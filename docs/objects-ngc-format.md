@@ -57,16 +57,70 @@ This strongly suggests `entry+0xc` is a sub-mesh/strip count, `entry+0x10` a
 flags or material-index field, and `entry+0x18`/`entry+0x1c` are pointers to
 per-strip data present only when the count allows it.
 
+## `objects_b_offset` array — material/texture bindings (partially confirmed)
+
+Confirmed from `FUN_800c7510` (`main.dol`), called right after both a
+model *and* its texture finish loading (from `FUN_800b7344`). It walks
+`num_b` entries at the *compacted* `objects_b_offset` array and binds each
+to texture data. Cross-referencing the compaction copy in `0x800b7534`
+(which shrinks each on-disk `0x40`-byte entry down to `0x10` bytes) resolves
+which on-disk bytes back each compacted field:
+
+| on-disk offset (within 0x40-byte entry) | compacted offset | meaning |
+| --- | --- | --- |
+| `+0x00` (u8) | `+0x00` | copied through, meaning unconfirmed |
+| `+0x08` (u16) | `+0x02` | becomes the runtime "flags" field; bit `0x100` = untextured |
+| `+0x0C` (u32) | `+0x04` | texture data offset, used only when textured |
+| `+0x12` (u16) | `+0x08` | copied through, meaning unconfirmed |
+| `+0x16` (u16) | `+0x0A` | if `0`, this binding is marked untextured |
+| `+0x18` (u16) | `+0x0C` | if `0` (or already untextured), also marked untextured |
+
+Compacted `+0x0E` and `+0x01` are **not** written by the compaction copy —
+they're leftover memory, unconditionally overwritten at runtime (`0xFFFF`
+and a model index respectively), so they carry no on-disk meaning. The rest
+of each `0x40`-byte on-disk entry (most of it) is still unconfirmed — likely
+a material name and additional texture/UV info, given the array's job.
+
+Cross-checked against the `texidx` lookup path (`FUN_800ba314`
+`"MBRomTexPtr"`, `FUN_800ba278`, `FUN_800ba1ac`): all three independently
+index this exact same array (`model_base + 0x58`, stride `0x10`, by the
+low 16 bits of a `texidx`), confirming it's the canonical texture-binding
+table used throughout the game, not something local to the one fixup
+routine.
+
+Implemented as `gdl_formats::MaterialBinding` — `flags_raw` (`+0x08`),
+`texture_offset` (`+0x0C`), and the two "untextured" check fields
+(`+0x16`/`+0x18`). **Verified**: across all 67 real `objects.ngc` files,
+every one of the 8,387 bindings whose checks mark it "textured" has a
+`texture_offset` that lands inside its level's actual `textures.ngc` file
+size (`cargo test -p gdl-formats textured_bindings_point_inside`) — strong
+evidence `texture_offset` really is a file-relative offset into
+`textures.ngc`.
+
 ## Not yet reverse engineered
 
-- What `num_b`'s compacted `0x10`-byte entries actually hold (material name?
-  texture index + UV info?).
+- Most of the `objects_b_offset` entry (only 4 of ~16 four-byte words
+  confirmed — see above).
 - The exact meaning of the `d_offset` array (`0x24` bytes/entry) — likely
   collision or trigger geometry given the trailing-empty-entry trimming.
 - The unnamed pointers at `0x64`–`0x78`.
 - Vertex/index/strip data layout inside the `objects_offset` entries once
   `entry+0xc` submesh count is followed.
 
-Next step to make progress here: decompile `0x800b7fec`/`0x800b719c`'s
-caller chain forward into whatever actually walks `objects_offset` entries
-for rendering (not just the fixup routine), to name the remaining fields.
+`textures.ngc` does **not** appear to share this pattern: real files (e.g.
+`levelE2/textures.ngc`) have no ASCII path comment and no obvious version
+magic in the first `0x40` bytes — byte patterns from `0x40` onward already
+look like GX `CMPR`-style compressed texture block data (repeating
+plausible RGB565 colour shorts), suggesting little or no file-level header.
+Not yet confirmed against decompiled code — the `objects.ngc`/`textures.ngc`
+load path in `FUN_800b7344` doesn't call an equivalent byte-swap routine for
+textures, which would make sense if GX-compressed texel data is stored as
+opaque byte blocks that don't need endian conversion.
+
+Next step to make progress on `objects.ngc`: decompile `0x800b7fec`/
+`0x800b719c`'s caller chain forward into whatever actually walks
+`objects_offset` entries for rendering, to name the remaining fields. For
+`textures.ngc`: find the function that actually builds a GX `GXTexObj` from
+the loaded data (search for code indexing off the texture pointer stored at
+`objects.ngc`'s material-binding `+0x04` field) to confirm the container
+format (TPL-style multi-image table vs. one texture per file).
