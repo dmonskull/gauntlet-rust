@@ -1,0 +1,9 @@
+[package]
+name = "gdl-game"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+gdl-formats.workspace = true
+bevy.workspace = true
