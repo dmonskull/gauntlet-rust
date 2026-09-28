@@ -82,6 +82,64 @@ impl ModelHeader {
     }
 }
 
+/// One entry of the `objects_b_offset` array: binds a model's sub-mesh to a
+/// texture inside the matching `textures.ngc`. On disk each entry is a
+/// `0x40`-byte record; only four fields are confirmed (the rest is unused by
+/// the runtime code reverse engineered so far — see
+/// `docs/objects-ngc-format.md`). Confirmed from `FUN_800c7510`, cross
+/// checked against `FUN_800ba314`/`FUN_800ba278` (the `texidx` lookup path),
+/// all of which index this same array.
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialBinding {
+    /// On-disk `+0x08`. Becomes the runtime flags field; bit `0x100` there
+    /// marks "untextured", but that bit itself is never set on disk — it's
+    /// computed from `untextured_a`/`untextured_b` below.
+    pub flags_raw: u16,
+    /// On-disk `+0x0C`. A file-relative offset into the sibling
+    /// `textures.ngc`, valid only when [`MaterialBinding::is_textured`].
+    pub texture_offset: u32,
+    /// On-disk `+0x16`. Zero here alone marks the binding untextured.
+    pub untextured_a: u16,
+    /// On-disk `+0x18`. Zero here also marks the binding untextured.
+    pub untextured_b: u16,
+}
+
+/// On-disk size of one `objects_b_offset` entry (before the game's
+/// in-memory compaction down to 0x10 bytes — see the module docs).
+pub const MATERIAL_BINDING_STRIDE: u32 = 0x40;
+
+impl MaterialBinding {
+    fn read_from_entry(entry: &[u8; MATERIAL_BINDING_STRIDE as usize]) -> Self {
+        Self {
+            flags_raw: le_u16(&entry[0x08..0x0A]),
+            texture_offset: le_u32(&entry[0x0C..0x10]),
+            untextured_a: le_u16(&entry[0x16..0x18]),
+            untextured_b: le_u16(&entry[0x18..0x1A]),
+        }
+    }
+
+    /// Mirrors the check in `FUN_800c7510`: a binding with either "check"
+    /// field zero has no texture, regardless of `texture_offset`'s value.
+    pub fn is_textured(&self) -> bool {
+        self.untextured_a != 0 && self.untextured_b != 0
+    }
+
+    /// Reads all `header.num_b` bindings for `header`, in file order.
+    pub fn read_all_from<R: Read + Seek>(
+        reader: &mut R,
+        header: &ModelHeader,
+    ) -> Result<Vec<Self>, ModelError> {
+        reader.seek(SeekFrom::Start(header.objects_b_offset as u64))?;
+        let mut bindings = Vec::with_capacity(header.num_b as usize);
+        let mut entry = [0u8; MATERIAL_BINDING_STRIDE as usize];
+        for _ in 0..header.num_b {
+            reader.read_exact(&mut entry)?;
+            bindings.push(Self::read_from_entry(&entry));
+        }
+        Ok(bindings)
+    }
+}
+
 fn le_u32(bytes: &[u8]) -> u32 {
     u32::from_le_bytes(bytes.try_into().unwrap())
 }
@@ -163,5 +221,55 @@ mod tests {
         }
         assert!(checked > 0, "found no objects.ngc files under {levels_dir:?}");
         eprintln!("validated {checked} real objects.ngc files");
+    }
+
+    /// Cross-file check: every textured `MaterialBinding`'s `texture_offset`
+    /// must land inside the sibling `textures.ngc`'s actual size. This is
+    /// the strongest evidence so far that `texture_offset` really is a
+    /// file-relative offset into `textures.ngc`, not just a plausible guess.
+    #[test]
+    fn textured_bindings_point_inside_the_sibling_textures_ngc() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT")
+            .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".to_string());
+        let levels_dir = Path::new(&root).join("LEVELS");
+        if !levels_dir.is_dir() {
+            eprintln!("skipping: {levels_dir:?} not present on this machine");
+            return;
+        }
+
+        let mut levels_checked = 0;
+        let mut textured_checked = 0;
+        for entry in std::fs::read_dir(&levels_dir).unwrap() {
+            let level_dir = entry.unwrap().path();
+            let model_path = level_dir.join("objects.ngc");
+            let textures_path = level_dir.join("textures.ngc");
+            if !model_path.is_file() || !textures_path.is_file() {
+                continue;
+            }
+            let textures_len = std::fs::metadata(&textures_path).unwrap().len() as u32;
+
+            let file = File::open(&model_path).unwrap();
+            let mut reader = BufReader::new(file);
+            let header = ModelHeader::read_from(&mut reader).unwrap();
+            let bindings = MaterialBinding::read_all_from(&mut reader, &header).unwrap();
+
+            for (i, binding) in bindings.iter().enumerate() {
+                if binding.is_textured() {
+                    assert!(
+                        binding.texture_offset < textures_len,
+                        "{model_path:?} binding {i}: texture_offset 0x{:X} outside \
+                         textures.ngc (len 0x{:X})",
+                        binding.texture_offset,
+                        textures_len
+                    );
+                    textured_checked += 1;
+                }
+            }
+            levels_checked += 1;
+        }
+        assert!(levels_checked > 0, "found no level pairs under {levels_dir:?}");
+        eprintln!(
+            "validated {textured_checked} textured bindings across {levels_checked} levels"
+        );
     }
 }
