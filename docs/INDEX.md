@@ -6,7 +6,8 @@ One file per system, written only once it's confirmed against the actual
 | file | about |
 | --- | --- |
 | [disc-format.md](disc-format.md) | GameCube disc boot header and DOL executable layout |
-| [objects-ngc-format.md](objects-ngc-format.md) | Model file (`objects.ngc`) header — counts, offsets, byte order |
+| [objects-ngc-format.md](objects-ngc-format.md) | Model file (`objects.ngc`) header, byte order, and material/texture bindings |
+| [textures-ngc-format.md](textures-ngc-format.md) | Texture file (`textures.ngc`) — status: not yet reverse engineered, what's known |
 
 ## Ghidra project
 
@@ -26,15 +27,29 @@ see `objects-ngc-format.md` for how that found the model header.
 - `objects.ngc` header: version magic, object/sub-array counts and offsets
   (`objects-ngc-format.md`). Verified by parsing all 67 real `objects.ngc`
   files across every level — `cargo test -p gdl-formats`.
+- `objects.ngc`'s `objects_b_offset` array (material/texture bindings): 4 of
+  its fields, enough to resolve which bytes of the sibling `textures.ngc`
+  each binding's texture lives at. Verified against all 8,387 textured
+  bindings across every level.
+
+## Corrections to earlier notes
+
+The `"World Data %s has no cameras"` / `"No world data file: %s"` style
+strings turned out to belong to a *different*, global per-world-type
+`"gar_%s.wad"` resource system (14 named types, e.g. `"castle"`), reached
+from `FUN_8005a094`/`FUN_80058074`/`FUN_800a8dfc` — **not** the per-level
+`WORLDS.PS2` file sitting in each `LEVELS/levelXX/` folder. The real
+`WORLDS.PS2` loader hasn't been located yet.
 
 ## Not started yet
 
-- `objects.ngc` per-entry array layouts (mesh/strip data, the `num_b` and
-  `num_d` arrays) — see "Not yet reverse engineered" in
-  `objects-ngc-format.md`
-- `textures.ngc` (GameCube native texture format)
-- `WORLDS.PS2` (level/world layout — object placement, cameras, audio per
-  the `"World Data %s has no cameras"`-style debug strings)
+- `objects.ngc` per-entry array layouts (mesh/strip data, the `num_b` array
+  beyond its 4 confirmed fields, and the `num_d` array) — see "Not yet
+  reverse engineered" in `objects-ngc-format.md`
+- `textures.ngc` — no header found yet; width/height/GX-format still
+  unknown (`textures-ngc-format.md`)
+- `WORLDS.PS2` (the actual per-level file — not yet located in the binary;
+  see "Corrections" above)
 - `ANIM.PS2` (animation data)
 - Actor/monster data (`MONSTERS/`, `CRITTER/`)
 - Main game loop / entity update
