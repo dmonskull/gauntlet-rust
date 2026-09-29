@@ -311,3 +311,19 @@ is shown once per session, for 3 seconds.
 - The announcer's class-name lines; the pickup score pop-ups
   (`FUN_8007fa7c`).
 - Four players.
+
+## Experience and levels
+
+Blows on monsters earn experience (`FUN_8008625c` → `FUN_8002f288` →
+`FUN_80076144`): the table value for the monster's type (`0x8011b580`
+per landed blow, `0x8011b608` for the killing one — bosses up to 300; the
+turbo variants at `0x8011b690`/`0x8011b718` are twice as much and also
+fill the turbo meter by 0.025 × experience, not ported) × the level
+record's `+0xA0`, divided by 1 + 0.1 × the levels the hero is above the
+record's `+0x9C`. `FUN_800763d4` adds it (`+0x1EC0`) and raises the level
+(`+0x3324`, at most 99) while the total reaches `L × ((L + 1) × 30 + 1000)`
+(from level 60: `(L − 59) × 4600 + 165200`); each level re-derives the
+stats through `FUN_8007f104` (+5 per stat per level, up to the class
+maximum), which raises strength, armour, speed and — by 100 a level — the
+health maximum. Damaging generators also earns experience (`FUN_800382c0`,
+not ported yet).

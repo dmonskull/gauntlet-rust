@@ -373,7 +373,7 @@ pub fn tick_generators(
             {
                 freed.push(owner);
             }
-            commands.entity(v).despawn();
+            commands.entity(v).try_despawn();
             recycled.push(v);
             bodies.retain(|b| b.entity != v);
             live -= 1;
@@ -426,6 +426,8 @@ pub fn tick_placed(
     let frustum = view.as_ref();
     let feet: Vec<[f32; 3]> = players.iter().map(|p| p.mover.position).collect();
     let mut live = monsters.iter().count();
+    // Monsters recycled this tick (their despawn hasn't applied yet).
+    let mut recycled: Vec<Entity> = Vec::new();
     for p in placed.0.iter_mut().filter(|p| !p.spawned) {
         if !on_screen(frustum, p.position, p.screen_radius)
             || !feet.iter().any(|f| distance(*f, p.position) <= PLACED_RANGE)
@@ -434,10 +436,11 @@ pub fn tick_placed(
         }
         if live >= level.slots {
             match claim_slot(&level, &monsters, 1) {
-                Ok(Some(v)) => {
+                Ok(Some(v)) if !recycled.contains(&v) => {
                     if let Ok((_, m)) = monsters.get(v) {
                         despawn_monster(&mut commands, v, m, &mut generators);
                     }
+                    recycled.push(v);
                     live -= 1;
                 }
                 _ => continue,

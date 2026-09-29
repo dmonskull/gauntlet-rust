@@ -55,6 +55,7 @@ const BODY_TIME: f32 = 4.0;
 fn apply_hits(
     mut commands: Commands,
     mut hits: MessageReader<Hit>,
+    mut state: Option<ResMut<PlayerState>>,
     level: Option<Res<MonsterLevel>>,
     mut monsters: Query<(&mut Monster, &mut Animator)>,
     mut generators: Query<&mut Generator>,
@@ -64,7 +65,21 @@ fn apply_hits(
         match hit.target_kind {
             TargetKind::Monster => {
                 let Ok((mut m, mut animator)) = monsters.get_mut(hit.target) else { continue };
+                // Already dead from an earlier blow this tick.
+                if m.hit_points <= 0.0 {
+                    continue;
+                }
                 m.take_hit(hit.damage, hit.kind, hit.push.to_array());
+                // Every blow earns experience; the killing one earns the
+                // kill's.
+                if let (Some(state), Some(level)) = (state.as_mut(), level.as_ref()) {
+                    let (at, scale) = level.experience;
+                    let xp = enemy::experience(m.enemy, m.hit_points <= 0.0, state.level, at, scale);
+                    let gained = state.add_experience(xp);
+                    if gained > 0 {
+                        info!("the hero reaches level {}", state.level);
+                    }
+                }
                 if m.hit_points > 0.0 {
                     // Wounded monsters hit softer.
                     if let (Some(stats), Some(level)) = (enemy::enemy_stats(m.enemy), level.as_ref()) {
@@ -86,19 +101,22 @@ fn apply_hits(
                     g.alive = g.alive.saturating_sub(1);
                 }
                 animator.play_named("DEATH");
-                commands.entity(hit.target).remove::<(Monster, Targetable)>().insert(Dying { left: BODY_TIME });
+                commands.entity(hit.target).try_remove::<(Monster, Targetable)>().try_insert(Dying { left: BODY_TIME });
                 debug!("monster {:?} dies", hit.target);
             }
             TargetKind::Generator => {
                 let Ok(mut g) = generators.get_mut(hit.target) else { continue };
+                if g.hit_points <= 0.0 {
+                    continue;
+                }
                 g.hit_points -= hit.damage;
                 if g.hit_points <= 0.0 {
                     for (e, model) in &models {
                         if model.0 == g.placement {
-                            commands.entity(e).despawn();
+                            commands.entity(e).try_despawn();
                         }
                     }
-                    commands.entity(hit.target).despawn();
+                    commands.entity(hit.target).try_despawn();
                     debug!("generator {} destroyed", g.placement);
                 } else if g.hit_points_per_tier > 0.0 {
                     g.tier = (g.hit_points / g.hit_points_per_tier).ceil().clamp(1.0, 3.0) as i32;
@@ -118,7 +136,7 @@ fn remove_bodies(
         d.left -= time.delta_secs();
         let done = animator.action_name() == "DEATH" && animator.finished();
         if d.left <= 0.0 || (done && d.left < BODY_TIME - 1.5) {
-            commands.entity(e).despawn();
+            commands.entity(e).try_despawn();
         }
     }
 }
