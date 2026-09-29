@@ -21,7 +21,8 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::disc::{DiscError, DiscHeader};
+use crate::disc::{DiscError, DiscHeader, ImageKind};
+use crate::rvz::{RvzError, RvzReader};
 
 #[derive(Debug, Error)]
 pub enum FstError {
@@ -29,6 +30,10 @@ pub enum FstError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Disc(#[from] DiscError),
+    #[error(transparent)]
+    Rvz(#[from] RvzError),
+    #[error("{0} disc images aren't supported")]
+    UnsupportedImage(&'static str),
     #[error("FST is malformed: {0}")]
     Malformed(&'static str),
     #[error("no such file on disc: {0}")]
@@ -119,22 +124,53 @@ impl Fst {
     }
 }
 
+/// Anything that reads like an uncompressed disc: a plain image file, or a
+/// compressed image decoded on the fly ([`RvzReader`]).
+pub trait DiscSource: Read + Seek + Send + Sync {}
+impl<T: Read + Seek + Send + Sync> DiscSource for T {}
+
 /// An open disc image: boot header, filesystem table, and a reader.
 pub struct Disc {
     pub header: DiscHeader,
     pub fst: Fst,
-    reader: BufReader<File>,
+    /// The container the disc came in (plain image or RVZ).
+    pub kind: ImageKind,
+    reader: Box<dyn DiscSource>,
 }
 
 impl Disc {
+    /// Opens a `.iso`/`.gcm` or an `.rvz`, told apart by magic, not by
+    /// extension. Other compressed formats give [`FstError::UnsupportedImage`].
     pub fn open(path: impl AsRef<Path>) -> Result<Self, FstError> {
-        let mut reader = BufReader::new(File::open(path)?);
+        let mut file = File::open(path)?;
+        let mut head = Vec::with_capacity(0x20);
+        (&mut file).take(0x20).read_to_end(&mut head)?;
+        let kind = ImageKind::sniff(&head);
+        let reader: Box<dyn DiscSource> = match kind {
+            ImageKind::GameCube => Box::new(BufReader::new(file)),
+            ImageKind::Rvz => Box::new(RvzReader::new(file)?),
+            ImageKind::Unknown => return Err(FstError::Malformed("no GameCube disc magic")),
+            other => return Err(FstError::UnsupportedImage(other.name())),
+        };
+        Self::from_reader(reader, kind)
+    }
+
+    /// Reads the boot header and FST through an already-open disc reader.
+    pub fn from_reader(mut reader: Box<dyn DiscSource>, kind: ImageKind) -> Result<Self, FstError> {
         let header = DiscHeader::read_from(&mut reader)?;
         reader.seek(SeekFrom::Start(header.fst_offset as u64))?;
         let mut table = vec![0u8; header.fst_size as usize];
         reader.read_exact(&mut table)?;
         let fst = Fst::parse(&table)?;
-        Ok(Self { header, fst, reader })
+        Ok(Self { header, fst, kind, reader })
+    }
+
+    /// Reads `len` bytes at a disc offset (for anything outside the FST).
+    pub fn read_at(&mut self, offset: u64, len: usize) -> Result<Vec<u8>, FstError> {
+        self.reader.seek(SeekFrom::Start(offset))?;
+        let mut data = vec![0u8; len];
+        self.reader.read_exact(&mut data)?;
+        Ok(data)
     }
 
     /// Reads a whole file off the disc by its path (case-insensitive).
@@ -143,10 +179,7 @@ impl Disc {
             .fst
             .get(path)
             .ok_or_else(|| FstError::NotFound(path.to_string()))?;
-        self.reader.seek(SeekFrom::Start(entry.offset as u64))?;
-        let mut data = vec![0u8; entry.length as usize];
-        self.reader.read_exact(&mut data)?;
-        Ok(data)
+        self.read_at(entry.offset as u64, entry.length as usize)
     }
 }
 
