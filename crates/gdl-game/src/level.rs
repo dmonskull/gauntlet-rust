@@ -1,6 +1,6 @@
 //! Validates every level at boot and loads level data on demand.
 
-use gdl_formats::{ModelFile, WorldFile, texture};
+use gdl_formats::{ModelFile, Population, WorldFile, texture};
 use gdl_install::GameInstall;
 
 use bevy::prelude::*;
@@ -12,6 +12,8 @@ pub struct LevelSummary {
     pub textures: usize,
     /// Textures using format selectors the game's own tables don't cover.
     pub unsupported_textures: usize,
+    /// Items placed in the level (`docs/level-population.md`).
+    pub placements: usize,
 }
 
 /// A level's parsed data, ready to turn into meshes.
@@ -21,6 +23,8 @@ pub struct LevelData {
     pub textures: Vec<u8>,
     /// Model placements: (object index into `model.objects`, world position).
     pub placements: Vec<(usize, [f32; 3])>,
+    /// Items, generators, monsters, player starts and the rest.
+    pub population: Population,
 }
 
 #[derive(Resource)]
@@ -103,6 +107,7 @@ pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, St
     let model = ModelFile::parse(&objects).map_err(|e| format!("objects.ngc: {e}"))?;
     let world = WorldFile::parse(&world_file).map_err(|e| format!("WORLDS.PS2: {e}"))?;
     let positions = world.world_positions().map_err(|e| format!("WORLDS.PS2: {e}"))?;
+    let population = Population::parse(&world_file).map_err(|e| format!("WORLDS.PS2 population: {e}"))?;
 
     // Nodes find their model by name, like the game does.
     let by_name: std::collections::HashMap<&str, usize> =
@@ -115,7 +120,7 @@ pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, St
         .filter_map(|(n, p)| Some((*by_name.get(n.name.as_str())?, p?)))
         .collect();
 
-    Ok(LevelData { name: name.to_string(), model, textures, placements })
+    Ok(LevelData { name: name.to_string(), model, textures, placements, population })
 }
 
 fn summarize(level: &LevelData) -> LevelSummary {
@@ -138,5 +143,6 @@ fn summarize(level: &LevelData) -> LevelSummary {
             .sum(),
         textures,
         unsupported_textures,
+        placements: level.population.placements.len(),
     }
 }

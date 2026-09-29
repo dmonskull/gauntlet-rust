@@ -4,6 +4,7 @@
 use bevy::prelude::*;
 
 use crate::level::LoadedGame;
+use crate::population::{LevelPopulation, PopulationView};
 use crate::world::CurrentLevelStats;
 
 pub struct HudPlugin;
@@ -35,10 +36,12 @@ fn spawn_hud(mut commands: Commands) {
 fn update_hud(
     game: Res<LoadedGame>,
     stats: Option<Res<CurrentLevelStats>>,
+    view: Res<PopulationView>,
+    population: Option<Res<LevelPopulation>>,
     mut text: Query<&mut Text, With<HudText>>,
 ) {
     let Some(stats) = stats else { return };
-    if !stats.is_changed() && !game.is_changed() {
+    if !stats.is_changed() && !game.is_changed() && !view.is_changed() {
         return;
     }
     let Ok(mut text) = text.single_mut() else { return };
@@ -67,9 +70,17 @@ fn update_hud(
     if summary.unsupported_textures > 0 {
         s += &format!(" ({} textures in unsupported formats)", summary.unsupported_textures);
     }
+    if stats.error.is_none() {
+        s += &format!("\n{} placements: {}", summary.placements, stats.population);
+        if let Some(start) = population.as_ref().filter(|p| p.level == stats.name).and_then(|p| p.player_start()) {
+            let [x, y, z] = start.position;
+            s += &format!("\nplayer start: {x:.1} {y:.1} {z:.1}, yaw {:.0} deg", start.yaw.to_degrees());
+        }
+        s += &format!("\npopulation shown: {}", view.label());
+    }
     for (name, why) in &game.failures {
         s += &format!("\nlevel {name} failed: {why}");
     }
-    s += "\n\nWASD move  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed  [ ] level";
+    s += "\n\nWASD move  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed  [ ] level  I population";
     text.0 = s;
 }
