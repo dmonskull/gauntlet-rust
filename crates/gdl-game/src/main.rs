@@ -17,6 +17,7 @@ mod locomotion;
 mod model_mesh;
 mod play_camera;
 mod player;
+mod texanim;
 mod population;
 mod viewer;
 mod world;
@@ -65,6 +66,7 @@ fn main() {
         camera::CameraPlugin,
         character::CharacterPlugin,
         billboard::BillboardPlugin,
+        texanim::TexAnimPlugin,
         autoshot::AutoShotPlugin,
     ));
 

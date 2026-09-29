@@ -108,3 +108,31 @@ We light per pixel in `level.wgsl` with the same formula (`SceneLight`,
 set from the level's record when it loads). Blending happens in linear
 space here but in gamma space on the GameCube, so dark translucent layers
 (blob shadows) come out lighter than the original.
+
+## Texture animation (`LEVELS/<level>/ANIM.PS2`)
+
+Despite the name, a level's `ANIM.PS2` is its texture-modifier list
+(`texmod.rs`), loaded as "anim" into `0x8028c4ec` (`FUN_800a8b2c`).
+Header `{0, 0, count, offset}`, then 0x58-byte records; set up by
+`FUN_800185b0` (message "TEXMOD with 0 texidx") and stepped every tick by
+`FUN_80018788` (from `FUN_80010a4c`):
+
+| offset | field |
+| --- | --- |
+| `+0x04` | texture name (32 bytes) |
+| `+0x24` | first-frame texture name (16 bytes), used when `+0x48` is −1 |
+| `+0x44` | binding of the modified texture in the level's `objects.ngc` |
+| `+0x48` | ≥ 0: first frame's binding; −1: look it up by the `+0x24` name; −2 / −3: scroll U / V |
+| `+0x4C` | i16: frames, or steps per whole scroll (negative scrolls backwards) |
+| `+0x4E` | i16: scroll phase |
+| `+0x50` | ticks per step (≤ 1: every tick; checked against the frame counter `r13-0x7580`) |
+| `+0x54` | starting step |
+
+A flipbook swaps the binding's texture for `first + step % frames`
+(`FUN_800ba278`); a scroll writes `±(step − phase) / |count|` into the
+scroll table at `0x802c7b08` (U at `+4`, V at `+0xC`), which the draw path
+applies as a texture-matrix offset for bindings flagged `0x40`
+(`FUN_800c6a78` → `FUN_800c68e4`). All 67 levels' files parse (623
+modifiers) and point at real bindings. Torches (`TORCHA`…) take their
+frames from `TORCH00`, which isn't in the level's own texture names — not
+resolved yet. We evaluate scrolls between ticks so they glide.

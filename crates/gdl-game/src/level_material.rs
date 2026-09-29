@@ -73,6 +73,9 @@ pub struct LevelMaterial {
     /// rgb: light colour × intensity, a: object colour.
     #[uniform(6)]
     pub light_color: Vec4,
+    /// xy: scroll of the diffuse texture.
+    #[uniform(7)]
+    pub uv_offset: Vec4,
     pub alpha_mode: AlphaMode,
     /// The game's per-instance depth switches (render flags 0x40, 0x80).
     pub depth_test: bool,
@@ -107,6 +110,7 @@ impl LevelMaterial {
             params: Vec4::new(lit, cutoff, STAGE0_SCALE, 0.0),
             light_dir: light.dir,
             light_color: light.color,
+            uv_offset: Vec4::ZERO,
             alpha_mode,
             depth_test: true,
             depth_write: true,

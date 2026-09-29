@@ -1,5 +1,6 @@
 //! Validates every level at boot and loads level data on demand.
 
+use gdl_formats::texmod::TexMod;
 use gdl_formats::{LevelCollision, ModelFile, Population, WorldFile, texture};
 use gdl_install::GameInstall;
 
@@ -27,6 +28,8 @@ pub struct LevelData {
     /// Items, generators, monsters, player starts and the rest.
     pub population: Population,
     pub collision: LevelCollision,
+    /// Animated and scrolling textures (`ANIM.PS2`; none if it's missing).
+    pub texmods: Vec<TexMod>,
 }
 
 #[derive(Resource)]
@@ -123,7 +126,12 @@ pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, St
         .filter_map(|(n, p)| Some((*by_name.get(n.name.as_str())?, p?, n.render_flags)))
         .collect();
 
-    Ok(LevelData { name: name.to_string(), model, textures, placements, population, collision })
+    let texmods = match install.read(&format!("LEVELS/{name}/ANIM.PS2")) {
+        Ok(b) => TexMod::parse_all(&b).map_err(|e| format!("ANIM.PS2: {e}"))?,
+        Err(_) => Vec::new(),
+    };
+
+    Ok(LevelData { name: name.to_string(), model, textures, placements, population, collision, texmods })
 }
 
 fn summarize(level: &LevelData) -> LevelSummary {
