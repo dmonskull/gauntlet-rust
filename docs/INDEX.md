@@ -65,6 +65,16 @@ One file per system, written only once it's confirmed against the actual
 - The hero's record (health, gold, keys, potions, timed powerups) and the
   items it touches: pickups, keyed doors and chests, exits, transporters,
   item animation and the game's hints.
+- Level mechanics ([mechanics.md](mechanics.md)): trigger pads, switches
+  and chains; lifts, elevators, trap walls, fading bridges and rotators
+  (moving their collision and meshes, carrying the hero), with their
+  sounds, camera cuts ([camera.md](camera.md)) and shakes; damage tiles and
+  damaging walls; breakables (barrels and their contents — Deaths too —,
+  exploding and poison barrels, secret walls, hit switches).
+- Placed golems woken by their triggers ([critters.md](critters.md)).
+- Monster hit and death sounds; generators' damage, experience and sounds.
+- The front end ([frontend.md](frontend.md)): fonts, title, character
+  select, pause menus, death flow.
 
 ## Reverse engineering setup
 
@@ -94,9 +104,12 @@ names), which is how most systems here were found.
   general, projectile and effect blows, the boss intro and camera
   ([critters.md](critters.md)); most monster AIs beyond chase/wander;
   hand/effect glows, blending between actions.
-- Gameplay: the main loop, damage from monsters to the hero, missile
-  effects and powerups (pierce, bounce, spreads), the fireball AIs,
-  turbo and magic, damage tiles, triggers, co-op.
+- Gameplay: missile effects and powerups (pierce, bounce, spreads),
+  magic (potions: the blast, shield and thrown potion run on the effect
+  slots, [items.md](items.md) / [projectiles.md](projectiles.md)), the
+  effects and particle systems ([rendering.md](rendering.md)), the in-game
+  HUD (per-player panels, `FUN_8007bca4` / `FUN_80075cac`), the tower's
+  quest gates and progression ([items.md](items.md)), co-op.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
   `FUN_80058074`: cameras, enemies, maps, 14 named realm types). The chunk
   directory, level names, camera, audio and enemy records and the monster
