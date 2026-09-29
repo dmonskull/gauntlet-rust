@@ -22,6 +22,7 @@ use gdl_formats::enemy::{self, ACTION_NAMES, EnemyInstance, EnemyScales, FIELDS_
 use gdl_formats::{LevelCollision, LevelTuning, ModelFile, WorldData};
 use gdl_install::GameInstall;
 
+use crate::combat::{TargetKind, Targetable};
 use crate::character::{Animator, CharacterData, CharacterModel};
 use crate::generators::{self, Generator};
 use crate::level::LoadedGame;
@@ -215,6 +216,9 @@ pub struct Monster {
     number: u32,
 }
 
+/// Stand-in height of a generator for the hit search.
+const GENERATOR_HEIGHT: f32 = 4.0;
+
 const READY: u8 = 0;
 const START: u8 = 1;
 const WALK: u8 = 3;
@@ -284,7 +288,10 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         number: level.created,
         model: model.clone(),
     };
-    commands.entity(root).insert((monster, LevelEntity));
+    // Hittable: its radius, and (a stand-in for the game's height test)
+    // twice its centre height.
+    let target = Targetable::new(TargetKind::Monster, instance.radius, 2.0 * stats.center_height);
+    commands.entity(root).insert((monster, target, LevelEntity));
     Some(root)
 }
 
@@ -342,7 +349,10 @@ fn setup_level(
         tuning
     );
     for g in gens {
-        commands.spawn((g, Transform::default(), LevelEntity));
+        // Hittable where it stands. Its height is a stand-in (generator
+        // models are about this tall; at most 3.5 counts as low).
+        let target = Targetable::new(TargetKind::Generator, g.screen_radius / 4.0, GENERATOR_HEIGHT);
+        commands.spawn((Transform::from_translation(Vec3::from(g.position)), target, g, LevelEntity));
     }
     commands.insert_resource(generators::PlacedMonsters(placed));
     commands.insert_resource(MonsterLevel {
