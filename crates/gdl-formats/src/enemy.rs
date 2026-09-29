@@ -185,13 +185,50 @@ pub const KILL_EXPERIENCE: [u32; 34] =
 /// `hero_level`: the table value × the scale, divided down by 1 + 0.1 ×
 /// the levels the hero is above the level's.
 pub fn experience(enemy: i32, killed: bool, hero_level: u32, level: f32, scale: f32) -> u32 {
+    scaled_experience(enemy, killed, 1, hero_level, level, scale)
+}
+
+/// Experience for a blow on a generator of monster type `enemy`: five
+/// times a blow on one of its monsters, before the level's scaling.
+pub fn generator_experience(enemy: i32, destroyed: bool, hero_level: u32, level: f32, scale: f32) -> u32 {
+    scaled_experience(enemy, destroyed, 5, hero_level, level, scale)
+}
+
+fn scaled_experience(enemy: i32, killed: bool, times: u32, hero_level: u32, level: f32, scale: f32) -> u32 {
     let table = if killed { &KILL_EXPERIENCE } else { &HIT_EXPERIENCE };
-    let base = table.get(enemy.max(0) as usize).copied().unwrap_or(0) as f32;
+    let base = (table.get(enemy.max(0) as usize).copied().unwrap_or(0) * times) as f32;
     let mut scale = scale;
     if level > 0.0 && hero_level as f32 > level {
         scale *= 1.0 / (0.1 * (hero_level as f32 - level) + 1.0);
     }
     (base * scale) as u32
+}
+
+/// Whole hit points a blow of `damage` takes off an item (a generator or
+/// a breakable) with `armor`, from a hero of `hero_level` on a level whose
+/// experience level is `level`: heroes above it hit harder (+10% a level),
+/// heroes below softer (-1% a level); every blow does at least 1.
+pub fn item_damage(damage: f32, armor: i8, hero_level: u32, level: f32) -> i32 {
+    let mut damage = damage;
+    if level > 0.0 {
+        let above = hero_level as f32 - level;
+        if above > 0.0 {
+            damage *= 0.1 * above + 1.0;
+        } else if above < 0.0 {
+            damage *= 1.0 + 0.01 * above;
+        }
+        if damage < 1.0 {
+            damage = 1.0;
+        }
+    }
+    if armor >= 0 {
+        damage -= f32::from(armor);
+        if damage <= 0.0 {
+            damage = 1.0;
+        }
+    }
+    // Rounded half away from zero.
+    (damage + if damage < 0.0 { -0.5 } else { 0.5 }) as i32
 }
 
 impl EnemyStats {
@@ -350,6 +387,20 @@ pub fn monster_sounds(enemy: i32, subtype: i32, name: &str, boss: i32, realm: ch
         die: [finish(format!("S_{weak}{die}CLOSE")), finish(format!("S_{strong}{die}CLOSE"))],
         hit: [weak_hit, first, later],
     })
+}
+
+/// A generator's sounds in realm `realm` (the level folder's letter) for
+/// one making `enemy`: when a blow lands, and when it's destroyed. Only
+/// the eleven monster realms have them; the jungle's demon generators use
+/// their own.
+pub fn generator_sounds(realm: char, enemy: i32) -> Option<(String, String)> {
+    if !('A'..='K').contains(&realm) {
+        return None;
+    }
+    if realm == 'J' && enemy == 0x18 {
+        return Some(("S_GENDAMWAR".into(), "S_GENKILLWAR".into()));
+    }
+    Some((format!("S_GENDAM{realm}"), format!("S_GENKILL{realm}")))
 }
 
 /// Which enemy types a level loads, from its realm's `ENMY` records
@@ -589,6 +640,18 @@ mod tests {
         }
         eprintln!("{made} generators/monsters resolve to a model, {refused} refused");
         assert!(made > 1000);
+    }
+
+    #[test]
+    fn blows_on_items() {
+        assert_eq!(item_damage(10.0, 2, 1, 0.0), 8);
+        assert_eq!(item_damage(10.0, 2, 13, 3.0), 18);
+        assert_eq!(item_damage(10.0, -1, 1, 11.0), 9);
+        assert_eq!(item_damage(1.0, 5, 1, 0.0), 1);
+        assert_eq!(generator_experience(4, false, 1, 0.0, 1.0), 10);
+        assert_eq!(generator_experience(4, true, 1, 0.0, 2.0), 20);
+        assert_eq!(generator_sounds('B', 1), Some(("S_GENDAMB".into(), "S_GENKILLB".into())));
+        assert_eq!(generator_sounds('L', 1), None);
     }
 
     #[test]

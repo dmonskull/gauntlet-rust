@@ -158,6 +158,10 @@ pub struct MonsterLevel {
     pub experience: (f32, f32),
     /// Each enemy type's hit and death sounds.
     pub sounds: MonsterSoundTable,
+    /// The level folder's realm letter (`A` for `levelA1`).
+    pub realm: char,
+    /// The level's boss type, or -1.
+    pub boss: i32,
     /// Per (enemy type, tier): the model, if one could be found.
     models: HashMap<(i32, i32), Option<Arc<MonsterModel>>>,
     /// 30 Hz ticks since the level started.
@@ -513,6 +517,8 @@ fn setup_level(
         experience: (tuning.experience_level, tuning.experience_scale),
         scales,
         sounds,
+        realm: population.level.strip_prefix("level").and_then(|l| l.chars().next()).unwrap_or('?').to_ascii_uppercase(),
+        boss: tuning.boss_enemy,
         tuning,
         enemies,
         models,

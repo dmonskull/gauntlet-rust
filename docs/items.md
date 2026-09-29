@@ -325,5 +325,9 @@ record's `+0x9C`. `FUN_800763d4` adds it (`+0x1EC0`) and raises the level
 (from level 60: `(L − 59) × 4600 + 165200`); each level re-derives the
 stats through `FUN_8007f104` (+5 per stat per level, up to the class
 maximum), which raises strength, armour, speed and — by 100 a level — the
-health maximum. Damaging generators also earns experience (`FUN_800382c0`,
-not ported yet).
+health maximum. Blows on items go through `FUN_8002f400`: a blow on a
+generator (item class 3) earns 5 × the hit value for its monster type
+(`+0xDC`; -2 → 1, -3 → 2, other negatives → 0) and destroying it 5 × the
+kill value, through the same `FUN_80076144` scaling (ported). A blow on a
+potion (class 1 subtype 4) sets it off (`FUN_80076618`, the potion's magic;
+not ported).

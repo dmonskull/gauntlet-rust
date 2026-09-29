@@ -4,9 +4,12 @@
 //! Monsters (the game's monster-damage routine): hit points go down by the damage;
 //! below two thirds and one third of their full hit points they hit for
 //! 0.667 / 0.333 of their damage; at 0 they die — their generator slot is
-//! freed at once and the body plays DEATH before it goes. Generators lose
-//! a strength level for each item-type's worth of hit points (their
-//! monsters come out weaker) and are gone at 0 with their model.
+//! freed at once and the body plays DEATH before it goes. Generators take
+//! whole hit points (the blow scaled by the hero's level against the
+//! level's, less their armour, at least 1: `enemy::item_damage`), lose a
+//! strength level for each item-type's worth (their monsters come out
+//! weaker) and are gone at 0 with their model. Blows on them earn five
+//! times a blow on one of their monsters.
 //!
 //! Monster blows (`MonsterHit`) hurt the hero through `DamagePlayer`.
 //!
@@ -120,7 +123,29 @@ fn apply_hits(
                 if g.hit_points <= 0.0 {
                     continue;
                 }
-                g.hit_points -= hit.damage;
+                let hero_level = state.as_ref().map_or(1, |s| s.level);
+                let was = g.hit_points;
+                let at = level.as_ref().map_or(0.0, |l| l.experience.0);
+                g.hit_points -= enemy::item_damage(hit.damage, g.armor, hero_level, at) as f32;
+                // Five times a blow on one of its monsters.
+                if let (Some(state), Some(level)) = (state.as_mut(), level.as_ref()) {
+                    let (at, scale) = level.experience;
+                    let xp = enemy::generator_experience(g.enemy, g.hit_points <= 0.0, state.level, at, scale);
+                    if state.add_experience(xp) > 0 {
+                        info!("the hero reaches level {}", state.level);
+                    }
+                }
+                // Its realm's sounds; none for destroying one on a boss level.
+                if let Some(level) = level.as_ref()
+                    && let Some((hurt, destroyed)) = enemy::generator_sounds(level.realm, g.enemy)
+                    && g.hit_points < was
+                {
+                    if g.hit_points > 0.0 {
+                        sounds.write(PlaySound(hurt));
+                    } else if level.boss < 0 {
+                        sounds.write(PlaySound(destroyed));
+                    }
+                }
                 if g.hit_points <= 0.0 {
                     for (e, model, _, _) in &models {
                         if model.0 == g.placement {
