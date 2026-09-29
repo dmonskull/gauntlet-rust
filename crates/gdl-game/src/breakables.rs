@@ -13,7 +13,8 @@
 //!
 //! Stand-ins: the blast and the poison cloud hurt once, at once, with the
 //! missiles' blast falloff (the game's effects, which carry them, aren't
-//! ported); hit flashes, hints 0x14 / 0x1B and chests blown apart by
+//! ported); a monster inside (a Death) comes out at tier 1 straight away;
+//! hit flashes, hints 0x14 / 0x1B and chests blown apart by
 //! explosive blows aren't done; a shootable wall's in-between hits are
 //! silent (the level's own hit sound isn't looked up); safe rocks (which
 //! break into pieces) aren't hittable.
@@ -26,7 +27,8 @@ use crate::combat::{Hit, TargetKind, Targetable};
 use crate::damage::after_armor;
 use crate::items::{self, LevelItems, USED};
 use crate::mechanics::{self, Mechanics};
-use crate::monsters::{Monster, MonsterLevel};
+use crate::monsters::{Monster, MonsterLevel, NewMonster, spawn_monster};
+use gdl_formats::enemy;
 use crate::player::Player;
 use crate::player_state::DamagePlayer;
 use crate::population::{ContentModels, LevelPopulation};
@@ -93,7 +95,14 @@ fn setup(mut commands: Commands, items: Res<LevelItems>) {
             continue;
         }
         let at = Vec3::from(view.shape.centre);
-        debug!("breakable {} {} ({class:?} {subtype:#x}) at {at}, {} hp, armour {}", view.placement, view.ty.name, view.ty.hit_points, view.ty.armor);
+        debug!(
+            "breakable {} {} ({class:?} {subtype:#x}) at {at}, {} hp, armour {}, holds {:?}",
+            view.placement,
+            view.ty.name,
+            view.ty.hit_points,
+            view.ty.armor,
+            view.contents.map(|c| c.name.as_str())
+        );
         commands.spawn((
             Transform::from_translation(at),
             Targetable::new(TargetKind::Breakable, view.shape.radius, view.ty.extent[1].max(0.5)),
@@ -113,7 +122,7 @@ fn hits(
     items: Option<ResMut<LevelItems>>,
     contents: Option<Res<ContentModels>>,
     mut mechanics: Option<ResMut<Mechanics>>,
-    level: Option<Res<MonsterLevel>>,
+    mut level: Option<ResMut<MonsterLevel>>,
     monsters: Query<(Entity, &Monster)>,
     mut players: Query<(Entity, &mut Player)>,
     mut hurt: MessageWriter<DamagePlayer>,
@@ -157,7 +166,27 @@ fn hits(
                     {
                         sounds.write(PlaySound(s));
                     }
-                    // (A monster inside, such as a Death, isn't released yet.)
+                    // A monster inside (a Death) comes out where the container stood.
+                    if let Some(id) = inside.as_ref().filter(|t| t.class == ItemClass::EnemyInfo).and_then(|t| t.enemy())
+                        && let Some(level) = level.as_deref_mut()
+                    {
+                        let ai = enemy::enemy_stats(id).map_or(7, |s| s.default_ai);
+                        let new = NewMonster {
+                            enemy: id,
+                            tier: 1,
+                            ai,
+                            position: [pos[0], pos[1] - 1.0, pos[2]],
+                            facing: 0.0,
+                            generator: None,
+                            placed: true,
+                            awareness: None,
+                            freeze: 0.0,
+                            throw_rate: 1.0,
+                        };
+                        if spawn_monster(level, new, &mut commands).is_some() {
+                            info!("breakable {} lets out monster {id:#x}", b.placement);
+                        }
+                    }
                     if let Some(ty) = inside.filter(|t| t.class != ItemClass::EnemyInfo) {
                         // Keys come as many as the container says.
                         let amount = (ty.class == ItemClass::Powerup && ty.subtype == 2).then(|| keys.unwrap_or(1).max(1));
