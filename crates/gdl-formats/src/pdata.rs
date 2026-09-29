@@ -45,6 +45,11 @@ pub struct PlayerStats {
     /// `+0x58`: multiplies the duration of every timed powerup the hero
     /// picks up (1.0–1.3; the magic classes get the most).
     pub powerup_time: f32,
+    /// `+0x5C`: where a thrown weapon leaves the hand, in the hero's own
+    /// frame (X across, Y up, Z forward) from its collision centre.
+    pub throw_offset: [f32; 3],
+    /// `+0x158`: the same for the power throw.
+    pub power_throw_offset: [f32; 3],
 }
 
 impl PlayerStats {
@@ -53,6 +58,7 @@ impl PlayerStats {
         let Some(r) = file.bytes("PDAT").filter(|b| b.len() >= 0x5C) else { return Ok(None) };
         let f = |at: usize| f32::from_le_bytes(r[at..at + 4].try_into().unwrap());
         let stat = |at: usize| Stat { start: f(at), max: f(at + 4) };
+        let vec3 = |at: usize| if r.len() >= at + 12 { [f(at), f(at + 4), f(at + 8)] } else { [0.0; 3] };
         Ok(Some(Self {
             strength: stat(0x28),
             speed: stat(0x30),
@@ -60,6 +66,8 @@ impl PlayerStats {
             magic: stat(0x40),
             body: PlayerBody { height: f(0x48), radius: f(0x4C), head_height: f(0x50), centre_height: f(0x54) },
             powerup_time: f(0x58),
+            throw_offset: vec3(0x5C),
+            power_throw_offset: vec3(0x158),
         }))
     }
 }
@@ -87,6 +95,10 @@ mod tests {
             let b = s.body;
             assert_eq!((b.height, b.radius, b.head_height, b.centre_height), (5.0, 1.5, 4.4, 2.5), "{p:?}");
             assert!((1.0..=1.5).contains(&s.powerup_time), "{p:?} {s:?}");
+            // Throws leave within a couple of units of the centre.
+            for v in [s.throw_offset, s.power_throw_offset] {
+                assert!(v.iter().all(|c| c.abs() <= 2.0), "{p:?} {v:?}");
+            }
             all.insert(p.file_stem().unwrap().to_string_lossy().into_owned(), s);
         }
         // The eight original classes (the unlockable Minotaur and Ogre are
@@ -100,5 +112,7 @@ mod tests {
         assert!(top(|s| -s.speed.start).contains(&"DWF"));
         assert!(top(|s| s.magic.start).contains(&"WIZ"));
         assert!(top(|s| s.armor.start).contains(&"KNI") && top(|s| s.armor.start).contains(&"VAL"));
+        assert_eq!(all["ARC"].throw_offset, [0.0, 1.5, 0.0]);
+        assert_eq!(all["WAR"].power_throw_offset, [0.0, 0.5, 1.5]);
     }
 }

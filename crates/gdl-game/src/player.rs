@@ -28,7 +28,7 @@ use bevy::prelude::*;
 use gdl_formats::{PlayerCollision, PlayerGround};
 use gdl_formats::pdata::PlayerStats;
 
-use crate::actions::{self, Action, ActionState, Env};
+use crate::actions::{self, Action, ActionState, Env, Strike};
 use crate::camera::FreeLook;
 use crate::character::{self, Animator, CharacterData};
 use crate::combat::{self, Buttons, Hit, Intent, TargetKind, Targetable, button};
@@ -38,6 +38,7 @@ use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
+use crate::projectiles::HeroShot;
 use crate::world::{LevelEntity, LevelGround};
 
 /// The hero's radius if the class data can't be read (every class has 1.5).
@@ -115,6 +116,9 @@ pub struct Player {
     pub radius: f32,
     /// The game's class index.
     class: Option<usize>,
+    /// When the latest attack or throw began (fixed-clock seconds): how
+    /// long a throw was wound up decides how far it goes.
+    attack_started: f64,
 }
 
 /// The hero's working stats at a character level: strength (5–20),
@@ -323,6 +327,7 @@ fn spawn_player(
         turbo_cost: 0.0,
         radius: hero.radius,
         class: hero.class,
+        attack_started: 0.0,
     };
     commands.entity(root).insert((player, LevelEntity));
     controls.ticks = 0;
@@ -461,6 +466,7 @@ fn tick(
     mut players: Query<(Entity, &mut Player, &mut Animator)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
+    mut shots: MessageWriter<HeroShot>,
     state: Option<Res<PlayerState>>,
 ) {
     // A dead hero lies still until it's revived.
@@ -599,8 +605,23 @@ fn tick(
                     hits.write(hit);
                 }
             }
+            // The game notes when an attack starts before it releases a
+            // shot, so a strafe attack chaining into the next one throws
+            // with no wind-up.
+            if strike.0 & Strike::STARTED != 0 {
+                p.attack_started = time.elapsed_secs_f64();
+            }
             if strike.projectile() {
-                debug!("{} would release a projectile (not implemented)", current.name());
+                // Aimed at what the search found, unless strafing or
+                // defending (then along where the hero is heading).
+                let aim = match found {
+                    Some(f) if held & (button::DEFEND | button::STRAFE) == 0 => f.direction,
+                    _ => Vec3::new(wanted.sin(), 0.0, wanted.cos()),
+                };
+                let wound_up = (time.elapsed_secs_f64() - p.attack_started) as f32;
+                debug!("{} releases a projectile after {wound_up:.2} s", current.name());
+                let targeted = found.is_some();
+                shots.write(HeroShot { hero: entity, feet: position, facing, aim, targeted, strike, wound_up });
             }
         }
         p.last_clip = (animator.action, animator.frame);
