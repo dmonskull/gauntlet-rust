@@ -6,6 +6,7 @@
 //! (`all`, `models`, `markers`, `off`; default `models`) picks the starting view.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bevy::prelude::*;
 use gdl_formats::ModelFile;
@@ -78,6 +79,20 @@ impl PopulationView {
 pub enum PopulationPart {
     Marker,
     Model,
+}
+
+/// On a placement's model: the index of its placement in
+/// [`Population::placements`], so gameplay can find the model it drives.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PlacementIndex(pub usize);
+
+/// On a model built from an atree: one entity per atree node (in node
+/// order, each a child of its parent node's), carrying that node's part at
+/// its rest offset — for whatever plays the atree's actions on it.
+#[derive(Component)]
+pub struct ItemRig {
+    pub atree: Arc<Atree>,
+    pub bones: Vec<Entity>,
 }
 
 /// The current level's population, and where its players start — for
@@ -230,7 +245,7 @@ impl Category {
 struct Source {
     model: ModelFile,
     textures: Vec<u8>,
-    atrees: Vec<Atree>,
+    atrees: Vec<Arc<Atree>>,
 }
 
 impl Source {
@@ -241,7 +256,7 @@ impl Source {
             .read(&format!("{dir}/ANIM.PS2"))
             .ok()
             .and_then(|a| AnimFile::parse(&a).ok())
-            .map_or_else(Vec::new, |a| a.atrees);
+            .map_or_else(Vec::new, |a| a.atrees.into_iter().map(Arc::new).collect());
         Some(Self { model, textures, atrees })
     }
 }
@@ -251,8 +266,11 @@ impl Source {
 /// (`ITEMS/level<realm letter>`, `POWERUPS`, `ITEMS/<level>`); generators
 /// also look in their monster's folder. Plain object lookups search the
 /// level's own models too.
+/// One model source: its models, textures and atrees.
+type SourceRef<'a> = (&'a ModelFile, &'a [u8], &'a [Arc<Atree>]);
+
 struct Sources<'a> {
-    list: Vec<(&'a ModelFile, &'a [u8], &'a [Atree])>,
+    list: Vec<SourceRef<'a>>,
     objects: Vec<HashMap<&'a str, usize>>,
     /// Indices into `list` of the item folders.
     items: Vec<usize>,
@@ -262,7 +280,7 @@ struct Sources<'a> {
 
 impl<'a> Sources<'a> {
     fn new(level: &'a LevelData, items: &'a [Source], monsters: &'a [(&'static str, Source)]) -> Self {
-        let mut list: Vec<(&ModelFile, &[u8], &[Atree])> =
+        let mut list: Vec<SourceRef> =
             items.iter().map(|s| (&s.model, s.textures.as_slice(), s.atrees.as_slice())).collect();
         let item_indices = (0..list.len()).collect();
         list.push((&level.model, &level.textures, &[]));
@@ -280,26 +298,23 @@ impl<'a> Sources<'a> {
     }
 
     /// The model the game would draw for `name`: an atree of that name
-    /// (each node's object is `<atree><node>`, at its rest offset), else an
+    /// (each node's object is `<atree><node>`, posed by the node), else an
     /// object named `name`, `name` + `L1` or `name` + `ROOT`.
-    fn resolve(&self, name: &str, extra: Option<usize>) -> Option<(usize, Vec<(usize, Vec3)>)> {
+    fn resolve(&self, name: &str, extra: Option<usize>) -> Option<Resolved> {
         if name.is_empty() {
             return None;
         }
         let atree_order: Vec<usize> = self.items.iter().copied().chain(extra).collect();
         for &s in &atree_order {
             let Some(atree) = self.list[s].2.iter().find(|a| a.name == name) else { continue };
-            let mut offsets: Vec<Vec3> = Vec::with_capacity(atree.nodes.len());
-            let mut parts = Vec::new();
-            for node in &atree.nodes {
-                let at = node.parent.map_or(Vec3::ZERO, |p| offsets[p]) + Vec3::from(node.offset);
-                offsets.push(at);
-                if let Some(&o) = self.objects[s].get(format!("{}{}", atree.name, node.name).as_str()) {
-                    parts.push((o, at));
-                }
-            }
+            let parts: Vec<(usize, usize)> = (0..atree.nodes.len())
+                .filter_map(|i| {
+                    let object = format!("{}{}", atree.name, atree.nodes[i].name);
+                    self.objects[s].get(object.as_str()).map(|&o| (i, o))
+                })
+                .collect();
             if !parts.is_empty() {
-                return Some((s, parts));
+                return Some(Resolved { source: s, atree: Some(atree.clone()), parts });
             }
         }
         let object_order: Vec<usize> = atree_order.iter().copied().chain([self.level]).collect();
@@ -307,12 +322,27 @@ impl<'a> Sources<'a> {
             let full = format!("{name}{suffix}");
             for &s in &object_order {
                 if let Some(&o) = self.objects[s].get(full.as_str()) {
-                    return Some((s, vec![(o, Vec3::ZERO)]));
+                    return Some(Resolved { source: s, atree: None, parts: vec![(0, o)] });
                 }
             }
         }
         None
     }
+}
+
+/// A model found for a name: its source, and either an atree's parts as
+/// `(node, object)` or a single plain object (node 0, unused).
+struct Resolved {
+    source: usize,
+    atree: Option<Arc<Atree>>,
+    parts: Vec<(usize, usize)>,
+}
+
+/// A model's meshes, built once per name and shared by its placements:
+/// per atree node (or one entry for a plain object).
+struct BuiltModel {
+    atree: Option<Arc<Atree>>,
+    parts: Vec<(usize, Vec<model_mesh::BuiltMesh>)>,
 }
 
 /// Monster folder code for a generator's type, when it names a monster.
@@ -374,7 +404,7 @@ pub fn spawn(
         codes.into_iter().filter_map(|c| Some((c, Source::load(install, &format!("MONSTERS/{c}"))?))).collect();
     let sources = Sources::new(level, &items, &monsters);
     let mut caches: Vec<TextureCache> = sources.list.iter().map(|(m, t, _)| TextureCache::new(m, t)).collect();
-    let mut built: HashMap<String, Vec<model_mesh::BuiltMesh>> = HashMap::new();
+    let mut built: HashMap<String, BuiltModel> = HashMap::new();
 
     let mut marker_assets: HashMap<Category, (Handle<Mesh>, Handle<StandardMaterial>)> = HashMap::new();
     let mut out = Spawned::default();
@@ -399,7 +429,7 @@ pub fn spawn(
     };
 
     let mut counts: HashMap<Category, usize> = HashMap::new();
-    for placement in &pop.placements {
+    for (index, placement) in pop.placements.iter().enumerate() {
         let ty = pop.resolved_type(placement);
         let category = Category::of(ty);
         *counts.entry(category).or_default() += 1;
@@ -419,28 +449,58 @@ pub fn spawn(
         let Some(name) = model_name(ty, placement) else { continue };
         let monster = monster_code(ty).and_then(|c| sources.monsters.get(c).copied());
         let key = format!("{name}/{}", monster.unwrap_or(usize::MAX));
-        let parts = match built.get(&key) {
-            Some(parts) => parts,
-            None => {
-                let mesh_parts = match sources.resolve(&name, monster) {
-                    Some((s, parts)) => {
-                        let mut bounds = (Vec3::MAX, Vec3::MIN);
-                        let (model, _, _) = sources.list[s];
-                        model_mesh::build(model, &mut caches[s], parts, meshes, level_materials, images, &mut bounds)
-                    }
-                    None => Vec::new(),
-                };
-                built.entry(key).or_insert(mesh_parts)
-            }
-        };
-        if parts.is_empty() {
+        let model = built.entry(key).or_insert_with(|| {
+            let Some(r) = sources.resolve(&name, monster) else { return BuiltModel { atree: None, parts: Vec::new() } };
+            let mut bounds = (Vec3::MAX, Vec3::MIN);
+            let (file, _, _) = sources.list[r.source];
+            let parts = r
+                .parts
+                .iter()
+                .map(|&(node, object)| {
+                    let at = [(object, Vec3::ZERO)];
+                    (node, model_mesh::build(file, &mut caches[r.source], at, meshes, level_materials, images, &mut bounds))
+                })
+                .filter(|(_, m)| !m.is_empty())
+                .collect();
+            BuiltModel { atree: r.atree, parts }
+        });
+        if model.parts.is_empty() {
             continue;
         }
         let root = commands
-            .spawn((transform, PopulationPart::Model, visibility(view, PopulationPart::Model), LevelEntity))
+            .spawn((
+                transform,
+                PopulationPart::Model,
+                PlacementIndex(index),
+                visibility(view, PopulationPart::Model),
+                LevelEntity,
+            ))
             .id();
-        for p in parts {
-            commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(root)));
+        let attach = |commands: &mut Commands, parent: Entity, parts: &[model_mesh::BuiltMesh]| {
+            for p in parts {
+                commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(parent)));
+            }
+        };
+        match &model.atree {
+            // One entity per node at its rest offset under its parent's, so
+            // the atree's actions can pose it.
+            Some(atree) => {
+                let mut bones: Vec<Entity> = Vec::with_capacity(atree.nodes.len());
+                for node in &atree.nodes {
+                    let parent = node.parent.map_or(root, |p| bones[p]);
+                    let at = Transform::from_translation(Vec3::from(node.offset));
+                    bones.push(commands.spawn((at, Visibility::default(), ChildOf(parent))).id());
+                }
+                for (node, parts) in &model.parts {
+                    attach(commands, bones[*node], parts);
+                }
+                commands.entity(root).insert(ItemRig { atree: atree.clone(), bones });
+            }
+            None => {
+                for (_, parts) in &model.parts {
+                    attach(commands, root, parts);
+                }
+            }
         }
         out.models += 1;
     }
