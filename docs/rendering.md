@@ -143,7 +143,29 @@ World nodes with node flag `0x800` (named `…PSYSE_FLAME…`, `…PSYSF_SPARK�
 are particle emitters: their model is only a placeholder shape (a white
 pyramid with `AAAWHITE`), which the game doesn't draw; triggers switch
 some on and off (`docs/mechanics.md`). `world.rs` leaves them out; the
-flames and sparks they emit aren't ported yet.
+flames and sparks they emit aren't ported yet. What's known so far:
+
+- `FUN_800aae??` (the world-instance setup, around `0x800aaeb0`): a node
+  whose name contains `PSYS` (`r2-0x5000`) takes the letter after it
+  (`PSYSE_FLAME` → `E`) and looks for the particle record whose `+0x06`
+  byte is that letter in the level's table (`DAT_8028c508`, count
+  `DAT_8028c50c`, `0x138` bytes each — the ANIM.PS2 `+0x10`/`+0x14`
+  records, [animation-format.md](animation-format.md)); `"Unable to find
+  world psys %c"` otherwise. A node with collision (`+0x36` > 0) passes
+  its first collision point (× `r2-0x4ff8`) as an offset. It then creates
+  the system (`FUN_800cede8` → `FUN_800d0af4`) on the node's instance and
+  sets instance flag `0x800000`.
+- `FUN_800ceeb8(system, emitter, record, offset)` applies a record: the
+  word at `+0x00` must be ≥ 0x100 (`"setWorldParms: WORLDPSYS type is"`);
+  `+0x10` is a bit set saying which fields follow — bit 1 first applies the
+  built-in preset whose `+0x04` short matches (table `0x80127fc4`, `0x138`
+  stride, ends at −1); bits 2/4/8 set emitter shorts `+0x2E`/`+0x30`/`+0x32`
+  from words 5–7; 0x10 two clamped rates from words 8–9 (× a constant) to
+  `+0x3A`/`+0x3C`; 0x20 two bytes from words 10–11; 0x40 a size from word
+  14; 0x80000 a short from word 0x2E; … (not finished).
+- `"TOO MANY PSYS OBJECTS"`, `"PSYS requires too many bits"` and
+  `"Setting PSYS attribute after draw"` mark the library's other entry
+  points (`0x800cc…`–`0x800d1…`).
 
 ## Item models
 
