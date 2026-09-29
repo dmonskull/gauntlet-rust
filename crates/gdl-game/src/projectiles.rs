@@ -725,7 +725,7 @@ fn spawn_projectile(
     damage: f32,
     kind: u32,
     scale: f32,
-) {
+) -> Entity {
     let p = Projectile {
         owner,
         position: launch.start,
@@ -747,6 +747,28 @@ fn spawn_projectile(
         None => commands.spawn((transform, Visibility::default())).id(),
     };
     commands.entity(entity).insert((p, LevelEntity));
+    entity
+}
+
+/// A critter's missile (`critters.rs`): it flies and hits like a
+/// monster's, from `start` at `velocity`, with the critter's own model
+/// (drawn at `scale`) and numbers.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_critter_missile(
+    commands: &mut Commands,
+    model: Option<&CharacterModel>,
+    critter: Entity,
+    start: Vec3,
+    velocity: Vec3,
+    gravity: f32,
+    radius: f32,
+    damage: f32,
+    kind: u32,
+    scale: f32,
+) -> Entity {
+    let t = missile(0, damage, velocity.length(), radius, 0.0, [0.0; 3], gravity);
+    let launch = Launch { check: start, start, velocity };
+    spawn_projectile(commands, model, Owner::Monster(critter), &launch, &t, radius, damage, kind, scale)
 }
 
 #[allow(clippy::too_many_arguments)]
