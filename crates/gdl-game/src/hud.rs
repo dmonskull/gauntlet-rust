@@ -5,6 +5,7 @@ use bevy::prelude::*;
 
 use crate::audio::AudioStatus;
 use crate::level::LoadedGame;
+use crate::population::{LevelPopulation, PopulationView};
 use crate::world::CurrentLevelStats;
 
 pub struct HudPlugin;
@@ -37,10 +38,12 @@ fn update_hud(
     game: Res<LoadedGame>,
     stats: Option<Res<CurrentLevelStats>>,
     audio: Res<AudioStatus>,
+    view: Res<PopulationView>,
+    population: Option<Res<LevelPopulation>>,
     mut text: Query<&mut Text, With<HudText>>,
 ) {
     let Some(stats) = stats else { return };
-    if !stats.is_changed() && !game.is_changed() && !audio.is_changed() {
+    if !stats.is_changed() && !game.is_changed() && !audio.is_changed() && !view.is_changed() {
         return;
     }
     let Ok(mut text) = text.single_mut() else { return };
@@ -73,9 +76,17 @@ fn update_hud(
     if !audio.last_sound.is_empty() {
         s += &format!("  sound: {}", audio.last_sound);
     }
+    if stats.error.is_none() {
+        s += &format!("\n{} placements: {}", summary.placements, stats.population);
+        if let Some(start) = population.as_ref().filter(|p| p.level == stats.name).and_then(|p| p.player_start()) {
+            let [x, y, z] = start.position;
+            s += &format!("\nplayer start: {x:.1} {y:.1} {z:.1}, yaw {:.0} deg", start.yaw.to_degrees());
+        }
+        s += &format!("\npopulation shown: {}", view.label());
+    }
     for (name, why) in &game.failures {
         s += &format!("\nlevel {name} failed: {why}");
     }
-    s += "\n\nWASD/stick move  Shift walk  C free camera  [ ] level  M mute music  N next sound\nfree camera: WASD fly  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed";
+    s += "\n\nWASD/stick move  Shift walk  C free camera  [ ] level  I population  M mute music  N next sound\nfree camera: WASD fly  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed";
     text.0 = s;
 }

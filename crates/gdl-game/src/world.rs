@@ -7,6 +7,7 @@ use crate::camera::FlyCamera;
 use crate::level::{LevelData, LoadedGame};
 use crate::level_material::LevelMaterial;
 use crate::model_mesh::{self, TextureCache};
+use crate::population::{self, LevelPopulation, PopulationView};
 
 pub struct WorldPlugin;
 
@@ -37,6 +38,8 @@ pub struct CurrentLevelStats {
     pub error: Option<String>,
     /// World-space bounds of the level geometry.
     pub bounds: Option<(Vec3, Vec3)>,
+    /// What populates the level, counted by kind.
+    pub population: String,
 }
 
 fn level_keys(keys: Res<ButtonInput<KeyCode>>, mut w: MessageWriter<ChangeLevel>) {
@@ -57,6 +60,8 @@ fn change_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut marker_materials: ResMut<Assets<StandardMaterial>>,
+    view: Res<PopulationView>,
     mut camera: Query<(&mut Transform, &mut FlyCamera)>,
     mut windows: Query<&mut Window>,
 ) {
@@ -77,9 +82,27 @@ fn change_level(
             stats.meshes = built.meshes;
             stats.triangles = built.triangles;
             stats.bounds = (built.min.x <= built.max.x).then_some((built.min, built.max));
+            let spawned = population::spawn(
+                &level,
+                &mut game.install,
+                *view,
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &mut marker_materials,
+                &mut images,
+            );
+            stats.population = spawned.summary;
+            let start = level.population.player_start(0);
             if let Ok((mut transform, mut fly)) = camera.single_mut() {
-                *fly = FlyCamera::looking_at_bounds(built.min, built.max, &mut transform);
+                *fly = match start {
+                    Some(start) if camera_at_start() => {
+                        FlyCamera::behind(&population::start_transform(&start), &mut transform)
+                    }
+                    _ => FlyCamera::looking_at_bounds(built.min, built.max, &mut transform),
+                };
             }
+            commands.insert_resource(LevelPopulation { level: level.name.clone(), population: level.population });
         }
         Err(why) => stats.error = Some(why),
     }
@@ -88,6 +111,12 @@ fn change_level(
     }
     info!("level {}: {} meshes, {} triangles", stats.name, stats.meshes, stats.triangles);
     commands.insert_resource(stats);
+}
+
+/// `GDL_CAMERA=start` starts the camera behind the player start instead of
+/// over the whole level.
+fn camera_at_start() -> bool {
+    std::env::var("GDL_CAMERA").is_ok_and(|v| v.eq_ignore_ascii_case("start"))
 }
 
 struct Built {

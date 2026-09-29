@@ -64,6 +64,8 @@ walk. `C` switches to a free camera (WASD fly, Space/Ctrl up/down, Shift
 fast, right-drag to look, mouse wheel for speed); `[` / `]` switch levels.
 The level's own music plays (`M` mutes it; `N` steps through the level's
 sound effects).
+Each level shows what populates it — player starts, generators, monsters,
+pickups, doors, exits — as markers and item models; `I` cycles what's shown.
 
 Not a full game yet: collision, monsters, combat and items are still being
 reverse engineered. See [`docs/INDEX.md`](docs/INDEX.md) for what's
