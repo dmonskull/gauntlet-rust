@@ -456,13 +456,11 @@ after the hero moves:
 levelA4 `-132.1,21,-1` is the LIFTPAD of `A4ELEV8`: the hero rides it down
 13 units, waits 2 s, and back up while it's held).
 
-Stand-ins and gaps: bridges pop in and out instead of fading; triggers
-run on or off screen; quest triggers (0x40), subtype 1 rotators or
+Bridges fade in and out at the game's 8 alpha steps a field (the shader's
+fade, `uv_offset.w`; opaque parts blend while fading). Stand-ins and gaps:
+triggers run on or off screen; quest triggers (0x40), subtype 1 rotators or
 node flag 0x2000000; only the hero (not monsters) holds a mover by
-standing on it; hit switches (0x1F) wait for blows on items
-(`breakables.rs`). Still to build: `hazards.rs` (damage tiles, damaging
-walls, blasts) and `breakables.rs` (barrels, shootable walls, hit
-switches, container contents) — both now built, below.
+standing on it. Hazards and breakables are below.
 
 [`hazards.rs`](../crates/gdl-game/src/hazards.rs) runs the damage tiles
 and damaging walls:

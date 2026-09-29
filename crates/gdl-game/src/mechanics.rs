@@ -15,7 +15,7 @@
 //! Movers rumble while they move and clunk when they stop (one loop at a
 //! time, as in the game); bridges sound as they open and close.
 //!
-//! Stand-ins: bridges pop in and out rather than fading; triggers run on
+//! Stand-ins: triggers run on
 //! or off screen; quest triggers (flag 0x40),
 //! subtype 1 rotators and the node flag 0x2000000 mode aren't done; only
 //! players (not monsters) hold a mover still by standing on it.
@@ -29,6 +29,7 @@ use gdl_formats::WorldNode;
 
 use crate::audio::{LoopSound, PlaySound};
 use crate::items::{self, LevelItems};
+use crate::level_material::LevelMaterial;
 use crate::monsters::MonsterLevel;
 use crate::play_camera::{Shake, StartCut};
 use crate::player::{Player, PlayerTick};
@@ -200,11 +201,13 @@ pub fn moving_roots(population: &Population) -> HashSet<usize> {
 #[derive(Component)]
 pub struct MovingGroup {
     root: usize,
+    /// How far faded out it's drawn (bridges).
+    fade: f32,
 }
 
 impl MovingGroup {
     pub fn new(root: usize) -> Self {
-        Self { root }
+        Self { root, fade: 0.0 }
     }
 }
 
@@ -304,6 +307,8 @@ pub struct Mechanics {
     members: HashMap<usize, Vec<usize>>,
     /// Bridges hidden now.
     hidden: HashSet<usize>,
+    /// Bridges part faded (0 shown … 1 gone).
+    fades: HashMap<usize, f32>,
     /// Placements of wake triggers (flag 0x2000) that came on since the
     /// critter update last took them.
     pub woken: Vec<usize>,
@@ -633,6 +638,7 @@ fn tick(
     // in place.
     let mut collision = std::sync::Arc::get_mut(&mut ground.0);
     let mut hidden = HashSet::new();
+    let mut fades = HashMap::new();
     let (letter, boss_level) = level.as_ref().map_or(('A', false), |l| (l.realm, l.boss >= 0));
     let realm = items.realm();
     let mut looping = None;
@@ -678,6 +684,7 @@ fn tick(
             if mv.alpha >= FADED {
                 hidden.insert(mv.node);
             }
+            fades.insert(mv.node, mv.alpha as f32 / 255.0);
         } else if mv.flags & MOVES_CARRYING != 0 || !carrying {
             let goal = if st & ON != 0 { mv.on } else { mv.off };
             let mut d = goal - mv.offset;
@@ -722,6 +729,7 @@ fn tick(
         }
     }
     mech.hidden = hidden;
+    mech.fades = fades;
     loops.write(LoopSound { key: "mover", name: looping });
 
     // Rotators.
@@ -811,15 +819,18 @@ fn tick(
 }
 
 /// Puts each moving group where its node is, between the last two ticks,
-/// and hides vanished bridges.
+/// fades bridges in and out (8 alpha steps a field) and hides vanished
+/// ones.
 fn pose_groups(
     time: Res<Time<Fixed>>,
     mechanics: Option<Res<Mechanics>>,
-    mut groups: Query<(&MovingGroup, &mut Transform, &mut Visibility)>,
+    mut groups: Query<(&mut MovingGroup, &mut Transform, &mut Visibility, &Children)>,
+    parts: Query<&MeshMaterial3d<LevelMaterial>>,
+    mut materials: ResMut<Assets<LevelMaterial>>,
 ) {
     let Some(mech) = mechanics else { return };
     let f = time.overstep_fraction();
-    for (g, mut transform, mut visibility) in &mut groups {
+    for (mut g, mut transform, mut visibility, children) in &mut groups {
         let Some(&(before, now)) = mech.poses.get(&g.root) else { continue };
         let a = to_transform(&before);
         let b = to_transform(&now);
@@ -827,6 +838,19 @@ fn pose_groups(
         transform.rotation = a.rotation.slerp(b.rotation, f);
         let want = if mech.hidden.contains(&g.root) { Visibility::Hidden } else { Visibility::Inherited };
         visibility.set_if_neq(want);
+        let fade = mech.fades.get(&g.root).copied().unwrap_or(0.0);
+        if fade != g.fade {
+            g.fade = fade;
+            for c in children {
+                let Ok(handle) = parts.get(*c) else { continue };
+                let Some(m) = materials.get_mut(&handle.0) else { continue };
+                m.uv_offset.w = fade;
+                // Opaque parts blend while they fade.
+                if fade > 0.0 && matches!(m.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+                    m.alpha_mode = AlphaMode::Blend;
+                }
+            }
+        }
     }
 }
 
