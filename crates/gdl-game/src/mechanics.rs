@@ -12,9 +12,11 @@
 //! is carried with it. A trigger coming on can shake the camera (flag
 //! 0x1000), cut to its camera point (`play_camera::StartCut`) and wake a
 //! statue (flag 0x2000, listed in `Mechanics::woken` for `critters.rs`).
+//! Movers rumble while they move and clunk when they stop (one loop at a
+//! time, as in the game); bridges sound as they open and close.
 //!
 //! Stand-ins: bridges pop in and out rather than fading; triggers run on
-//! or off screen; mover and bridge sounds, quest triggers (flag 0x40),
+//! or off screen; quest triggers (flag 0x40),
 //! subtype 1 rotators and the node flag 0x2000000 mode aren't done; only
 //! players (not monsters) hold a mover still by standing on it.
 
@@ -25,7 +27,9 @@ use gdl_formats::collision::NodePose;
 use gdl_formats::population::{LocatorKind, PlacementParams, Population};
 use gdl_formats::WorldNode;
 
+use crate::audio::{LoopSound, PlaySound};
 use crate::items::{self, LevelItems};
+use crate::monsters::MonsterLevel;
 use crate::play_camera::{Shake, StartCut};
 use crate::player::{Player, PlayerTick};
 use crate::player_state::PlayerState;
@@ -58,7 +62,9 @@ const FADE_STEP: i32 = 8;
 const FADED: i32 = 0xF8;
 
 /// Trigger subtypes and their default flags (the low byte).
+const BRIDGESW: i32 = 0x16;
 const DOORSW: i32 = 0x17;
+const BRIDGEPAD: i32 = 0x14;
 const LIFTPAD: i32 = 0x1B;
 const LIFTEND: i32 = 0x1D;
 /// A switch that's hit rather than touched.
@@ -236,8 +242,38 @@ struct Mover {
     on: f32,
     offset: f32,
     state: u8,
+    /// The state at the last update, for its sounds.
+    previous: u8,
+    /// Its sound: 0–5 a loop while it moves (`MOVER_LOOPS`), 11 a one-shot
+    /// on arriving on, above 10 a one-shot when it starts or stops; −1 none.
+    sound: i8,
     /// How faded out a bridge is (0 shown, 255 gone).
     alpha: i32,
+}
+
+/// Mover loop sets (`S_ELV<set><realm>` while moving, `S_ELV<set>STP<realm>`
+/// when it stops, `B` added on boss levels; `*` marks a plain name,
+/// `S_<name>ROTATE` / `S_<name>STOP`).
+const MOVER_LOOPS: [&str; 6] = ["MET", "ROPE", "CHAIN", "ICE", "STONE", "*ROCK"];
+
+/// Mover one-shots by sound − 10 (rows 1–4) and realm id.
+const MOVER_SHOTS: [[&str; 12]; 4] = [
+    ["", "S_TRAPA", "", "S_TRAPC", "S_TRAPD", "S_TRAPE", "S_TRAPF", "S_TRAPG", "", "S_TRAPI", "S_TRAPJ", "S_TRAPK"],
+    ["", "", "", "S_QUAKEC", "", "", "", "", "", "", "", "S_ELVCNNK"],
+    ["", "S_BRIDOPA", "", "S_BRIDOPC", "S_BRIDOPD", "", "", "", "S_BRIDOPH", "S_BRIDOPI", "", ""],
+    ["", "S_BRIDCLA", "", "S_BRIDCLC", "S_BRIDCLD", "", "", "", "S_BRIDCLH", "S_BRIDCLI", "", ""],
+];
+
+/// A mover's loop and stop sounds in realm `letter` (boss levels use their
+/// own recordings).
+fn mover_loop(sound: i8, letter: char, boss_level: bool) -> Option<(String, String)> {
+    let set = MOVER_LOOPS.get(usize::try_from(sound).ok()?)?;
+    let letter = if letter == 'T' { 'G' } else { letter };
+    let b = if boss_level { "B" } else { "" };
+    Some(match set.strip_prefix('*') {
+        Some(name) => (format!("S_{name}ROTATE"), format!("S_{name}STOP")),
+        None => (format!("S_ELV{set}{letter}{b}"), format!("S_ELV{set}STP{letter}{b}")),
+    })
 }
 
 struct Rotator {
@@ -283,7 +319,7 @@ fn setup(mut commands: Commands, population: Res<LevelPopulation>, nodes: Option
         }
         let ty = pop.resolved_type(p);
         match p.params(ty.class) {
-            PlacementParams::Trigger { target, flags, radius, id, next, off, on, .. } => {
+            PlacementParams::Trigger { target, flags, radius, sound, id, next, off, on } => {
                 let target = target.filter(|&t| t < nodes.nodes.len());
                 let flags = default_flags(ty.subtype, flags);
                 if let Some(node) = target {
@@ -298,7 +334,18 @@ fn setup(mut commands: Commands, population: Res<LevelPopulation>, nodes: Option
                         None => {
                             let (off, on) = (0.1 * f32::from(off), 0.1 * f32::from(on));
                             m.mover_of.insert(node, m.movers.len());
-                            m.movers.push(Mover { node, kind, flags: flags as u8, off, on, offset: off, state: 0, alpha: 0 });
+                            m.movers.push(Mover {
+                                node,
+                                kind,
+                                flags: flags as u8,
+                                off,
+                                on,
+                                offset: off,
+                                state: 0,
+                                previous: 0,
+                                sound,
+                                alpha: 0,
+                            });
                         }
                     }
                 }
@@ -399,6 +446,9 @@ fn tick(
     mut models: Query<&mut Transform, Without<Player>>,
     mut cuts: MessageWriter<StartCut>,
     mut shakes: MessageWriter<Shake>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut loops: MessageWriter<LoopSound>,
+    level: Option<Res<MonsterLevel>>,
 ) {
     let (Some(mut mech), Some(nodes), Some(mut items), Some(mut ground)) = (mechanics, nodes, items, ground) else {
         return;
@@ -583,9 +633,40 @@ fn tick(
     // in place.
     let mut collision = std::sync::Arc::get_mut(&mut ground.0);
     let mut hidden = HashSet::new();
+    let (letter, boss_level) = level.as_ref().map_or(('A', false), |l| (l.realm, l.boss >= 0));
+    let realm = items.realm();
+    let mut looping = None;
     for mv in &mut mech.movers {
         let carrying = standing == Some(mv.node);
         let mut st = mv.state;
+        // Sounds, from this state against the last update's.
+        let prev = mv.previous;
+        mv.previous = st;
+        if mv.sound >= 0 {
+            let shot = |row: i8| MOVER_SHOTS.get((row - 1) as usize).and_then(|r| r.get(realm)).filter(|n| !n.is_empty());
+            if mv.kind == BRIDGEPAD || mv.kind == BRIDGESW {
+                if (st ^ prev) & ON != 0 {
+                    let row = if st & ON == 0 { 4 } else { 3 };
+                    if let Some(name) = shot(row) {
+                        sounds.write(PlaySound((*name).into()));
+                    }
+                }
+            } else if mv.sound < 10 {
+                if let Some((run, stop)) = mover_loop(mv.sound, letter, boss_level) {
+                    if st & MOVING != 0 {
+                        looping.get_or_insert(run);
+                    } else if prev & MOVING != 0 {
+                        sounds.write(PlaySound(stop));
+                    }
+                }
+            } else if mv.sound == 11 {
+                if st & ON != 0 && prev & ON == 0 && let Some(name) = shot(1) {
+                    sounds.write(PlaySound((*name).into()));
+                }
+            } else if (st ^ prev) & MOVING != 0 && let Some(name) = shot(mv.sound - 10) {
+                sounds.write(PlaySound((*name).into()));
+            }
+        }
         let mut disable = 0u8;
         let moving;
         if mv.flags & BRIDGE != 0 {
@@ -641,6 +722,7 @@ fn tick(
         }
     }
     mech.hidden = hidden;
+    loops.write(LoopSound { key: "mover", name: looping });
 
     // Rotators.
     for r in &mut mech.rotators {
@@ -784,6 +866,10 @@ mod tests {
     #[test]
     fn subtype_flags() {
         assert_eq!(default_flags(0x14, 0x1234), 0x1210);
+        assert_eq!(mover_loop(0, 'A', false), Some(("S_ELVMETA".into(), "S_ELVMETSTPA".into())));
+        assert_eq!(mover_loop(4, 'G', true), Some(("S_ELVSTONEGB".into(), "S_ELVSTONESTPGB".into())));
+        assert_eq!(mover_loop(5, 'B', false), Some(("S_ROCKROTATE".into(), "S_ROCKSTOP".into())));
+        assert_eq!(mover_loop(-1, 'A', false), None);
         assert_eq!(default_flags(0x18, 0x0002), 0x000A);
         assert_eq!(default_flags(LIFTPAD, 0), 0x80C);
     }

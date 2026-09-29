@@ -29,15 +29,28 @@ impl Plugin for GameAudioPlugin {
         app.add_audio_source::<MusicTrack>()
             .add_audio_source::<SoundEffect>()
             .add_message::<PlaySound>()
+            .add_message::<LoopSound>()
             .init_resource::<AudioStatus>()
             .add_systems(Startup, load_audio_tables)
-            .add_systems(Update, (level_music, audio_keys, play_sounds).chain());
+            .add_systems(Update, (level_music, audio_keys, play_sounds, loop_sounds).chain());
     }
 }
 
 /// Plays a sound effect by its catalog name (`S_WARN`).
 #[derive(Message)]
 pub struct PlaySound(pub String);
+
+/// Starts (`Some`) or stops (`None`) the looping sound on channel `key`:
+/// one loop per channel, left alone when asked for the one it's playing
+/// (a lift's rumble while it moves).
+#[derive(Message)]
+pub struct LoopSound {
+    pub key: &'static str,
+    pub name: Option<String>,
+}
+
+#[derive(Component)]
+struct LoopChannel(&'static str, String);
 
 /// What's playing, for the HUD.
 #[derive(Resource, Default)]
@@ -210,6 +223,38 @@ fn play_sounds(
                 warn!("sound {name}: {e}");
                 status.last_sound = format!("{name} failed: {e}");
             }
+        }
+    }
+}
+
+fn loop_sounds(
+    mut commands: Commands,
+    mut requests: MessageReader<LoopSound>,
+    mut game: ResMut<LoadedGame>,
+    mut tables: ResMut<AudioTables>,
+    mut effects: ResMut<Assets<SoundEffect>>,
+    options: Res<GameOptions>,
+    playing: Query<(Entity, &LoopChannel)>,
+) {
+    for LoopSound { key, name } in requests.read() {
+        let current = playing.iter().find(|(_, c)| c.0 == *key);
+        if current.is_some_and(|(_, c)| Some(&c.1) == name.as_ref()) {
+            continue;
+        }
+        if let Some((e, _)) = current {
+            commands.entity(e).try_despawn();
+        }
+        let Some(name) = name else { continue };
+        match build_sound(&mut game, &mut tables, name) {
+            Ok(effect) => {
+                commands.spawn((
+                    LoopChannel(key, name.clone()),
+                    SoundKind::Effect,
+                    AudioPlayer(effects.add(effect)),
+                    PlaybackSettings { volume: options.category(SoundKind::Effect), ..PlaybackSettings::DESPAWN },
+                ));
+            }
+            Err(e) => warn!("sound {name}: {e}"),
         }
     }
 }
