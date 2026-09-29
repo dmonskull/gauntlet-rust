@@ -38,8 +38,21 @@ Tags seen on the disc:
 | `TOFF` | u32 offsets into `TEXT` |
 | `STRS` | 20-byte group records: `u32 count, u32 first string, u32 font, f32 scale x, f32 scale y` |
 | `DEFS` / `SDEF` | group names: pool + u32 offsets (`PLAYER_CLASS`, `ARC_RANK`, `DRIDER_SPEECH`, …) |
-| `LIST` / `LOFF` / `LDEF` | named lists of groups (menus); 8-byte records — not decoded yet |
-| `FONT` | 20-byte font entries (`8Hi_fonts5`, `font32`, …) |
+| `LIST` / `LOFF` / `LDEF` | named lists of groups: `LIST` has 8-byte records `{u32 count, u32 first}` into `LOFF`, a table of u32 group indices; `LDEF` holds each list's name (u32 offsets into the `DEFS` pool) |
+| `FONT` | 20-byte records `{name[16], u32 slot}`: the fonts a group's `font` number indexes; `slot` is 0 on disc and filled by the loader |
+
+The lists are not menus. `ENGLISH.ROM` has four: `CLASS_RANK` (the 16
+`*_RANK` groups in class order), `CLASS_TURBO` (8 `*_TURBO`),
+`LEGEND_ITEMS` (11 `LEGEND_ITEMS0nn`) and `CONTROLS_DESC` (`CONTROLS1..4`);
+`HINTS_E.ROM` has four more, `SCROLL_E.ROM` none. The menus themselves are
+tables in `main.dol` ([frontend.md](frontend.md)).
+
+`FONT` names are matched to the game's 13 font slots with a plain,
+case-sensitive `strcmp` (`FUN_800e76a4`) at the end of the text ROM loader
+`FUN_8001ffa8`, over the slot names at `0x80118538`; a name that matches nothing leaves
+slot 0. `ENGLISH.ROM`'s fonts are `8Hi_fonts5` (matches nothing → slot 0,
+`font8x8`), `font32` (slot 6) and `initials` (slot 7). Fonts themselves:
+[frontend.md](frontend.md).
 
 `ENGLISH.ROM` is the GameCube text, `PS2ENGLISH.ROM`/`BAKENGLISH.ROM` are
 leftovers; `HINTS_E.ROM` and `SCROLL_E.ROM` hold hints and scroll text.
