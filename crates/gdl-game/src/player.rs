@@ -6,7 +6,7 @@
 //! Controls: left stick or WASD/arrows to move (Shift walks).
 
 use bevy::prelude::*;
-use gdl_formats::MoveParams;
+use gdl_formats::{PlayerCollision, PlayerGround};
 use gdl_formats::pdata::PlayerStats;
 
 use crate::camera::FreeLook;
@@ -17,13 +17,6 @@ use crate::locomotion::{self, Mover, Stick, Switch};
 use crate::play_camera::PlayCamera;
 use crate::population::LevelPopulation;
 use crate::world::{LevelEntity, LevelGround};
-
-/// Stand-ins until the player's own collision values are decoded: wall
-/// radius and floor step for the generic actor mover.
-const PLAYER_RADIUS: f32 = 1.0;
-const PLAYER_STEP: f32 = 2.0;
-/// The actor mover drops at most 16 units per second.
-const MAX_DROP_PER_SECOND: f32 = 16.0;
 
 pub struct PlayerPlugin;
 
@@ -44,6 +37,10 @@ struct Hero {
 #[derive(Component)]
 pub struct Player {
     pub mover: Mover,
+    /// The floor being followed and the node stood on, between ticks.
+    pub ground: PlayerGround,
+    /// Where the player (re)starts the level.
+    start: ([f32; 3], f32),
     /// Position and facing before the latest tick, for interpolation.
     previous: ([f32; 3], f32),
 }
@@ -110,7 +107,8 @@ fn spawn_player(
     let (root, _, _) =
         character::spawn_character(&hero.data, transform, &mut commands, &mut meshes, &mut materials, &mut images);
     let mover = Mover::new(feet, facing, hero.speed);
-    commands.entity(root).insert((Player { mover, previous: (feet, facing) }, LevelEntity));
+    let player = Player { mover, ground: PlayerGround::new(feet[1]), start: (feet, facing), previous: (feet, facing) };
+    commands.entity(root).insert((player, LevelEntity));
     info!("player starts at {feet:?} facing {:.0} deg", facing.to_degrees());
 }
 
@@ -158,17 +156,26 @@ fn tick(
     let right = Vec3::new(-forward.z, 0.0, forward.x);
     let dir = right * raw.x + forward * raw.y;
     let stick = Stick { heading: dir.x.atan2(dir.z), magnitude: raw.length().min(1.0) };
-    let params = MoveParams::new(PLAYER_RADIUS, PLAYER_STEP, MAX_DROP_PER_SECOND * dt);
+    let body = PlayerCollision::default();
 
     for (mut player, mut animator) in &mut players {
         player.previous = (player.mover.position, player.mover.facing);
         let d = player.mover.step(stick, dt);
         let feet = player.mover.position;
         let d = match &ground {
-            Some(g) => g.0.move_actor(feet, d, &params).delta,
+            Some(g) => g.0.move_player(feet, d, &body, &mut player.ground).delta,
             None => d,
         };
         player.mover.position = std::array::from_fn(|i| feet[i] + d[i]);
+        // Fell out of the level: back to the start (the game kills the
+        // player here; lives aren't implemented yet).
+        if ground.as_ref().is_some_and(|g| player.mover.position[1] <= g.0.kill_height()) {
+            let (at, facing) = player.start;
+            player.mover.position = at;
+            player.mover.facing = facing;
+            player.ground = PlayerGround::new(at[1]);
+            player.previous = (at, facing);
+        }
         trace!("player at {:?}", player.mover.position);
 
         // The game's action chaining; the new action's factors apply from
