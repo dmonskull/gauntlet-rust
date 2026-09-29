@@ -11,6 +11,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use gdl_formats::texture::{self, TextureFormat as GameTextureFormat};
 
 use crate::camera::FlyCamera;
+use crate::collision_debug::{self, CollisionOverlay};
 use crate::level::{LevelData, LoadedGame};
 use crate::level_material::LevelMaterial;
 
@@ -40,6 +41,7 @@ pub struct CurrentLevelStats {
     pub name: String,
     pub meshes: usize,
     pub triangles: usize,
+    pub collision_triangles: usize,
     pub error: Option<String>,
 }
 
@@ -61,6 +63,8 @@ fn change_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut debug_materials: ResMut<Assets<StandardMaterial>>,
+    overlay: Res<CollisionOverlay>,
     mut camera: Query<(&mut Transform, &mut FlyCamera)>,
     mut windows: Query<&mut Window>,
 ) {
@@ -78,6 +82,14 @@ fn change_level(
     match game.load_current() {
         Ok(level) => {
             let built = spawn_level(&level, &mut commands, &mut meshes, &mut materials, &mut images);
+            collision_debug::spawn_overlay(
+                &level.collision,
+                overlay.visible,
+                &mut commands,
+                &mut meshes,
+                &mut debug_materials,
+            );
+            stats.collision_triangles = level.collision.triangles.len();
             stats.meshes = built.meshes;
             stats.triangles = built.triangles;
             if let Ok((mut transform, mut fly)) = camera.single_mut() {

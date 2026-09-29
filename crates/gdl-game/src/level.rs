@@ -1,6 +1,6 @@
 //! Validates every level at boot and loads level data on demand.
 
-use gdl_formats::{ModelFile, WorldFile, texture};
+use gdl_formats::{LevelCollision, ModelFile, WorldFile, texture};
 use gdl_install::GameInstall;
 
 use bevy::prelude::*;
@@ -21,6 +21,7 @@ pub struct LevelData {
     pub textures: Vec<u8>,
     /// Model placements: (object index into `model.objects`, world position).
     pub placements: Vec<(usize, [f32; 3])>,
+    pub collision: LevelCollision,
 }
 
 #[derive(Resource)]
@@ -103,6 +104,7 @@ pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, St
     let model = ModelFile::parse(&objects).map_err(|e| format!("objects.ngc: {e}"))?;
     let world = WorldFile::parse(&world_file).map_err(|e| format!("WORLDS.PS2: {e}"))?;
     let positions = world.world_positions().map_err(|e| format!("WORLDS.PS2: {e}"))?;
+    let collision = LevelCollision::new(&world).map_err(|e| format!("WORLDS.PS2 collision: {e}"))?;
 
     // Nodes find their model by name, like the game does.
     let by_name: std::collections::HashMap<&str, usize> =
@@ -115,7 +117,7 @@ pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, St
         .filter_map(|(n, p)| Some((*by_name.get(n.name.as_str())?, p?)))
         .collect();
 
-    Ok(LevelData { name: name.to_string(), model, textures, placements })
+    Ok(LevelData { name: name.to_string(), model, textures, placements, collision })
 }
 
 fn summarize(level: &LevelData) -> LevelSummary {

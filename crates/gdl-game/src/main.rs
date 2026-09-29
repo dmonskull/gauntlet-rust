@@ -5,6 +5,7 @@
 mod autoshot;
 mod bootstrap;
 mod camera;
+mod collision_debug;
 mod hud;
 mod level;
 mod level_material;
@@ -68,6 +69,7 @@ fn main() {
         .add_plugins((
             level_material::LevelMaterialPlugin,
             camera::CameraPlugin,
+            collision_debug::CollisionDebugPlugin,
             world::WorldPlugin,
             hud::HudPlugin,
             autoshot::AutoShotPlugin,
