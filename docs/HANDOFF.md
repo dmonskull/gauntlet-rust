@@ -55,7 +55,17 @@ Handy test spots are listed in [mechanics.md](mechanics.md) and
 [camera.md](camera.md) (levelA1 elevator switch, levelA4 lift, barrels,
 the levelA2 Death barrel).
 
+## Latest check
+
+The all-levels smoke test on master `1853c94` (bosses, throw aim, golem
+fix) passed all 67 real levels; only the two empty folders fail.
+
 ## Work in progress
+
+- **In-game HUD**: the front-end helper (branch
+  `worktree-agent-ae4de672b088538df`) was working on it when usage ran
+  out and was told to commit its WIP. Review, build, test and merge it
+  before starting the next job.
 
 - **Bosses**: the B6 dragon is merged into master (`5e74b35`). It wakes,
   uses fireballs, breath, claws and stomp, hits the hero, takes hits and
