@@ -2,6 +2,7 @@
 //! disc image, extracted folder or main.dol — and it finds, validates and
 //! loads the rest. No game assets ship with this program.
 
+mod audio;
 mod autoshot;
 mod bootstrap;
 mod camera;
@@ -94,7 +95,7 @@ fn main() {
         };
         app.insert_resource(game)
             .insert_resource(choice)
-            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin));
+            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, audio::GameAudioPlugin));
     }
     app.run();
 }

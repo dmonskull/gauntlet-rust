@@ -59,6 +59,8 @@ around the level with the game's own speeds, turn rate and walk/run
 animations at its 30 Hz tick: WASD or a gamepad's left stick, Shift to
 walk. `C` switches to a free camera (WASD fly, Space/Ctrl up/down, Shift
 fast, right-drag to look, mouse wheel for speed); `[` / `]` switch levels.
+The level's own music plays (`M` mutes it; `N` steps through the level's
+sound effects).
 
 Not a full game yet: collision, monsters, combat and items are still being
 reverse engineered. See [`docs/INDEX.md`](docs/INDEX.md) for what's
@@ -68,14 +70,16 @@ confirmed and what's next.
 
 | crate | about |
 | --- | --- |
-| `gdl-formats` | Parsers for the game's on-disc formats (disc, FST, models, textures, worlds) |
+| `gdl-formats` | Parsers for the game's on-disc formats (disc, FST, models, textures, worlds, audio) |
 | `gdl-install` | Finds and validates a user's copy of the game, read-only file access |
 | `gdl-game` | The runtime: launcher, boot, level rendering, camera |
 
 ## Development
 
 `GDL_SCREENSHOT=out.png cargo run -p gdl-game` renders a few frames, saves a
-screenshot and exits. Tests that need game data use your own copy via
+screenshot and exits. `cargo run -p gdl-formats --example audio_dump --
+STREAMS/CASTLE1.ads out.wav` (or a `.VBK` and an output folder) decodes
+game audio to `.wav`. Tests that need game data use your own copy via
 `GAUNTLET_DISC` / `GAUNTLET_ASSET_ROOT` and skip cleanly without it.
 
 ## Reverse engineering
