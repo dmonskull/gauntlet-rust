@@ -9,11 +9,16 @@ use gdl_install::GameInstall;
 
 const USAGE: &str = "\
 usage: gdl-game [GAME] [--level NAME] [--forget]
+       gdl-game [GAME] --viewer [--character CLASS] [--variant V] [--action NAME]
 
-  GAME          your Gauntlet: Dark Legacy disc image (.iso/.gcm), extracted
-                disc folder, or its main.dol. Remembered for next time.
-  --level NAME  level to load (e.g. levelA1). Defaults to the first level.
-  --forget      forget the remembered game path and ask again.
+  GAME             your Gauntlet: Dark Legacy disc image (.iso/.gcm), extracted
+                   disc folder, or its main.dol. Remembered for next time.
+  --level NAME     level to load (e.g. levelA1). Defaults to the first level.
+  --forget         forget the remembered game path and ask again.
+  --viewer         character viewer instead of the levels.
+  --character CLS  player class to show (e.g. ARC, KNI, WIZ).
+  --variant V      colour/armour folder (default BLU; e.g. RED, YEL40).
+  --action NAME    action to start with (e.g. RUN1).
 
   env: GAUNTLET_GAME (same as GAME), GDL_ARTIFACTS (settings folder)";
 
@@ -21,19 +26,33 @@ pub struct Args {
     pub game: Option<PathBuf>,
     pub level: Option<String>,
     pub forget: bool,
+    pub viewer: bool,
+    pub character: Option<String>,
+    pub variant: Option<String>,
+    pub action: Option<String>,
 }
 
 impl Args {
     pub fn parse() -> Result<Self, String> {
-        let mut args = Self { game: None, level: None, forget: false };
+        let mut args = Self {
+            game: None,
+            level: None,
+            forget: false,
+            viewer: false,
+            character: None,
+            variant: None,
+            action: None,
+        };
         let mut it = std::env::args().skip(1);
         while let Some(arg) = it.next() {
             match arg.as_str() {
                 "-h" | "--help" => return Err(USAGE.to_string()),
                 "--forget" => args.forget = true,
-                "--level" => {
-                    args.level = Some(it.next().ok_or("--level needs a level name")?);
-                }
+                "--level" => args.level = Some(it.next().ok_or("--level needs a level name")?),
+                "--viewer" => args.viewer = true,
+                "--character" => args.character = Some(it.next().ok_or("--character needs a class")?),
+                "--variant" => args.variant = Some(it.next().ok_or("--variant needs a folder name")?),
+                "--action" => args.action = Some(it.next().ok_or("--action needs an action name")?),
                 flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n\n{USAGE}")),
                 path if args.game.is_none() => args.game = Some(PathBuf::from(path)),
                 extra => return Err(format!("unexpected argument {extra}\n\n{USAGE}")),
