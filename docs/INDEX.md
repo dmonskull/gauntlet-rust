@@ -10,6 +10,7 @@ One file per system, written only once it's confirmed against the actual
 | [textures-ngc-format.md](textures-ngc-format.md) | Texture formats, palettes, lightmaps |
 | [worlds-format.md](worlds-format.md) | Level scene graph and model placement |
 | [rendering.md](rendering.md) | How a level is drawn: diffuse × colour × lightmap |
+| [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music |
 
 ## Confirmed and implemented
 
@@ -18,6 +19,8 @@ One file per system, written only once it's confirmed against the actual
 - Locating a user's copy from a disc image, extracted folder or `main.dol`
   (`gdl-install`).
 - Models, textures, lightmaps and world placement for all 67 levels.
+- Audio: all 65 sound banks, the sound catalog and all 111 music streams
+  decode; each level plays its own music, sound effects play by name.
 
 ## Reverse engineering setup
 
@@ -47,5 +50,8 @@ names), which is how most systems here were found.
   (animation) — models likely reuse the `objects.ngc` format.
 - Gameplay: the main loop, entity update, combat, items, co-op.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
-  `FUN_80058074`: cameras, audio, 14 named realm types).
-- The rest of `WORLDS.PS2` (collision/grid tables) and audio.
+  `FUN_80058074`: cameras, enemies, maps, 14 named realm types). Only the
+  chunk directory, level names and audio records are parsed so far.
+- The rest of `WORLDS.PS2` (collision/grid tables).
+- Audio behaviour beyond playback: music track switching, ducking,
+  positional sound.
