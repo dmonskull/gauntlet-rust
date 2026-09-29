@@ -43,3 +43,14 @@ Tags seen on the disc:
 
 `ENGLISH.ROM` is the GameCube text, `PS2ENGLISH.ROM`/`BAKENGLISH.ROM` are
 leftovers; `HINTS_E.ROM` and `SCROLL_E.ROM` hold hints and scroll text.
+
+## Player stats (`PDATA/<class>.WAD`, chunk `PDAT`)
+
+One 384-byte record. Decoded so far (`pdata.rs`): four `(start, max)` f32
+pairs — strength `+0x28`, speed `+0x30`, armour `+0x38`, magic `+0x40`.
+The order is fixed by the class archetypes among the eight original
+classes (Dwarf strongest and slowest, Wizard/Sorceress most magic,
+Knight/Valkyrie most armour); values run 100–650 at start, up to 999.
+`+0x58` (1.0–1.3) and `+0x5C..+0x7C` are further per-class tuning, not
+named yet. The player movement code multiplies stick magnitude by a speed
+value derived from this stat; the derivation isn't traced yet.
