@@ -18,21 +18,29 @@ vertex colours), not by dynamic lights.
    at the node's world position.
 2. Merge everything sharing a (diffuse, lightmap) pair into one mesh — a
    level is a few hundred draw calls instead of tens of thousands.
-3. Draw with `LevelMaterial`: `diffuse(uv) × vertex colour × lightmap
-   alpha(uv2) × 2`, in gamma space like the GameCube's TEV, converted to
-   linear at the end. Textures are uploaded as plain `Rgba8Unorm` so their
-   raw values reach the shader; tonemapping is off.
+3. Draw with `LevelMaterial`, which reproduces the game's TEV setup
+   (`FUN_800c46f8`, programming `GXSetTevColorIn`/`GXSetTevColorOp` at
+   `FUN_800ffbe0`/`FUN_800ffce4`):
+   - stage 0, always: `clamp(texture × rasterized colour × 2)`
+     (`GX_CC_TEXC × GX_CC_RASC`, `GX_CS_SCALE_2`)
+   - stage 1, chosen by `FUN_800c48c0` when the submesh has a lightmap
+     (render state flag 2): `stage 0 × lightmap alpha` at 1×
+     (`GX_CC_CPREV × GX_CC_TEXA`, texture map 1 on texture coordinate 1).
+   The rasterized colour of lightmapped geometry is its prelit vertex colour
+   (every lightmapped submesh on the disc has one). In gamma space like the
+   hardware, converted to linear at the end; textures upload as plain
+   `Rgba8Unorm`; tonemapping is off.
 4. Emit both windings of every triangle (the game doesn't cull this
    geometry).
 
 ## Assumptions not yet traced to the binary
 
-- **Lightmap scale 2×.** Lightmap texels cluster at alpha level 3 of 7; 2×
-  puts that at ~0.86 brightness, 1× at ~0.43. The TEV configuration for
-  map 1 hasn't been read yet to confirm.
-- **Vertex colours at 1×.** `FUN_800c48c0` shifts them left 3 and adds an
-  ambient term before clamping; the ambient term and TEV scale aren't
-  confirmed.
+- **Dynamic lighting.** Geometry without prelit colours (about 10,000
+  submeshes, and all characters) is lit by the game's lights in
+  `FUN_800c48c0` (normal · light direction plus ambient); we use a neutral
+  0.5 until those lights are implemented.
+- The ambient/base term `FUN_800c48c0` adds to prelit colours before
+  clamping (`DAT_802cc088`) is assumed 0 for level geometry.
 - Alpha: `Mask(0.5)` for textures with transparency, blending for the
   shared-palette formats. The submesh/binding flags that really choose the
   blend mode aren't decoded yet.

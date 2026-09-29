@@ -6,11 +6,11 @@ use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
-/// Lightmaps modulate at 2x, PS2-style (mid-level = unchanged). Chosen from
-/// the data — lightmap texels cluster at alpha level 3 of 7, which 2x maps
-/// to ~0.86 brightness and 1x to ~0.43 — not yet traced to the game's TEV
-/// setup.
-pub const LIGHTMAP_SCALE: f32 = 2.0;
+/// TEV stage 0 scales texture × rasterized colour by 2 (`GX_CS_SCALE_2`),
+/// PS2-style: a colour of 0.5 leaves the texture unchanged. The lightmap
+/// stage then multiplies by the lightmap's alpha at 1×. See
+/// `docs/rendering.md`.
+pub const STAGE0_SCALE: f32 = 2.0;
 
 pub struct LevelMaterialPlugin;
 
@@ -29,7 +29,7 @@ pub struct LevelMaterial {
     #[texture(2)]
     #[sampler(3)]
     pub lightmap: Option<Handle<Image>>,
-    /// x: lightmap enabled, y: alpha cutoff, z: lightmap scale.
+    /// x: lightmap enabled, y: alpha cutoff, z: stage 0 scale.
     #[uniform(4)]
     pub params: Vec4,
     pub alpha_mode: AlphaMode,
@@ -42,7 +42,7 @@ impl LevelMaterial {
             _ => 0.0,
         };
         let lit = if lightmap.is_some() { 1.0 } else { 0.0 };
-        Self { diffuse, lightmap, params: Vec4::new(lit, cutoff, LIGHTMAP_SCALE, 0.0), alpha_mode }
+        Self { diffuse, lightmap, params: Vec4::new(lit, cutoff, STAGE0_SCALE, 0.0), alpha_mode }
     }
 }
 

@@ -90,9 +90,12 @@ pub fn build(
                 buf.uvs.push(v.uv);
                 buf.lightmap_uvs.push(v.lightmap_uv.unwrap_or_default());
                 // Raw 0..1 values: the shader multiplies in gamma space.
+                // Without a prelit colour the game lights the vertex
+                // dynamically; 0.5 is neutral under the 2× TEV stage until
+                // the game's lights are implemented.
                 buf.colors.push(match v.color {
                     Some([r, g, b]) => [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
-                    None => [1.0; 4],
+                    None => [0.5, 0.5, 0.5, 1.0],
                 });
             }
             // Both windings: the game draws this geometry without culling.
