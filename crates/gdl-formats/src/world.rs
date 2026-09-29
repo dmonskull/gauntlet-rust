@@ -5,8 +5,12 @@
 //! `+0x2E`), builds each node's instance at its translation *relative to its
 //! parent*, and finds its model by binary-searching every loaded model
 //! file's name table for the node's name. Little-endian like the models.
+//!
+//! The same file carries the level's collision; see [`crate::collision`].
 
 use thiserror::Error;
+
+use crate::collision::CollisionTables;
 
 const NODE_STRIDE: usize = 0x3C;
 const HEADER_WORDS: usize = 30;
@@ -23,15 +27,17 @@ pub enum WorldError {
     BadLink(usize, i32),
     #[error("scene graph has a cycle through node {0}")]
     Cycle(usize),
+    #[error("collision tables: {0}")]
+    BadCollision(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct WorldHeader {
     pub num_nodes: u32,
     pub nodes_offset: u32,
-    /// Second table: `0x28`-byte records holding two vec3s (bounds?).
-    pub num_regions: u32,
-    pub regions_offset: u32,
+    /// Collision triangles (`0x28`-byte records, see [`crate::collision`]).
+    pub num_triangles: u32,
+    pub triangles_offset: u32,
     pub bounds_min: [f32; 3],
     pub bounds_max: [f32; 3],
     /// Side length of the level's X/Z lookup grid cells.
@@ -53,14 +59,22 @@ pub struct WorldNode {
     pub has_model: bool,
     pub next_sibling: Option<usize>,
     pub first_child: Option<usize>,
-    /// Node `+0x30`; equals the model record's `+0x04` bounding value.
+    /// Node `+0x30`; equals the model record's `+0x04` bounding value, and
+    /// bounds the node's collision triangles.
     pub radius: f32,
+    /// Node `+0x35`: collision queries skip nodes sharing a bit with their
+    /// mask (0 in every retail level).
+    pub collision_disable: u8,
+    /// The node's collision triangles: node `+0x38` first (−1 = none),
+    /// `+0x36` count.
+    pub collision: std::ops::Range<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub struct WorldFile {
     pub header: WorldHeader,
     pub nodes: Vec<WorldNode>,
+    pub collision: CollisionTables,
 }
 
 impl WorldFile {
@@ -71,8 +85,8 @@ impl WorldFile {
         let header = WorldHeader {
             num_nodes: words[0],
             nodes_offset: words[1],
-            num_regions: words[2],
-            regions_offset: words[3],
+            num_triangles: words[2],
+            triangles_offset: words[3],
             bounds_min: [f(9), f(10), f(11)],
             bounds_max: [f(12), f(13), f(14)],
             cell_size: f(15),
@@ -102,9 +116,16 @@ impl WorldFile {
                 next_sibling: link(i, le_u16(e, 0x2C) as i16)?,
                 first_child: link(i, le_u16(e, 0x2E) as i16)?,
                 radius: le_f32(e, 0x30),
+                collision_disable: e[0x35],
+                collision: match (le_u32(e, 0x38) as i32, le_u16(e, 0x36) as i16) {
+                    (first, count) if first >= 0 && count > 0 => first as usize..first as usize + count as usize,
+                    _ => 0..0,
+                },
             });
         }
-        Ok(Self { header, nodes })
+        let collision = CollisionTables::parse(file, &words)?;
+        collision.validate(&nodes)?;
+        Ok(Self { header, nodes, collision })
     }
 
     /// Each reachable node's world position, walking the tree from node 0

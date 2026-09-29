@@ -15,6 +15,7 @@ One file per system, written only once it's confirmed against the actual
 | [rendering.md](rendering.md) | How a level is drawn: diffuse × colour × lightmap |
 | [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning |
 | [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music |
+| [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |
 
 ## Confirmed and implemented
 
@@ -35,6 +36,8 @@ One file per system, written only once it's confirmed against the actual
 - What populates every level — item types, placements (pickups,
   generators, monsters, doors, triggers, exits, transporters) and locators
   (player starts, boss spawn, camera points) — shown in the level view.
+- Level collision (triangles, grid) and the game's floor, wall and
+  move-with-collision queries.
 
 ## Reverse engineering setup
 
@@ -66,6 +69,7 @@ names), which is how most systems here were found.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
   `FUN_80058074`: cameras, enemies, maps, 14 named realm types). Only the
   chunk directory, level names and audio records are parsed so far.
-- The rest of `WORLDS.PS2` (collision/grid tables).
+- The rest of `WORLDS.PS2` (header words 4 and 6).
 - Audio behaviour beyond playback: music track switching, ducking,
   positional sound.
+- Character type data (collision radius, step height) that the movers read.
