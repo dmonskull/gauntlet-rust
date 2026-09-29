@@ -32,7 +32,7 @@ use gdl_formats::enemy;
 use crate::audio::PlaySound;
 use crate::character::Animator;
 use crate::combat::{Hit, TargetKind, Targetable};
-use crate::critters::{Critter, CritterLevel};
+use crate::critters::{Critter, CritterLevel, CritterSphere};
 use crate::generators::Generator;
 use crate::monsters::{Monster, MonsterHit, MonsterLevel};
 use crate::player::Player;
@@ -68,6 +68,7 @@ pub(crate) fn apply_hits(
     mut generators: Query<&mut Generator>,
     models: Query<(Entity, &PlacementIndex, Option<&GeneratorLooks>, Option<&Children>)>,
     mut critters: Query<&mut Critter>,
+    spheres: Query<&CritterSphere>,
     critter_level: Option<Res<CritterLevel>>,
     mut sounds: MessageWriter<PlaySound>,
 ) {
@@ -177,11 +178,16 @@ pub(crate) fn apply_hits(
                 }
             }
             TargetKind::Object => {
-                // Critters (`critters.rs`): block, armour, experience.
-                let Ok(mut c) = critters.get_mut(hit.target) else { continue };
+                // Critters (`critters.rs`), on the body or a hit sphere:
+                // block, armour, experience.
+                let (target, sphere) = match spheres.get(hit.target) {
+                    Ok(s) => (s.critter, Some(s.node)),
+                    Err(_) => (hit.target, None),
+                };
+                let Ok(mut c) = critters.get_mut(target) else { continue };
                 let realm = critter_level.as_ref().map_or('A', |l| l.realm());
                 let mut hit_sounds = Vec::new();
-                let xp = c.take_hit(hit.damage, hit.kind, hit.push.to_array(), &mut hit_sounds, realm);
+                let xp = c.take_hit(hit.damage, hit.kind, hit.push.to_array(), sphere, &mut hit_sounds, realm);
                 info!("the hero hits a critter for {:.1}: {:.0} hit points left", hit.damage, c.hit_points);
                 for s in hit_sounds {
                     sounds.write(PlaySound(s));

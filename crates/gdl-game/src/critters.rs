@@ -1,31 +1,45 @@
 //! Critters: the game's scripted monsters, run from their `CRITTER/*.WAD`
 //! data (`docs/critters.md` has the game's code behind all of this). This
-//! runs the placed golem: it stands as a statue until a wake trigger by it
-//! comes on, then every 30 Hz tick it
+//! runs the placed golem and the level's boss (one-part bosses so far).
 //!
-//! 1. scores the players against its type's target condition and keeps
-//!    the best (players it hit in the last quarter second score worse);
+//! A golem stands as a statue until a wake trigger by it comes on; a boss
+//! is made at the level's boss locator and sleeps (playing INIT) until two
+//! seconds have passed and its targets are within its wake distance. Then
+//! every 30 Hz tick a critter
+//!
+//! 1. scores the players against its type's target condition: the golem
+//!    keeps the best, a boss every one that passes (up to four); players a
+//!    critter hit in the last quarter second score worse;
 //! 2. picks a move: the forced ones first (INIT → START, DEATH, a move's
-//!    follow-up, then a knockdown, knockback, roar or flinch for the blows
-//!    it took), else a block when its target is attacking, else the least
-//!    recently used attack whose condition its target meets, else the
-//!    movement move whose condition scores its target best, else a taunt
-//!    (unhurt) or READY — every move only when its cooldown since it last
-//!    ended has run out;
+//!    follow-up, a boss's READY after START, then a knockdown, knockback,
+//!    roar or flinch for the blows it took), else a block when its target
+//!    is attacking, else the next step of a running pattern or the least
+//!    recently used pattern or attack whose condition a target meets, else
+//!    the movement move whose condition scores its target best, else a
+//!    taunt (unhurt) or READY — every move only when its cooldown since it
+//!    last ended has run out;
 //! 3. switches to it the way the move's transition allows (at once, or
-//!    when the animation playing ends);
-//! 4. lands the move's blows on their frames: a sphere on the move's node,
-//!    swept from its last position, against each player (a hit player
-//!    can't be hit by a critter again for 0.25 s); plays its sounds;
-//! 5. walks at the move's speed in the move's direction plus its knockback,
-//!    against the level's walls and floor, stopping short of players, and
-//!    turns toward its target at the move's rate.
+//!    when the animation playing ends); a boss holds a move at least its
+//!    hold time;
+//! 4. lands the move's blows on their frames — a sphere on the move's node
+//!    swept from its last position, a breath cone along the node, a
+//!    missile (with the critter's own effect model, aimed with an arc at
+//!    its target, faster the angrier it is) or a ring on the ground — and
+//!    plays its sounds; a player a critter hit can't be hit by one again
+//!    for 0.25 s;
+//! 5. walks at the move's speed in the move's direction plus its knockback
+//!    (a golem on the level's walls and floor, stopping short of players;
+//!    a boss kept within its leash of home) and turns toward its target at
+//!    the move's rate.
 //!
 //! Blows from the hero reach it through `damage.rs` ([`Critter::take_hit`]):
-//! a blocking critter takes a quarter, its armour comes off each blow, the
-//! hero earns a share of its experience per blow and a fifth of it for the
-//! kill; the blows' kinds pick its hit reaction and push it. At 0 hit
-//! points it plays DEATH and is removed when that ends.
+//! critters whose type has hit spheres are hit on those ([`CritterSphere`],
+//! each with its share of hit points and damage scale), others on the
+//! body; a blocking critter takes a quarter, its armour comes off each
+//! blow, the hero earns a share of its experience per blow and a fifth of
+//! it for the kill; the blows' kinds pick its hit reaction and push it
+//! (bosses aren't pushed). At 0 hit points it plays DEATH and is removed
+//! when that ends (a boss when its hold after it ends).
 //!
 //! A statue only wakes when a wake trigger (flag 0x2000) next to it comes
 //! on, as in the game — most placed golems are never woken.
@@ -33,20 +47,22 @@
 //! hero comes that close.
 //!
 //! Stand-ins (see the doc): a woken statue goes straight to its ACTIVE
-//! animation and its critter appears when that ends;
-//! the golem's stomp ring (a damaging effect in the game) hurts players in
-//! its radius at once; projectiles, the health meter, effects, breakable
-//! nodes, its blows on other monsters and pushing players aside aren't
-//! done. Bosses, the gargoyle and the general aren't run yet.
+//! animation and its critter appears when that ends; ground rings (a
+//! damaging effect in the game) hurt players in their radius at once;
+//! critter missiles live the missiles' three seconds; the boss intro and
+//! camera, the boss key, parts (the chimera's heads), breaking nodes, the
+//! health meter, effects and fading, its blows on other monsters and
+//! pushing players aside aren't done.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 use gdl_formats::anim::AnimFile;
 use gdl_formats::collision::{node_flags, push_out};
 use gdl_formats::critter::{self, CritterDamage, CritterFile, CritterMove, Condition, class, kind};
-use gdl_formats::population::{ItemClass, PlacementParams, REALM_LETTERS};
+use gdl_formats::population::{ItemClass, LocatorKind, PlacementParams, REALM_LETTERS, rotation_matrix};
 use gdl_formats::{LevelCollision, ModelFile};
 
 use crate::audio::PlaySound;
@@ -61,7 +77,7 @@ use crate::monsters::{MonsterLevel, MonsterTick};
 use crate::player::Player;
 use crate::player_state::{DamagePlayer, PlayerState};
 use crate::population::LevelPopulation;
-use crate::projectiles::cylinder_hit;
+use crate::projectiles::{cylinder_hit, spawn_critter_missile};
 use crate::world::{LevelEntity, LevelGround};
 
 pub struct CrittersPlugin;
@@ -77,12 +93,21 @@ impl Plugin for CrittersPlugin {
 
 /// Seconds per 30 Hz tick: critters keep time in seconds.
 const DT: f32 = 1.0 / 30.0;
-/// Enemy type of the golem.
+/// Enemy type of the golem, and the first boss type.
 const GOLEM: i32 = 0x1D;
+const FIRST_BOSS: i32 = 0x22;
 
 /// A wake trigger wakes the nearest statue within this (horizontally,
 /// less the statue item's radius).
 const WAKE_REACH: f32 = 10.0;
+/// A boss sleeps at least this long before it may wake.
+const BOSS_WAKE_DELAY: f32 = 2.0;
+/// `TYPE +0x5C` flags: hit spheres, a boxed leash, no wake delay, free
+/// turning.
+const TYPE_SPHERES: u32 = 0x2;
+const TYPE_BOX_LEASH: u32 = 0x20;
+const TYPE_NO_WAKE_DELAY: u32 = 0x80;
+const TYPE_FREE_TURN: u32 = 0x400;
 
 /// Anger: 0.5 at full health up to 5 near death.
 const ANGER_SPAN: f32 = 4.5;
@@ -100,10 +125,18 @@ const HIT_GUARD: f32 = 0.25;
 const RECENTLY_HIT: f32 = 1000.0;
 /// Scores at or above this mean a condition failed.
 const REJECTED: f32 = 1.0e21;
+/// Bosses track at most this many players.
+const MAX_TARGETS: usize = 4;
 /// A blocking critter takes this share of a blow.
 const BLOCKED: f32 = 0.25;
 /// Share of its experience every player earns for the kill.
 const KILL_EXPERIENCE: f32 = 0.2;
+/// A boss takes blows × this for 0..4 players (outside its intro).
+const BOSS_DAMAGE_BY_PLAYERS: [f32; 5] = [1.0, 1.0, 0.5, 0.3, 0.2];
+/// The roar damage is × this for 0..4 players.
+const ROAR_BY_PLAYERS: [f32; 5] = [1.0, 1.0, 1.5, 2.0, 2.0];
+/// Players: only one hero runs here.
+const PLAYERS: usize = 1;
 /// Knockback per unit of push by blow kind, the golem's reduction, cap,
 /// decay per tick, stop threshold and upward fall per second.
 const KNOCK_HEAVY: f32 = 10.0;
@@ -117,18 +150,25 @@ const KNOCK_STOP: f32 = 0.01;
 const KNOCK_FALL: f32 = 100.0;
 /// Seconds per animation frame when recording when a move ends.
 const FRAME_TIME: f32 = 1.0 / 30.0;
-/// Ticks into a death before `GDL_CRITTER_SHOT` saves its screenshot.
-const DEATH_SHOT_DELAY: u32 = 8;
+/// Ticks after its event before `GDL_CRITTER_SHOT` saves its screenshot.
+const SHOT_DELAY: u32 = 8;
 /// When a move that has never run "ended".
 const NEVER: f32 = -1.0e6;
 /// A critter drops at most this fast (units/s).
 const MAX_DROP: f32 = 16.0;
+/// Missiles: the span of the launch speed range anger reaches (from 0.5
+/// to 1.5 anger), and the launch direction's drop when it aims at nothing.
+const SPEED_SPAN: f32 = 0.75;
+const ANGER_CAP: f32 = 1.5;
+const UNAIMED_DROP: f32 = -0.5;
 
 /// Blow kind bits.
 const KIND_STRONG: u32 = 0x10;
 const KIND_KNOCKDOWN: u32 = 0x20;
 const KIND_HEAVY: u32 = 0x100;
 const KIND_REACTIONS: u32 = 0x130;
+/// Blow kinds that don't land on a hit sphere (they hit the body).
+const KIND_BODY: u32 = 0x100320;
 
 /// One critter file loaded for the level, with a model per body.
 pub struct CritterKind {
@@ -136,6 +176,8 @@ pub struct CritterKind {
     bodies: Vec<Option<Body>>,
     /// The statue a placed one stands as until it wakes.
     statue: Option<CharacterModel>,
+    /// Missile models: effect atrees named by its `SFXX` records.
+    effects: HashMap<usize, Arc<CharacterModel>>,
 }
 
 /// A body's model and what its moves animate.
@@ -145,6 +187,8 @@ struct Body {
     /// first, as the game does), and its node.
     actions: Vec<usize>,
     nodes: Vec<Option<usize>>,
+    /// Per `NODE` record of the type: its skeleton node (none: the root).
+    spheres: Vec<Option<usize>>,
     /// Per action: frames, rate, loops.
     clips: Vec<(u16, u16, bool)>,
 }
@@ -165,6 +209,14 @@ struct Statue {
 #[derive(Component)]
 struct StatueModel;
 
+/// One of a critter's hit spheres (its type's `NODE` records): the hero
+/// hits these instead of the body.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct CritterSphere {
+    pub critter: Entity,
+    pub node: usize,
+}
+
 /// The level's critter state.
 #[derive(Resource)]
 pub struct CritterLevel {
@@ -178,6 +230,32 @@ pub struct CritterLevel {
     damage_scale: f32,
     /// Per player: until when critter blows can't hit it.
     guard: HashMap<Entity, f32>,
+    /// The boss, once made; whether it has died.
+    pub boss: Option<Entity>,
+    pub boss_dead: bool,
+    /// Events this tick, for `GDL_CRITTER_SHOT_ON`.
+    events: Vec<&'static str>,
+    /// Stand-in look for critter missiles: their effect models are drawn by
+    /// the effects system (textures it supplies), which isn't done.
+    glow: (Handle<Mesh>, Handle<StandardMaterial>),
+    rng: u32,
+}
+
+impl CritterLevel {
+    /// The level's realm letter (critter sound names use it).
+    pub fn realm(&self) -> char {
+        self.realm
+    }
+
+    fn random(&mut self) -> f32 {
+        // xorshift32; the game has its own generator.
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        (x >> 8) as f32 / (1u32 << 24) as f32
+    }
 }
 
 /// The game's instance state (0 new, 1 dying, 3 active).
@@ -188,7 +266,7 @@ pub enum CritterState {
     Active,
 }
 
-/// The target the critter tracks (the game keeps up to four).
+/// A target the critter tracks (the game keeps up to four).
 #[derive(Clone, Copy, Debug)]
 struct Tracked {
     player: Entity,
@@ -196,6 +274,11 @@ struct Tracked {
     distance: f32,
     direction: [f32; 2],
     position: [f32; 3],
+    score: f32,
+    /// Scales the score (the game weighs damage dealt against taken).
+    weight: f32,
+    /// The player's centre (missiles aim here).
+    centre: [f32; 3],
 }
 
 /// A critter's own animation clock (the game's controller: frame, whether
@@ -243,6 +326,7 @@ pub struct Critter {
     pub position: [f32; 3],
     pub yaw: f32,
     home_yaw: f32,
+    home: [f32; 3],
     previous: ([f32; 3], f32),
     floor: f32,
     /// Current and chosen move (within the type).
@@ -253,12 +337,20 @@ pub struct Critter {
     /// The current move's target.
     move_target: Option<Entity>,
     switched: bool,
-    /// When each move last ended.
+    /// When each move last ended; when each pattern last started.
     ends: Vec<f32>,
+    pattern_starts: Vec<f32>,
+    /// The pattern running and its step, and the one just chosen.
+    pattern: Option<(usize, usize)>,
+    chosen_pattern: Option<usize>,
+    /// A boss holds its move until this time.
+    hold_until: f32,
+    /// A sleeping boss may wake from this time.
+    wake_at: f32,
     /// Blows and sounds done this move (bits 1, 2).
     blows_done: u8,
     sounds_done: u8,
-    tracked: Option<Tracked>,
+    tracked: Vec<Tracked>,
     anger: f32,
     /// Damage taken lately, its kinds, summed push, time of the last blow.
     damage_taken: f32,
@@ -270,7 +362,13 @@ pub struct Critter {
     /// The move node's world position this tick and last.
     node_at: Option<[f32; 3]>,
     node_was: Option<[f32; 3]>,
+    /// Per hit sphere: damage taken (it stops counting at its share of hit
+    /// points), and its entity.
+    sphere_damage: Vec<f32>,
+    spheres: Vec<Entity>,
     blows_dealt: u32,
+    /// Hit points at the start of the last tick.
+    hp_before: f32,
     /// The critter clock at its last tick (seconds since the level began).
     now: f32,
 }
@@ -284,17 +382,23 @@ impl Critter {
         self.kind.bodies[self.ty].as_ref().expect("critters are only made with a body")
     }
 
+    fn class(&self) -> i16 {
+        self.kind.file.desc.class
+    }
+
     fn move_kind(&self, i: Option<usize>) -> Option<i32> {
         i.and_then(|i| self.moves().get(i)).map(|m| m.kind)
     }
 
-    /// A blow from the hero: returns the experience it earns. `sound` gets
-    /// the hit sound's name to play.
-    pub fn take_hit(&mut self, damage: f32, kind_bits: u32, push: [f32; 3], now_sound: &mut Vec<String>, realm: char) -> u32 {
+    /// A blow from the hero, on hit sphere `sphere` or the body: returns
+    /// the experience it earns. `sounds` gets the names of the sounds to
+    /// play.
+    pub fn take_hit(&mut self, damage: f32, kind_bits: u32, push: [f32; 3], sphere: Option<usize>, sounds: &mut Vec<String>, realm: char) -> u32 {
         if self.state != CritterState::Active || self.hit_points <= 0.0 {
             return 0;
         }
-        let ty = &self.kind.file.types[self.ty];
+        let ty = self.kind.file.types[self.ty].clone();
+        let boss = self.class() == class::BOSS;
         let (mut damage, mut kind_bits) = (damage, kind_bits);
         if self.move_kind(self.current) == Some(kind::BLOCK) {
             kind_bits &= !KIND_REACTIONS;
@@ -302,7 +406,28 @@ impl Critter {
         }
         damage = after_armor(damage, ty.armor);
         self.damage_taken += damage;
-        let xp = (damage.min(self.hit_points) / (1.0 + self.full_hit_points) * ty.experience) as u32;
+        if boss {
+            damage *= BOSS_DAMAGE_BY_PLAYERS[PLAYERS];
+        }
+        let share = damage.clamp(0.0, self.hit_points.max(0.0)) / (1.0 + self.full_hit_points);
+        let mut xp = (share * ty.experience) as u32;
+        if boss {
+            xp *= PLAYERS as u32;
+        }
+        // A blow on a hit sphere is scaled by it, up to what it has left.
+        if kind_bits & KIND_BODY == 0
+            && let Some(n) = sphere
+            && let Some(node) = self.kind.file.type_nodes(self.ty).get(n)
+        {
+            let full = node.hit_points * self.full_hit_points;
+            let taken = self.sphere_damage[n];
+            if taken < full {
+                damage = (damage * node.damage_scale).min(full - taken);
+                self.sphere_damage[n] = taken + damage;
+            } else {
+                damage = 0.0;
+            }
+        }
         if damage <= 0.0 {
             return xp;
         }
@@ -315,7 +440,7 @@ impl Critter {
             return xp + (KILL_EXPERIENCE * ty.experience) as u32;
         }
         if let Ok(s) = usize::try_from(ty.hit_effects[0]) {
-            sound_chain(&self.kind.file, s, realm, now_sound);
+            sound_chain(&self.kind.file, s, realm, sounds);
         }
         xp
     }
@@ -338,8 +463,8 @@ fn sound_chain(file: &CritterFile, first: usize, realm: char, out: &mut Vec<Stri
     }
 }
 
-/// Loads the critter files the level's enemy slots name (the golem for
-/// now), their models, and places the statues.
+/// Loads the critter files the level's enemy slots name (the golem and the
+/// boss for now), their models; places the statues and makes the boss.
 #[allow(clippy::too_many_arguments)]
 fn setup_level(
     mut commands: Commands,
@@ -350,13 +475,15 @@ fn setup_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut standard: ResMut<Assets<StandardMaterial>>,
 ) {
     let (Some(population), Some(ground)) = (population, ground) else { return };
     let realm_id = REALM_LETTERS.iter().find(|(l, _)| *l == monsters.realm).map_or(1, |r| r.1);
     let realm_items = format!("level{}", monsters.realm);
     let mut kinds = HashMap::new();
-    for &(enemy, _) in &monsters.enemies.loaded {
-        if enemy != GOLEM || kinds.contains_key(&enemy) {
+    let wanted = monsters.enemies.loaded.iter().map(|e| e.0).filter(|&e| e == GOLEM || e >= FIRST_BOSS);
+    for enemy in wanted {
+        if kinds.contains_key(&enemy) {
             continue;
         }
         let Some(file_name) = critter::file_for_enemy(enemy, realm_id, "") else { continue };
@@ -385,6 +512,7 @@ fn setup_level(
                 textures: textures.clone(),
             })
         };
+        let mut build = |d: &CharacterData| CharacterModel::build(d, &mut meshes, &mut materials, &mut images);
         let bodies = (0..file.types.len())
             .map(|ty| {
                 let owner = file.types[ty].parent.unwrap_or(ty);
@@ -394,19 +522,55 @@ fn setup_level(
                     .iter()
                     .map(|m| d.clips.actions.iter().position(|a| a.name == m.anim).unwrap_or(0))
                     .collect();
-                let nodes = moves.iter().map(|m| (!m.node.is_empty()).then(|| d.skeleton.node_index(&m.node)).flatten()).collect();
+                let node = |name: &str| (!name.is_empty()).then(|| d.skeleton.node_index(name)).flatten();
+                let nodes = moves.iter().map(|m| node(&m.node)).collect();
+                let spheres = file.type_nodes(ty).iter().map(|n| node(&n.name)).collect();
                 let clips = d.clips.actions.iter().map(|a| (a.frames, a.rate, a.loops())).collect();
-                let model = CharacterModel::build(&d, &mut meshes, &mut materials, &mut images);
-                Some(Body { model, actions, nodes, clips })
+                Some(Body { model: build(&d), actions, nodes, spheres, clips })
             })
             .collect::<Vec<_>>();
         if bodies.first().is_none_or(Option::is_none) {
             warn!("{folder}: no atree {}", file.atree_name(0));
             continue;
         }
-        let statue = data("GOL_STATUE").map(|d| CharacterModel::build(&d, &mut meshes, &mut materials, &mut images));
-        info!("critter {} ({path}) from {folder}: {} moves, statue {}", file.desc.name, file.moves.len(), statue.is_some());
-        kinds.insert(enemy, Arc::new(CritterKind { file, bodies, statue }));
+        let statue = data("GOL_STATUE").map(|d| build(&d));
+        // Missile models: the effect a projectile blow starts names an
+        // atree of the critter's own folder.
+        let mut effects = HashMap::new();
+        for d in &file.damage {
+            if !matches!(d.kind, 1 | 8) {
+                continue;
+            }
+            let Ok(e) = usize::try_from(d.effects[0]) else { continue };
+            let Some(name) = file.sounds.get(e).map(|s| s.effect.clone()) else { continue };
+            if effects.contains_key(&e) || name.is_empty() {
+                continue;
+            }
+            match data(&name) {
+                Some(md) => {
+                    debug!(
+                        "{folder}: missile model {name}: nodes {:?}, objects {:?}",
+                        md.skeleton.nodes.iter().map(|n| (n.name.as_str(), n.has_model(), n.hidden(), n.render_flags)).collect::<Vec<_>>(),
+                        md.model
+                            .objects
+                            .iter()
+                            .filter(|o| o.name.starts_with(&name))
+                            .map(|o| (o.name.as_str(), o.submeshes.len(), o.flags))
+                            .collect::<Vec<_>>()
+                    );
+                    effects.insert(e, Arc::new(build(&md)));
+                }
+                None => debug!("{folder}: no missile model {name}"),
+            }
+        }
+        info!(
+            "critter {} ({path}) from {folder}: {} moves, statue {}, {} missile models",
+            file.desc.name,
+            file.moves.len(),
+            statue.is_some(),
+            effects.len()
+        );
+        kinds.insert(enemy, Arc::new(CritterKind { file, bodies, statue, effects }));
     }
 
     // Placed critters stand as statues.
@@ -419,11 +583,14 @@ fn setup_level(
         }
         let Some(enemy) = ty.enemy() else { continue };
         let Some(kind) = kinds.get(&enemy) else { continue };
+        if kind.file.desc.class == class::BOSS {
+            continue;
+        }
         let mut position = p.position;
         if let Some(y) = ground.0.floor_height(position) {
             position[1] = y;
         }
-        let m = gdl_formats::population::rotation_matrix(p.rotation);
+        let m = rotation_matrix(p.rotation);
         let yaw = m[6].atan2(m[8]);
         let range = match p.params(ty.class) {
             PlacementParams::Enemy { range, .. } => range,
@@ -452,7 +619,7 @@ fn setup_level(
     // `GDL_CRITTER_HP=<scale>`: a testing aid that scales critters' hit
     // points (to see one die sooner).
     let testing_scale = std::env::var("GDL_CRITTER_HP").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
-    commands.insert_resource(CritterLevel {
+    let mut level = CritterLevel {
         kinds,
         statues,
         now: 0.0,
@@ -461,14 +628,37 @@ fn setup_level(
         speed_scale: t.monster_speed,
         damage_scale: t.monster_damage,
         guard: HashMap::new(),
-    });
-}
+        boss: None,
+        boss_dead: false,
+        events: Vec::new(),
+        glow: (
+            meshes.add(Sphere::new(1.0)),
+            standard.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.55, 0.1),
+                emissive: LinearRgba::rgb(4.0, 1.6, 0.2),
+                unlit: true,
+                ..default()
+            }),
+        ),
+        rng: 0x2545_F491,
+    };
 
-impl CritterLevel {
-    /// The level's realm letter (critter sound names use it).
-    pub fn realm(&self) -> char {
-        self.realm
+    // The boss appears at the level's boss locator, dropped onto the floor
+    // below it.
+    if monsters.boss >= FIRST_BOSS
+        && let Some(kind) = level.kinds.get(&monsters.boss).cloned()
+        && let Some(spot) = pop.locators.iter().find(|l| l.kind == LocatorKind::Boss)
+    {
+        let m = rotation_matrix(spot.rotation);
+        let yaw = m[6].atan2(m[8]);
+        let mut at = spot.position;
+        if let Some(h) = ground.0.floor_probe(at, 4.0, -1000.0, 5.0, 2) {
+            at[1] = h.point[1];
+        }
+        level.boss = spawn_critter(&level, &kind, at, yaw, &mut commands);
+        info!("boss {} at {at:?} facing {:.0}°", kind.file.desc.name, yaw.to_degrees());
     }
+    commands.insert_resource(level);
 }
 
 fn read_folder(game: &mut LoadedGame, folder: &str) -> Option<(AnimFile, ModelFile, Vec<u8>)> {
@@ -478,7 +668,8 @@ fn read_folder(game: &mut LoadedGame, folder: &str) -> Option<(AnimFile, ModelFi
     Some((anim, model, textures))
 }
 
-/// Makes a critter of `kind` standing at `position` facing `yaw`.
+/// Makes a critter of `kind` standing at `position` facing `yaw`: its
+/// hit points, its home (the type's, or here), its hit spheres.
 fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 3], yaw: f32, commands: &mut Commands) -> Option<Entity> {
     let ty = 0;
     let body = kind.bodies[ty].as_ref()?;
@@ -488,6 +679,20 @@ fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 
     let transform = Transform::from_translation(Vec3::from(position)).with_rotation(Quat::from_rotation_y(yaw));
     let root = body.model.spawn(transform, commands);
     let moves = kind.file.type_moves(ty).len();
+    let nodes = kind.file.type_nodes(ty);
+    let spheres: Vec<Entity> = if t.flags & TYPE_SPHERES != 0 {
+        nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let target = Targetable::new(TargetKind::Object, n.radius, n.radius);
+                let sphere = CritterSphere { critter: root, node: i };
+                commands.spawn((Transform::from_translation(Vec3::from(position)), target, sphere, LevelEntity)).id()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let critter = Critter {
         kind: kind.clone(),
         ty,
@@ -497,6 +702,7 @@ fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 
         position,
         yaw,
         home_yaw: yaw,
+        home: t.fixed_home().unwrap_or(position),
         previous: (position, yaw),
         floor: position[1] - t.hover,
         current: None,
@@ -507,9 +713,14 @@ fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 
         // Never used yet: every move is ready (the game's clock has run since
         // boot, ours since the level began).
         ends: vec![NEVER; moves],
+        pattern_starts: vec![NEVER; kind.file.type_patterns(ty).len()],
+        pattern: None,
+        chosen_pattern: None,
+        hold_until: 0.0,
+        wake_at: 0.0,
         blows_done: 0,
         sounds_done: 0,
-        tracked: None,
+        tracked: Vec::new(),
         anger: ANGER_BASE,
         damage_taken: 0.0,
         kinds: 0,
@@ -519,10 +730,16 @@ fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 
         clock: Clock { action: 0, frame: 0.0, frames: 1, rate: 30, loops: false, ended: true },
         node_at: None,
         node_was: None,
+        sphere_damage: vec![0.0; nodes.len()],
         blows_dealt: 0,
+        hp_before: hp,
         now: level.now,
+        spheres: spheres.clone(),
     };
-    commands.entity(root).insert((critter, Targetable::new(TargetKind::Object, t.radius, t.height), LevelEntity));
+    commands.entity(root).insert((critter, LevelEntity));
+    if spheres.is_empty() {
+        commands.entity(root).insert(Targetable::new(TargetKind::Object, t.radius, t.height));
+    }
     Some(root)
 }
 
@@ -536,6 +753,9 @@ struct Hero {
     attacking: bool,
 }
 
+/// A blow for a player: damage, kind bits, push.
+type Blow = (Entity, f32, u32, [f32; 3]);
+
 #[allow(clippy::too_many_arguments)]
 fn tick_critters(
     mut commands: Commands,
@@ -547,6 +767,7 @@ fn tick_critters(
     mut players: Query<(Entity, &mut Player)>,
     mut critters: Query<(Entity, &mut Critter, &mut Animator), Without<StatueModel>>,
     mut statues: Query<&mut Animator, With<StatueModel>>,
+    mut spheres: Query<&mut Transform, (With<CritterSphere>, Without<Critter>)>,
     bones: Query<&GlobalTransform>,
     mut hurt: MessageWriter<DamagePlayer>,
     mut sounds: MessageWriter<PlaySound>,
@@ -572,7 +793,7 @@ fn tick_critters(
 
     wake_statues(level, mechanics, population.as_deref(), &heroes, &mut statues, &mut commands);
 
-    let mut blows: Vec<(Entity, f32, u32, [f32; 3])> = Vec::new();
+    let mut blows: Vec<Blow> = Vec::new();
     let mut to_play: Vec<String> = Vec::new();
     for (entity, mut c, mut animator) in &mut critters {
         let c = &mut *c;
@@ -580,6 +801,7 @@ fn tick_critters(
         c.previous = (c.position, c.yaw);
         c.switched = false;
         let ty = type_info(&c.kind.file, c.ty);
+        let boss = ty.class == class::BOSS;
 
         // The blows taken become knockback; old damage is forgotten.
         knockback(c);
@@ -595,15 +817,27 @@ fn tick_critters(
 
         // Targets and anger.
         let centre = centre_of(c, &ty);
-        c.tracked = best_player(c, &ty, centre, &heroes, level);
+        track(c, &ty, centre, &heroes, level);
         c.anger = (1.0 - c.hit_points.max(0.0) / (1.0 + c.full_hit_points)) * ANGER_SPAN + ANGER_BASE;
         if c.state == CritterState::New {
-            c.state = CritterState::Active;
+            if !boss {
+                c.state = CritterState::Active;
+            } else if wake_boss(c, &ty, now) {
+                c.state = CritterState::Active;
+                info!("the boss {} wakes", c.kind.file.desc.name);
+            }
         }
 
-        // Dead and done.
-        if c.move_kind(c.current) == Some(kind::DEATH) && c.clock.ended {
+        // Dead and done: a golem when DEATH ends, a boss when its hold does.
+        if c.move_kind(c.current) == Some(kind::DEATH) && c.clock.ended && (!boss || now >= c.hold_until) {
             debug!("critter {entity:?} is gone");
+            if level.boss == Some(entity) {
+                level.boss_dead = true;
+                info!("the boss is dead: its key would drop {:?} from it (not done)", c.kind.file.types[c.ty].key_offset);
+            }
+            for s in &c.spheres {
+                commands.entity(*s).try_despawn();
+            }
             commands.entity(entity).try_despawn();
             continue;
         }
@@ -611,6 +845,7 @@ fn tick_critters(
         // Choose, switch.
         c.next = None;
         c.pick = None;
+        c.chosen_pattern = None;
         forced(c, &ty, now);
         if c.state == CritterState::Active {
             if c.next.is_none() {
@@ -619,7 +854,8 @@ fn tick_critters(
             if c.next.is_none() {
                 choose_attack(c, now);
             }
-            if c.next.is_none() {
+            let attacking = cur_kind.is_some_and(|k| k >= kind::ATTACK_FIRST);
+            if c.next.is_none() && !(boss && attacking) {
                 choose_movement(c, centre, now);
             }
             if c.next.is_none() {
@@ -627,16 +863,23 @@ fn tick_critters(
                 c.next = taunt.or_else(|| find(c, kind::READY, Find::Nearest, now));
             }
         }
-        if c.next.is_none() {
+        if c.next.is_none() && !boss {
             c.next = c.current;
         }
         let was = c.current;
         switch(c, now, &mut animator);
-        if c.switched && c.move_kind(c.current) == Some(kind::DEATH) && death_shot.is_none() {
-            *death_shot = Some(DEATH_SHOT_DELAY);
+        if c.switched && c.move_kind(c.current) == Some(kind::DEATH) {
+            level.events.push("death");
         }
+        if c.hit_points < c.hp_before {
+            level.events.push("hurt");
+        }
+        c.hp_before = c.hit_points;
         if c.state == CritterState::Dying {
             commands.entity(entity).try_remove::<Targetable>();
+            for s in &c.spheres {
+                commands.entity(*s).try_remove::<Targetable>();
+            }
         }
         if c.current != was && let Some(i) = c.current {
             debug!(
@@ -649,6 +892,22 @@ fn tick_critters(
         }
         let Some(cur) = c.current else { continue };
         let mv = c.moves()[cur].clone();
+        trace!(
+            "critter {entity:?} {} frame {:.1}/{} ended {} next {:?} hold {:.2}",
+            mv.name,
+            c.clock.frame,
+            c.clock.frames,
+            c.clock.ended,
+            c.next.map(|n| c.moves()[n].name.clone()),
+            c.hold_until - now
+        );
+
+        // A boss holds a move its hold time past the animation's end.
+        if mv.hold <= 0.0 {
+            c.hold_until = 0.0;
+        } else if !c.clock.ended || c.hold_until == 0.0 {
+            c.hold_until = now + mv.hold;
+        }
 
         // The move's target and node.
         if c.move_target.is_none() || c.switched {
@@ -659,15 +918,23 @@ fn tick_critters(
             c.sounds_done = 0;
             c.node_was = None;
         }
-        let node = c.body().nodes[cur];
-        let node_matrix = match node.and_then(|n| animator.bone(n)).and_then(|b| bones.get(b).ok()) {
-            Some(g) => g.affine(),
-            None => bevy::math::Affine3A::from_rotation_translation(Quat::from_rotation_y(c.yaw), Vec3::from(c.position)),
+        let root = Affine3A::from_rotation_translation(Quat::from_rotation_y(c.yaw), Vec3::from(c.position));
+        let bone_matrix = |n: Option<usize>| -> Affine3A {
+            n.and_then(|n| animator.bone(n)).and_then(|b| bones.get(b).ok()).map_or(root, |g| g.affine())
         };
+        let node_matrix = bone_matrix(c.body().nodes[cur]);
         c.node_was = c.node_at.filter(|_| c.node_was.is_some() || !c.switched);
         c.node_at = Some(node_matrix.translation.into());
         if c.node_was.is_none() {
             c.node_was = c.node_at;
+        }
+        // The hit spheres follow their nodes.
+        for (i, s) in c.spheres.iter().enumerate() {
+            let Some(n) = c.kind.file.type_nodes(c.ty).get(i) else { continue };
+            let m = bone_matrix(c.body().spheres[i]);
+            if let Ok(mut t) = spheres.get_mut(*s) {
+                t.translation = m.transform_point3(Vec3::from(n.offset));
+            }
         }
 
         // Blows and sounds on their frames.
@@ -681,7 +948,7 @@ fn tick_critters(
             c.blows_done |= bit;
             let Ok(d) = usize::try_from(mv.damage[slot]) else { continue };
             let Some(dmg) = c.kind.file.damage.get(d).cloned() else { continue };
-            deal(c, entity, &dmg, first, node_matrix, &heroes, level, &mut blows);
+            deal(c, entity, &dmg, first, node_matrix, &heroes, level, &mut blows, &mut commands);
         }
         for (k, (s, at)) in mv.sounds.iter().enumerate() {
             let bit = 1 << k;
@@ -692,7 +959,11 @@ fn tick_critters(
         }
 
         // Walk and turn.
-        walk(c, &mv, &ty, &ground.0, &heroes, level.speed_scale);
+        if boss {
+            walk_leashed(c, &mv, &ty, level.speed_scale);
+        } else {
+            walk(c, &mv, &ty, &ground.0, &heroes, level.speed_scale);
+        }
         turn(c, &mv, &heroes);
         c.clock.advance(DT);
     }
@@ -707,7 +978,14 @@ fn tick_critters(
         info!("a critter hits the hero for {amount:.1} (kind {kind_bits:#x})");
     }
     // `GDL_CRITTER_SHOT=<png>`: a testing aid that saves a screenshot a
-    // few ticks into the first critter death.
+    // few ticks after the first critter event named by
+    // `GDL_CRITTER_SHOT_ON` (`death`, the default; `missile`; `hurt`).
+    let wanted = std::env::var("GDL_CRITTER_SHOT_ON").unwrap_or_else(|_| "death".into());
+    if death_shot.is_none() && level.events.iter().any(|e| *e == wanted) {
+        let delay = std::env::var("GDL_CRITTER_SHOT_DELAY").ok().and_then(|v| v.parse().ok());
+        *death_shot = Some(delay.unwrap_or(SHOT_DELAY).max(1));
+    }
+    level.events.clear();
     if let Some(left) = death_shot.as_mut()
         && *left > 0
     {
@@ -723,6 +1001,24 @@ fn tick_critters(
     for s in to_play {
         sounds.write(PlaySound(s));
     }
+}
+
+/// A sleeping boss wakes once its two seconds are up (none with the type's
+/// flag) and every player it tracks is within its wake distance (at once
+/// when that's 0).
+fn wake_boss(c: &mut Critter, ty: &TypeInfo, now: f32) -> bool {
+    if c.wake_at == 0.0 {
+        if ty.flags & TYPE_NO_WAKE_DELAY == 0 {
+            c.wake_at = now + BOSS_WAKE_DELAY;
+        }
+        return false;
+    }
+    if now < c.wake_at {
+        return false;
+    }
+    let furthest = c.tracked.iter().map(|t| t.distance).fold(0.0f32, f32::max);
+    let furthest = if furthest <= 0.0 { REJECTED } else { furthest };
+    ty.wake_distance <= 0.0 || furthest < ty.wake_distance
 }
 
 /// Wakes statues: from the level's wake triggers (the nearest statue
@@ -803,6 +1099,9 @@ struct TypeInfo {
     radius: f32,
     height: f32,
     hover: f32,
+    leash: f32,
+    wake_distance: f32,
+    flags: u32,
 }
 
 fn type_info(file: &CritterFile, ty: usize) -> TypeInfo {
@@ -814,13 +1113,16 @@ fn type_info(file: &CritterFile, ty: usize) -> TypeInfo {
         radius: t.radius,
         height: t.height,
         hover: t.hover,
+        leash: t.leash,
+        wake_distance: t.wake_distance,
+        flags: t.flags,
     }
 }
 
 /// The blows taken turn into knockback (not for bosses): the push × a
 /// factor by the blows' kinds (less for the golem), capped.
 fn knockback(c: &mut Critter) {
-    let class = c.kind.file.desc.class;
+    let class = c.class();
     if class == class::BOSS {
         return;
     }
@@ -855,6 +1157,11 @@ fn centre_of(c: &Critter, ty: &TypeInfo) -> [f32; 3] {
     [c.position[0] + o[0] * co + o[2] * s, c.position[1] + o[1], c.position[2] - o[0] * s + o[2] * co]
 }
 
+/// Whether the critter's anger is outside a condition's range.
+fn anger_fails(anger: f32, cond: &Condition) -> bool {
+    anger < cond.min_anger || (cond.min_anger < cond.max_anger && cond.max_anger <= anger)
+}
+
 /// The game's target score for a point: the horizontal distance over the
 /// cosine between the (turned) facing and the direction, or twice the
 /// distance when that's 60° or more off; a failed condition scores 1e21 or
@@ -863,7 +1170,7 @@ fn score(c: &Critter, cond: &Condition, centre: [f32; 3], point: [f32; 3]) -> (f
     let (dx, dy, dz) = (point[0] - centre[0], point[1] - centre[1], point[2] - centre[2]);
     let distance = (dx * dx + dz * dz).sqrt();
     let dir = if distance > 0.0 { [dx / distance, dz / distance] } else { [0.0, 1.0] };
-    if c.anger < cond.min_anger || (cond.min_anger < cond.max_anger && cond.max_anger <= c.anger) {
+    if anger_fails(c.anger, cond) {
         return (1.2e21, distance, dir);
     }
     if distance < cond.min_distance {
@@ -884,34 +1191,52 @@ fn score(c: &Critter, cond: &Condition, centre: [f32; 3], point: [f32; 3]) -> (f
     (s, distance, dir)
 }
 
-/// The best player by the type's target condition; players a critter hit
-/// in the last quarter second count a thousand times worse.
-fn best_player(c: &Critter, ty: &TypeInfo, centre: [f32; 3], heroes: &[Hero], level: &CritterLevel) -> Option<Tracked> {
-    let mut best: Option<(f32, Tracked)> = None;
+/// The players it tracks by its type's target condition, best first. A
+/// golem keeps the best whatever it scores; a boss up to four that pass
+/// (weighted 1: the game weighs damage dealt against taken, which only
+/// matters with several players). Players a critter hit in the last
+/// quarter second count a thousand times worse.
+fn track(c: &mut Critter, ty: &TypeInfo, centre: [f32; 3], heroes: &[Hero], level: &CritterLevel) {
+    let mut found: Vec<Tracked> = Vec::new();
     for h in heroes {
         let (mut s, distance, direction) = score(c, &ty.target, centre, h.feet);
         if level.guard.get(&h.entity).is_some_and(|&until| level.now < until) {
             s *= RECENTLY_HIT;
         }
-        if best.is_none_or(|(b, _)| s < b) {
-            best = Some((s, Tracked { player: h.entity, distance, direction, position: h.feet }));
+        if ty.class == class::BOSS && s >= REJECTED {
+            continue;
         }
+        let centre = [h.feet[0], h.feet[1] + h.half, h.feet[2]];
+        found.push(Tracked { player: h.entity, distance, direction, position: h.feet, score: s, weight: 1.0, centre });
     }
-    best.map(|b| b.1)
+    found.sort_by(|a, b| a.score.total_cmp(&b.score));
+    found.truncate(if ty.class == class::BOSS { MAX_TARGETS } else { 1 });
+    c.tracked = found;
 }
 
-/// The tracked target, if it meets `cond` (or anyway, with `fallback`).
+/// The tracked target that best meets `cond` (with `fallback`, the best one
+/// anyway).
 fn best_target(c: &Critter, cond: &Condition, fallback: bool) -> Option<Entity> {
-    let t = c.tracked?;
-    let failed = c.anger < cond.min_anger
-        || (cond.min_anger < cond.max_anger && cond.max_anger <= c.anger)
-        || t.distance < cond.min_distance
-        || (cond.max_distance > 0.0 && cond.max_distance < t.distance)
-        || {
+    let mut best: Option<(f32, Entity)> = None;
+    for t in &c.tracked {
+        let s = if anger_fails(c.anger, cond) {
+            1.2e21
+        } else if t.distance < cond.min_distance {
+            1.01e21
+        } else if cond.max_distance > 0.0 && cond.max_distance < t.distance {
+            1.02e21
+        } else {
             let h = c.yaw - cond.angle;
-            h.sin() * t.direction[0] + h.cos() * t.direction[1] < cond.min_cos
+            if h.sin() * t.direction[0] + h.cos() * t.direction[1] < cond.min_cos { 1.1e21 } else { t.distance * t.weight }
         };
-    (!failed || fallback).then_some(t.player)
+        if best.is_none_or(|(b, _)| s < b) {
+            best = Some((s, t.player));
+        }
+    }
+    match best {
+        Some((s, p)) if s < REJECTED || fallback => Some(p),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -950,8 +1275,9 @@ fn ready(c: &Critter, i: usize, now: f32) -> bool {
     m.cooldown <= 0.0 || c.ends[i] + m.cooldown <= now
 }
 
-/// The moves forced on it: INIT when new, START after INIT, DEATH when
-/// dying, a move's follow-up; then reactions to the blows taken.
+/// The moves forced on it: INIT when new (a sleeping boss keeps playing
+/// it), START after INIT, DEATH when dying, a move's follow-up, a boss's
+/// READY after START; then reactions to the blows taken.
 fn forced(c: &mut Critter, ty: &TypeInfo, now: f32) {
     let cur = c.current.map(|i| c.moves()[i].clone());
     let next = match (&cur, c.state) {
@@ -971,13 +1297,17 @@ fn forced(c: &mut Critter, ty: &TypeInfo, now: f32) {
             c.next = find(c, kind::KNOCKBACK, Find::Ready, now);
         }
     }
-    if c.next.is_none() && c.damage_taken >= ROAR_DAMAGE {
+    if c.next.is_none() && c.damage_taken >= ROAR_DAMAGE * ROAR_BY_PLAYERS[PLAYERS] {
         c.next = find(c, kind::ROAR, Find::Ready, now);
     }
     if c.next.is_none() && c.kinds & KIND_STRONG != 0 {
         c.next = find(c, kind::FLINCH, Find::Ready, now);
     }
     c.kinds &= !KIND_REACTIONS;
+    if c.next.is_some() {
+        // A forced move ends a pattern.
+        c.pattern = None;
+    }
 }
 
 /// Whether a move's node (and its follow-up's) are there.
@@ -1002,9 +1332,30 @@ fn choose_block(c: &mut Critter, now: f32, heroes: &[Hero]) {
     }
 }
 
-/// The least recently used attack whose condition finds a target.
+/// The next step of a running pattern; else the least recently used
+/// pattern or attack whose condition finds a target.
 fn choose_attack(c: &mut Critter, now: f32) {
+    let patterns = c.kind.file.type_patterns(c.ty).to_vec();
+    if let Some((p, step)) = c.pattern
+        && let Some(&m) = patterns[p].moves.get(step + 1)
+        && m >= 0
+    {
+        c.next = Some(m as usize);
+        return;
+    }
     let mut best_time = 999_999.0f32;
+    let mut pattern_pick: Option<usize> = None;
+    for (i, p) in patterns.iter().enumerate() {
+        if Some(i) == c.pattern.map(|p| p.0) || p.flags & 0x1000 != 0 || c.pattern_starts[i] + p.cooldown > now {
+            continue;
+        }
+        let Some(t) = best_target(c, &p.condition, false) else { continue };
+        if c.pattern_starts[i] < best_time {
+            best_time = c.pattern_starts[i];
+            pattern_pick = Some(i);
+            c.pick = Some(t);
+        }
+    }
     let mut chosen: Option<usize> = None;
     for i in 0..c.moves().len() {
         let m = c.moves()[i].clone();
@@ -1021,18 +1372,25 @@ fn choose_attack(c: &mut Critter, now: f32) {
         if c.ends[i] < best_time {
             best_time = c.ends[i];
             chosen = Some(i);
+            pattern_pick = None;
             c.pick = Some(t);
-        } else if chosen.is_none_or(|b| transition(&c.moves()[b], &m) > 1) {
+        } else if pattern_pick.is_none() && chosen.is_none_or(|b| transition(&c.moves()[b], &m) > 1) {
             chosen = Some(i);
             c.pick = Some(t);
         }
     }
-    c.next = chosen;
+    match pattern_pick {
+        Some(p) => {
+            c.chosen_pattern = Some(p);
+            c.next = usize::try_from(patterns[p].moves[0]).ok();
+        }
+        None => c.next = chosen,
+    }
 }
 
 /// The movement move that scores its target best.
 fn choose_movement(c: &mut Critter, centre: [f32; 3], now: f32) {
-    let Some(t) = c.tracked else { return };
+    let Some(t) = c.tracked.first().copied() else { return };
     let mut best = REJECTED;
     for i in 0..c.moves().len() {
         let m = &c.moves()[i];
@@ -1086,9 +1444,10 @@ fn transition(cur: &CritterMove, next: &CritterMove) -> u8 {
     }
 }
 
-/// Switches to the chosen move the way the transition allows, and starts
-/// its animation; a switch records when the move will end (its cooldown
-/// runs from then).
+/// Switches to the chosen move the way the transition allows (not before
+/// a boss's hold on its move runs out, unless the new one outranks
+/// everything), and starts its animation; a switch records when the move
+/// will end (its cooldown runs from then), and steps or starts a pattern.
 fn switch(c: &mut Critter, now: f32, animator: &mut Animator) {
     let cur = c.current.map(|i| c.moves()[i].clone());
     let next = c.next;
@@ -1099,12 +1458,14 @@ fn switch(c: &mut Critter, now: f32, animator: &mut Animator) {
             let nm = &c.moves()[n];
             if Some(n) != c.current && nm.priority >= 0xF00 && m.transition != 0 {
                 (Some(n), 3)
+            } else if c.hold_until > now {
+                (c.current, 0)
             } else {
                 (Some(n), transition(m, nm))
             }
         }
     };
-    let mode = if target != c.current && mode == 0 && c.clock.ended { 1 } else { mode };
+    let mode = if target != c.current && mode == 0 && c.hold_until <= now && c.clock.ended { 1 } else { mode };
     let Some(t) = target else { return };
     let action = c.body().actions[t];
     let differs = action != c.clock.action || c.current.is_none();
@@ -1125,7 +1486,18 @@ fn switch(c: &mut Critter, now: f32, animator: &mut Animator) {
     animator.play(action);
     c.switched = true;
     c.current = Some(t);
-    c.ends[t] = now + FRAME_TIME * (f32::from(clip.0) - 2.0);
+    c.hold_until = 0.0;
+    // Patterns: a new one starts; a running one steps on (or ends).
+    if let Some(p) = c.chosen_pattern.take() {
+        c.pattern_starts[p] = now;
+        c.pattern = Some((p, 0));
+    } else if let Some((p, step)) = c.pattern {
+        let patterns = c.kind.file.type_patterns(c.ty);
+        let step = step + 1;
+        c.pattern = patterns[p].moves.get(step).filter(|&&m| m >= 0 && m as usize == t).map(|_| (p, step));
+    } else {
+        c.ends[t] = now + FRAME_TIME * (f32::from(clip.0) - 2.0);
+    }
 }
 
 /// Which of the move's two blows land this frame (bits 1, 2): sweeps land
@@ -1156,26 +1528,46 @@ fn blow_bits(m: &CritterMove, frame: i32, done: u8) -> u8 {
     bits
 }
 
-/// A blow: kind 0 is a sphere on the move's node, swept from where it was
-/// last tick, against each player's cylinder; kind 3 (the golem's stomp
-/// ring) hurts players within its radius at once (stand-in for the game's
-/// damaging effect). Other kinds need the effects and projectiles and
-/// aren't done.
+/// A blow, by its `DAMG` kind:
+///
+/// - 0: a sphere on the move's node, swept from where it was last tick,
+///   against each player's cylinder;
+/// - 1, 2, 8: a missile from the node (its offset in the critter's space),
+///   aimed with an arc at its target (1: flag 1) or along its facing, as
+///   fast as the critter's anger picks from the speed range, turned by the
+///   blow's yaw and spread;
+/// - 3: a ring on the ground: players within its radius (stand-in for the
+///   game's damaging effect, at once);
+/// - 4: a breath cone along the node's forward axis (turned by its yaw
+///   and pitch): players between its reach and length, within its
+///   thickness.
+///
+/// Players a critter hit can't be hit again for a quarter second.
 #[allow(clippy::too_many_arguments)]
 fn deal(
     c: &mut Critter,
     me: Entity,
     d: &CritterDamage,
     first: bool,
-    node: bevy::math::Affine3A,
+    node: Affine3A,
     heroes: &[Hero],
     level: &mut CritterLevel,
-    blows: &mut Vec<(Entity, f32, u32, [f32; 3])>,
+    blows: &mut Vec<Blow>,
+    commands: &mut Commands,
 ) {
     let damage = d.damage * level.damage_scale;
+    if matches!(d.kind, 1 | 2 | 8) {
+        if first {
+            launch(c, me, d, damage, level, commands);
+            level.events.push("missile");
+        }
+        return;
+    }
     let offset = node.matrix3 * Vec3::from(d.offset);
     let at = Vec3::from(c.node_at.unwrap_or(c.position)) + offset;
     let was = Vec3::from(c.node_was.unwrap_or(c.position)) + offset;
+    // The breath's direction: the node's forward axis, turned.
+    let forward = turn_dir(Vec3::from(node.matrix3.z_axis).normalize_or_zero(), d.yaw, d.pitch);
     for h in heroes {
         if level.guard.get(&h.entity).is_some_and(|&until| level.now < until) {
             continue;
@@ -1186,6 +1578,13 @@ fn deal(
             3 if first => {
                 let v = centre - at;
                 Vec2::new(v.x, v.z).length() <= d.radius + h.radius && v.y.abs() <= h.half + d.radius
+            }
+            4 => {
+                let v = centre - at;
+                let across = Vec2::new(v.x, v.z).length();
+                across >= d.min_range
+                    && across <= d.radius
+                    && cylinder_hit(at, at + forward * d.radius, centre, h.radius + d.life, h.half + d.life).is_some()
             }
             _ => false,
         };
@@ -1199,9 +1598,76 @@ fn deal(
         c.blows_dealt += 1;
         debug!("critter {me:?} blow kind {} lands for {damage:.1}", d.kind);
     }
-    if first && !matches!(d.kind, 0 | 3) {
+    if first && !matches!(d.kind, 0 | 3 | 4) {
         debug!("critter {me:?}: damage kind {} not done yet", d.kind);
     }
+}
+
+/// Turns a direction by `yaw` about the vertical and tilts it by `pitch`
+/// about the horizontal axis across it.
+fn turn_dir(dir: Vec3, yaw: f32, pitch: f32) -> Vec3 {
+    let d = Quat::from_rotation_y(yaw) * dir;
+    let across = Vec3::new(d.z, 0.0, -d.x).normalize_or_zero();
+    if across == Vec3::ZERO { d } else { Quat::from_axis_angle(across, pitch) * d }
+}
+
+/// The launch direction that brings a missile of `speed` under `gravity`
+/// from `from` to `to` on the flatter arc (straight at it when it can't
+/// reach).
+fn lob_toward(from: Vec3, to: Vec3, speed: f32, gravity: f32) -> Vec3 {
+    let d = to - from;
+    let flat = Vec2::new(d.x, d.z);
+    let h = flat.length();
+    if gravity <= 0.0 || h < 1e-3 || speed <= 0.0 {
+        return d.normalize_or_zero();
+    }
+    let s2 = speed * speed;
+    let disc = s2 * s2 - gravity * (gravity * h * h + 2.0 * d.y * s2);
+    if disc < 0.0 {
+        return d.normalize_or_zero();
+    }
+    let angle = ((s2 - disc.sqrt()) / (gravity * h)).atan();
+    let f = flat / h;
+    Vec3::new(f.x * angle.cos(), angle.sin(), f.y * angle.cos())
+}
+
+/// A missile: from the move's node, at the critter's target (flag 1) or
+/// along its facing, as fast as its anger picks from the speed range, with
+/// its own effect model.
+fn launch(c: &Critter, me: Entity, d: &CritterDamage, damage: f32, level: &mut CritterLevel, commands: &mut Commands) {
+    let (s, co) = c.yaw.sin_cos();
+    let o = d.offset;
+    let offset = Vec3::new(o[0] * co + o[2] * s, o[1], -o[0] * s + o[2] * co);
+    let start = Vec3::from(c.node_at.unwrap_or(c.position)) + offset;
+    let t = ((c.anger.clamp(ANGER_BASE, ANGER_CAP) - ANGER_BASE) * SPEED_SPAN).min(1.0);
+    let speed = d.speed[0] + t * (d.speed[1] - d.speed[0]);
+    if speed <= 0.0 {
+        debug!("critter {me:?}: a still effect (not done)");
+        return;
+    }
+    let forward = Vec3::new(s, 0.0, co);
+    let target = c.move_target.and_then(|p| c.tracked.iter().find(|t| t.player == p));
+    let mut dir = match target {
+        Some(t) if d.flags & 1 != 0 => {
+            let to = Vec3::from(t.centre);
+            if d.flags & 8 == 0 { lob_toward(start, to, speed, d.gravity) } else { (to - start).normalize_or_zero() }
+        }
+        _ if d.flags & 4 != 0 => forward,
+        _ => Vec3::new(forward.x, UNAIMED_DROP, forward.z).normalize_or_zero(),
+    };
+    if d.kind == 1 {
+        let spread = if d.spread > 0.0 { (level.random() - 0.5) * d.spread } else { 0.0 };
+        dir = turn_dir(dir, d.yaw + spread, if d.flags & 8 != 0 { d.pitch } else { 0.0 });
+    }
+    let model = usize::try_from(d.effects[0]).ok().and_then(|e| c.kind.effects.get(&e)).map(|m| m.as_ref());
+    info!("critter {me:?} launches a missile: {damage:.0} damage at {speed:.0}/s from {start:?}");
+    let size = d.life.max(0.1);
+    let e = spawn_critter_missile(commands, model, me, start, dir * speed, d.gravity, d.radius, damage, d.blow, size);
+    // Stand-in glow (half its hit radius), since the effect model draws
+    // nothing without the effects system.
+    let (mesh, material) = level.glow.clone();
+    let glow = Transform::from_scale(Vec3::splat(0.5 * d.radius / size));
+    commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), glow, ChildOf(e)));
 }
 
 /// Walks at the move's speed (× the level's monster speed) in its
@@ -1209,14 +1675,7 @@ fn deal(
 /// players.
 fn walk(c: &mut Critter, m: &CritterMove, ty: &TypeInfo, collision: &LevelCollision, heroes: &[Hero], speed_scale: f32) {
     let s = m.speed * speed_scale * DT;
-    let f = [c.yaw.sin(), c.yaw.cos()];
-    let (dx, dz) = match m.kind {
-        kind::BACK => (-s * f[0], -s * f[1]),
-        kind::WALK_RIGHT => (s * f[1], -s * f[0]),
-        kind::WALK_LEFT => (-s * f[1], s * f[0]),
-        kind::WALK_DIAGONAL => (-s * f[1] + s * f[0], s * f[1] + s * f[0]),
-        _ => (s * f[0], s * f[1]),
-    };
+    let (dx, dz) = move_direction(c.yaw, m.kind, s);
     let mut v = [dx + c.knock[0] * DT, c.knock[1] * DT, dz + c.knock[2] * DT];
     for (i, k) in c.knock.iter_mut().enumerate() {
         *k *= KNOCK_DECAY;
@@ -1282,6 +1741,36 @@ fn walk(c: &mut Critter, m: &CritterMove, ty: &TypeInfo, collision: &LevelCollis
     c.position = [from[0] + v[0], c.position[1] + dy, from[2] + v[2]];
 }
 
+/// A move's ground step for a critter facing `yaw`: forward, back, to
+/// either side or diagonally.
+fn move_direction(yaw: f32, k: i32, s: f32) -> (f32, f32) {
+    let f = [yaw.sin(), yaw.cos()];
+    match k {
+        kind::BACK => (-s * f[0], -s * f[1]),
+        kind::WALK_RIGHT => (s * f[1], -s * f[0]),
+        kind::WALK_LEFT => (-s * f[1], s * f[0]),
+        kind::WALK_DIAGONAL => (-s * f[1] + s * f[0], s * f[1] + s * f[0]),
+        _ => (s * f[0], s * f[1]),
+    }
+}
+
+/// A boss walks without the level's collision, kept within its leash of
+/// home (a box with the type's flag), at its hover height.
+fn walk_leashed(c: &mut Critter, m: &CritterMove, ty: &TypeInfo, speed_scale: f32) {
+    if ty.leash <= 0.0 {
+        return;
+    }
+    let (dx, dz) = move_direction(c.yaw, m.kind, m.speed * speed_scale * DT);
+    let mut off = [c.position[0] + dx - c.home[0], c.position[2] + dz - c.home[2]];
+    let dist = (off[0] * off[0] + off[1] * off[1]).sqrt();
+    if ty.flags & TYPE_BOX_LEASH != 0 {
+        off = [off[0].clamp(-ty.leash, ty.leash), off[1].clamp(-ty.leash, ty.leash)];
+    } else if dist > ty.leash {
+        off = [off[0] * ty.leash / dist, off[1] * ty.leash / dist];
+    }
+    c.position = [c.home[0] + off[0], c.position[1], c.home[2] + off[1]];
+}
+
 /// Turns toward the move's target at the move's rate (toward home for
 /// moves flagged so); without the free-turning flag, no further than the
 /// type allows from the way it was made facing.
@@ -1292,7 +1781,7 @@ fn turn(c: &mut Critter, m: &CritterMove, heroes: &[Hero]) {
     } else {
         c.move_target.and_then(|t| heroes.iter().find(|h| h.entity == t)).map(|h| {
             let g = (h.feet[0] - c.position[0]).atan2(h.feet[2] - c.position[2]);
-            if ty.flags & 0x400 != 0 {
+            if ty.flags & TYPE_FREE_TURN != 0 {
                 g
             } else {
                 let d = locomotion::wrap(g - c.home_yaw).clamp(-ty.max_turn, ty.max_turn);
@@ -1405,5 +1894,26 @@ mod tests {
         assert!(c.ended);
         c.advance(DT);
         assert!(!c.ended && c.frame < 3.0);
+    }
+
+    #[test]
+    fn lobs_land_on_the_target() {
+        let (from, to) = (Vec3::ZERO, Vec3::new(30.0, -10.0, 0.0));
+        let (speed, gravity) = (40.0, 30.0);
+        let v = lob_toward(from, to, speed, gravity) * speed;
+        // Where it is when it has come 30 across.
+        let t = 30.0 / v.x;
+        let y = v.y * t - 0.5 * gravity * t * t;
+        assert!((y - to.y).abs() < 1e-3, "{y}");
+        // Too far to reach: straight at it.
+        assert_eq!(lob_toward(from, Vec3::new(1000.0, 0.0, 0.0), 10.0, 30.0), Vec3::X);
+    }
+
+    #[test]
+    fn turned_directions_keep_their_length() {
+        let d = turn_dir(Vec3::Z, std::f32::consts::FRAC_PI_2, 0.0);
+        assert!((d - Vec3::X).length() < 1e-5, "{d}");
+        let d = turn_dir(Vec3::Z, 0.0, 0.3);
+        assert!((d.length() - 1.0).abs() < 1e-5 && d.y.abs() > 0.2);
     }
 }
