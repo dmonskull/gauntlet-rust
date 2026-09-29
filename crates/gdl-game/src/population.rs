@@ -341,6 +341,9 @@ pub struct Spawned {
     pub summary: String,
 }
 
+/// How far above the floor a dropped item sits.
+const ITEM_FLOOR_GAP: f32 = 0.1;
+
 /// Spawns the level's population as markers and models, tagged as level
 /// entities so a level change clears them.
 #[allow(clippy::too_many_arguments)]
@@ -400,11 +403,16 @@ pub fn spawn(
         let ty = pop.resolved_type(placement);
         let category = Category::of(ty);
         *counts.entry(category).or_default() += 1;
-        let transform = Transform {
-            translation: Vec3::from(placement.position),
-            rotation: game_rotation(placement.rotation),
-            ..default()
-        };
+        // Items land on the floor under them (+0.1), like the game does at
+        // level start, unless their type keeps its height.
+        let mut position = placement.position;
+        if !ty.keeps_height()
+            && let Some(y) = level.collision.floor_height(position)
+        {
+            position[1] = y + ITEM_FLOOR_GAP;
+        }
+        let transform =
+            Transform { translation: Vec3::from(position), rotation: game_rotation(placement.rotation), ..default() };
         marker(category, Transform::from_translation(transform.translation), commands, meshes);
         out.markers += 1;
 

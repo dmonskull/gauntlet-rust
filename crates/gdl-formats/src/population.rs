@@ -232,6 +232,13 @@ pub struct ItemType {
 }
 
 impl ItemType {
+    /// `+0x0A` bit 0: the item keeps its placed height. Everything else is
+    /// dropped onto the floor below when the level starts (sounds,
+    /// rotators and some obstacles and triggers keep theirs).
+    pub fn keeps_height(&self) -> bool {
+        self.class != ItemClass::Random && self.raw[0x0A] & 1 != 0
+    }
+
     /// The game's name for the subtype, where it has one.
     pub fn subtype_name(&self) -> Option<&'static str> {
         if self.class == ItemClass::Random {

@@ -169,6 +169,7 @@ fn tick(
             None => d,
         };
         player.mover.position = std::array::from_fn(|i| feet[i] + d[i]);
+        trace!("player at {:?}", player.mover.position);
         animator.play_named(player.mover.gait.action());
     }
 }
