@@ -35,6 +35,13 @@ cargo run -p gdl-game -- --forget          # forget the remembered game
 
 `GAUNTLET_GAME` works in place of the path argument.
 
+A character viewer shows any player class with its animations
+(`[` / `]` action, `Tab` class):
+
+```bash
+cargo run -p gdl-game -- --viewer --character KNI --action RUN1
+```
+
 Dolphin's compressed formats (`.rvz`, `.gcz`, `.wia`, `.ciso`) aren't
 supported yet — convert to ISO in Dolphin (right-click → *Convert File…*).
 

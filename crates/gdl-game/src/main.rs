@@ -5,9 +5,12 @@
 mod autoshot;
 mod bootstrap;
 mod camera;
+mod character;
 mod hud;
 mod level;
 mod level_material;
+mod model_mesh;
+mod viewer;
 mod world;
 
 use bevy::prelude::*;
@@ -43,34 +46,46 @@ fn main() {
         eprintln!("warning: {warning}");
     }
 
-    let game = match LoadedGame::load(install, args.level.as_deref()) {
-        Ok(game) => game,
-        Err(message) => {
-            eprintln!("{message}");
-            std::process::exit(1);
-        }
-    };
-    println!("{}; starting in {}", game.summary_line(), game.current_name());
-    for (name, why) in &game.failures {
-        eprintln!("warning: level {name} failed to load: {why}");
-    }
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window { title: "Gauntlet: Dark Legacy".into(), ..default() }),
+        ..default()
+    }))
+    .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.03)))
+    .add_plugins((
+        level_material::LevelMaterialPlugin,
+        camera::CameraPlugin,
+        character::CharacterPlugin,
+        autoshot::AutoShotPlugin,
+    ));
 
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Gauntlet: Dark Legacy".into(),
-                ..default()
-            }),
-            ..default()
-        }))
-        .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.03)))
-        .insert_resource(game)
-        .add_plugins((
-            level_material::LevelMaterialPlugin,
-            camera::CameraPlugin,
-            world::WorldPlugin,
-            hud::HudPlugin,
-            autoshot::AutoShotPlugin,
-        ))
-        .run();
+    if args.viewer {
+        let viewer = viewer::Viewer::new(
+            install,
+            args.character.as_deref(),
+            args.variant.as_deref(),
+            args.action.as_deref(),
+        );
+        match viewer {
+            Ok(v) => app.insert_resource(v).add_plugins(viewer::ViewerPlugin),
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        };
+    } else {
+        let game = match LoadedGame::load(install, args.level.as_deref()) {
+            Ok(game) => game,
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        };
+        println!("{}; starting in {}", game.summary_line(), game.current_name());
+        for (name, why) in &game.failures {
+            eprintln!("warning: level {name} failed to load: {why}");
+        }
+        app.insert_resource(game).add_plugins((world::WorldPlugin, hud::HudPlugin));
+    }
+    app.run();
 }

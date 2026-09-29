@@ -1,3 +1,4 @@
+pub mod anim;
 pub mod disc;
 pub mod fst;
 pub mod model;
