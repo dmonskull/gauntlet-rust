@@ -413,38 +413,41 @@ scales.
 
 ## In this rewrite
 
-Built so far:
+[`mechanics.rs`](../crates/gdl-game/src/mechanics.rs) runs, each 30 Hz tick
+after the hero moves:
 
-- `NodePose` and `LevelCollision::{set_pose, pose, poses}`
-  ([`collision.rs`](../crates/gdl-formats/src/collision.rs)): each node's
-  rigid move from where the file puts it; queries against a moved moving
-  node are turned into its rest frame and the hit turned back out. Tested
-  with a lifted floor and a turned wall.
-- `LevelData::{nodes, placement_nodes}`
-  ([`level.rs`](../crates/gdl-game/src/level.rs)): the scene graph and
-  each model placement's node.
-- `LevelItems` API ([`items.rs`](../crates/gdl-game/src/items.rs)):
-  `ItemView`, `view`, `views`, `realm`, `play`, `set_state`, `set_flags`,
-  `free`, `release` (new items from `RELEASED_BASE`, amount override,
-  pickup delay; no model yet); `USED` is public; used obstacles step
-  through their actions like opened chests.
+- **Touches**: the hero's feet against each trigger's touch shape (the
+  placement's radius as a cylinder, or the type's shape; LIFTPAD doubled),
+  marking it and the triggers chained after it (not quest ones).
+  Chained-to triggers and hit switches can't be touched.
+- **Trigger update** exactly as above: flags 1 / 2 / 4 / plain pad, the
+  lift timer (120 fields), stand-on-target (0x100), all-players (0x400,
+  one player), the touches cleared unless flags 0xC0. Pads play OFF / ONA /
+  ON / OFFA.
+- **Movers**: one per target node (lift kinds merged), starting at the off
+  height; toward on / off at 4 units/s, arrival within 0.001, kind flag
+  0x20 turning round, kind flag 8 or no player on it to move, the disable
+  byte 1 while moving (0xFF for hidden bridges), state kept by kinds 0x47
+  (bridges while someone stands on them).
+- **Rotators** subtypes 0 (always) and 2 (once touched, to the limit).
+- **Poses**: each moving root's world pose is its own move, then its
+  moving parent's. Every node in its subtree gets it in the collision
+  (`LevelCollision::set_pose`), and `world.rs` draws the subtree's model
+  placements as one `MovingGroup` entity posed each frame (interpolated
+  between ticks).
+- **Riding**: lift pads (and triggers flagged 0x100) move their touch
+  shape and model with their target. The hero standing on a moving node
+  is carried by the node's change of pose (feet, floor and facing).
 
-Still to build:
+`GDL_WARP="x,y,z"` starts the hero somewhere else for testing (on
+levelA4 `-132.1,21,-1` is the LIFTPAD of `A4ELEV8`: the hero rides it down
+13 units, waits 2 s, and back up while it's held).
 
-- `mechanics.rs`: triggers (touch, chains, update), movers, rotators,
-  node world poses (own move, then the parent's), carrying the hero (apply
-  the standing node's change of pose to the hero's feet, floor and
-  facing).
-- Drawing moving nodes: `world.rs` splits instances of trigger/rotator
-  targets and their descendants out of the merged meshes into entities
-  posed each frame. Bridge fading as show/hide (a stand-in for the alpha
-  fade).
-- `hazards.rs`: damage tiles, damaging walls, a stand-in one-off blast for
-  exploding barrels and CHESTEXP until the effect system is ported.
-- `breakables.rs`: a `Targetable` (kind `Breakable`) entity per hittable
-  item, hits applied as above, contents released through
-  `LevelItems::release`, with models pre-built for container contents by
-  `population.rs`.
-- Not planned yet: quest triggers (flag 0x40), camera shake and cuts,
-  mover sound loops (`DAT_8028aff0`), obstacle falls (0x28, 0x31, 0x33–0x35),
-  safe-rock pieces, node flag `0x2000000` animation.
+Stand-ins and gaps: bridges pop in and out instead of fading; triggers
+run on or off screen; no mover or bridge sounds, camera shakes or cuts,
+monster wake-ups (0x2000), quest triggers (0x40), subtype 1 rotators or
+node flag 0x2000000; only the hero (not monsters) holds a mover by
+standing on it; hit switches (0x1F) wait for blows on items
+(`breakables.rs`). Still to build: `hazards.rs` (damage tiles, damaging
+walls, blasts) and `breakables.rs` (barrels, shootable walls, hit
+switches, container contents).

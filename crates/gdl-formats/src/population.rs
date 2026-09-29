@@ -330,9 +330,12 @@ impl Placement {
             ItemClass::Trigger => PlacementParams::Trigger {
                 target: usize::try_from(self.i16_at(0)).ok(),
                 flags: self.i16_at(2) as u16,
-                time: self.params[4],
+                radius: self.params[4],
+                sound: self.params[5] as i8,
                 id: self.params[6],
                 next: self.params[7],
+                off: self.i16_at(8),
+                on: self.i16_at(10),
             },
             ItemClass::Exit => PlacementParams::Exit {
                 destination: (self.i32_at(0) == 0).then(|| cstr(&self.params[4..12])).filter(|s| !s.is_empty()),
@@ -345,8 +348,8 @@ impl Placement {
             }
             ItemClass::Rotator => PlacementParams::Rotator {
                 target: usize::try_from(self.i32_at(0)).ok(),
-                param: self.i32_at(4),
-                speed: self.f32_at(8),
+                angle: self.f32_at(4),
+                limit: self.f32_at(8),
             },
             ItemClass::Sound => PlacementParams::Sound { radius: self.f32_at(0) },
             ItemClass::Powerup => PlacementParams::Powerup { count: self.i16_at(0) },
@@ -369,9 +372,12 @@ pub enum PlacementParams {
     /// or `rate` takes a per-strength default (10/5/2 and 5/10/15).
     Generator { strength: i16, ai: i16, max: i16, rate: i16 },
     Enemy { level: i16, ai: i16, range: f32, param: i16 },
-    /// `target`: index of the `WORLDS.PS2` node it moves; `id` / `next`
-    /// chain triggers together.
-    Trigger { target: Option<usize>, flags: u16, time: u8, id: u8, next: u8 },
+    /// `target`: index of the `WORLDS.PS2` node it moves; `flags`: the
+    /// high byte is kept (the low byte comes from the subtype); `radius`:
+    /// half the touch radius (0 = the type's shape, 0xFF = tiny); `sound`:
+    /// the mover's sound; `id` / `next` chain triggers together; `off` /
+    /// `on`: the mover's heights in tenths (`docs/mechanics.md`).
+    Trigger { target: Option<usize>, flags: u16, radius: u8, sound: i8, id: u8, next: u8, off: i16, on: i16 },
     /// A level code such as `A6` (realm letter + level digit), or `None`
     /// for the default destination.
     Exit { destination: Option<String> },
@@ -380,8 +386,9 @@ pub enum PlacementParams {
     Transporter { id: i32, destination: i32 },
     /// `subtype` overrides the type's (0 = keep it).
     Obstacle { subtype: i16, count: i16 },
-    /// `target`: index of the `WORLDS.PS2` node it turns.
-    Rotator { target: Option<usize>, param: i32, speed: f32 },
+    /// `target`: index of the `WORLDS.PS2` node it turns; `angle`: radians
+    /// per video field; `limit`: how far a touched one turns.
+    Rotator { target: Option<usize>, angle: f32, limit: f32 },
     Sound { radius: f32 },
     None,
 }

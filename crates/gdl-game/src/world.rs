@@ -13,6 +13,7 @@ use crate::camera::FlyCamera;
 use crate::collision_debug::{self, CollisionOverlay};
 use crate::level::{LevelData, LoadedGame};
 use crate::level_material::LevelMaterial;
+use crate::mechanics;
 use crate::model_mesh::{self, TextureCache};
 use crate::population::{self, LevelPopulation, PopulationView};
 
@@ -171,15 +172,46 @@ fn spawn_level(
     let mut cache = TextureCache::new(&level.model, &level.textures);
     // Static instances merge into shared meshes; ones that turn toward the
     // camera stay separate entities (their meshes shared per object).
-    let (facing, fixed): (Vec<_>, Vec<_>) =
-        level.placements.iter().partition(|&&(_, _, flags)| Billboard::from_flags(flags).is_some());
-    let instances = fixed.iter().map(|&&(object, at, flags)| (object, Vec3::from(at), flags));
-    let built = model_mesh::build_flagged(&level.model, &mut cache, instances, meshes, materials, images, &mut bounds);
+    // What triggers and rotators move (`mechanics.rs`) is drawn apart,
+    // one entity per moving group, so it can be posed.
+    let nodes = mechanics::LevelNodes::new(level.nodes.clone());
+    let roots = mechanics::moving_roots(&level.population);
+    let group_of = |i: usize| level.placement_nodes.get(i).and_then(|&n| nodes.group_of(n, &roots));
+    let (facing, fixed): (Vec<_>, Vec<_>) = level
+        .placements
+        .iter()
+        .enumerate()
+        .partition(|&(i, &(_, _, flags))| group_of(i).is_none() && Billboard::from_flags(flags).is_some());
+    let (moving, fixed): (Vec<_>, Vec<_>) = fixed.into_iter().partition(|&(i, _)| group_of(i).is_some());
+    let instances = fixed.iter().map(|&(_, &(object, at, flags))| (object, Vec3::from(at), flags));
+    let mut built = model_mesh::build_flagged(&level.model, &mut cache, instances, meshes, materials, images, &mut bounds);
     let mut triangles: usize = built.iter().map(|b| b.triangles).sum();
     let mut count = built.len();
     for b in &built {
         commands.spawn((Mesh3d(b.mesh.clone()), MeshMaterial3d(b.material.clone()), LevelEntity));
     }
+    let mut groups: HashMap<usize, Vec<(usize, Vec3, u32)>> = HashMap::new();
+    for &(i, &(object, at, flags)) in &moving {
+        groups.entry(group_of(i).unwrap()).or_default().push((object, Vec3::from(at), flags));
+    }
+    for (root, instances) in groups {
+        debug!(
+            "moving group {} ({}): {:?}",
+            root,
+            nodes.nodes[root].name,
+            instances.iter().map(|&(o, _, f)| format!("{} {f:#x}", level.model.objects[o].name)).collect::<Vec<_>>()
+        );
+        let parts = model_mesh::build_flagged(&level.model, &mut cache, instances, meshes, materials, images, &mut bounds);
+        let group = commands.spawn((mechanics::MovingGroup::new(root), Transform::IDENTITY, Visibility::default(), LevelEntity)).id();
+        for p in &parts {
+            triangles += p.triangles;
+            count += 1;
+            commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(group)));
+        }
+        built.extend(parts);
+    }
+    let facing: Vec<_> = facing.into_iter().map(|(_, p)| p).collect();
+    commands.insert_resource(nodes);
     let mut shared: HashMap<(usize, u32), Vec<model_mesh::BuiltMesh>> = HashMap::new();
     for &&(object, at, flags) in &facing {
         let parts = shared.entry((object, flags)).or_insert_with(|| {

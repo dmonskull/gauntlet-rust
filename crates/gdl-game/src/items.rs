@@ -430,6 +430,15 @@ impl LevelItems {
         }
     }
 
+    /// Moves the item's touch shape to `centre` (a pad riding its lift);
+    /// returns how far it moved and its model, for the caller to move too.
+    pub fn move_centre(&mut self, placement: usize, centre: [f32; 3]) -> Option<([f32; 3], Option<Entity>)> {
+        let i = self.find_mut(placement)?;
+        let old = i.shape.centre;
+        i.shape.centre = centre;
+        Some(([centre[0] - old[0], centre[1] - old[1], centre[2] - old[2]], i.model))
+    }
+
     /// Frees the item at once, model and all (the game's `+0xC4 = 0xFFFF`).
     pub fn free(&mut self, placement: usize, commands: &mut Commands) {
         if let Some(i) = self.find_mut(placement) {

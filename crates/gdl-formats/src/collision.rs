@@ -590,6 +590,10 @@ pub struct LevelCollision {
     /// triangles are in world space. Set by whatever moves them
     /// ([`set_pose`](Self::set_pose)).
     pub poses: Vec<NodePose>,
+    /// Per node, its own disable byte (the file's, or set at run time).
+    own_disable: Vec<u8>,
+    /// Per node, its parent.
+    parent: Vec<Option<usize>>,
 }
 
 /// Per-actor movement settings for [`LevelCollision::move_actor`].
@@ -732,6 +736,8 @@ impl LevelCollision {
             triangles: world.collision.triangles.clone(),
             grid: world.collision.grid.clone(),
             poses: vec![NodePose::REST; world.nodes.len()],
+            own_disable: world.nodes.iter().map(|n| n.collision_disable).collect(),
+            parent,
             nodes,
             moving: world.collision.grid.moving_nodes(),
             bounds: [h.bounds_min, h.bounds_max],
@@ -745,6 +751,26 @@ impl LevelCollision {
         if let Some(p) = self.poses.get_mut(node) {
             *p = pose;
         }
+    }
+
+    /// Sets node `node`'s own disable byte at run time (the game's `+0x35`:
+    /// 0xFF hides a vanished bridge from every query, 1 from the player's
+    /// while it moves). A node's children count their parent's too.
+    pub fn set_disable(&mut self, node: usize, value: u8) {
+        if self.own_disable.get(node) == Some(&value) || node >= self.nodes.len() {
+            return;
+        }
+        self.own_disable[node] = value;
+        for i in 0..self.nodes.len() {
+            if i == node || self.parent[i] == Some(node) {
+                self.nodes[i].disable = self.own_disable[i] | self.parent[i].map_or(0, |p| self.own_disable[p]);
+            }
+        }
+    }
+
+    /// Node `node`'s parent in the scene graph.
+    pub fn parent(&self, node: usize) -> Option<usize> {
+        self.parent.get(node).copied().flatten()
     }
 
     /// Where node `node` is now (at rest unless something moved it).

@@ -19,7 +19,7 @@
 //! | strafe (R) | right trigger | O |
 //! | combo move (Z) | right bumper | G |
 //!
-//! `GDL_STICK="x,y"` holds the stick; `GDL_BUTTONS="attack@10-12,power"`
+//! `GDL_WARP="x,y,z"` starts the hero there; `GDL_STICK="x,y"` holds the stick; `GDL_BUTTONS="attack@10-12,power"`
 //! holds buttons (`attack`, `power`, `turbo`, `magic`, `charge`, `strafe`,
 //! `combo`), each for the whole run or for a range of ticks since the hero
 //! appeared.
@@ -306,6 +306,14 @@ fn spawn_player(
             (std::array::from_fn(|i| (lo[i] + hi[i]) / 2.0), 0.0)
         }
     };
+    // `GDL_WARP="x,y,z"`: start somewhere else (testing).
+    let warped = std::env::var("GDL_WARP").ok().and_then(|s| {
+        let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        (v.len() == 3).then(|| [v[0], v[1], v[2]])
+    });
+    if let Some(at) = warped {
+        feet = at;
+    }
     // Stand on the floor under the start.
     if let Some(y) = collision.floor_height(feet).or_else(|| collision.top_floor(feet[0], feet[2])) {
         feet[1] = y;
