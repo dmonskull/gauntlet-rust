@@ -69,20 +69,31 @@ follows the level's own camera points and distances.
 | key | |
 | --- | --- |
 | WASD / left stick | move (Shift walks) |
+| `J` / A | attack (hold or tap for combos) |
+| `L` / Y | power attack (finishes a combo) |
+| `H` / B | defend (turbo when held with attack) |
+| `U` / X, `P` / L, `O` / R, `G` / Z | magic, charge, strafe, combo move |
+| F1 | developer overlay |
 | `C` | free camera (WASD fly, Space/Ctrl up/down, Shift fast, right-drag look, wheel speed) |
 | `[` / `]` | previous / next level |
 | `I` | cycle item models / debug markers |
 | `K` | collision overlay |
 | `M` / `N` | mute music / play the level's next sound effect |
 
-Items, generators and monsters are placed where the game places them, but
-monsters, combat and pickups are still being reverse engineered. See
-[`docs/INDEX.md`](docs/INDEX.md) for what's confirmed and what's next.
+Generators pour out the realm's own monsters, which chase and hit the hero;
+the hero fights back with the game's combos, finishers and target search,
+and wounded monsters hit softer, dead ones fall, broken generators weaken
+and vanish. The hero keeps the game's health, gold, keys, potions and
+powerups; pickups, keyed doors, exits and transporters work. See
+[`docs/INDEX.md`](docs/INDEX.md) for what's confirmed and what's next
+(projectiles, magic, turbo, bosses, menus, co-op).
 
 Environment switches for testing: `GDL_SCREENSHOT=out.png` (with
 `GDL_SHOT_AT=<frame>`) saves a screenshot and exits, `GDL_STICK=x,y` holds
 the stick, `GDL_FREE_CAMERA=1` starts in the free camera, `GDL_FPS=1` logs
-the frame rate.
+the frame rate, `GDL_BUTTONS=attack@20-21,power` holds buttons,
+`GDL_DUMMY=4` places a practice target, `GDL_DEBUG_HUD=1` shows the
+developer overlay.
 
 ## Crates
 

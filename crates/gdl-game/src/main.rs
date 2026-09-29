@@ -13,8 +13,11 @@ mod character;
 mod collision_debug;
 mod combat;
 mod damage;
+mod exits;
 mod generators;
+mod hints;
 mod hud;
+mod items;
 mod level;
 mod level_material;
 mod locomotion;
@@ -22,8 +25,10 @@ mod model_mesh;
 mod monsters;
 mod play_camera;
 mod player;
+mod player_state;
 mod texanim;
 mod population;
+mod status_hud;
 mod viewer;
 mod world;
 
@@ -117,7 +122,14 @@ fn main() {
         app.insert_resource(game)
             .insert_resource(choice)
             .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
-            .add_plugins(monsters::MonstersPlugin);
+            .add_plugins(monsters::MonstersPlugin)
+            .add_plugins((
+                player_state::PlayerStatePlugin,
+                items::ItemsPlugin,
+                exits::ExitsPlugin,
+                hints::HintsPlugin,
+                status_hud::StatusHudPlugin,
+            ));
     }
     app.run();
 }

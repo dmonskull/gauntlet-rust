@@ -8,9 +8,13 @@
 //! a strength level for each item-type's worth of hit points (their
 //! monsters come out weaker) and are gone at 0 with their model.
 //!
-//! Stand-ins: the level-versus-player-level damage scale and the monster
-//! resistances aren't applied; pushes aren't; there's no
-//! hit reaction, sound or score yet.
+//! Monster blows (`MonsterHit`) hurt the hero through `DamagePlayer`.
+//!
+//! Stand-ins: the level-versus-player-level damage scale, the monster
+//! resistances and the hero's armour aren't applied; pushes aren't; there's
+//! no hit reaction, sound or score yet. When the hero dies it plays DEATH
+//! and comes back at the level start at full health (lives and the
+//! game-over flow aren't done).
 
 use bevy::prelude::*;
 use gdl_formats::enemy;
@@ -18,15 +22,17 @@ use gdl_formats::enemy;
 use crate::character::Animator;
 use crate::combat::{Hit, TargetKind, Targetable};
 use crate::generators::Generator;
-use crate::monsters::{Monster, MonsterLevel};
+use crate::monsters::{Monster, MonsterHit, MonsterLevel};
+use crate::player::Player;
+use crate::player_state::{DamagePlayer, PlayerState};
 use crate::player::PlayerTick;
-use crate::population::PlacementModel;
+use crate::population::PlacementIndex;
 
 pub struct DamagePlugin;
 
 impl Plugin for DamagePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (apply_hits.after(PlayerTick), remove_bodies));
+        app.add_systems(FixedUpdate, (apply_hits.after(PlayerTick), remove_bodies, hurt_hero, revive_hero));
     }
 }
 
@@ -47,7 +53,7 @@ fn apply_hits(
     level: Option<Res<MonsterLevel>>,
     mut monsters: Query<(&mut Monster, &mut Animator)>,
     mut generators: Query<&mut Generator>,
-    models: Query<(Entity, &PlacementModel)>,
+    models: Query<(Entity, &PlacementIndex)>,
 ) {
     for hit in hits.read() {
         match hit.target_kind {
@@ -109,5 +115,39 @@ fn remove_bodies(
         if d.left <= 0.0 || (done && d.left < BODY_TIME - 1.5) {
             commands.entity(e).despawn();
         }
+    }
+}
+
+fn hurt_hero(mut hits: MessageReader<MonsterHit>, mut damage: MessageWriter<DamagePlayer>) {
+    for hit in hits.read() {
+        damage.write(DamagePlayer { amount: hit.damage });
+    }
+}
+
+/// Seconds the hero lies dead before coming back.
+const REVIVE_AFTER: f32 = 3.0;
+
+fn revive_hero(
+    time: Res<Time>,
+    mut state: ResMut<PlayerState>,
+    mut dead_for: Local<f32>,
+    mut players: Query<(&mut Player, &mut Animator)>,
+) {
+    if state.alive {
+        *dead_for = 0.0;
+        return;
+    }
+    let Ok((mut p, mut animator)) = players.single_mut() else { return };
+    if *dead_for == 0.0 {
+        animator.play_named("DEATH");
+    }
+    *dead_for += time.delta_secs();
+    if *dead_for >= REVIVE_AFTER {
+        let (at, facing) = p.start;
+        p.teleport(at, facing);
+        state.health = state.max_health();
+        state.alive = true;
+        animator.play_named("READY");
+        info!("the hero is back at the start");
     }
 }

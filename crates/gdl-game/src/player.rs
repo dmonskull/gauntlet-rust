@@ -36,6 +36,7 @@ use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
+use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
 use crate::world::{LevelEntity, LevelGround};
 
@@ -97,6 +98,17 @@ pub struct Player {
     pub radius: f32,
     /// The game's class index.
     class: Option<usize>,
+}
+
+impl Player {
+    /// Moves the hero instantly (no interpolation smear), standing on a
+    /// fresh floor.
+    pub fn teleport(&mut self, at: [f32; 3], facing: f32) {
+        self.mover.position = at;
+        self.mover.facing = facing;
+        self.ground = PlayerGround::new(at[1]);
+        self.previous = (at, facing);
+    }
 }
 
 /// Player movement; the play camera ticks after it.
@@ -330,7 +342,12 @@ fn tick(
     mut players: Query<(Entity, &mut Player, &mut Animator)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
+    state: Option<Res<PlayerState>>,
 ) {
+    // A dead hero lies still until it's revived.
+    if state.is_some_and(|s| !s.alive) {
+        return;
+    }
     let dt = time.delta_secs();
     controls.ticks += 1;
     let raw = if free_look.0 { Vec2::ZERO } else { read_stick(&keys, &pads) };
@@ -462,10 +479,7 @@ fn tick(
         // player here; lives aren't implemented yet).
         if ground.as_ref().is_some_and(|g| p.mover.position[1] <= g.0.kill_height()) {
             let (at, facing) = p.start;
-            p.mover.position = at;
-            p.mover.facing = facing;
-            p.ground = PlayerGround::new(at[1]);
-            p.previous = (at, facing);
+            p.teleport(at, facing);
         }
         trace!("player at {:?}", p.mover.position);
     }
