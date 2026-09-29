@@ -1,7 +1,7 @@
 //! What a landed blow does (`docs/combat.md`, `docs/monsters.md`): the
 //! hero's `Hit` messages take hit points off monsters and generators.
 //!
-//! Monsters (the game's `FUN_8004e660`): hit points go down by the damage;
+//! Monsters (the game's monster-damage routine): hit points go down by the damage;
 //! below two thirds and one third of their full hit points they hit for
 //! 0.667 / 0.333 of their damage; at 0 they die — their generator slot is
 //! freed at once and the body plays DEATH before it goes. Generators lose
@@ -9,7 +9,7 @@
 //! monsters come out weaker) and are gone at 0 with their model.
 //!
 //! Stand-ins: the level-versus-player-level damage scale and the monster
-//! resistances (`FUN_8002f58c`) aren't applied; pushes aren't; there's no
+//! resistances aren't applied; pushes aren't; there's no
 //! hit reaction, sound or score yet.
 
 use bevy::prelude::*;
