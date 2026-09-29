@@ -13,6 +13,9 @@ fn main() {
             for p in img.pixels.as_chunks::<4>().0 {
                 *hist.entry(p[3] / 32 * 32).or_insert(0usize) += 1;
             }
+            let opaque: Vec<_> = img.pixels.as_chunks::<4>().0.iter().filter(|p| p[3] > 64).collect();
+            let avg = |c: usize| opaque.iter().map(|p| p[c] as f32).sum::<f32>() / opaque.len().max(1) as f32;
+            println!("  rgb of alpha>64 texels: {:.0} {:.0} {:.0}", avg(0), avg(1), avg(2));
             println!("{name} tex {} fmt {:#x} flags {:#x} {}x{}: {hist:?}", s.descriptor.texture, b.format, b.flags_raw, img.width, img.height);
         }
     }

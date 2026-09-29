@@ -7,11 +7,12 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use gdl_formats::population::LocatorKind;
-use gdl_formats::{LevelCamera, WorldData};
+use gdl_formats::{LevelCamera, LevelLight, WorldData};
 
 use crate::camera::{FlyCamera, FreeLook};
 use crate::camera_rig::{CameraPoint, CameraRig};
 use crate::level::LoadedGame;
+use crate::level_material::SceneLight;
 use crate::player::{Player, PlayerTick};
 use crate::population::LevelPopulation;
 use crate::world::LevelGround;
@@ -43,9 +44,10 @@ impl Plugin for PlayCameraPlugin {
     }
 }
 
-/// Each level's camera record, by lower-case level folder (`levela1`).
+/// Each level's camera record and light, by lower-case level folder
+/// (`levela1`).
 #[derive(Resource, Default)]
-struct LevelCameras(HashMap<String, LevelCamera>);
+struct LevelCameras(HashMap<String, (LevelCamera, LevelLight)>);
 
 #[derive(Resource)]
 pub struct PlayCamera {
@@ -70,7 +72,9 @@ fn load_level_cameras(mut commands: Commands, mut game: ResMut<LoadedGame>) {
         match game.install.read(&path).map_err(|e| e.to_string()).and_then(|b| WorldData::parse(&b).map_err(|e| e.to_string())) {
             Ok(world) => {
                 for level in &world.levels {
-                    cameras.0.insert(level.folder().to_ascii_lowercase(), world.cameras[level.camera].clone());
+                    cameras
+                        .0
+                        .insert(level.folder().to_ascii_lowercase(), (world.cameras[level.camera].clone(), level.light));
                 }
             }
             Err(e) => warn!("{path}: {e}"),
@@ -92,10 +96,15 @@ fn start(
     population: Res<LevelPopulation>,
     ground: Option<Res<LevelGround>>,
     cameras: Option<Res<LevelCameras>>,
+    mut scene_light: ResMut<SceneLight>,
 ) {
     let Some(ground) = ground else { return };
-    let record = cameras.and_then(|c| c.0.get(&population.level.to_ascii_lowercase()).cloned());
-    let record = record.unwrap_or(LevelCamera { mode: 0, pitch_limit: 0.35, bounds: None, near: 24.0, far: 32.0 });
+    let records = cameras.and_then(|c| c.0.get(&population.level.to_ascii_lowercase()).cloned());
+    // The level's light lights everything that isn't prelit.
+    *scene_light = records.as_ref().map_or_else(SceneLight::default, |(_, light)| SceneLight::new(light));
+    let record = records
+        .map(|(c, _)| c)
+        .unwrap_or(LevelCamera { mode: 0, pitch_limit: 0.35, bounds: None, near: 24.0, far: 32.0 });
     // Only plain camera points are picked by distance; starting, intro and
     // trigger cameras are chosen by events.
     let points: Vec<CameraPoint> = population

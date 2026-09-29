@@ -82,3 +82,29 @@ cut-out mask for textures whose alpha is only ever 0 or 255, blend textures
 with real partial alpha (fog cards, glass), and specialize the level
 material's pipeline on the two depth switches. `FUN_800b4490` is the same
 table for effects and 2D.
+
+## Lighting (geometry without prelit colours)
+
+Characters, items and any object whose vertices carry no colour are lit
+in software by the model interpreter (`FUN_800c48c0`), per vertex, in byte
+units (0x80 = 1.0, clamped to 255):
+
+```
+colour = objColour × ambient + max(0, N · L) × lightColour × objColour
+       (+ each point light: min(1, N·D × strength × (1 − k·|D|²) / |D|²) × colour)
+```
+
+`L` is the scene light's direction negated and normalized (`FUN_800ad810`,
+×`r2-0x4d68` = −1); `objColour` is the instance's colour (0x80 grey for
+ordinary instances). The scene light comes from the level's `WDATA` `LEVL`
+record (`FUN_800678f0` → `FUN_800b6568`/`FUN_800b64cc`): ambient `+0xEC`,
+direction `+0xF0`, colour `+0xFC`, intensity `+0x108` — ambient 0.8 and a
+white light along (−1, −6, 2) in every level except B6. Up to three lights
+are supported (`+0x9C` count, `+0xBC` array of the lighting environment);
+the levels use one. Prelit vertices are multiplied by the instance colour
+instead. Point lights (the `r13-0x6a9c` list) aren't implemented yet.
+
+We light per pixel in `level.wgsl` with the same formula (`SceneLight`,
+set from the level's record when it loads). Blending happens in linear
+space here but in gamma space on the GameCube, so dark translucent layers
+(blob shadows) come out lighter than the original.

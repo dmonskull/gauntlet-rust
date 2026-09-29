@@ -157,6 +157,9 @@ pub fn load_monster(install: &mut GameInstall, name: &str) -> Result<CharacterDa
     })
 }
 
+/// Height of blob shadows above the feet.
+const SHADOW_LIFT: f32 = 0.1;
+
 /// The meshes one model object is drawn with.
 type PartMeshes = Vec<(Handle<Mesh>, Handle<LevelMaterial>)>;
 
@@ -314,8 +317,14 @@ pub fn spawn_character(
             attach(weapon, bones[i], commands, &mut build);
         }
     }
-    // Blob shadow under the character.
-    attach(object_index("SHADOWL1"), root, commands, &mut build);
+    // Blob shadow under the character, lifted off the floor it lies on (the
+    // collision floor can sit a little below the drawn one).
+    if let Some(shadow) = object_index("SHADOWL1") {
+        let lift = commands.spawn((Transform::from_xyz(0.0, SHADOW_LIFT, 0.0), Visibility::default(), ChildOf(root))).id();
+        for b in build(shadow) {
+            commands.spawn((Mesh3d(b.mesh), MeshMaterial3d(b.material), ChildOf(lift)));
+        }
+    }
 
     // Skeletal nodes find their clip bone through the clips' own node of the
     // same name (players: the variant skeleton vs the class's shared clips;

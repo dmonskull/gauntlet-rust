@@ -115,7 +115,7 @@ pub fn build_flagged(
     images: &mut Assets<Image>,
     bounds: &mut (Vec3, Vec3),
 ) -> Vec<BuiltMesh> {
-    let mut groups: HashMap<(u16, u16, DrawState), MeshBuffers> = HashMap::new();
+    let mut groups: HashMap<(u16, u16, DrawState, bool), MeshBuffers> = HashMap::new();
     for (object, offset, flags) in instances {
         let state = DrawState::from_flags(flags);
         for submesh in &model.objects[object].submeshes {
@@ -124,7 +124,9 @@ pub fn build_flagged(
             }
             let d = submesh.descriptor;
             let lightmap = if state.lightmap { d.lightmap } else { 0 };
-            let buf = groups.entry((d.texture, lightmap, state)).or_default();
+            // Without prelit colours the game lights the vertices itself.
+            let lit = submesh.vertices.first().is_some_and(|v| v.color.is_none());
+            let buf = groups.entry((d.texture, lightmap, state, lit)).or_default();
             let base = buf.positions.len() as u32;
             for v in &submesh.vertices {
                 let p = Vec3::from(v.position) + offset;
@@ -135,9 +137,8 @@ pub fn build_flagged(
                 buf.uvs.push(v.uv);
                 buf.lightmap_uvs.push(v.lightmap_uv.unwrap_or_default());
                 // Raw 0..1 values: the shader multiplies in gamma space.
-                // Without a prelit colour the game lights the vertex
-                // dynamically; 0.5 is neutral under the 2× TEV stage until
-                // the game's lights are implemented.
+                // Unlit vertices are lit in the shader (the colour only
+                // carries alpha then).
                 buf.colors.push(match v.color {
                     Some([r, g, b]) => [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
                     None => [0.5, 0.5, 0.5, 1.0],
@@ -152,7 +153,7 @@ pub fn build_flagged(
     }
 
     let mut out = Vec::with_capacity(groups.len());
-    for ((diffuse, lightmap, state), buf) in groups {
+    for ((diffuse, lightmap, state, lit), buf) in groups {
         let triangles = buf.indices.len() / 6;
         let (diffuse_image, mut alpha_mode) = match cache.get(diffuse, images) {
             Some((image, alpha)) => (Some(image), alpha),
@@ -174,7 +175,7 @@ pub fn build_flagged(
         }
         out.push(BuiltMesh {
             mesh: meshes.add(mesh),
-            material: materials.add(LevelMaterial::new(diffuse_image, lightmap_image, alpha_mode).with_depth(state.depth_test, state.depth_write)),
+            material: materials.add(LevelMaterial::new(diffuse_image, lightmap_image, alpha_mode).with_depth(state.depth_test, state.depth_write).dynamic(lit)),
             triangles,
         });
     }

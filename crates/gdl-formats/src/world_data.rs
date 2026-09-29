@@ -10,7 +10,8 @@
 //! dir   16 bytes per chunk: u32 tag ('WRLD', 'LEVL', 'AUDS', …),
 //!       u32 offset, u32 record count, u32
 //! LEVL  0x10C bytes per level: +0x08 name ("A1" → LEVELS/levelA1),
-//!       +0x58 i16 camera record, +0x5A i16 audio record
+//!       +0x58 i16 camera record, +0x5A i16 audio record, +0xEC ambient,
+//!       +0xF0 light direction, +0xFC light colour, +0x108 intensity
 //! CAMS  0x6C bytes per record: +0x00 i16 mode, +0x08 f32 pitch limit,
 //!       +0x0C/+0x18 target bounds min/max (used when +0x24 byte is set,
 //!       else the level's own bounds inset by 8, raised by 4),
@@ -44,7 +45,7 @@ pub enum WorldDataError {
     BadTrackCount(usize, i16),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorldLevel {
     /// `A1` for `LEVELS/levelA1`.
     pub name: String,
@@ -52,6 +53,19 @@ pub struct WorldLevel {
     pub audio: usize,
     /// Index into [`WorldData::cameras`].
     pub camera: usize,
+    pub light: LevelLight,
+}
+
+/// The level's light for anything not prelit: a grey ambient level and one
+/// directional light.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LevelLight {
+    pub ambient: f32,
+    /// Direction the light shines in (not normalized): (-1, -6, 2) almost
+    /// everywhere, i.e. from above.
+    pub direction: [f32; 3],
+    pub color: [f32; 3],
+    pub intensity: f32,
 }
 
 impl WorldLevel {
@@ -180,7 +194,13 @@ impl WorldData {
                 if camera >= cameras.len() {
                     return Err(WorldDataError::BadCameraIndex(name, index, cameras.len()));
                 }
-                Ok(WorldLevel { name, audio: audio_index, camera })
+                let light = LevelLight {
+                    ambient: le_f32(l, 0xEC),
+                    direction: vec3(l, 0xF0),
+                    color: vec3(l, 0xFC),
+                    intensity: le_f32(l, 0x108),
+                };
+                Ok(WorldLevel { name, audio: audio_index, camera, light })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -282,6 +302,10 @@ mod tests {
         let mut levels = 0;
         for p in entries.flatten().map(|e| e.path()) {
             let w = WorldData::parse(&std::fs::read(&p).unwrap()).unwrap_or_else(|e| panic!("{p:?}: {e}"));
+            for l in &w.levels {
+                let d = l.light.direction;
+                assert!(d[1] < 0.0 && (0.0..=1.0).contains(&l.light.ambient), "{p:?} {}: {:?}", l.name, l.light);
+            }
             for c in &w.cameras {
                 assert_eq!(c.mode, 0, "{p:?}");
                 assert!(c.near > 0.0 && c.near <= c.far && c.far < 100.0, "{p:?} {c:?}");
