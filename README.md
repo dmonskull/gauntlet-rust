@@ -75,6 +75,7 @@ follows the level's own camera points and distances.
 | `H` / B | defend (turbo when held with attack) |
 | `U` / X, `P` / L, `O` / R, `G` / Z | magic, charge, strafe, combo move |
 | `-` / `=` | master volume down / up (5% steps; starts at 25%) |
+| `Esc` or `Enter` / Start | pause menu (and the front end: arrows move, Enter/`J` accept, Esc/`H` back) |
 | F1 | developer overlay |
 | `C` | free camera (WASD fly, Space/Ctrl up/down, Shift fast, right-drag look, wheel speed) |
 | `[` / `]` | previous / next level |
@@ -82,13 +83,25 @@ follows the level's own camera points and distances.
 | `K` | collision overlay |
 | `M` / `N` | mute music / play the level's next sound effect |
 
-Generators pour out the realm's own monsters, which chase and hit the hero;
-the hero fights back with the game's combos, finishers and target search,
-and wounded monsters hit softer, dead ones fall, broken generators weaken
-and vanish. The hero keeps the game's health, gold, keys, potions and
-powerups; pickups, keyed doors, exits and transporters work. See
-[`docs/INDEX.md`](docs/INDEX.md) for what's confirmed and what's next
-(projectiles, magic, turbo, bosses, menus, co-op).
+A bare run opens on the game's title screen (the game's own fonts and
+art), then character select, and the tower; `--level` or `--character`
+go straight into play. `Esc`/Start pauses (Settings → Audio has the
+volume sliders).
+
+Generators pour out the realm's own monsters, which chase, shoot arrows,
+lob bombs and hit the hero, crying out as they're hit and die; the hero
+fights back with the game's combos, finishers, throws, turbo attacks and
+target search, earning experience and levels. Wounded monsters hit softer,
+broken generators weaken and vanish. The hero keeps the game's health,
+gold, keys, potions and powerups; pickups, keyed doors, exits and
+transporters work. Switches and pads raise elevators, drop trap walls,
+show bridges and run lifts that carry the hero; spikes, flame vents, force
+fields and saw blades cycle and hurt; barrels break open (dropping what
+they hold) or explode, and secret walls can be broken.
+
+Not yet: bosses and golems (the critter system is decoded and being
+built), using magic potions, the effects system (particles, flames, magic
+blasts), co-op. [`docs/INDEX.md`](docs/INDEX.md) has what's confirmed.
 
 Environment switches for testing: `GDL_SCREENSHOT=out.png` (with
 `GDL_SHOT_AT=<frame>`) saves a screenshot and exits, `GDL_STICK=x,y` holds
