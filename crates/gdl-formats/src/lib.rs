@@ -8,6 +8,7 @@ pub mod model;
 pub mod pdata;
 pub mod population;
 pub mod rvz;
+pub mod texmod;
 pub mod text;
 pub mod texture;
 pub mod world;

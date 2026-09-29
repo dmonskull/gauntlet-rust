@@ -83,6 +83,8 @@ struct MeshBuffers {
 }
 
 pub struct BuiltMesh {
+    /// The diffuse texture's binding in the model file.
+    pub diffuse: u16,
     pub mesh: Handle<Mesh>,
     pub material: Handle<LevelMaterial>,
     pub triangles: usize,
@@ -174,6 +176,7 @@ pub fn build_flagged(
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, buf.lightmap_uvs);
         }
         out.push(BuiltMesh {
+            diffuse,
             mesh: meshes.add(mesh),
             material: materials.add(LevelMaterial::new(diffuse_image, lightmap_image, alpha_mode).with_depth(state.depth_test, state.depth_write).dynamic(lit)),
             triangles,

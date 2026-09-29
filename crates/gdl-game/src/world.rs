@@ -5,7 +5,10 @@ use bevy::prelude::*;
 
 use std::collections::HashMap;
 
+use gdl_formats::texmod::{FirstFrame, TexModKind};
+
 use crate::billboard::Billboard;
+use crate::texanim::{LevelTexAnims, TexAnim};
 use crate::camera::FlyCamera;
 use crate::collision_debug::{self, CollisionOverlay};
 use crate::level::{LevelData, LoadedGame};
@@ -185,5 +188,32 @@ fn spawn_level(
             commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(root)));
         }
     }
+    // Texture animations: every material drawing a modified texture, and
+    // the images a flipbook steps through.
+    let mut by_binding: HashMap<u16, Vec<Handle<LevelMaterial>>> = HashMap::new();
+    for b in built.iter().chain(shared.values().flatten()) {
+        by_binding.entry(b.diffuse).or_default().push(b.material.clone());
+    }
+    let anims: Vec<TexAnim> = level
+        .texmods
+        .iter()
+        .filter_map(|m| {
+            let materials = by_binding.get(&m.binding)?.clone();
+            let frames = match &m.kind {
+                TexModKind::Frames(first) => {
+                    let first = match first {
+                        FirstFrame::Binding(b) => *b,
+                        FirstFrame::Named(name) => level.model.texture_names.iter().find(|t| &t.name == name)?.binding,
+                    };
+                    (0..m.count.unsigned_abs()).map(|k| cache.get(first + k, images).map(|(image, _)| image)).collect()
+                }
+                _ => Vec::new(),
+            };
+            Some(TexAnim::new(m.clone(), materials, frames))
+        })
+        .collect();
+    info!("{} of {} texture animations attached", anims.len(), level.texmods.len());
+    commands.insert_resource(LevelTexAnims::new(anims));
+
     Built { meshes: count, triangles, min: bounds.0, max: bounds.1 }
 }

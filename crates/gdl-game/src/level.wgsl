@@ -16,6 +16,8 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> light_dir: vec4<f32>;
 // rgb: light colour x intensity, a: object colour (0x80/0xFF)
 @group(#{MATERIAL_BIND_GROUP}) @binding(6) var<uniform> light_color: vec4<f32>;
+// xy: diffuse texture scroll (texture modifiers)
+@group(#{MATERIAL_BIND_GROUP}) @binding(7) var<uniform> uv_offset: vec4<f32>;
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
@@ -26,7 +28,7 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 #ifdef VERTEX_UVS_A
-    var color = textureSample(diffuse_texture, diffuse_sampler, in.uv);
+    var color = textureSample(diffuse_texture, diffuse_sampler, in.uv + uv_offset.xy);
 #else
     var color = vec4(1.0);
 #endif
