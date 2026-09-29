@@ -358,6 +358,9 @@ per second (`r2-0x6ec0`); more than 5 below the floor it stood on
 
 ## Critter files (`CRITTER/*.WAD`)
 
+Everything about critters is now in [critters.md](critters.md); this is
+the summary.
+
 A chunk file; `FUN_80040008` looks up eight tags (built from the bytes at
 `r2-0x70cc`…) and byte-swaps each record, fixing their sizes:
 
