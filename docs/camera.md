@@ -85,3 +85,32 @@ elapsed; once fewer than 45 remain any button (`& 0x20000FF`) cuts it to
 where the play camera wants them, until both are within 0.3
 (`r2-0x77f8`), and play begins (players' `+0x91C` = 4). Ported in
 `play_camera.rs` (`Intro`); the hero isn't held still during the shot.
+
+## Trigger cuts
+
+A trigger whose id matches a kind-9 camera point's index (the locator
+loader `FUN_80066258` links them with `FUN_80066c7c`; the trigger keeps
+the point in `+0xEE`) shows that point when it comes on with a player on
+it (`FUN_8001be98(node, &point.pos, &point.rot, point byte, 0x1E, 0)`):
+
+- `r13-0x774c` = 2 (a cut is on). While it is, the hero's damage routine
+  refuses every blow (`FUN_80078560` checks it first) and triggers keep
+  their touches.
+- `r13-0x7748` = 30 fields: the delay before the view changes.
+- `r13-0x7744` = 6 × the point's byte, or 40 fields when it's 0: how long
+  the view holds (counted down by fields in `FUN_8001bc14`-ish, the cut
+  update around `0x8001bd00`); it also holds while the node the trigger
+  moved is moving (node flag `0x8000000`).
+- The camera stands at the point, turned by −(its yaw + π) about Y, then
+  its pitch about X — the same view as the level-start camera.
+- Two black bars are drawn over the 512 × 384 screen: lines 0–80 and
+  304–384 (`FUN_800b2dc4(…, 0, 0, 0x200, 0x50)` and `(…, 0, 0x130,
+  0x200, 0x50)`).
+- When it ends the camera goes back to following the players.
+
+In this rewrite (`play_camera.rs`, `StartCut` sent by `mechanics.rs`): the
+same delay, time, hold while moving and bars; the hero takes no damage
+meanwhile; the way back glides like the level start (the game's own
+return isn't traced). On levelA1 `GDL_WARP="-33.8,0,26.6"` stands the
+hero on the switch of `A1ELEV666`, which cuts to the elevator rising out
+of the water.

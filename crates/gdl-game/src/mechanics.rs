@@ -22,10 +22,11 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use gdl_formats::collision::NodePose;
-use gdl_formats::population::{PlacementParams, Population};
+use gdl_formats::population::{LocatorKind, PlacementParams, Population};
 use gdl_formats::WorldNode;
 
 use crate::items::{self, LevelItems};
+use crate::play_camera::StartCut;
 use crate::player::{Player, PlayerTick};
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
@@ -220,6 +221,9 @@ struct Trigger {
     shown: u8,
     /// Rides its target (lift pads): its touch centre at rest.
     rides: Option<[f32; 3]>,
+    /// The camera point (locator index) whose index is this trigger's id:
+    /// shown when it comes on.
+    cut: Option<usize>,
 }
 
 struct Mover {
@@ -321,6 +325,9 @@ fn setup(mut commands: Commands, population: Res<LevelPopulation>, nodes: Option
                     action: 0,
                     shown: 0,
                     rides: None,
+                    cut: (id != 0)
+                        .then(|| pop.locators.iter().position(|l| l.kind == LocatorKind::Transmitter(9) && l.index == i16::from(id)))
+                        .flatten(),
                 });
             }
             PlacementParams::Rotator { target: Some(node), angle, limit } if node < nodes.nodes.len() => {
@@ -388,6 +395,7 @@ fn tick(
     state: Option<Res<PlayerState>>,
     mut players: Query<&mut Player>,
     mut models: Query<&mut Transform, Without<Player>>,
+    mut cuts: MessageWriter<StartCut>,
 ) {
     let (Some(mut mech), Some(nodes), Some(mut items), Some(mut ground)) = (mechanics, nodes, items, ground) else {
         return;
@@ -531,7 +539,13 @@ fn tick(
         }
         let t = &mut mech.triggers[i];
         if t.action != 0 && before == 0 {
-            debug!("trigger {} (subtype {:#x}) on", t.placement, t.subtype);
+            debug!("trigger {} (subtype {:#x}) on{}", t.placement, t.subtype, if t.cut.is_some() { ", with a camera cut" } else { "" });
+            // Show what it did from its camera point.
+            if m != 0
+                && let Some(locator) = t.cut
+            {
+                cuts.write(StartCut { locator, node: target });
+            }
             if flags & WAKES != 0 {
                 let placement = t.placement;
                 mech.woken.push(placement);
@@ -731,6 +745,13 @@ fn to_transform(p: &NodePose) -> Transform {
     let m = &p.rotation;
     let rotation = Mat3::from_cols(Vec3::new(m[0], m[3], m[6]), Vec3::new(m[1], m[4], m[7]), Vec3::new(m[2], m[5], m[8]));
     Transform { translation: Vec3::from(p.translation), rotation: Quat::from_mat3(&rotation), scale: Vec3::ONE }
+}
+
+impl Mechanics {
+    /// Whether the mover on `node` is moving (or a bridge fading).
+    pub fn node_moving(&self, node: usize) -> bool {
+        self.mover_of.get(&node).is_some_and(|&k| self.movers[k].state & MOVING != 0)
+    }
 }
 
 /// Hit switches (subtype 0x1F): a blow presses them for every player, down

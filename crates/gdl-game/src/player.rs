@@ -488,6 +488,9 @@ fn tick(
         return;
     }
     let dt = time.delta_secs();
+    // Blows during a camera cut do nothing (the game's damage routine
+    // refuses them).
+    let cut = play_camera.as_ref().is_some_and(|c| c.in_cut());
     controls.ticks += 1;
     let raw = if free_look.0 { Vec2::ZERO } else { read_stick(&keys, &pads) };
     let held = if free_look.0 { 0 } else { read_buttons(&keys, &pads, &controls) };
@@ -545,7 +548,10 @@ fn tick(
             combat::request(intent, p.actions.range, stick.magnitude, walked_into, p.actions.combo, p.request);
         // Blows taken: flinch, knockback or knockdown. A flinch only
         // interrupts standing and moving about; the rest override.
-        let (hit_damage, hit_flags, hit_push) = std::mem::take(&mut p.pending_hit);
+        let (mut hit_damage, mut hit_flags, mut hit_push) = std::mem::take(&mut p.pending_hit);
+        if cut {
+            (hit_damage, hit_flags, hit_push) = (0.0, 0, Vec3::ZERO);
+        }
         let (reaction, knock, reaction_face) = hit_reaction(hit_damage, hit_flags, hit_push, facing);
         if knock > 0.0 {
             let k = hit_push * knock;

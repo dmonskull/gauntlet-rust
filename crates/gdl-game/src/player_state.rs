@@ -278,8 +278,17 @@ fn new_hero(mut commands: Commands, mut game: ResMut<LoadedGame>, choice: Option
     commands.insert_resource(state);
 }
 
-fn take_damage(mut hits: MessageReader<DamagePlayer>, mut state: ResMut<PlayerState>) {
+fn take_damage(
+    mut hits: MessageReader<DamagePlayer>,
+    mut state: ResMut<PlayerState>,
+    camera: Option<Res<crate::play_camera::PlayCamera>>,
+) {
+    // No harm comes to the hero during a camera cut.
+    let cut = camera.is_some_and(|c| c.in_cut());
     for hit in hits.read() {
+        if cut {
+            continue;
+        }
         if state.damage(hit.amount) {
             info!("the hero has died");
         }
