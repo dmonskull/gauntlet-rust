@@ -133,13 +133,24 @@ players holding it, `0x10` = moving, `0x20` = on; `uVar4` = the kind flags
   (`FUN_80063840` ≠ 0). So pads have to be held; switches (2), lifts
   (4) and elevators keep their state.
 
-Sounds: bridges play `DAT_801233fc` (appear) / `DAT_801233c4` (vanish) by
-realm (`FUN_8009c938` / `FUN_8009c9a4`) when state `0x20` changes. Other
-movers use the sound parameter: below 10 a start/stop loop pair from the
-runtime table `DAT_8028aff0` (`FUN_8009cecc`, filled per level — not
-traced); 11 on arrival; above 10 a one-shot from
-`0x80123354 + (v − 10) × 0x38 + realm × 4` (`FUN_8009ca10`). On the disc
-nearly all parameters are −1..4.
+Sounds (skipped while the sound byte is negative): bridges of kinds 0x14 /
+0x16 play `DAT_801233fc` = `S_BRIDCL<realm>` when state `0x20` clears and
+`DAT_801233c4` = `S_BRIDOP<realm>` when it sets (`FUN_8009c938` /
+`FUN_8009c9a4`; realms A C D H I). Other movers use the sound byte:
+
+- below 10: a loop while moving and a stop sound when it stops
+  (`FUN_8009cecc(0 / 2, pos, v)`), one loop at a time for all movers
+  (`FUN_8009cecc(−1)` when none moves). `FUN_800a0e44` fills the pairs
+  per level from the sets at `0x80122aa4`: `MET ROPE CHAIN ICE STONE
+  *ROCK` → `S_ELV<set><realm letter>` / `S_ELV<set>STP<letter>` (`…B` on
+  boss levels), `*ROCK` → `S_ROCKROTATE` / `S_ROCKSTOP`;
+- 11: a one-shot on turning on (with node flags `0xC00000`);
+- above 10: a one-shot from row v − 10 of `0x80123354` (`0x38` per row,
+  realm × 4; `FUN_8009ca10`) when it starts or stops: row 1 `S_TRAP<l>`,
+  row 2 `S_QUAKEC` / `S_ELVCNNK`, rows 3/4 `S_BRIDOP<l>` / `S_BRIDCL<l>`.
+
+On the disc nearly all parameters are −1..4. `mechanics.rs` plays all of
+these (the node-flag check for 11 is left out) through `audio::LoopSound`.
 
 ## Trigger touch and update
 
@@ -446,8 +457,7 @@ levelA4 `-132.1,21,-1` is the LIFTPAD of `A4ELEV8`: the hero rides it down
 13 units, waits 2 s, and back up while it's held).
 
 Stand-ins and gaps: bridges pop in and out instead of fading; triggers
-run on or off screen; no mover or bridge sounds, camera shakes or cuts,
-monster wake-ups (0x2000), quest triggers (0x40), subtype 1 rotators or
+run on or off screen; quest triggers (0x40), subtype 1 rotators or
 node flag 0x2000000; only the hero (not monsters) holds a mover by
 standing on it; hit switches (0x1F) wait for blows on items
 (`breakables.rs`). Still to build: `hazards.rs` (damage tiles, damaging
