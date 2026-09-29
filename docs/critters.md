@@ -964,3 +964,71 @@ the gargoyle and the general aren't run yet.
 - **Node positions** come from the bones' last drawn transforms, one frame
   behind. The critter's own animation clock (frame and end, at the clip's
   rate) drives the logic.
+
+## Boss work in progress
+
+`critters.rs` now also runs one-part bosses. It was checked on levelB6's dragon.
+
+**What runs:**
+- **Spawn.** The level's boss type (`LEVL +0x44`) loads its file and spawns
+  at the boss locator (kind 6), dropped onto the floor below and raised by
+  `TYPE +0xB0`. That call is `0x8001bb54` → `0x8003df60(4, 0, …)`.
+  - Hit points are `TYPE +0xE4` × level `+0xAC`.
+  - Home is `TYPE +0xA0`, or where it spawned.
+  - It is leashed to `TYPE +0xAC` of home (a box with `TYPE` flag 0x20) and
+    ignores the level's collision.
+- **Waking** (`0x800399f0`, state 0). It plays INIT, waits 2 s (none with
+  `TYPE` flag 0x80), then wakes once its targets are within `TYPE +0xEC`.
+- **Targets.** It tracks up to 4 players that pass `TYPE +0x80`, with
+  weight 1, and so only one player here (`0x80036ed4`).
+- **Moves.**
+  - After START the forced move is READY.
+  - Patterns run with their cooldowns (`PTRN +0x14`); a pattern's steps
+    follow one another.
+  - A move is held for `MOVE +0x8C` past its animation.
+  - DEATH is removed when its hold ends. There is no fade (stand-in).
+- **Blows:**
+  - DAMG kinds 1, 2 and 8 fire missiles through
+    `projectiles::spawn_critter_missile`.
+    - They start at the move node plus `+0x20` in the critter's space.
+    - Speed is min + (clamp(anger, 0.5, 1.5) − 0.5) × 0.75 × (max − min).
+    - They are aimed at the target's centre on the flatter ballistic arc
+      under `+0x38` (flag 8: straight).
+    - Kind 1 adds yaw `+0x14` ± spread `+0x48`.
+    - The model is the effect atree named by `SFXX +0x40` (e.g.
+      `FBALL_LOOP`), drawn at scale `+0x08`. It draws nothing without the
+      effects system, so a glowing sphere of half the hit radius stands in.
+  - Kind 4 is a breath cone: the node's forward axis turned by
+    `+0x14`/`+0x1C`, length `+0x0C`, thickness `+0x08`, from `+0x10`
+    outward. It hits every frame of a 0x83 window, subject to the 0.25 s
+    guard.
+- **Hit spheres.** Critters with `TYPE` flag 2 are hit on `NODE` spheres
+  (`CritterSphere` entities following their bones; `damage.rs` maps them
+  back to the critter). Each blow is × `NODE +0x40`, capped at
+  `NODE +0x44` × hit points per sphere.
+- **Bosses taking damage.** Damage is × `0x8011a920[players]` (1.0 for one
+  player), experience is × players, and there is no knockback. The roar
+  threshold is 50 × `0x8011a90c[players]`.
+- **Boss death** sets `CritterLevel::boss_dead` and logs where the key would
+  drop (`TYPE +0xD0`, `0x8001b854`).
+
+**Checked on B6:**
+- The dragon wakes and plays START (its ROAR animation), then READY, then
+  fireballs, claws, breath, stomp and wing.
+- Its missiles, claws, breath and stomp hit the hero.
+- The hero's thrown axe and blows hit its spheres.
+- It dies and is removed.
+- Screenshots were taken with `GDL_CRITTER_SHOT_ON=missile|hurt|death` and
+  `GDL_CRITTER_SHOT_DELAY`.
+
+**Next:**
+- Parts (`TYPE +0x11C` children, the chimera's heads). The spawn is
+  `0x8003df60` with children linked by `+0xAD8`/`+0xADC`. They share the
+  body (`0x80036d18`) and patterns (`0x8003b6f0`, `0x8003bb40`).
+- The boss key as a real item. This needs a hook to build extra item
+  models.
+- The intro state machine (`r13-0x725c`, `0x80056c00`–`0x80057020`) and the
+  boss camera (`BCAM`, around `0x8001bbcc`).
+- Kinds 5, 6, 7 and 9, the look nodes, and breakable nodes.
+- Checking the golem against hit spheres: blows on its BALL/HANDR spheres
+  run out at 0.25 × its hit points.
