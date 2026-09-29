@@ -66,6 +66,17 @@ GS settings the data was authored for):
 | `0x100`, `0x200`/`0x400`/`0x100000` | tint colour from the instance / fade alpha from instance `+0x53` (not implemented) |
 | `0x8000` (→ `0x20000`), `0x10000000` | extra texture stages (not implemented) |
 
+The draw traversal (`FUN_800c7d6c`) skips an instance's subtree on `0x2`
+and its own draw on `0x1`. Bits `0x0F000000` pick a facing mode that
+`FUN_800c81ac` applies to the instance matrix each frame, from the camera
+position (`FUN_800b8f54`): `0x1000000` turns about Y so +Z faces the camera
+(`FF` bushes and trees), `0x3000000` also tilts freely, `0x5000000`/
+`0x6000000`/`0x7000000` tilt at most 15°/30°/45° (`r2-0x4780..`), and
+`0x4000000` takes the camera's rotation (`CF` sprites and glows). We spawn
+those instances as their own entities with a `Billboard` component
+(`billboard.rs`); `0x2000000` and `0x8000000` (other routines) are unused
+by the levels.
+
 Everything else is alpha-blended with an alpha test of > 2. We keep a
 cut-out mask for textures whose alpha is only ever 0 or 255, blend textures
 with real partial alpha (fog cards, glass), and specialize the level

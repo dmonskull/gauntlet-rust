@@ -86,6 +86,11 @@ pub mod render_flags {
     /// Additive: source × alpha + destination (PS2 ALPHA 0x48; normal
     /// blending is 0x44).
     pub const ADDITIVE: u32 = 0x80_0000;
+    /// Facing mode, applied to the instance's matrix while drawing:
+    /// `0x1…` turns about Y toward the camera, `0x3…` also tilts, `0x5…`/
+    /// `0x6…`/`0x7…` tilt at most 15°/30°/45°, `0x4…` takes the camera's
+    /// rotation.
+    pub const FACING_MASK: u32 = 0x0F00_0000;
 }
 
 #[derive(Debug, Clone)]

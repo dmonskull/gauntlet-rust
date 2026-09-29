@@ -3,6 +3,9 @@
 
 use bevy::prelude::*;
 
+use std::collections::HashMap;
+
+use crate::billboard::Billboard;
 use crate::camera::FlyCamera;
 use crate::collision_debug::{self, CollisionOverlay};
 use crate::level::{LevelData, LoadedGame};
@@ -153,11 +156,34 @@ fn spawn_level(
 ) -> Built {
     let mut bounds = (Vec3::MAX, Vec3::MIN);
     let mut cache = TextureCache::new(&level.model, &level.textures);
-    let instances = level.placements.iter().map(|&(object, at, flags)| (object, Vec3::from(at), flags));
+    // Static instances merge into shared meshes; ones that turn toward the
+    // camera stay separate entities (their meshes shared per object).
+    let (facing, fixed): (Vec<_>, Vec<_>) =
+        level.placements.iter().partition(|&&(_, _, flags)| Billboard::from_flags(flags).is_some());
+    let instances = fixed.iter().map(|&&(object, at, flags)| (object, Vec3::from(at), flags));
     let built = model_mesh::build_flagged(&level.model, &mut cache, instances, meshes, materials, images, &mut bounds);
-    let triangles = built.iter().map(|b| b.triangles).sum();
+    let mut triangles: usize = built.iter().map(|b| b.triangles).sum();
+    let mut count = built.len();
     for b in &built {
         commands.spawn((Mesh3d(b.mesh.clone()), MeshMaterial3d(b.material.clone()), LevelEntity));
     }
-    Built { meshes: built.len(), triangles, min: bounds.0, max: bounds.1 }
+    let mut shared: HashMap<(usize, u32), Vec<model_mesh::BuiltMesh>> = HashMap::new();
+    for &&(object, at, flags) in &facing {
+        let parts = shared.entry((object, flags)).or_insert_with(|| {
+            let mut local = (Vec3::MAX, Vec3::MIN);
+            model_mesh::build_flagged(&level.model, &mut cache, [(object, Vec3::ZERO, flags)], meshes, materials, images, &mut local)
+        });
+        let at = Vec3::from(at);
+        bounds.0 = bounds.0.min(at);
+        bounds.1 = bounds.1.max(at);
+        let root = commands
+            .spawn((Transform::from_translation(at), Visibility::default(), Billboard::from_flags(flags).unwrap(), LevelEntity))
+            .id();
+        for p in parts.iter() {
+            triangles += p.triangles;
+            count += 1;
+            commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(root)));
+        }
+    }
+    Built { meshes: count, triangles, min: bounds.0, max: bounds.1 }
 }
