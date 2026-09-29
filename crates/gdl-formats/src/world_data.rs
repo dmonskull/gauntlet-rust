@@ -92,6 +92,9 @@ pub struct RealmEnemy {
     pub subtype: i32,
     /// `+0x08`: name[16] handed to the sound setup (`GRUNT`, `RAT`).
     pub name: String,
+    /// `+0x10`: the name buffer's second half: a gargoyle's kind (`eagl`,
+    /// `lion`, `serp`), which picks its critter file and models.
+    pub variant: String,
 }
 
 /// A level's monster tuning, from its level record: the enemy setup, the
@@ -262,6 +265,7 @@ impl WorldData {
                     enemy: le_u32(e, 0) as i32,
                     subtype: le_u32(e, 4) as i32,
                     name: cstr(&e[0x08..0x18]),
+                    variant: cstr(&e[0x10..0x18]),
                 })
                 .collect(),
             None => Vec::new(),
