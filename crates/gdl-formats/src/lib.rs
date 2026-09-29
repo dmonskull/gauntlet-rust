@@ -5,6 +5,7 @@ pub mod collision;
 pub mod critter;
 pub mod disc;
 pub mod enemy;
+pub mod font;
 pub mod fst;
 pub mod model;
 pub mod pdata;
