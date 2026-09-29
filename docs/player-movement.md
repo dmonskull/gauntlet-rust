@@ -69,7 +69,9 @@ and power-A attacks, 9 throws, 10 fire, 11 the rest, 12 combos.
 
 Heading = stick angle + camera yaw (stick up moves away from the camera;
 [camera.md](camera.md)). Players start at the level's entry-0 start
-locator, facing its yaw, dropped onto the floor below.
+locator, facing its yaw, dropped onto the floor below. Each tick's move
+goes through the player's own collision (`LevelCollision::move_player`,
+[collision.md](collision.md) "Moving a player").
 Per tick:
 
 ```
@@ -94,7 +96,6 @@ stick immediately; only the body lags.
 
 ## Not yet
 
-- The player's own collision chain: movement goes through the generic
-  actor mover ([collision.md](collision.md)) with a stand-in radius (1.0)
-  and step (2.0) for now.
+- Falling out of a level returns the hero to the start (the game kills
+  the player; lives aren't implemented).
 - Attacks, strafing, the shove, and blends between actions.

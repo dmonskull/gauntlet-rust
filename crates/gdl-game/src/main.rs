@@ -68,6 +68,14 @@ fn main() {
         autoshot::AutoShotPlugin,
     ));
 
+    // GDL_FPS=1 logs frame rate and frame time every second.
+    if std::env::var("GDL_FPS").is_ok_and(|v| !v.is_empty() && v != "0") {
+        app.add_plugins((
+            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
+            bevy::diagnostic::LogDiagnosticsPlugin::default(),
+        ));
+    }
+
     if args.viewer {
         let viewer = viewer::Viewer::new(
             install,
