@@ -108,6 +108,14 @@ pub struct LevelTuning {
     pub monster_awareness: f32,
     /// `+0xBC`: scales the damage monsters deal.
     pub monster_damage: f32,
+    /// `+0xC0`: scales the pause between a monster's throws (with its own
+    /// throw rate, `docs/projectiles.md`).
+    pub throw_timing: f32,
+    /// `+0xC4`: scales the speed of monster missiles.
+    pub missile_speed: f32,
+    /// `+0xC8`: scales how far a monster's lobbed missile may aim above or
+    /// below the player (a random ±2.5 units × this).
+    pub missile_spread: f32,
     /// `+0xCC`: scales generator hit points.
     pub generator_hit_points: f32,
     /// `+0xD0`: scales generator spawn rates (the wait between monsters).
@@ -131,6 +139,9 @@ impl LevelTuning {
             monster_speed: le_f32(l, 0xB0),
             monster_awareness: le_f32(l, 0xB4),
             monster_damage: le_f32(l, 0xBC),
+            throw_timing: le_f32(l, 0xC0),
+            missile_speed: le_f32(l, 0xC4),
+            missile_spread: le_f32(l, 0xC8),
             generator_hit_points: le_f32(l, 0xCC),
             generator_rate: le_f32(l, 0xD0),
             generator_max: le_f32(l, 0xD4),

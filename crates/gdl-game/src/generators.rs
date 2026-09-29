@@ -76,6 +76,10 @@ pub struct PlacedMonster {
     pub yaw: f32,
     pub screen_radius: f32,
     pub spawned: bool,
+    /// How much each throw adds to the monster's throw pause
+    /// (`docs/projectiles.md`): the placement's parameter, 1 → 0, n → n / 10;
+    /// 1 when unset.
+    pub throw_rate: f32,
 }
 
 #[derive(Resource, Default)]
@@ -192,7 +196,7 @@ pub fn from_population(
                     ramp: 0.0,
                 });
             }
-            PlacementParams::Enemy { level, ai, range, .. } => placed.push(PlacedMonster {
+            PlacementParams::Enemy { level, ai, range, param } => placed.push(PlacedMonster {
                 placement: i,
                 enemy: id,
                 tier: level as i32,
@@ -202,6 +206,11 @@ pub fn from_population(
                 yaw,
                 screen_radius: 4.0 * item_radius(ty.extent),
                 spawned: false,
+                throw_rate: match param {
+                    1 => 0.0,
+                    n if n > 1 => 0.1 * n as f32,
+                    _ => 1.0,
+                },
             }),
             _ => {}
         }
@@ -391,6 +400,7 @@ pub fn tick_generators(
             placed: false,
             awareness: None,
             freeze: 0.0,
+            throw_rate: 1.0,
         };
         let Some(e) = spawn_monster(&mut level, new, &mut commands) else { continue };
         debug!("generator {} made enemy {} tier {tier} at {spot:?}", g.placement, g.enemy);
@@ -459,6 +469,7 @@ pub fn tick_placed(
             awareness,
             // Placed monsters stand still for 30 fields first.
             freeze: if p.tier < 4 { 30.0 } else { 0.0 },
+            throw_rate: p.throw_rate,
         };
         p.spawned = true;
         debug!("placed monster {} (enemy {} level {}) appears", p.placement, p.enemy, p.tier);
