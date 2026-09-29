@@ -13,8 +13,10 @@
 //! The flinch/knockdown and push the blow causes play out in the monster's
 //! next tick (`monsters.rs`).
 //!
+//! Monster blows lose the hero's armour first (weak ones do nothing).
+//!
 //! Stand-ins: the level-versus-player-level damage scale, the monster
-//! resistances and the hero's armour aren't applied; there's no hit
+//! resistances, elements and blocking while defending aren't applied; there's no hit
 //! sound, effect or score yet. When the hero dies it plays DEATH
 //! and comes back at the level start at full health (lives and the
 //! game-over flow aren't done).
@@ -121,9 +123,25 @@ fn remove_bodies(
     }
 }
 
-fn hurt_hero(mut hits: MessageReader<MonsterHit>, mut damage: MessageWriter<DamagePlayer>) {
+/// The game's armour rule: a blow armour stops loses the armour value, and
+/// one no stronger than the armour does nothing.
+pub fn after_armor(damage: f32, armor: f32) -> f32 {
+    if damage < 0.0 {
+        -damage
+    } else if damage > armor {
+        damage - armor
+    } else {
+        0.0
+    }
+}
+
+fn hurt_hero(mut hits: MessageReader<MonsterHit>, players: Query<&Player>, mut damage: MessageWriter<DamagePlayer>) {
     for hit in hits.read() {
-        damage.write(DamagePlayer { amount: hit.damage });
+        let armor = players.get(hit.player).map_or(0.0, |p| p.armor);
+        let amount = after_armor(hit.damage, armor);
+        if amount > 0.0 {
+            damage.write(DamagePlayer { amount });
+        }
     }
 }
 
@@ -152,5 +170,17 @@ fn revive_hero(
         state.alive = true;
         animator.play_named("READY");
         info!("the hero is back at the start");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn armour_takes_its_value_off_or_stops_the_blow() {
+        assert_eq!(after_armor(5.0, 1.5), 3.5);
+        assert_eq!(after_armor(1.0, 1.5), 0.0);
+        assert_eq!(after_armor(-2.0, 1.5), 2.0);
     }
 }

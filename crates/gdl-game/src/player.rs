@@ -66,6 +66,7 @@ pub struct PlayerChoice {
 /// The loaded hero, spawned again on every level.
 #[derive(Resource)]
 struct Hero {
+    armor: f32,
     data: CharacterData,
     speed: f32,
     strength: f32,
@@ -94,6 +95,8 @@ pub struct Player {
     move_factor: f32,
     /// Damage per blow.
     pub strength: f32,
+    /// Derived armour, 0–5: taken off every blow that armour stops.
+    pub armor: f32,
     /// Collision radius: reach and range bands are measured from it.
     pub radius: f32,
     /// The game's class index.
@@ -160,9 +163,14 @@ fn load_hero(mut commands: Commands, mut game: ResMut<LoadedGame>, choice: Res<P
     let speed = locomotion::move_speed(speed_stat, 0.0);
     let strength = combat::strength(stats.map_or(400.0, |s| at_level_1(s.strength)));
     let radius = stats.map_or(DEFAULT_RADIUS, |s| s.body.radius);
-    info!("player {}: speed stat {speed_stat} -> {speed:.2} units/s, strength {strength:.1}, radius {radius}", data.name);
+    // Armour works like the other derived stats: 0.001 × stat across 0–5.
+    let armor = (0.005 * stats.map_or(0.0, |s| at_level_1(s.armor))).clamp(0.0, 5.0);
+    info!(
+        "player {}: speed stat {speed_stat} -> {speed:.2} units/s, strength {strength:.1}, armour {armor:.2}, radius {radius}",
+        data.name
+    );
     let class = character::class_index(&data.class);
-    commands.insert_resource(Hero { data, speed, strength, radius, class });
+    commands.insert_resource(Hero { data, speed, strength, armor, radius, class });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -202,6 +210,7 @@ fn spawn_player(
         last_clip: (0, 0.0),
         move_factor: 1.0,
         strength: hero.strength,
+        armor: hero.armor,
         radius: hero.radius,
         class: hero.class,
     };

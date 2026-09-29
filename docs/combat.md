@@ -362,3 +362,15 @@ level's (`+0x9C` of the level record), the type resistances
 scale; each item-type's worth lost drops a strength level (its monsters
 come out a tier lower); at 0 it's removed with its model. The per-level
 model swap (`GEN_<code><n>`) isn't shown yet.
+
+## Blows that land on the hero
+
+`FUN_80078560` (hurt a player) runs a blow through `FUN_8002f58c` with the
+player's derived armour (`+0x108`, 0–5 = 0.001 × armour stat × 5): unless
+the blow's kind has `0x200` or `0x800` (armour-piercing), armour is taken
+off the damage, and a blow no stronger than the armour does nothing
+(`damage.rs::after_armor`). The same routine then applies elemental
+resistances by kind (`& 0xF`) and flags — not ported. Blows above 1 are
+also scaled by the level record's `+0xA4`, which is 1.0 in every retail
+level. Defending (`+0x964 & 0x600`) cuts or blocks blows from the front
+(`r2-0x5ea8`, angle limits `r2-0x5e18`/`r2-0x5e10`) — not ported yet.
