@@ -58,7 +58,7 @@ impl TexMod {
         let (count, offset) = (le_u32(h, 8) as usize, le_u32(h, 12) as usize);
         let end = offset + count * RECORD_LEN;
         let table = file.get(offset..end).ok_or(TexModError::Truncated(offset, end))?;
-        Ok(table.chunks_exact(RECORD_LEN).map(Self::parse_record).collect())
+        Ok(table.as_chunks::<RECORD_LEN>().0.iter().map(|r| Self::parse_record(r)).collect())
     }
 
     fn parse_record(r: &[u8]) -> Self {
