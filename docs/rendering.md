@@ -44,3 +44,30 @@ vertex colours), not by dynamic lights.
 - Alpha: `Mask(0.5)` for textures with transparency, blending for the
   shared-palette formats. The submesh/binding flags that really choose the
   blend mode aren't decoded yet.
+
+## Blending and depth (instance render flags)
+
+Each `WORLDS.PS2` node's `+0x18` holds the flags its instance is created
+with: `FUN_800aafb0` reads the field, then overwrites it with the parent
+pointer, and ORs the value into the instance's `+0x60` (`FUN_800ba658`).
+Level artists' node-name codes line up with the bits (`XP` nodes are
+additive, `FF` nodes carry `0x1000000`, `CF` nodes `0x4000000`).
+
+`FUN_800c3bbc` draws an instance with `+0x60 & 0x1090D7C0`;
+`FUN_800c5894`/`FUN_800c664c` turn the bits into GX state (they're the PS2
+GS settings the data was authored for):
+
+| bit | effect |
+| --- | --- |
+| `0x40` | depth compare always (`GXSetZMode` func 7 instead of 6) |
+| `0x80` | no depth writes |
+| `0x4000` | skip the lightmap stage |
+| `0x800000` | additive: `GXSetBlendMode(BLEND, SRCALPHA, ONE)` (PS2 ALPHA `0x48`; normal is `0x44` = `SRCALPHA, INVSRCALPHA`) |
+| `0x100`, `0x200`/`0x400`/`0x100000` | tint colour from the instance / fade alpha from instance `+0x53` (not implemented) |
+| `0x8000` (→ `0x20000`), `0x10000000` | extra texture stages (not implemented) |
+
+Everything else is alpha-blended with an alpha test of > 2. We keep a
+cut-out mask for textures whose alpha is only ever 0 or 255, blend textures
+with real partial alpha (fog cards, glass), and specialize the level
+material's pipeline on the two depth switches. `FUN_800b4490` is the same
+table for effects and 2D.

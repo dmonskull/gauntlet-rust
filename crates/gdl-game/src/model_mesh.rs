@@ -32,16 +32,43 @@ impl<'a> TextureCache<'a> {
             .or_insert_with(|| {
                 let b = model.bindings.get(binding as usize)?;
                 let image = texture::decode(textures, b).ok()?;
+                // The game alpha-blends everything (discarding alpha <= 2).
+                // Blending is only needed where alpha is actually partial;
+                // cut-outs keep a mask so they sort and depth-write like
+                // opaque geometry.
+                let partial = image.pixels.as_chunks::<4>().0.iter().filter(|p| (8..248).contains(&p[3])).count();
                 let alpha = match GameTextureFormat::from_selector(b.format) {
                     Ok(GameTextureFormat::SharedPaletteCi4 | GameTextureFormat::SharedPaletteCi8) => {
                         AlphaMode::Blend
                     }
+                    _ if partial * 50 > image.pixels.len() / 4 => AlphaMode::Blend,
                     _ if image.has_transparency() => AlphaMode::Mask(0.5),
                     _ => AlphaMode::Opaque,
                 };
                 Some((images.add(to_bevy_image(image)), alpha))
             })
             .clone()
+    }
+}
+
+/// How an instance is drawn, from its render flags.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct DrawState {
+    additive: bool,
+    depth_test: bool,
+    depth_write: bool,
+    lightmap: bool,
+}
+
+impl DrawState {
+    fn from_flags(flags: u32) -> Self {
+        use gdl_formats::world::render_flags as f;
+        Self {
+            additive: flags & f::ADDITIVE != 0,
+            depth_test: flags & f::NO_DEPTH_TEST == 0,
+            depth_write: flags & f::NO_DEPTH_WRITE == 0,
+            lightmap: flags & f::NO_LIGHTMAP == 0,
+        }
     }
 }
 
@@ -62,7 +89,7 @@ pub struct BuiltMesh {
 }
 
 /// Merges the given objects (each moved by its offset) into one mesh per
-/// (diffuse, lightmap) pair.
+/// (diffuse, lightmap) pair, drawn the default way.
 pub fn build(
     model: &ModelFile,
     cache: &mut TextureCache,
@@ -72,14 +99,32 @@ pub fn build(
     images: &mut Assets<Image>,
     bounds: &mut (Vec3, Vec3),
 ) -> Vec<BuiltMesh> {
-    let mut groups: HashMap<(u16, u16), MeshBuffers> = HashMap::new();
-    for (object, offset) in instances {
+    let instances = instances.into_iter().map(|(object, offset)| (object, offset, 0));
+    build_flagged(model, cache, instances, meshes, materials, images, bounds)
+}
+
+/// Like [`build`], with each instance's render flags (`WorldNode::render_flags`)
+/// choosing its blending and depth handling; one mesh per (diffuse,
+/// lightmap, draw state).
+pub fn build_flagged(
+    model: &ModelFile,
+    cache: &mut TextureCache,
+    instances: impl IntoIterator<Item = (usize, Vec3, u32)>,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<LevelMaterial>,
+    images: &mut Assets<Image>,
+    bounds: &mut (Vec3, Vec3),
+) -> Vec<BuiltMesh> {
+    let mut groups: HashMap<(u16, u16, DrawState), MeshBuffers> = HashMap::new();
+    for (object, offset, flags) in instances {
+        let state = DrawState::from_flags(flags);
         for submesh in &model.objects[object].submeshes {
             if submesh.triangles.is_empty() {
                 continue;
             }
             let d = submesh.descriptor;
-            let buf = groups.entry((d.texture, d.lightmap)).or_default();
+            let lightmap = if state.lightmap { d.lightmap } else { 0 };
+            let buf = groups.entry((d.texture, lightmap, state)).or_default();
             let base = buf.positions.len() as u32;
             for v in &submesh.vertices {
                 let p = Vec3::from(v.position) + offset;
@@ -107,12 +152,15 @@ pub fn build(
     }
 
     let mut out = Vec::with_capacity(groups.len());
-    for ((diffuse, lightmap), buf) in groups {
+    for ((diffuse, lightmap, state), buf) in groups {
         let triangles = buf.indices.len() / 6;
-        let (diffuse_image, alpha_mode) = match cache.get(diffuse, images) {
+        let (diffuse_image, mut alpha_mode) = match cache.get(diffuse, images) {
             Some((image, alpha)) => (Some(image), alpha),
             None => (None, AlphaMode::Opaque),
         };
+        if state.additive {
+            alpha_mode = AlphaMode::Add;
+        }
         let lightmap_image = (lightmap != 0).then(|| cache.get(lightmap, images)).flatten().map(|(i, _)| i);
 
         let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
@@ -126,7 +174,7 @@ pub fn build(
         }
         out.push(BuiltMesh {
             mesh: meshes.add(mesh),
-            material: materials.add(LevelMaterial::new(diffuse_image, lightmap_image, alpha_mode)),
+            material: materials.add(LevelMaterial::new(diffuse_image, lightmap_image, alpha_mode).with_depth(state.depth_test, state.depth_write)),
             triangles,
         });
     }

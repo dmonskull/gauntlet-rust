@@ -26,7 +26,9 @@ pub struct PlayCameraPlugin;
 
 impl Plugin for PlayCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(FreeLook(false))
+        // GDL_FREE_CAMERA=1 starts in the free camera (level overviews).
+        let free = std::env::var("GDL_FREE_CAMERA").is_ok_and(|v| !v.is_empty() && v != "0");
+        app.insert_resource(FreeLook(free))
             .add_systems(Startup, (load_level_cameras, set_fov))
             .add_systems(FixedUpdate, tick.after(PlayerTick))
             .add_systems(

@@ -53,6 +53,10 @@ pub struct WorldHeader {
 pub struct WorldNode {
     pub name: String,
     pub flags: u32,
+    /// Node `+0x18` in the file (the game reuses the field for the parent
+    /// pointer once loaded): flags the node's instance is created with,
+    /// including how it's drawn — see [`render_flags`].
+    pub render_flags: u32,
     /// Translation relative to the parent node.
     pub local_position: [f32; 3],
     /// Node `+0x28 == 1`: the node draws the model with its name.
@@ -68,6 +72,20 @@ pub struct WorldNode {
     /// The node's collision triangles: node `+0x38` first (−1 = none),
     /// `+0x36` count.
     pub collision: std::ops::Range<usize>,
+}
+
+/// Instance flags that change how a model is drawn (`docs/rendering.md`).
+/// The game masks an instance's flags with `0x1090D7C0` for its draw call.
+pub mod render_flags {
+    /// Depth test off (compare always).
+    pub const NO_DEPTH_TEST: u32 = 0x40;
+    /// Depth writes off.
+    pub const NO_DEPTH_WRITE: u32 = 0x80;
+    /// The lightmap stage is skipped.
+    pub const NO_LIGHTMAP: u32 = 0x4000;
+    /// Additive: source × alpha + destination (PS2 ALPHA 0x48; normal
+    /// blending is 0x44).
+    pub const ADDITIVE: u32 = 0x80_0000;
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +129,7 @@ impl WorldFile {
             nodes.push(WorldNode {
                 name: String::from_utf8_lossy(&e[..end]).into_owned(),
                 flags: le_u32(e, 0x10),
+                render_flags: le_u32(e, 0x18),
                 local_position: [le_f32(e, 0x1C), le_f32(e, 0x20), le_f32(e, 0x24)],
                 has_model: le_u32(e, 0x28) == 1,
                 next_sibling: link(i, le_u16(e, 0x2C) as i16)?,

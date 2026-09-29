@@ -21,8 +21,9 @@ pub struct LevelData {
     pub name: String,
     pub model: ModelFile,
     pub textures: Vec<u8>,
-    /// Model placements: (object index into `model.objects`, world position).
-    pub placements: Vec<(usize, [f32; 3])>,
+    /// Model placements: (object index into `model.objects`, world
+    /// position, the node's render flags).
+    pub placements: Vec<(usize, [f32; 3], u32)>,
     /// Items, generators, monsters, player starts and the rest.
     pub population: Population,
     pub collision: LevelCollision,
@@ -119,7 +120,7 @@ pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, St
         .iter()
         .zip(positions)
         .filter(|(n, _)| n.has_model)
-        .filter_map(|(n, p)| Some((*by_name.get(n.name.as_str())?, p?)))
+        .filter_map(|(n, p)| Some((*by_name.get(n.name.as_str())?, p?, n.render_flags)))
         .collect();
 
     Ok(LevelData { name: name.to_string(), model, textures, placements, population, collision })
@@ -140,7 +141,7 @@ fn summarize(level: &LevelData) -> LevelSummary {
         triangles: level
             .placements
             .iter()
-            .flat_map(|&(i, _)| &level.model.objects[i].submeshes)
+            .flat_map(|&(i, _, _)| &level.model.objects[i].submeshes)
             .map(|s| s.triangles.len())
             .sum(),
         textures,
