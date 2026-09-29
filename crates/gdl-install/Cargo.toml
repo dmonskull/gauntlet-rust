@@ -1,11 +1,9 @@
 [package]
-name = "gdl-game"
+name = "gdl-install"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
 gdl-formats.workspace = true
-gdl-install.workspace = true
-bevy.workspace = true
-rfd = "0.17.2"
+thiserror.workspace = true

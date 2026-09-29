@@ -6,31 +6,68 @@ Legacy* (game ID `GUNE5D`), built from reverse engineering the original
 GameCube disc/DOL format.
 
 This project ships no game assets and no code copied from the original
-binary. Point it at a GameCube disc image you already own and it reads that
-disc's own data at runtime.
-
-## Status
-
-Day zero. `gdl-formats` parses the disc boot header and `main.dol` layout;
-`gdl-game` opens a bare window as a plumbing check. Nothing playable yet —
-see [`docs/INDEX.md`](docs/INDEX.md) for what's been reverse engineered so
-far and what's next.
+binary. Point it at a copy of the game you already own and it reads that
+copy's own data at runtime.
 
 ## Run
 
 ```bash
-export GAUNTLET_DISC="/path/to/Gauntlet - Dark Legacy (USA).iso"
 cargo run -p gdl-game
 ```
+
+On first launch a file picker asks for your game. Any of these work:
+
+- the disc image — `.iso` / `.gcm`
+- an extracted disc folder (plain extraction, or Dolphin's
+  *Extract Entire Disc* `sys/` + `files/` layout)
+- the extracted `main.dol`
+
+It checks it's really Gauntlet: Dark Legacy, remembers the choice, and
+loads everything from there. Next launch goes straight in.
+
+You can also pass the game directly, which is remembered too:
+
+```bash
+cargo run -p gdl-game -- "/path/to/Gauntlet - Dark Legacy (USA).iso"
+cargo run -p gdl-game -- --level levelC1   # pick a level
+cargo run -p gdl-game -- --forget          # forget the remembered game
+```
+
+`GAUNTLET_GAME` works in place of the path argument.
+
+Dolphin's compressed formats (`.rvz`, `.gcz`, `.wia`, `.ciso`) aren't
+supported yet — convert to ISO in Dolphin (right-click → *Convert File…*).
+
+Your game files are only ever read. The remembered path lives in
+`gdl-artifacts/settings.txt` next to the executable (override the folder
+with `GDL_ARTIFACTS`).
+
+## Status
+
+Boots from the disc, validates every level's model and texture data (67/67
+levels), and shows the loaded game. Level geometry isn't reverse engineered
+yet, so nothing is drawn in 3D — see [`docs/INDEX.md`](docs/INDEX.md) for
+what's confirmed and what's next.
+
+## Crates
+
+| crate | about |
+| --- | --- |
+| `gdl-formats` | Parsers for the game's on-disc formats (disc header, FST, models) |
+| `gdl-install` | Finds and validates a user's copy of the game, read-only file access |
+| `gdl-game` | The runtime: launcher, boot, rendering |
+
+## Development
+
+`GDL_SCREENSHOT=out.png cargo run -p gdl-game` renders a few frames, saves a
+screenshot and exits. Tests that need game data use your own copy via
+`GAUNTLET_DISC` / `GAUNTLET_ASSET_ROOT` and skip cleanly without it.
 
 ## Reverse engineering
 
 `main.dol` is analyzed with Ghidra (12.1.4) using
 [Cuyler36/Ghidra-GameCube-Loader](https://github.com/Cuyler36/Ghidra-GameCube-Loader)
 for the DOL loader and its bundled Gekko/Broadway PowerPC SLEIGH language.
-The game was built with Metrowerks CodeWarrior, so CodeWarrior demangling
-resolves a meaningful slice of runtime-library symbols automatically.
-
 Findings live in [`docs/`](docs/), one file per system, written as they're
 confirmed against the actual binary — not guessed from similarly-shaped
 games.
