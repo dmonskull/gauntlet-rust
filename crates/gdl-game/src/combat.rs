@@ -247,6 +247,8 @@ pub struct Hit {
 
 /// How far the search looks, units.
 pub const SEARCH_RANGE: f32 = 30.0;
+/// How far a throw looks on a boss level.
+pub const BOSS_THROW_RANGE: f32 = 200.0;
 /// Cosine of the widest search angle (next to the hero): 60° either side.
 /// It narrows linearly to straight ahead at [`SEARCH_RANGE`].
 pub const SEARCH_CONE: f32 = 0.5;
@@ -320,8 +322,19 @@ pub fn search<'a>(
     heading: f32,
     candidates: impl IntoIterator<Item = (Entity, Vec3, &'a Targetable)>,
 ) -> Option<Found> {
+    search_within(origin, heading, SEARCH_RANGE, candidates)
+}
+
+/// [`search`] out to `range` (a throw on a boss level looks 200 units
+/// out, `r2-0x5a58`).
+pub fn search_within<'a>(
+    origin: Vec3,
+    heading: f32,
+    range: f32,
+    candidates: impl IntoIterator<Item = (Entity, Vec3, &'a Targetable)>,
+) -> Option<Found> {
     let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
-    let narrowing = (1.0 - SEARCH_CONE) / SEARCH_RANGE;
+    let narrowing = (1.0 - SEARCH_CONE) / range;
     let mut best: Option<Found> = None;
     for (entity, position, t) in candidates {
         let v = position - origin;
@@ -334,7 +347,7 @@ pub fn search<'a>(
                 length - t.radius
             }
             TargetKind::Object => {
-                if length > SEARCH_RANGE {
+                if length > range {
                     continue;
                 }
                 length - t.radius
@@ -347,7 +360,7 @@ pub fn search<'a>(
                 length * scale - t.radius.min(GENERATOR_RADIUS_CAP)
             }
         };
-        if distance > SEARCH_RANGE || best.is_some_and(|b| distance >= b.distance) {
+        if distance > range || best.is_some_and(|b| distance >= b.distance) {
             continue;
         }
         let n = if length > 0.0 { v / length } else { dir };

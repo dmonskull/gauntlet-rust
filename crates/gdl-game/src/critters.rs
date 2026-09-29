@@ -84,10 +84,49 @@ pub struct CrittersPlugin;
 
 impl Plugin for CrittersPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, tick_critters.after(MonsterTick)).add_systems(
+        app.add_systems(FixedUpdate, (tick_critters.after(MonsterTick), boss_victory.after(tick_critters)))
+            .add_systems(
             Update,
             (setup_level.run_if(resource_added::<MonsterLevel>), interpolate).chain(),
         );
+    }
+}
+
+/// Seconds after the boss dies before the level ends (stand-in: the
+/// game's heroes cheer, take the key and leave through their exit state,
+/// which isn't traced).
+const VICTORY_SECONDS: f32 = 5.0;
+
+/// A boss's death wins the realm for every hero (`FUN_8001b854` marks the
+/// realm in each player's `+0x1EC8`), then the party goes back to the
+/// tower.
+fn boss_victory(
+    level: Option<Res<CritterLevel>>,
+    population: Option<Res<crate::population::LevelPopulation>>,
+    mut state: Option<ResMut<crate::player_state::PlayerState>>,
+    mut since: Local<Option<f32>>,
+    mut change: MessageWriter<crate::exits::ChangeLevelTo>,
+) {
+    let dead = level.as_ref().is_some_and(|l| l.boss_dead);
+    if !dead {
+        *since = None;
+        return;
+    }
+    let t = since.get_or_insert_with(|| {
+        let realm = population
+            .as_ref()
+            .and_then(|p| p.level.strip_prefix("level").and_then(|s| s.chars().next()))
+            .and_then(|c| gdl_formats::population::REALM_LETTERS.iter().find(|(l, _)| l.eq_ignore_ascii_case(&c)))
+            .map_or(0, |(_, id)| *id);
+        if let Some(s) = state.as_mut() {
+            s.realms_beaten |= 1 << realm;
+            info!("realm {realm} beaten");
+        }
+        0.0
+    });
+    *t += DT;
+    if *t >= VICTORY_SECONDS && *t - DT < VICTORY_SECONDS {
+        change.write(crate::exits::ChangeLevelTo("levelL1".into()));
     }
 }
 
@@ -833,7 +872,7 @@ fn tick_critters(
             debug!("critter {entity:?} is gone");
             if level.boss == Some(entity) {
                 level.boss_dead = true;
-                info!("the boss is dead: its key would drop {:?} from it (not done)", c.kind.file.types[c.ty].key_offset);
+                info!("the boss is dead (its key, drawn at {:?} from it, isn't shown yet)", c.kind.file.types[c.ty].key_offset);
             }
             for s in &c.spheres {
                 commands.entity(*s).try_despawn();
