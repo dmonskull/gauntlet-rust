@@ -53,13 +53,16 @@ with `GDL_ARTIFACTS`).
 ## Status
 
 Boots straight from your disc, validates all 67 levels, and renders any of
-them in 3D with the game's own geometry, textures and baked lightmaps. Fly
-around with WASD (Space/Ctrl up/down, Shift fast, right-drag to look, mouse
-wheel for speed) and switch levels with `[` / `]`.
+them in 3D with the game's own geometry, textures and baked lightmaps. A
+hero (Warrior by default; `--character VAL --variant RED` for others) runs
+around the level with the game's own speeds, turn rate and walk/run
+animations at its 30 Hz tick: WASD or a gamepad's left stick, Shift to
+walk. `C` switches to a free camera (WASD fly, Space/Ctrl up/down, Shift
+fast, right-drag to look, mouse wheel for speed); `[` / `]` switch levels.
 
-Not playable yet: characters, animation and gameplay haven't been reverse
-engineered. See [`docs/INDEX.md`](docs/INDEX.md) for what's confirmed and
-what's next.
+Not a full game yet: collision, monsters, combat and items are still being
+reverse engineered. See [`docs/INDEX.md`](docs/INDEX.md) for what's
+confirmed and what's next.
 
 ## Crates
 

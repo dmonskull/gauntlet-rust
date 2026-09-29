@@ -35,6 +35,8 @@ pub struct CurrentLevelStats {
     pub meshes: usize,
     pub triangles: usize,
     pub error: Option<String>,
+    /// World-space bounds of the level geometry.
+    pub bounds: Option<(Vec3, Vec3)>,
 }
 
 fn level_keys(keys: Res<ButtonInput<KeyCode>>, mut w: MessageWriter<ChangeLevel>) {
@@ -74,6 +76,7 @@ fn change_level(
             let built = spawn_level(&level, &mut commands, &mut meshes, &mut materials, &mut images);
             stats.meshes = built.meshes;
             stats.triangles = built.triangles;
+            stats.bounds = (built.min.x <= built.max.x).then_some((built.min, built.max));
             if let Ok((mut transform, mut fly)) = camera.single_mut() {
                 *fly = FlyCamera::looking_at_bounds(built.min, built.max, &mut transform);
             }

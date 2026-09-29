@@ -12,6 +12,7 @@ One file per system, written only once it's confirmed against the actual
 | [animation-format.md](animation-format.md) | Skeletons, actions and keyframed animation |
 | [chunk-files.md](chunk-files.md) | The `.WAD`/`.ROM` tagged-chunk container, and game text |
 | [rendering.md](rendering.md) | How a level is drawn: diffuse × colour × lightmap |
+| [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning |
 
 ## Confirmed and implemented
 
@@ -23,6 +24,8 @@ One file per system, written only once it's confirmed against the actual
 - Skeletons and animation for every player class and monster, skeletal and
   flipbook (`--viewer`).
 - The `.WAD`/`.ROM` container every data file uses, and all game text.
+- Player class stats, and walking/running a hero around a level at the
+  game's 30 Hz tick with its speeds and turn rate.
 
 ## Reverse engineering setup
 
