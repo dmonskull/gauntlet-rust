@@ -85,6 +85,9 @@ pub struct PlayerState {
     pub runestones: Vec<i32>,
     /// Legendary items, gems and quest pieces picked up: (subtype, amount).
     pub treasures: Vec<(i32, i32)>,
+    /// Realms whose boss this hero has beaten, a bit per realm id (the
+    /// record's `+0x1EC8`, set by the boss's death for every player).
+    pub realms_beaten: u32,
     pub alive: bool,
     /// The class's three-letter code (`WAR`), for its voice and sounds.
     pub class: String,
@@ -117,6 +120,7 @@ impl PlayerState {
             powers: Vec::new(),
             runestones: Vec::new(),
             treasures: Vec::new(),
+            realms_beaten: 0,
             alive: true,
             class: class.to_ascii_uppercase(),
             radius: stats.map_or(DEFAULT_RADIUS, |s| s.body.radius),

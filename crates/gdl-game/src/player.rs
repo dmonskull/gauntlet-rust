@@ -38,7 +38,7 @@ use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
-use crate::projectiles::HeroShot;
+use crate::projectiles::{self, HeroShot};
 use crate::world::{LevelEntity, LevelGround};
 
 /// The hero's radius if the class data can't be read (every class has 1.5).
@@ -482,7 +482,9 @@ fn tick(
     mut hits: MessageWriter<Hit>,
     mut shots: MessageWriter<HeroShot>,
     state: Option<Res<PlayerState>>,
+    monster_level: Option<Res<crate::monsters::MonsterLevel>>,
 ) {
+    let boss_level = monster_level.as_ref().is_some_and(|l| l.boss >= 0);
     // A dead hero lies still until it's revived.
     if state.is_some_and(|s| !s.alive) {
         return;
@@ -634,8 +636,20 @@ fn tick(
             if strike.projectile() {
                 // Aimed at what the search found, unless strafing or
                 // defending (then along where the hero is heading).
+                // The game aims from the release height at the target's
+                // centre (a monster's `+0x54`), so the throw tilts up or down
+                // to meet it.
+                // On a boss level a throw looks much further out.
+                let found = match found {
+                    None if boss_level => combat::search_within(position, wanted, combat::BOSS_THROW_RANGE, candidates()),
+                    f => f,
+                };
                 let aim = match found {
-                    Some(f) if held & (button::DEFEND | button::STRAFE) == 0 => f.direction,
+                    Some(f) if held & (button::DEFEND | button::STRAFE) == 0 => {
+                        let from = position + Vec3::Y * projectiles::PLAYER_CENTRE;
+                        let centre = f.position + Vec3::Y * (0.5 * f.height);
+                        (centre - from).normalize_or(f.direction)
+                    }
                     _ => Vec3::new(wanted.sin(), 0.0, wanted.cos()),
                 };
                 let wound_up = (time.elapsed_secs_f64() - p.attack_started) as f32;

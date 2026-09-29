@@ -319,3 +319,13 @@ throw every two seconds.
 - The secret classes use the missile record, offsets and effects folder
   of the class eight before them (their PDAT values match those); the
   game's per-class index for them isn't traced.
+
+## The throw's target (`FUN_800864b0`)
+
+The throw's aim vector comes from its own target search: from the release
+point to the target's **centre** (a monster's `+0x54`, a critter's centre,
+an item's), within 30 units (`r2-0x5b28`) — 200 (`r2-0x5a58`) on a boss
+level — then `FUN_800857d8` adjusts it (above). So a throw tilts up or down
+to meet a target on higher or lower ground. The runtime aims from the
+hero's centre height at the found target's centre (feet + half its
+height), using the 200-unit range for throws on boss levels.
