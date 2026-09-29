@@ -17,6 +17,7 @@ mod exits;
 mod font;
 mod frontend;
 mod generators;
+mod hazards;
 mod hints;
 mod hud;
 mod items;
@@ -137,6 +138,7 @@ fn main() {
                 player_state::PlayerStatePlugin,
                 items::ItemsPlugin,
                 mechanics::MechanicsPlugin,
+                hazards::HazardsPlugin,
                 exits::ExitsPlugin,
                 hints::HintsPlugin,
                 status_hud::StatusHudPlugin,

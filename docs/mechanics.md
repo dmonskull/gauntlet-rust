@@ -449,5 +449,25 @@ monster wake-ups (0x2000), quest triggers (0x40), subtype 1 rotators or
 node flag 0x2000000; only the hero (not monsters) holds a mover by
 standing on it; hit switches (0x1F) wait for blows on items
 (`breakables.rs`). Still to build: `hazards.rs` (damage tiles, damaging
-walls, blasts) and `breakables.rs` (barrels, shootable walls, hit
-switches, container contents).
+walls, blasts) — now built, below — and `breakables.rs` (barrels,
+shootable walls, hit switches, container contents).
+
+[`hazards.rs`](../crates/gdl-game/src/hazards.rs) runs the damage tiles
+and damaging walls:
+
+- Tiles cycle as decoded: OFF waits the type's `+0x48` (or −3 × the
+  placement's `+0x32`) × 2 fields × level `+0xD8`, a negative time random
+  in |v|..3|v|; the other actions last their animation. Out (state 2 or 4)
+  a tile with type flag 1 hurts a hero standing in its shape: damage
+  (placement `+0x30` or type `+0x40`) × level `+0xDC`, less armour, flags
+  = value | 0x80, pushed out along the tile's −Z for values with 0x30, the
+  realm's tile sound, once per phase. Levitating heroes are spared.
+- Walls: the last wall the hero's move hit, with its node's flags OR'ed up
+  the parents: 15 (0x30000–0x50000, knockdown and push), 10 (0x20000,
+  knockback and push) or 5, less armour, once a second.
+- On levelA1, `GDL_WARP="-46.8,0.25,7.5"` stands the hero in a force
+  field: 11.5 damage each time it comes on.
+
+Stand-ins: active phases last their animation (the game's own timer for
+them isn't confirmed); hint 0x15 isn't shown; walls that only hurt while
+animating (0x2000000) never do, as nothing animates them yet.

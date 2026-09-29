@@ -119,6 +119,9 @@ pub struct Player {
     /// When the latest attack or throw began (fixed-clock seconds): how
     /// long a throw was wound up decides how far it goes.
     attack_started: f64,
+    /// The level node and point the last tick's move ran into, if a wall
+    /// stopped it (damaging walls, `hazards.rs`).
+    pub wall_hit: Option<(usize, [f32; 3])>,
 }
 
 /// The hero's working stats at a character level: strength (5–20),
@@ -338,6 +341,7 @@ fn spawn_player(
         radius: hero.radius,
         class: hero.class,
         attack_started: 0.0,
+        wall_hit: None,
     };
     commands.entity(root).insert((player, LevelEntity));
     controls.ticks = 0;
@@ -665,7 +669,11 @@ fn tick(
         p.move_factor = move_factor;
         let feet = p.mover.position;
         let d = match &ground {
-            Some(g) => g.0.move_player(feet, d, &body, &mut p.ground).delta,
+            Some(g) => {
+                let moved = g.0.move_player(feet, d, &body, &mut p.ground);
+                p.wall_hit = moved.wall.map(|h| (h.node, h.point));
+                moved.delta
+            }
             None => d,
         };
         p.mover.position = std::array::from_fn(|i| feet[i] + d[i]);

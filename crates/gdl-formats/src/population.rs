@@ -352,6 +352,7 @@ impl Placement {
                 limit: self.f32_at(8),
             },
             ItemClass::Sound => PlacementParams::Sound { radius: self.f32_at(0) },
+            ItemClass::DamageTile => PlacementParams::DamageTile { damage: self.i16_at(0), off_time: self.i16_at(2) },
             ItemClass::Powerup => PlacementParams::Powerup { count: self.i16_at(0) },
             _ => PlacementParams::None,
         }
@@ -390,6 +391,9 @@ pub enum PlacementParams {
     /// per video field; `limit`: how far a touched one turns.
     Rotator { target: Option<usize>, angle: f32, limit: f32 },
     Sound { radius: f32 },
+    /// `damage`: replaces the type's (0 = keep it); `off_time`: when not 0,
+    /// −3 × it replaces the type's off time (`docs/mechanics.md`).
+    DamageTile { damage: i16, off_time: i16 },
     None,
 }
 
