@@ -9,8 +9,13 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var diffuse_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var lightmap_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var lightmap_sampler: sampler;
-// x: lightmap enabled, y: alpha cutoff, z: stage 0 scale
+// x: lightmap enabled, y: alpha cutoff, z: stage 0 scale, w: lit by the
+// level light instead of prelit vertex colours
 @group(#{MATERIAL_BIND_GROUP}) @binding(4) var<uniform> params: vec4<f32>;
+// xyz: unit vector toward the light, w: ambient level
+@group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> light_dir: vec4<f32>;
+// rgb: light colour x intensity, a: object colour (0x80/0xFF)
+@group(#{MATERIAL_BIND_GROUP}) @binding(6) var<uniform> light_color: vec4<f32>;
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
@@ -26,7 +31,18 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = vec4(1.0);
 #endif
 #ifdef VERTEX_COLORS
-    color = color * in.color;
+    if (params.w > 0.5) {
+        // The game's software lighting for unlit vertices: object colour x
+        // (ambient + N.L x light colour), clamped to a byte.
+        // Normal-less geometry (blob shadows) gets ambient only.
+        let n = in.world_normal;
+        let len = length(n);
+        let d = select(0.0, max(dot(n / max(len, 1e-6), light_dir.xyz), 0.0), len > 1e-4);
+        let ras = clamp(light_color.a * (vec3(light_dir.w) + d * light_color.rgb), vec3(0.0), vec3(1.0));
+        color = color * vec4(ras, in.color.a);
+    } else {
+        color = color * in.color;
+    }
 #endif
     color = vec4(clamp(color.rgb * params.z, vec3(0.0), vec3(1.0)), color.a);
 #ifdef VERTEX_UVS_B
