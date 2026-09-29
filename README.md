@@ -17,7 +17,8 @@ cargo run -p gdl-game
 
 On first launch a file picker asks for your game. Any of these work:
 
-- the disc image — `.iso` / `.gcm`
+- the disc image — `.iso` / `.gcm`, or Dolphin's compressed `.rvz`
+  (read directly, no conversion)
 - an extracted disc folder (plain extraction, or Dolphin's
   *Extract Entire Disc* `sys/` + `files/` layout)
 - the extracted `main.dol`
@@ -29,14 +30,16 @@ You can also pass the game directly, which is remembered too:
 
 ```bash
 cargo run -p gdl-game -- "/path/to/Gauntlet - Dark Legacy (USA).iso"
+cargo run -p gdl-game -- "/path/to/Gauntlet - Dark Legacy (USA).rvz"
 cargo run -p gdl-game -- --level levelC1   # pick a level
 cargo run -p gdl-game -- --forget          # forget the remembered game
 ```
 
 `GAUNTLET_GAME` works in place of the path argument.
 
-Dolphin's compressed formats (`.rvz`, `.gcz`, `.wia`, `.ciso`) aren't
-supported yet — convert to ISO in Dolphin (right-click → *Convert File…*).
+Dolphin's other compressed formats (`.gcz`, `.wia`, `.ciso`, and RVZ
+made with bzip2/LZMA instead of the default Zstandard) aren't supported —
+convert to RVZ or ISO in Dolphin (right-click → *Convert File…*).
 
 Your game files are only ever read. The remembered path lives in
 `gdl-artifacts/settings.txt` next to the executable (override the folder
@@ -57,7 +60,7 @@ what's next.
 
 | crate | about |
 | --- | --- |
-| `gdl-formats` | Parsers for the game's on-disc formats (disc, FST, models, textures, worlds) |
+| `gdl-formats` | Parsers for the game's on-disc formats (disc, RVZ, FST, models, textures, worlds) |
 | `gdl-install` | Finds and validates a user's copy of the game, read-only file access |
 | `gdl-game` | The runtime: launcher, boot, level rendering, camera |
 
