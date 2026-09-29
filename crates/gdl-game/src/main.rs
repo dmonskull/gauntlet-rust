@@ -4,6 +4,7 @@
 
 mod audio;
 mod autoshot;
+mod billboard;
 mod bootstrap;
 mod camera;
 mod camera_rig;
@@ -63,6 +64,7 @@ fn main() {
         level_material::LevelMaterialPlugin,
         camera::CameraPlugin,
         character::CharacterPlugin,
+        billboard::BillboardPlugin,
         autoshot::AutoShotPlugin,
     ));
 
