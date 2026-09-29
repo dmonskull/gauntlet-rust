@@ -14,7 +14,7 @@ pub struct StatusHudPlugin;
 
 impl Plugin for StatusHudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn).add_systems(Update, update);
+        app.add_systems(Startup, spawn).add_systems(Update, (update, show_in_play));
     }
 }
 
@@ -72,6 +72,20 @@ fn update(
         && hints.is_changed()
     {
         text.0 = hints.text.clone().unwrap_or_default();
+    }
+}
+
+type HudTexts = Or<(With<StatusText>, With<HintText>)>;
+
+/// The status and hints only show while a level is played, not on the
+/// title, select or loading screens.
+fn show_in_play(
+    frontend: Option<Res<crate::frontend::Frontend>>,
+    mut texts: Query<&mut Visibility, HudTexts>,
+) {
+    let want = if frontend.is_none_or(|f| f.playing()) { Visibility::Inherited } else { Visibility::Hidden };
+    for mut v in &mut texts {
+        v.set_if_neq(want);
     }
 }
 

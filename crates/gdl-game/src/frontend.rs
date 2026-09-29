@@ -563,6 +563,11 @@ impl Frontend {
         matches!(self.screen, Screen::Title | Screen::LoadingSelect | Screen::LoadingGame)
     }
 
+    /// Whether a level is being played (menus may be open over it).
+    pub fn playing(&self) -> bool {
+        self.screen == Screen::Playing
+    }
+
     /// Whether gameplay should be frozen (anything but plain play).
     fn frozen(&self) -> bool {
         !(self.screen == Screen::Playing && self.menus.is_empty())
