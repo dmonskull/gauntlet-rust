@@ -778,7 +778,7 @@ fn launch_hero(
         let items = targets.iter().map(|(e, g, t)| (e, g.translation(), t));
         if let Some((s, target, target_kind)) = item_hit(launch.check, launch.start, radius, items) {
             let at = launch.check.lerp(launch.start, s);
-            hits.write(Hit { target, attacker: shot.hero, damage, kind, push: Vec3::ZERO, at, target_kind });
+            hits.write(Hit { target, attacker: shot.hero, damage, kind, push: Vec3::ZERO, at, target_kind, ranged: true });
             continue;
         }
         info!(
@@ -915,6 +915,7 @@ fn fly(
                     push: Vec3::ZERO,
                     at: to,
                     target_kind: b.kind,
+                    ranged: true,
                 });
                 stop = Some(Stop::At(to));
             }
@@ -933,6 +934,7 @@ fn fly(
                     push: Vec3::ZERO,
                     at: to,
                     target_kind,
+                    ranged: true,
                 });
                 stop = Some(Stop::At(to));
             }
@@ -990,6 +992,7 @@ fn burst(
                 push: Vec3::ZERO,
                 at,
                 target_kind: b.kind,
+                ranged: true,
             });
         }
     }

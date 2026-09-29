@@ -19,7 +19,7 @@
 //! Monster blows lose the hero's armour first (weak ones do nothing).
 //!
 //! A blow that does damage plays the monster's hit sound, the killing one
-//! its death sound (`MonsterSounds`): the close versions, as for melee.
+//! its death sound (`MonsterSounds`): the far versions for thrown blows.
 //!
 //! Stand-ins: the level-versus-player-level damage scale, the monster
 //! resistances, elements and blocking while defending aren't applied; there's no hit
@@ -80,7 +80,7 @@ fn apply_hits(
                 if hit.damage > 0.0 {
                     m.hits = m.hits.saturating_add(1);
                     if let Some(s) = level.as_ref().and_then(|l| l.sounds.get(&m.enemy)) {
-                        let name = if m.hit_points > 0.0 { s.hit(m.strength, m.hits) } else { s.die(m.strength) };
+                        let name = if m.hit_points > 0.0 { s.hit(m.strength, m.hits, hit.ranged) } else { s.die(m.strength, hit.ranged) };
                         sounds.write(PlaySound(name.to_string()));
                     }
                 }

@@ -693,7 +693,7 @@ fn strike_blow(
     let (damage, kind) = combat::blow(strike, p.strength, &found);
     let push = if sighted { combat::push(facing, damage) } else { Vec3::ZERO };
     let at = position + Vec3::new(facing.sin(), 0.0, facing.cos()) * (combat::REACH + p.radius);
-    Some(Hit { target: found.entity, attacker, damage, kind, push, at, target_kind: found.kind })
+    Some(Hit { target: found.entity, attacker, damage, kind, push, at, target_kind: found.kind, ranged: false })
 }
 
 fn interpolate(fixed: Res<Time<Fixed>>, mut players: Query<(&Player, &mut Transform)>) {
