@@ -10,6 +10,7 @@ mod hud;
 mod level;
 mod level_material;
 mod model_mesh;
+mod population;
 mod viewer;
 mod world;
 
@@ -85,7 +86,8 @@ fn main() {
         for (name, why) in &game.failures {
             eprintln!("warning: level {name} failed to load: {why}");
         }
-        app.insert_resource(game).add_plugins((world::WorldPlugin, hud::HudPlugin));
+        app.insert_resource(game)
+            .add_plugins((world::WorldPlugin, hud::HudPlugin, population::PopulationPlugin));
     }
     app.run();
 }

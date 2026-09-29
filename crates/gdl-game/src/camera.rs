@@ -38,6 +38,17 @@ impl FlyCamera {
     }
 }
 
+impl FlyCamera {
+    /// Looks down at `target` from behind it (against its +Z) and above.
+    pub fn behind(target: &Transform, transform: &mut Transform) -> Self {
+        let back = -(target.rotation * Vec3::Z);
+        let eye = target.translation + back * 22.0 + Vec3::Y * 18.0;
+        *transform = Transform::from_translation(eye).looking_at(target.translation, Vec3::Y);
+        let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
+        Self { yaw, pitch, speed: 20.0 }
+    }
+}
+
 fn spawn_camera(mut commands: Commands) {
     let mut transform = Transform::default();
     let fly = FlyCamera::looking_at_bounds(Vec3::splat(-100.0), Vec3::splat(100.0), &mut transform);

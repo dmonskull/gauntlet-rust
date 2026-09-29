@@ -10,6 +10,7 @@ One file per system, written only once it's confirmed against the actual
 | [textures-ngc-format.md](textures-ngc-format.md) | Texture formats, palettes, lightmaps |
 | [worlds-format.md](worlds-format.md) | Level scene graph and model placement |
 | [animation-format.md](animation-format.md) | Skeletons, actions and keyframed animation |
+| [level-population.md](level-population.md) | Items, generators, monsters, exits and player starts in `WORLDS.PS2` |
 | [rendering.md](rendering.md) | How a level is drawn: diffuse × colour × lightmap |
 
 ## Confirmed and implemented
@@ -20,6 +21,9 @@ One file per system, written only once it's confirmed against the actual
   (`gdl-install`).
 - Models, textures, lightmaps and world placement for all 67 levels.
 - Skeletons and animation for every character (`--viewer`).
+- What populates every level — item types, placements (pickups,
+  generators, monsters, doors, triggers, exits, transporters) and locators
+  (player starts, boss spawn, camera points) — shown in the level view.
 
 ## Reverse engineering setup
 
@@ -47,7 +51,7 @@ names), which is how most systems here were found.
 
 - Monsters (`MONSTERS/`, `CRITTER/*.WAD`) in the viewer; weapons and
   hand effects attached to characters; blending between actions.
-- Gameplay: the main loop, entity update, combat, items, co-op.
+- Gameplay: the main loop, entity update, combat, item behaviour, co-op.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
   `FUN_80058074`: cameras, audio, 14 named realm types).
 - The rest of `WORLDS.PS2` (collision/grid tables) and audio.

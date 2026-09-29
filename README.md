@@ -54,7 +54,9 @@ with `GDL_ARTIFACTS`).
 Boots straight from your disc, validates all 67 levels, and renders any of
 them in 3D with the game's own geometry, textures and baked lightmaps. Fly
 around with WASD (Space/Ctrl up/down, Shift fast, right-drag to look, mouse
-wheel for speed) and switch levels with `[` / `]`.
+wheel for speed) and switch levels with `[` / `]`. Each level shows what
+populates it — player starts, generators, monsters, pickups, doors, exits —
+as markers and item models; `I` cycles what's shown.
 
 Not playable yet: characters, animation and gameplay haven't been reverse
 engineered. See [`docs/INDEX.md`](docs/INDEX.md) for what's confirmed and
