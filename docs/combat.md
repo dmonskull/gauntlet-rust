@@ -342,3 +342,23 @@ When `+0x900 & 0xFE` is set:
   plays at 0.2 × armour) aren't done. The attack-sound indices in `PDAT`
   (`+0x0C`–`+0x1E`) aren't played.
 - Only the Default scheme; the C-stick isn't used.
+
+## What a blow does to its target
+
+`damage.rs` applies the hero's `Hit` messages.
+
+**Monsters** (`FUN_8004e660`): hit points (`+0x200`) go down by the
+damage. The monster's own damage (`+0xBC`) is then recomputed from its
+type's damage × the level's scale, × 0.667 below two thirds of its full
+hit points and × 0.333 below one third (`r2-0x6cf0`, `r2-0x6cf8`). At 0
+or less (`r2-0x6e88`) it dies: state `+0xB4` = 8 and its slot is released
+at once (`FUN_8004f240`), so its generator can make another; the body plays
+DEATH. Not applied yet: the scale by the player's level against the
+level's (`+0x9C` of the level record), the type resistances
+(`FUN_8002f58c`), the push accumulator (`+0x2A0`), hit effects
+(`FUN_80093e08`) and score.
+
+**Generators**: hit points are the item type's × strength × the level's
+scale; each item-type's worth lost drops a strength level (its monsters
+come out a tier lower); at 0 it's removed with its model. The per-level
+model swap (`GEN_<code><n>`) isn't shown yet.
