@@ -19,7 +19,7 @@ One file per system, written only once it's confirmed against the actual
 | [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |
 | [combat.md](combat.md) | Controls → logical buttons, attack intents and chaining, target search, blows, damage |
 | [monsters.md](monsters.md) | Monster stats and tiers, the realm's monster slots, generators, placed monsters, the monster AI and mover; `CRITTER` files |
-| [critters.md](critters.md) | The scripted monsters (bosses, golem, gargoyles, general): `CRITTER` file records, loading, spawning, move choice and switching, blows, damage, death — decoded, not yet run |
+| [critters.md](critters.md) | The scripted monsters (bosses, golem, gargoyles, general): `CRITTER` file records, loading, spawning, move choice and switching, blows, damage, death; the placed golem runs |
 | [projectiles.md](projectiles.md) | Thrown weapons and monster missiles: release, aim, lob, flight, collision, blasts, the throwing AIs |
 | [items.md](items.md) | The hero's state (health, gold, keys, potions, powerups), item touch, pickups, doors, chests, exits, transporters, hints |
 | [frontend.md](frontend.md) | Fonts (`FONTS/*.FNT`, font slots), the 2D screen, title, character select, the in-game menus, death and GAME OVER |
@@ -90,9 +90,9 @@ names), which is how most systems here were found.
 
 ## Not reverse engineered yet
 
-- The critter runtime (decoded in [critters.md](critters.md), parsed in
-  `critter.rs`, not run yet; the boss intro and camera untraced) and most
-  monster AIs beyond chase/wander;
+- The critter runtime beyond the placed golem: bosses, gargoyles, the
+  general, projectile and effect blows, the boss intro and camera
+  ([critters.md](critters.md)); most monster AIs beyond chase/wander;
   hand/effect glows, blending between actions.
 - Gameplay: the main loop, damage from monsters to the hero, missile
   effects and powerups (pierce, bounce, spreads), the fireball AIs,

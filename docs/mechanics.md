@@ -194,7 +194,9 @@ still standing on the target or a child of it, `+0x8C4` / its parent
   - flag `0x1000`: `FUN_800277ec(10.0, 0, 0, 0xB4, 100)` — probably a
     camera shake (not traced);
   - flag `0x2000`: wakes the nearest placed monster (`FUN_80062fdc` for
-    class 4 within `r2-0x67a8`): its `+0xE4 |= 1`;
+    class 4 within `r2-0x67a8`): its `+0xE4 |= 1`. Here `tick` lists the
+    trigger in `Mechanics::woken` and `critters.rs` wakes the statue
+    ([critters.md](critters.md));
   - `+0xEE` ≥ 0 and `m`: camera cut to the linked transmitter
     (`FUN_8001be98`; locator kind 9, [level-population.md](level-population.md)).
 - Finally, unless `r13-0x774c` or flags `0xC0`, the touches `+0xCE` are
