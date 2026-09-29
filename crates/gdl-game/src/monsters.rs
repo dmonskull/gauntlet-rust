@@ -548,6 +548,8 @@ fn level_tuning(raw: Option<LevelTuning>) -> LevelTuning {
         experience_level: 0.0,
         experience_scale: 1.0,
         boss_enemy: -1,
+        tile_time: 1.0,
+        hazard_damage: 1.0,
     });
     for v in [
         &mut t.monster_hit_points,
@@ -561,6 +563,8 @@ fn level_tuning(raw: Option<LevelTuning>) -> LevelTuning {
         &mut t.generator_rate,
         &mut t.generator_max,
         &mut t.experience_scale,
+        &mut t.tile_time,
+        &mut t.hazard_damage,
     ] {
         if *v <= 0.0 {
             *v = 1.0;
