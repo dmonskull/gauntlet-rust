@@ -232,7 +232,9 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Time::<Fixed>::from_hz(locomotion::TICK_HZ))
             .insert_resource(Controls { script: button_script(), ..default() })
-            .add_systems(Startup, load_hero)
+            // Loaded again whenever the choice changes (the front end's
+            // character select); the next level spawn uses it.
+            .add_systems(Update, load_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
             .add_systems(FixedUpdate, tick.in_set(PlayerTick))
             .add_systems(Update, level_stats)
             .add_systems(
