@@ -55,21 +55,34 @@ with `GDL_ARTIFACTS`).
 
 ## Status
 
-Boots straight from your disc, validates all 67 levels, and renders any of
-them in 3D with the game's own geometry, textures and baked lightmaps. A
-hero (Warrior by default; `--character VAL --variant RED` for others) runs
-around the level with the game's own speeds, turn rate and walk/run
-animations at its 30 Hz tick: WASD or a gamepad's left stick, Shift to
-walk. `C` switches to a free camera (WASD fly, Space/Ctrl up/down, Shift
-fast, right-drag to look, mouse wheel for speed); `[` / `]` switch levels.
-The level's own music plays (`M` mutes it; `N` steps through the level's
-sound effects).
-Each level shows what populates it — player starts, generators, monsters,
-pickups, doors, exits — as markers and item models; `I` cycles what's shown.
+Boots straight from your disc (ISO or RVZ), validates all 67 levels, and
+plays them in 3D with the game's own geometry, textures, baked lightmaps,
+blending (additive glows, fog cards) and camera-facing foliage. The level's
+own music plays.
 
-Not a full game yet: collision, monsters, combat and items are still being
-reverse engineered. See [`docs/INDEX.md`](docs/INDEX.md) for what's
-confirmed and what's next.
+A hero (Warrior by default; `--character VAL --variant RED` for others)
+starts on the level's start point and runs around with the game's own
+speeds, turn rate, stride animations and collision (walls, ledges, steps),
+at its 30 Hz tick with smooth interpolation. The camera is the game's: it
+follows the level's own camera points and distances.
+
+| key | |
+| --- | --- |
+| WASD / left stick | move (Shift walks) |
+| `C` | free camera (WASD fly, Space/Ctrl up/down, Shift fast, right-drag look, wheel speed) |
+| `[` / `]` | previous / next level |
+| `I` | cycle item models / debug markers |
+| `K` | collision overlay |
+| `M` / `N` | mute music / play the level's next sound effect |
+
+Items, generators and monsters are placed where the game places them, but
+monsters, combat and pickups are still being reverse engineered. See
+[`docs/INDEX.md`](docs/INDEX.md) for what's confirmed and what's next.
+
+Environment switches for testing: `GDL_SCREENSHOT=out.png` (with
+`GDL_SHOT_AT=<frame>`) saves a screenshot and exits, `GDL_STICK=x,y` holds
+the stick, `GDL_FREE_CAMERA=1` starts in the free camera, `GDL_FPS=1` logs
+the frame rate.
 
 ## Crates
 
