@@ -112,6 +112,47 @@ Generators pass their `+0xDE` byte as the tier, which is their live count,
 0, at that point — so a generator never makes special variants; placed
 monsters pass their level.
 
+## Hit and death sounds
+
+`FUN_8009d940(slot, name)` runs for each realm `ENMY` record (not subtypes
+5 and 9) and looks up sound ids by name (`FUN_8001801c`, catalog names are
+15 characters, so longer names match their first 15). The name prefix:
+
+- Types 1 2 4 5 7 8 10 11 13 14 16 17 19 20 23 24 25 26: `<name>1` for
+  weak and `<name>2` for strong monsters when the subtype is below 10 and
+  the level's `+0x44` boss is -1; otherwise `<name>2` for both.
+- Type 0x1B: `<name>1`. Type 0x1D (golem): `GOL<realm letter>` (T → G,
+  `FUN_80057a68`), and `KILL` instead of `DIE`; it also loads
+  `S_GOL%cSTOMP`, `BORN`, `SWING`.
+- Others: the name as is.
+
+Sounds: `S_<p>DIECLOSE` / `S_<p>DIEFAR` (weak prefix → `0x8028b514` /
+`0x8028b554`, strong → `0x8028b534` / `0x8028b574`); hits `S_<p>HITCLOSE` /
+`HITFAR` for the weak prefix, and for the strong one `S_<p>HIT1CLOSE`,
+`HIT2CLOSE`, `HIT1FAR`, `HIT2FAR` when both prefixes exist, else
+`S_<p>HITCLOSE`/`HITFAR` for both. When the level's boss is 0x24,
+0x25 or 0x29 every name is cut to 14 characters and `C`, `D` or `B` added
+(`S_SKE2DIECLOSEC` on levelC5, `S_SPIDDIECLOSED` on levelD5,
+`S_MAGDIECLOSEB` on levelG5). Types 2 8 0x11 0x13 0x18 0x19 and the plain
+ones also get `S_<p>BITE`, type 0xB `S_<p>STRIKE` (`0x8028b654/674`; where
+they play isn't traced).
+
+`FUN_8004e660` counts a blow that does damage in `+0x204` and then plays
+(`FUN_8009d6c0` hit, `FUN_8009d7b4` death; `param_7` 1 close, 2 far —
+thrown missiles pass 2):
+
+- hit: strength `+0x206` < 2 → the weak `HIT`; else `+0x204` < 2 → `HIT1`,
+  else `HIT2`.
+- death: strength < 2 → the weak `DIE`, else the strong one.
+
+`+0x206` is set once when the monster is made (`FUN_8004ffbc` from its hit
+points against the full ones), i.e. it follows the tier.
+
+Runtime: `enemy::monster_sounds` builds the names, `damage.rs` plays the
+close ones. Stand-ins: no far versions, sounds aren't positioned, and a
+weak monster whose realm has only the strong set (the game leaves that
+slot unset) uses the strong first-hit sound.
+
 ## Level tuning (level record, `0x10C` bytes)
 
 `r13-0x72bc` points at the current level's record (set by `FUN_80058074`):

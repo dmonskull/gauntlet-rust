@@ -118,6 +118,9 @@ pub struct LevelTuning {
     pub experience_level: f32,
     /// `+0xA0`: scales the experience monsters give.
     pub experience_scale: f32,
+    /// `+0x44`: the level's boss (an enemy type), or -1. Some boss levels'
+    /// monsters use their own sound variants (`docs/monsters.md`).
+    pub boss_enemy: i32,
 }
 
 impl LevelTuning {
@@ -133,6 +136,7 @@ impl LevelTuning {
             generator_max: le_f32(l, 0xD4),
             experience_level: le_f32(l, 0x9C),
             experience_scale: le_f32(l, 0xA0),
+            boss_enemy: le_u32(l, 0x44) as i32,
         }
     }
 }

@@ -15,15 +15,19 @@
 //!
 //! Monster blows lose the hero's armour first (weak ones do nothing).
 //!
+//! A blow that does damage plays the monster's hit sound, the killing one
+//! its death sound (`MonsterSounds`): the close versions, as for melee.
+//!
 //! Stand-ins: the level-versus-player-level damage scale, the monster
 //! resistances, elements and blocking while defending aren't applied; there's no hit
-//! sound, effect or score yet. When the hero dies it plays DEATH
+//! effect or score yet, and sounds aren't placed in 3D. When the hero dies it plays DEATH
 //! and comes back at the level start at full health (lives and the
 //! game-over flow aren't done).
 
 use bevy::prelude::*;
 use gdl_formats::enemy;
 
+use crate::audio::PlaySound;
 use crate::character::Animator;
 use crate::combat::{Hit, TargetKind, Targetable};
 use crate::generators::Generator;
@@ -60,6 +64,7 @@ fn apply_hits(
     mut monsters: Query<(&mut Monster, &mut Animator)>,
     mut generators: Query<&mut Generator>,
     models: Query<(Entity, &PlacementIndex, Option<&GeneratorLooks>, Option<&Children>)>,
+    mut sounds: MessageWriter<PlaySound>,
 ) {
     for hit in hits.read() {
         match hit.target_kind {
@@ -70,6 +75,13 @@ fn apply_hits(
                     continue;
                 }
                 m.take_hit(hit.damage, hit.kind, hit.push.to_array());
+                if hit.damage > 0.0 {
+                    m.hits = m.hits.saturating_add(1);
+                    if let Some(s) = level.as_ref().and_then(|l| l.sounds.get(&m.enemy)) {
+                        let name = if m.hit_points > 0.0 { s.hit(m.strength, m.hits) } else { s.die(m.strength) };
+                        sounds.write(PlaySound(name.to_string()));
+                    }
+                }
                 // Every blow earns experience; the killing one earns the
                 // kill's.
                 if let (Some(state), Some(level)) = (state.as_mut(), level.as_ref()) {
