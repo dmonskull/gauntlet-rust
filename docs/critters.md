@@ -6,9 +6,9 @@ tables (see [monsters.md](monsters.md) for regular monsters).
 
 The file format is parsed in
 [`crates/gdl-formats/src/critter.rs`](../crates/gdl-formats/src/critter.rs),
-which has typed records and real-data tests over all 18 files. **The
-runtime has not been written yet**: nothing below runs in game. This page
-is the reverse-engineering record to build it from.
+which has typed records and real-data tests over all 18 files. The
+runtime is [`crates/gdl-game/src/critters.rs`](../crates/gdl-game/src/critters.rs).
+So far it runs the placed golem only; see [In this rewrite](#in-this-rewrite).
 
 Addresses are in `main.dol`; `r2`/`r13` are as in [INDEX.md](INDEX.md).
 Critters keep time in seconds: `r13-0x756c` is the current time and
@@ -859,3 +859,108 @@ Move kinds:
 | `r2-0x7268` | 1e21 | movement-choice start |
 | `r2-0x7220`…`r2-0x7204` | 2e21 … 1.01e21 | rejection scores |
 | `0x8011a90c`, `0x8011a920` | tables | roar threshold and boss damage scale by player count |
+
+## In this rewrite
+
+[`critters.rs`](../crates/gdl-game/src/critters.rs) runs the **placed
+golem** (enemy 0x1D) on the 30 Hz tick, interpolated for drawing. Bosses,
+the gargoyle and the general aren't run yet.
+
+- **Loading.** When the level's monster state is set up, the level's golem
+  slot loads its file (`golem`, `golemF` or `golemI` by realm) and builds its
+  body model from `MONSTERS/golem/level<realm>`. It also builds the
+  `GOL_STATUE` atree from the same folder.
+- **Statues.** Each placed golem (`ENEMYINFO` for one player) stands as
+  `GOL_STATUE` on the floor below its placement.
+  - `mechanics.rs` now lists the placements of wake triggers (flag `0x2000`)
+    that come on (`Mechanics::woken`).
+  - Each wakes the nearest statue whose horizontal distance, less the item
+    type's radius, is under 10.
+  - The level-data survey `every_real_statue_and_its_wake_trigger` finds
+    377 placed critters on the disc, only 13 with a wake trigger in reach
+    (A1, C2, G2, G3, I1, J1, K1). Most statues are scenery, as in the game.
+- **Waking.** A woken statue plays `ACTIVE`, then the golem replaces it.
+  It gets hit points `TYPE +0xE4` × the level's `+0xAC` and state 0.
+- **Each tick** it:
+  1. turns blows taken into knockback, and forgets damage after 3 s or
+     during ROAR and hit reactions;
+  2. scores the players with `TYPE +0x80`, a player hit in the last 0.25 s
+     scoring × 1000;
+  3. updates anger, and goes to state 3;
+  4. picks a move: forced, then block, then attack (least recently used,
+     with cooldowns and conditions), then movement (lowest score), then
+     TAUNT/READY;
+  5. switches by the transition table and animation modes, recording move
+     ends for cooldowns;
+  6. aims the move at its target and lands blows on their frames;
+  7. plays the move's `SFXX` sounds (`%c` = the realm letter);
+  8. walks at `MOVE +0x84` × the level's `+0xB0` in the move's direction,
+     plus knockback. It takes the walls from 2 units up with its radius,
+     probes the floor at the leading edge (from its height to −height − 3,
+     rise ≤ 2 × (radius + move)), drops at most 16/s, and stops short of
+     the hero;
+  9. turns at `MOVE +0x88`.
+- **Blows** (`DAMG`):
+  - Kind 0 sweeps the sphere on the move's node (the bone's world matrix,
+    offset `+0x20`, radius `+0x0C`) from last tick to this against the
+    hero's cylinder.
+  - A hit deals `+0x2C` × the level's `+0xBC` through `queue_hit` and
+    `DamagePlayer`, less the hero's armour. The push is 0.5 × (node
+    movement + unit(to hero, y = 1)), and the hero can't be hit by a
+    critter again for 0.25 s.
+- **Blows on it** (`damage.rs`, `TargetKind::Object` → `Critter::take_hit`):
+  - blocking takes × 0.25 and no knock kinds;
+  - `TYPE +0xBC` armour comes off (`after_armor`);
+  - the hero earns min(damage, hp) ÷ (1 + full) × `TYPE +0xE8`, plus 0.2 ×
+    `+0xE8` for the kill;
+  - the kinds and push feed the reactions and knockback;
+  - the `TYPE +0xF4` hit sound plays.
+- **Death.** At 0 hit points it loses `Targetable`, plays DEATH, and is
+  removed when that ends.
+- **Verified** in levelJ1 and levelC2:
+  - Stepping on the wake trigger wakes the statue next to it.
+  - The golems play INIT, START, TURN/WALK, then block, attack in rotation
+    (ATTACK1L → ATTACK1R → ATTACK2 → ATTACK3 → ATTACK4), roar and taunt.
+    They hit the hero (8.5–58.5 per blow) and knock him down.
+  - The hero's blows take them down (blocked ones barely scratch them),
+    and they play DEATH and go.
+- **Testing aids:**
+  - `GDL_WAKE_STATUES=<range>` wakes statues when the hero comes that
+    close;
+  - `GDL_CRITTER_HP=<scale>` scales critter hit points;
+  - `GDL_CRITTER_SHOT=<png>` saves a screenshot a few ticks into the first
+    critter death.
+
+### Stand-ins and gaps
+
+- **Wake-up.**
+  - The wake search only looks at statues. The game takes the nearest
+    `ENEMYINFO` item of any kind, if flagged on screen or always active.
+  - The statue's own animation states (`+0xC4`/`+0xCA`/`+0xC6`) are
+    reduced to "play ACTIVE, then spawn".
+- **The stomp ring** (`DAMG` kind 3, ATTACK4) hurts heroes within its
+  radius at once. In the game it's a damaging effect in the projectile
+  table, lasting `+0x08` s.
+- **Projectile kinds** (1, 2, 8), breath cones (4), generator effects (5,
+  6), grabs (7) and kind 9 aren't done.
+- **Timing.** Critter time starts at 0 each level. Moves that have never
+  run count as long ago, so they're ready; the game's clock runs from boot.
+- **Only one target is tracked.** Condition `[6]` (distance from home) and
+  the multi-target weighting are bosses' and aren't done.
+- **Not done:**
+  - look nodes, the health meter (`GMETER`), hit effects and flashes,
+    fading, shadows;
+  - breakable `NODE`s: blows land on the body, and `TYPE` flag 2's node
+    spheres aren't used;
+  - dropping `+0xACC` items;
+  - critter blows on monsters (`0x80035908`);
+  - pushing players aside (`0x800350c8`) — the golem only stops short;
+  - critter-vs-critter and critter-vs-monster collision;
+  - the level-vs-hero-level damage scale;
+  - elemental resistances (`TYPE +0xE0`).
+- **Player "attacking"** (for BLOCK) is the hero's action being in an
+  attack or defend category, rather than the game's intent test
+  (`0x80074564`).
+- **Node positions** come from the bones' last drawn transforms, one frame
+  behind. The critter's own animation clock (frame and end, at the clip's
+  rate) drives the logic.
