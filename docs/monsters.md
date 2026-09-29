@@ -214,6 +214,26 @@ on screen (`FUN_800b4ef4`, the item radius around the item: flag
 AI 15 generators (`+0xE3 == 0xF`) instead make one monster through
 `FUN_80063430`. The debug display: `"Generators"` (`FUN_8002e650`).
 
+### Blows on a generator (`FUN_8005c1c8`)
+
+Item hits: for a generator hit by a player whose level record `+0x9C`
+(experience level) is above 0, the damage is scaled by the hero's level
+`L` against it: × (1 + 0.1 × (L − lvl)) above, × (1 − 0.01 × (lvl − L))
+below, and at least 1. Then the item's armour `+0xCF` (the type's `+0x42`
+byte; -1 = none) comes off, at least 1 left, and the result, rounded half
+away from zero (`FUN_800bec14`), comes off the i16 hit points `+0xD0`.
+The strength `+0xE2` is recomputed from the type's hit points × level
+`+0xCC` (`per`): 3 above 2 × per, 2 above per, else 1, 0 at none; a change
+swaps the model (`GEN_%s%d`, `GEN_SPECIAL%d`), and at 0 the generator is
+freed and its monsters forget it. Experience: `docs/items.md`.
+
+Sounds, by the realm id `r13-0x7220` (the level id >> 8: A–K = 1–11, S 12,
+L 13, T 0): `FUN_8009bfac` plays the hit sound from `0x80123910[realm]`,
+`FUN_8009c010` the destroy sound from `0x801238dc[realm]` (only when the
+level has no boss, `r13-0x7764` < 0). They are `S_GENDAM<letter>` and
+`S_GENKILL<letter>` for A–K (S and T none, L `S_DEFEATVOXB` on a hit); the
+jungle's (J) generators of type 0x18 use `S_GENDAMWAR` / `S_GENKILLWAR`.
+
 ### Making a monster (`FUN_8004f41c`)
 
 1. The AI: `FUN_8004f7e4(type, tier, ai)` — small monsters (sco, rat, sna,

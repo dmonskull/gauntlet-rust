@@ -221,6 +221,8 @@ pub struct ItemType {
     pub value: i32,
     /// `+0x40`: powerup amount — gold value, health from food, keys.
     pub amount: i16,
+    /// `+0x42`: armour taken off each blow; -1 for items blows don't hurt.
+    pub armor: i8,
     /// `+0x44`: hit points (multiplied by a generator's strength).
     pub hit_points: i16,
     /// `+0x46`: item flags copied to each placed item.
@@ -584,6 +586,7 @@ fn parse_item_type(r: &[u8]) -> ItemType {
         center_offset: vec3(r, 0x1C),
         value: le_u32(r, 0x3C) as i32,
         amount: le_u16(r, 0x40) as i16,
+        armor: r[0x42] as i8,
         hit_points: le_u16(r, 0x44) as i16,
         flags: le_u16(r, 0x46),
         duration: le_u16(r, 0x4A) as i16,

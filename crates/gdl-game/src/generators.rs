@@ -46,6 +46,8 @@ pub struct Generator {
     /// One strength level's worth of hit points (the item type's, scaled):
     /// losing that much drops the generator a level.
     pub hit_points_per_tier: f32,
+    /// Taken off each blow (the item type's; -1 none).
+    pub armor: i8,
     pub position: [f32; 3],
     /// Heading of its front (monsters come out this way first).
     pub yaw: f32,
@@ -187,6 +189,7 @@ pub fn from_population(
                     alive: 0,
                     hit_points: (ty.hit_points as i32 * strength as i32) as f32 * tuning.generator_hit_points,
                     hit_points_per_tier: ty.hit_points as f32 * tuning.generator_hit_points,
+                    armor: ty.armor,
                     position,
                     yaw,
                     reach: ty.extent[0],
