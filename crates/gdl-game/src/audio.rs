@@ -210,7 +210,13 @@ fn play_sounds(
     options: Res<GameOptions>,
 ) {
     for PlaySound(name) in requests.read() {
-        match build_sound(&mut game, &mut tables, name) {
+        let started = std::time::Instant::now();
+        let built = build_sound(&mut game, &mut tables, name);
+        let took = started.elapsed();
+        if took.as_millis() > 2 {
+            debug!("sound {name} took {took:?} to build");
+        }
+        match built {
             Ok(effect) => {
                 commands.spawn((
                     SoundKind::Effect,
