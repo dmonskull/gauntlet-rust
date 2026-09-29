@@ -414,7 +414,9 @@ impl Critter {
         if boss {
             xp *= PLAYERS as u32;
         }
-        // A blow on a hit sphere is scaled by it, up to what it has left.
+        // A blow on a hit sphere that still has hit points is scaled by it,
+        // up to what it has left; once a sphere is spent, blows on it land
+        // on the body in full (the game skips the sphere then).
         if kind_bits & KIND_BODY == 0
             && let Some(n) = sphere
             && let Some(node) = self.kind.file.type_nodes(self.ty).get(n)
@@ -424,8 +426,6 @@ impl Critter {
             if taken < full {
                 damage = (damage * node.damage_scale).min(full - taken);
                 self.sphere_damage[n] = taken + damage;
-            } else {
-                damage = 0.0;
             }
         }
         if damage <= 0.0 {
