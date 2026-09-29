@@ -503,8 +503,12 @@ the barrel behind the start (a blue potion falls out);
 `GDL_WARP="-13.5,-2.5,-3.8"` sets off an exploding barrel (17.5 to the
 hero).
 
+A monster inside (the 84 Deaths) comes out where the container stood, at
+tier 1 (its model is loaded with the level; on levelA2
+`GDL_WARP="9.69,2.5,-50.8"` + attack breaks one open).
+
 Stand-ins: blasts and gas hurt once, at once (no effect or lingering
-cloud); no hit flash or hints 0x14 / 0x1B; monsters inside containers
-(Deaths) aren't released; a shootable wall's in-between hits are silent;
+cloud); no hit flash or hints 0x14 / 0x1B; a released monster starts
+right away (the game wakes a placed-monster item); a shootable wall's in-between hits are silent;
 safe rocks aren't hittable; walls' own collision (item shape 4) isn't
 ported, so shootable walls never blocked the hero in the first place.

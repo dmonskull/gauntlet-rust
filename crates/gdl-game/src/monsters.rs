@@ -478,6 +478,17 @@ fn setup_level(
 
     let mut wanted: Vec<(i32, i32)> =
         gens.iter().map(|g| (g.enemy, g.tier)).chain(placed.iter().map(|p| (p.enemy, p.tier))).collect();
+    // Monsters hiding in containers (Deaths in barrels) come out at tier 1.
+    let pop = &population.population;
+    for p in &pop.placements {
+        let ty = pop.resolved_type(p);
+        if let gdl_formats::population::PlacementParams::Container { contents: Some(c), .. } = p.params(ty.class)
+            && c < pop.item_types.len()
+            && let Some(id) = pop.resolve(c).enemy()
+        {
+            wanted.push((id, 1));
+        }
+    }
     wanted.sort();
     wanted.dedup();
     let mut folders = FolderCache::default();
