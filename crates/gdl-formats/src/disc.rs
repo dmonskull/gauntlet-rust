@@ -67,6 +67,59 @@ impl DiscHeader {
     }
 }
 
+/// Offset and value of the GameCube disc magic word in boot.bin.
+pub const GAMECUBE_MAGIC_OFFSET: usize = 0x1C;
+pub const GAMECUBE_MAGIC: [u8; 4] = [0xC2, 0x33, 0x9F, 0x3D];
+
+/// What a disc image file holds, told by its first 0x20 bytes rather than
+/// its extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageKind {
+    /// A plain `.iso`/`.gcm`: boot.bin with the GameCube magic.
+    GameCube,
+    /// Dolphin's RVZ.
+    Rvz,
+    /// Formats recognised only to say they're unsupported.
+    Wia,
+    Gcz,
+    Ciso,
+    Wbfs,
+    Unknown,
+}
+
+impl ImageKind {
+    pub fn sniff(head: &[u8]) -> Self {
+        let magic = |at: usize, m: &[u8]| head.get(at..at + m.len()) == Some(m);
+        if magic(GAMECUBE_MAGIC_OFFSET, &GAMECUBE_MAGIC) {
+            Self::GameCube
+        } else if magic(0, &crate::rvz::RVZ_MAGIC) {
+            Self::Rvz
+        } else if magic(0, &crate::rvz::WIA_MAGIC) {
+            Self::Wia
+        } else if magic(0, &0xB10B_C001u32.to_le_bytes()) {
+            Self::Gcz
+        } else if magic(0, b"CISO") {
+            Self::Ciso
+        } else if magic(0, b"WBFS") {
+            Self::Wbfs
+        } else {
+            Self::Unknown
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::GameCube => "GameCube disc image",
+            Self::Rvz => "RVZ",
+            Self::Wia => "WIA",
+            Self::Gcz => "GCZ",
+            Self::Ciso => "CISO",
+            Self::Wbfs => "WBFS",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// A GameCube DOL executable: up to 7 .text and 11 .data sections plus BSS,
 /// each independently placed in memory. There is no single "size" field in
 /// the header; total size is the max of every section's (offset + size).
@@ -172,6 +225,19 @@ mod tests {
         assert_eq!(header.dol_offset, 0x1DA00);
         assert_eq!(header.fst_offset, 0x25B200);
         assert_eq!(header.fst_size, 0x11872);
+    }
+
+    #[test]
+    fn sniffs_image_kind_by_magic() {
+        let mut iso = make_header(0x1DA00);
+        iso[0x1C..0x20].copy_from_slice(&GAMECUBE_MAGIC);
+        assert_eq!(ImageKind::sniff(&iso), ImageKind::GameCube);
+        assert_eq!(ImageKind::sniff(b"RVZ\x01\x01\0\0\0"), ImageKind::Rvz);
+        assert_eq!(ImageKind::sniff(b"WIA\x01"), ImageKind::Wia);
+        assert_eq!(ImageKind::sniff(&[0x01, 0xC0, 0x0B, 0xB1]), ImageKind::Gcz);
+        assert_eq!(ImageKind::sniff(b"CISO"), ImageKind::Ciso);
+        assert_eq!(ImageKind::sniff(&make_header(0)), ImageKind::Unknown, "no magic");
+        assert_eq!(ImageKind::sniff(b"RV"), ImageKind::Unknown, "short");
     }
 
     #[test]

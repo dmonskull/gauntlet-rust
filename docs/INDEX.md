@@ -5,7 +5,7 @@ One file per system, written only once it's confirmed against the actual
 
 | file | about |
 | --- | --- |
-| [disc-format.md](disc-format.md) | GameCube disc boot header, DOL layout, FST filesystem |
+| [disc-format.md](disc-format.md) | GameCube disc boot header, DOL layout, FST filesystem, RVZ images |
 | [objects-ngc-format.md](objects-ngc-format.md) | Models: header, names, texture bindings, PS2 VIF geometry |
 | [textures-ngc-format.md](textures-ngc-format.md) | Texture formats, palettes, lightmaps |
 | [worlds-format.md](worlds-format.md) | Level scene graph and model placement |
@@ -19,8 +19,10 @@ One file per system, written only once it's confirmed against the actual
 
 - Disc image: boot header, `main.dol` layout, FST — every game file read
   straight from the `.iso` (all 2,481 match an extracted copy byte-for-byte).
-- Locating a user's copy from a disc image, extracted folder or `main.dol`
-  (`gdl-install`).
+- Dolphin's RVZ compressed images (Zstandard, junk packing), read on the
+  fly — the whole disc matches the ISO byte-for-byte.
+- Locating a user's copy from a disc image (`.iso`/`.gcm`/`.rvz`), extracted
+  folder or `main.dol` (`gdl-install`).
 - Models, textures, lightmaps and world placement for all 67 levels.
 - Skeletons and animation for every player class and monster, skeletal and
   flipbook (`--viewer`).

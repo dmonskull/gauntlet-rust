@@ -1,7 +1,7 @@
 //! Locates and reads a user's own copy of Gauntlet: Dark Legacy (GameCube).
 //!
 //! Point [`GameInstall::locate`] at whatever you have — a `.iso`/`.gcm` disc
-//! image, an extracted disc folder in any of the common layouts, or the
+//! image, Dolphin's compressed `.rvz`, an extracted disc folder in any of the common layouts, or the
 //! extracted `main.dol` — and it finds the game data, checks it really is
 //! this game, and exposes every file through one read-only API keyed by the
 //! game's own paths (`LEVELS/levelA1/objects.ngc`, case-insensitive).
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use gdl_formats::{Disc, DiscHeader, FstError};
+use gdl_formats::{Disc, DiscHeader, FstError, ImageKind, RvzError};
 use thiserror::Error;
 
 /// Game IDs this runtime has been reverse engineered against. Other regional
@@ -25,8 +25,8 @@ pub enum InstallError {
     #[error("'{0}' does not exist")]
     Missing(PathBuf),
     #[error(
-        "'{0}' is a Dolphin-compressed .{1} image, which isn't supported yet. \
-         In Dolphin, right-click the game → Convert File… → Format: ISO, then point at the .iso"
+        "'{0}' is a {1} image, which isn't supported. In Dolphin, right-click the game → \
+         Convert File… → Format: RVZ (Zstandard) or ISO, then point at the new file"
     )]
     CompressedImage(PathBuf, String),
     #[error("'{0}' is not a Gauntlet: Dark Legacy disc image ({1})")]
@@ -91,10 +91,9 @@ impl GameInstall {
             .extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
+        // Disc images (.iso/.gcm/.rvz, and the compressed formats we can only
+        // explain) are told apart by their magic in `Disc::open`.
         match ext.as_str() {
-            "rvz" | "wia" | "gcz" | "ciso" | "wbfs" | "nkit" => {
-                Err(InstallError::CompressedImage(path.to_path_buf(), ext))
-            }
             "dol" | "bin" => {
                 // main.dol / boot.bin inside an extracted tree: `.../sys/main.dol`
                 // (Dolphin layout) or `.../main.dol`. Search upward from it.
@@ -117,6 +116,8 @@ impl GameInstall {
             FstError::Malformed(why) => {
                 InstallError::NotThisGame(path.to_path_buf(), format!("no valid GameCube filesystem: {why}"))
             }
+            FstError::UnsupportedImage(kind) => InstallError::CompressedImage(path.to_path_buf(), kind.into()),
+            FstError::Rvz(RvzError::Unsupported(what)) => InstallError::CompressedImage(path.to_path_buf(), what),
             other => other.into(),
         })?;
 
@@ -230,7 +231,8 @@ impl GameInstall {
     }
 
     pub fn source_kind(&self) -> &'static str {
-        match self.source {
+        match &self.source {
+            Source::Disc { disc, .. } if disc.kind == ImageKind::Rvz => "RVZ disc image",
             Source::Disc { .. } => "disc image",
             Source::Directory { .. } => "extracted folder",
         }
@@ -367,9 +369,17 @@ mod tests {
     #[test]
     fn explains_compressed_images_and_wrong_folders() {
         let top = scratch("errors");
-        let rvz = top.join("game.rvz");
+        // Recognised by magic whatever the extension says.
+        for (name, magic) in [("game.wia", &b"WIA\x01"[..]), ("game.iso", &[0x01, 0xC0, 0x0B, 0xB1])] {
+            let path = top.join(name);
+            std::fs::write(&path, magic).unwrap();
+            let err = GameInstall::locate(&path).unwrap_err();
+            assert!(matches!(err, InstallError::CompressedImage(..)), "{name}: {err}");
+            assert!(err.to_string().contains("Convert File"), "{err}");
+        }
+        let rvz = top.join("broken.rvz");
         std::fs::write(&rvz, b"RVZ\x01").unwrap();
-        assert!(matches!(GameInstall::locate(&rvz), Err(InstallError::CompressedImage(..))));
+        assert!(matches!(GameInstall::locate(&rvz), Err(InstallError::Disc(FstError::Rvz(_)))));
         assert!(matches!(GameInstall::locate(&top), Err(InstallError::NoGameData(_))));
         assert!(matches!(
             GameInstall::locate(top.join("nope.iso")),
@@ -385,6 +395,27 @@ mod tests {
         std::fs::write(&junk, vec![0u8; 0x2000]).unwrap();
         assert!(GameInstall::locate(&junk).is_err());
         let _ = std::fs::remove_dir_all(&top);
+    }
+
+    /// The user's RVZ locates as the same game as the ISO, with the same
+    /// levels and file contents.
+    #[test]
+    fn real_rvz_locates_like_the_iso() {
+        let rvz = PathBuf::from(std::env::var("GAUNTLET_RVZ").unwrap_or_else(|_| ISO.replace(".iso", ".rvz")));
+        let (Some(iso), true) = (real_iso(), rvz.is_file()) else {
+            eprintln!("skipping: no RVZ and ISO");
+            return;
+        };
+        let mut a = GameInstall::locate(&rvz).unwrap();
+        let mut b = GameInstall::locate(&iso).unwrap();
+        assert_eq!(a.source_kind(), "RVZ disc image");
+        assert_eq!(a.game_id.as_deref(), Some("GUNE5D"));
+        assert!(a.warning.is_none());
+        assert_eq!((&a.levels, a.files()), (&b.levels, b.files()));
+        for level in b.levels.clone().iter().step_by(10) {
+            let p = format!("LEVELS/{level}/objects.ngc");
+            assert!(a.read(&p).unwrap() == b.read(&p).unwrap(), "{p}");
+        }
     }
 
     /// The real disc image and the user's own extracted copy must agree on
