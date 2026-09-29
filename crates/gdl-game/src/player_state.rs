@@ -12,7 +12,7 @@ use gdl_formats::pdata::PlayerStats;
 
 use crate::audio::PlaySound;
 use crate::level::LoadedGame;
-use crate::player::{PlayerChoice, PlayerTick};
+use crate::player::{PlayerChoice, PlayerSpawn, PlayerTick};
 
 /// Health a new hero starts with.
 pub const START_HEALTH: f32 = 500.0;
@@ -253,7 +253,8 @@ impl Plugin for PlayerStatePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<DamagePlayer>()
             .init_resource::<PlayerState>()
-            .add_systems(Startup, new_hero)
+            // A new hero whenever the class choice changes.
+            .add_systems(Update, new_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
             .add_systems(FixedUpdate, (take_damage, powers_and_warning).chain().after(PlayerTick));
     }
 }
