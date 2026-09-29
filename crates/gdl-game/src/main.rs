@@ -7,6 +7,7 @@ mod autoshot;
 mod bootstrap;
 mod camera;
 mod character;
+mod collision_debug;
 mod hud;
 mod level;
 mod level_material;
@@ -96,7 +97,7 @@ fn main() {
         };
         app.insert_resource(game)
             .insert_resource(choice)
-            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, audio::GameAudioPlugin, population::PopulationPlugin));
+            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin));
     }
     app.run();
 }

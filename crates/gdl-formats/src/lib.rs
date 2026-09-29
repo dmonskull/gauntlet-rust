@@ -1,6 +1,7 @@
 pub mod anim;
 pub mod audio;
 pub mod chunk;
+pub mod collision;
 pub mod disc;
 pub mod fst;
 pub mod model;
@@ -12,6 +13,7 @@ pub mod texture;
 pub mod world;
 pub mod world_data;
 
+pub use collision::{CollisionTables, CollisionTriangle, Hit, LevelCollision, MoveParams, Moved, Query};
 pub use disc::{DiscError, DiscHeader, DolHeader, ImageKind};
 pub use fst::{Disc, DiscSource, FileEntry, Fst, FstError};
 pub use model::{MaterialBinding, ModelError, ModelFile, ModelHeader, ModelObject, Submesh, Vertex};
