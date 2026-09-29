@@ -10,6 +10,7 @@ One file per system, written only once it's confirmed against the actual
 | [textures-ngc-format.md](textures-ngc-format.md) | Texture formats, palettes, lightmaps |
 | [worlds-format.md](worlds-format.md) | Level scene graph and model placement |
 | [animation-format.md](animation-format.md) | Skeletons, actions and keyframed animation |
+| [chunk-files.md](chunk-files.md) | The `.WAD`/`.ROM` tagged-chunk container, and game text |
 | [rendering.md](rendering.md) | How a level is drawn: diffuse × colour × lightmap |
 
 ## Confirmed and implemented
@@ -21,6 +22,7 @@ One file per system, written only once it's confirmed against the actual
 - Models, textures, lightmaps and world placement for all 67 levels.
 - Skeletons and animation for every player class and monster, skeletal and
   flipbook (`--viewer`).
+- The `.WAD`/`.ROM` container every data file uses, and all game text.
 
 ## Reverse engineering setup
 
