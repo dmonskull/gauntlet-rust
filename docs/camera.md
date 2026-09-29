@@ -71,3 +71,17 @@ camera faces; [player-movement.md](player-movement.md)).
 - Starting (kind 1), intro path (3/4) and trigger (9) cameras.
 - Several players: the fit distance and pitch limit.
 - Boss cameras (`BCAM`), camera modes other than 0.
+
+## Level start
+
+`FUN_80026ca4` sets up the opening shot for the entry's starting camera
+(the kind-1 locator whose index is the entry, `r13-0x71e4`): the eye at the
+locator, facing its yaw (+π twice, so its own yaw) and −pitch, looking at a
+point as far along that direction as the players are from it; a countdown
+of 91 video fields (`r13-0x733c` = `0x5B`) and the intro flag
+(`r13-0x7340`). The director (`FUN_80023e84`) counts it down by the fields
+elapsed; once fewer than 45 remain any button (`& 0x20000FF`) cuts it to
+1. Then each update eye and target move 0.1 (`r2-0x7798`) of the way to
+where the play camera wants them, until both are within 0.3
+(`r2-0x77f8`), and play begins (players' `+0x91C` = 4). Ported in
+`play_camera.rs` (`Intro`); the hero isn't held still during the shot.
