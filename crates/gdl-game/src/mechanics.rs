@@ -732,20 +732,33 @@ fn tick(
     mech.fades = fades;
     loops.write(LoopSound { key: "mover", name: looping });
 
-    // Rotators.
+    // Rotators; a touched one grinds round (its realm's sound) until it
+    // reaches its limit.
+    let rotator_sound = match realm {
+        1 => Some(("S_ROCKROTATE", "S_ROCKSTOP")),
+        9 => Some(("S_METLROTATE", "S_METLROTATESTO")),
+        _ => None,
+    };
+    let mut grinding = false;
     for r in &mut mech.rotators {
         match r.subtype {
             0 => r.total += r.angle * FIELDS,
             2 if r.touched && !r.done => {
                 r.total += r.angle * FIELDS;
+                grinding = true;
                 if r.total.abs() >= r.limit.abs() {
                     r.total = r.limit.abs().copysign(r.total);
                     r.done = true;
+                    if let Some((_, stop)) = rotator_sound {
+                        sounds.write(PlaySound(stop.into()));
+                    }
                 }
             }
             _ => {}
         }
     }
+    let grind = rotator_sound.filter(|_| grinding).map(|(run, _)| run.to_string());
+    loops.write(LoopSound { key: "rotator", name: grind });
 
     // World poses, parents first: a node's own move, then its parent's.
     let mut world: HashMap<usize, NodePose> = HashMap::new();
