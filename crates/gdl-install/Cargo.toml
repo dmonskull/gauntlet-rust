@@ -1,0 +1,9 @@
+[package]
+name = "gdl-install"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+gdl-formats.workspace = true
+thiserror.workspace = true

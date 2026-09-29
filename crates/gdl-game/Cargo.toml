@@ -6,4 +6,6 @@ publish.workspace = true
 
 [dependencies]
 gdl-formats.workspace = true
+gdl-install.workspace = true
 bevy.workspace = true
+rfd = "0.17.2"

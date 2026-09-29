@@ -1,69 +1,64 @@
-//! Entry point. Points at your own legally-owned Gauntlet: Dark Legacy
-//! (GameCube) disc image via the `GAUNTLET_DISC` environment variable, reads
-//! its boot header and main.dol layout, then opens a bare window as a
-//! plumbing check. No game assets ship in this repository.
+//! Gauntlet: Dark Legacy runtime. Point it at your own copy of the game —
+//! disc image, extracted folder or main.dol — and it finds, validates and
+//! loads the rest. No game assets ship with this program.
 
-use std::fs::File;
-use std::io::BufReader;
+mod autoshot;
+mod bootstrap;
+mod level;
 
 use bevy::prelude::*;
-use gdl_formats::{DiscHeader, DolHeader};
+
+use bootstrap::Args;
+use level::LoadedGame;
 
 fn main() {
-    let disc_info = match load_disc_info() {
-        Ok(info) => info,
+    let args = match Args::parse() {
+        Ok(args) => args,
+        Err(message) => {
+            println!("{message}");
+            return;
+        }
+    };
+
+    let install = match bootstrap::resolve(&args) {
+        Ok(install) => install,
         Err(message) => {
             eprintln!("{message}");
             std::process::exit(1);
         }
     };
 
-    println!("{disc_info}");
+    println!(
+        "Game: {} ({}) from {} {}",
+        install.title.as_deref().unwrap_or("Gauntlet: Dark Legacy"),
+        install.game_id.as_deref().unwrap_or("id unknown"),
+        install.source_kind(),
+        install.origin.display()
+    );
+    if let Some(warning) = &install.warning {
+        eprintln!("warning: {warning}");
+    }
+
+    let game = match LoadedGame::load(install, args.level.as_deref()) {
+        Ok(game) => game,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+    };
+    println!("{}", game.summary_line());
 
     App::new()
-        .insert_resource(WindowTitle(disc_info))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "gdl-game".into(),
+                title: format!("Gauntlet: Dark Legacy — {}", game.current_level),
                 ..default()
             }),
             ..default()
         }))
-        .add_systems(Startup, set_window_title)
+        .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.03)))
+        .add_plugins(autoshot::AutoShotPlugin)
+        .insert_resource(game)
+        .add_systems(Startup, level::spawn_boot_screen)
         .run();
-}
-
-#[derive(Resource)]
-struct WindowTitle(String);
-
-fn set_window_title(title: Res<WindowTitle>, mut windows: Query<&mut Window>) {
-    if let Ok(mut window) = windows.single_mut() {
-        window.title = format!("gdl-game — {}", title.0);
-    }
-}
-
-fn load_disc_info() -> Result<String, String> {
-    let disc_path = std::env::var("GAUNTLET_DISC").map_err(|_| {
-        "Set GAUNTLET_DISC to the path of your own Gauntlet: Dark Legacy (GameCube) \
-         disc image (.iso/.gcm) before running gdl-game."
-            .to_string()
-    })?;
-
-    let file = File::open(&disc_path)
-        .map_err(|e| format!("Failed to open '{disc_path}': {e}"))?;
-    let mut reader = BufReader::new(file);
-
-    let boot = DiscHeader::read_from(&mut reader)
-        .map_err(|e| format!("Failed to read disc header from '{disc_path}': {e}"))?;
-    let dol = DolHeader::read_from(&mut reader, boot.dol_offset)
-        .map_err(|e| format!("Failed to read main.dol header: {e}"))?;
-
-    Ok(format!(
-        "{} ({}) — main.dol @ 0x{:X}, {} bytes, entry 0x{:08X}",
-        boot.title,
-        boot.game_id,
-        boot.dol_offset,
-        dol.file_size(),
-        dol.entry_point,
-    ))
 }

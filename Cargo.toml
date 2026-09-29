@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/gdl-formats", "crates/gdl-game"]
+members = ["crates/gdl-formats", "crates/gdl-install", "crates/gdl-game"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +9,7 @@ publish = false
 
 [workspace.dependencies]
 gdl-formats = { path = "crates/gdl-formats" }
+gdl-install = { path = "crates/gdl-install" }
 bevy = { version = "0.18.1" }
 thiserror = "2"
 
