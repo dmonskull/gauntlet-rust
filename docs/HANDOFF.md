@@ -66,11 +66,11 @@ the levelA2 Death barrel).
     model needs the effects system).
   - Victory: the boss's death marks the realm in `PlayerState::realms_beaten`
     (the record's `+0x1EC8`, `FUN_8001b854`). After 5 s the party goes back
-    to the tower (a stand-in: the game's heroes cheer (action `0x1C`), the
+    to the tower (a stand-in: the game's heroes pick up the key (action `0x1C`, PICK), the
     `BOSSKEY`/`BOSSKEY2` effect shows, and their exit state
     (`FUN_8007692c` case 4 → `FUN_80077ccc`) ends the level). Tested on B6
     with `GDL_WARP="-3.2,29.7,-12" GDL_CRITTER_HP=0.02` + attack.
-  - Not done: the `BOSSKEY` effect, the victory cheer, the boss intro and
+  - Not done: the `BOSSKEY` effect, the key pick-up, the boss intro and
     camera, and multi-part bosses such as the chimera; the other bosses are
     untested.
 - **Throw aim** (a user report): throws now aim from the release height at
