@@ -449,6 +449,94 @@ impl CollisionNode {
     }
 }
 
+/// Where a moving node is now, as a rigid motion of the node from where the
+/// file places it: `world = rotation · rest + translation` (column vectors,
+/// `rotation` row-major). The game moves a node's instance matrix (lifts
+/// along Y, rotators about Y) and turns each query into the node's frame
+/// (`docs/collision.md`, `docs/mechanics.md`); applying the inverse motion
+/// to the query here is the same thing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NodePose {
+    pub rotation: [f32; 9],
+    pub translation: [f32; 3],
+}
+
+impl NodePose {
+    /// Where the file puts it.
+    pub const REST: Self = Self { rotation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], translation: [0.0; 3] };
+
+    /// A plain move.
+    pub fn translation(t: [f32; 3]) -> Self {
+        Self { translation: t, ..Self::REST }
+    }
+
+    /// A turn by `angle` about the vertical through `pivot`, the way the
+    /// game turns an instance: its X axis toward its Z axis for a positive
+    /// angle.
+    pub fn turn_about(pivot: [f32; 3], angle: f32) -> Self {
+        let (s, c) = angle.sin_cos();
+        // x' = c·x − s·z, z' = s·x + c·z.
+        let rotation = [c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c];
+        let r = Self { rotation, translation: [0.0; 3] };
+        Self { rotation, translation: sub(pivot, r.apply_vector(pivot)) }
+    }
+
+    pub fn is_rest(&self) -> bool {
+        *self == Self::REST
+    }
+
+    pub fn apply_vector(&self, v: [f32; 3]) -> [f32; 3] {
+        let m = &self.rotation;
+        [
+            m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+            m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+            m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
+        ]
+    }
+
+    pub fn apply(&self, p: [f32; 3]) -> [f32; 3] {
+        add(self.apply_vector(p), self.translation)
+    }
+
+    /// The rest position of a point the pose puts at `p`.
+    pub fn inverse_apply(&self, p: [f32; 3]) -> [f32; 3] {
+        let v = sub(p, self.translation);
+        let m = &self.rotation;
+        [
+            m[0] * v[0] + m[3] * v[1] + m[6] * v[2],
+            m[1] * v[0] + m[4] * v[1] + m[7] * v[2],
+            m[2] * v[0] + m[5] * v[1] + m[8] * v[2],
+        ]
+    }
+
+    /// This pose followed by `after`.
+    pub fn then(&self, after: &Self) -> Self {
+        let (a, b) = (&after.rotation, &self.rotation);
+        let rotation = std::array::from_fn(|k| {
+            let (i, j) = (k / 3, k % 3);
+            a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j]
+        });
+        Self { rotation, translation: after.apply(self.translation) }
+    }
+
+    /// The motion from `self` to `to`: `self.then(&delta) == to`.
+    pub fn delta_to(&self, to: &Self) -> Self {
+        let inverse = {
+            let m = &self.rotation;
+            let rotation = [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
+            let r = Self { rotation, translation: [0.0; 3] };
+            Self { rotation, translation: scale(r.apply_vector(self.translation), -1.0) }
+        };
+        inverse.then(to)
+    }
+}
+
+impl Default for NodePose {
+    fn default() -> Self {
+        Self::REST
+    }
+}
+
 /// What a query looks for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Query {
@@ -497,6 +585,11 @@ pub struct LevelCollision {
     pub nodes: Vec<CollisionNode>,
     pub moving: Vec<usize>,
     pub bounds: [[f32; 3]; 2],
+    /// Per node, where it has moved to: only the moving nodes'
+    /// ([`CollisionNode::moves`]) are used, the rest stay at rest as their
+    /// triangles are in world space. Set by whatever moves them
+    /// ([`set_pose`](Self::set_pose)).
+    pub poses: Vec<NodePose>,
 }
 
 /// Per-actor movement settings for [`LevelCollision::move_actor`].
@@ -638,19 +731,35 @@ impl LevelCollision {
         Ok(Self {
             triangles: world.collision.triangles.clone(),
             grid: world.collision.grid.clone(),
+            poses: vec![NodePose::REST; world.nodes.len()],
             nodes,
             moving: world.collision.grid.moving_nodes(),
             bounds: [h.bounds_min, h.bounds_max],
         })
     }
 
-    /// Each triangle's corners in world space (moving nodes at rest), with
-    /// its owning node.
+    /// Moves node `node` to `pose` (relative to where the file puts it).
+    /// Only moving nodes' collision follows; a static node's triangles are
+    /// fixed in world space, as in the game.
+    pub fn set_pose(&mut self, node: usize, pose: NodePose) {
+        if let Some(p) = self.poses.get_mut(node) {
+            *p = pose;
+        }
+    }
+
+    /// Where node `node` is now (at rest unless something moved it).
+    pub fn pose(&self, node: usize) -> NodePose {
+        self.poses.get(node).copied().unwrap_or(NodePose::REST)
+    }
+
+    /// Each triangle's corners in world space (moving nodes where they are
+    /// now), with its owning node.
     pub fn world_triangles(&self) -> impl Iterator<Item = (usize, usize, [[f32; 3]; 3])> + '_ {
         self.nodes.iter().enumerate().flat_map(move |(ni, n)| {
+            let pose = if n.moves() { self.pose(ni) } else { NodePose::REST };
             n.triangles.clone().map(move |ti| {
                 let off = if n.moves() { n.center } else { [0.0; 3] };
-                (ni, ti, self.triangles[ti].vertices().map(|v| add(v, off)))
+                (ni, ti, self.triangles[ti].vertices().map(|v| pose.apply(add(v, off))))
             })
         })
     }
@@ -703,6 +812,17 @@ impl LevelCollision {
             if node.flags & q.node_mask == 0 || node.disable & q.disable_mask != 0 || node.triangles.is_empty() {
                 continue;
             }
+            // A moving node that has moved: test the query moved back into
+            // the node's rest frame (the game moves it into the node's
+            // frame), and move the hit back out.
+            let pose = if node.moves() { self.pose(ni) } else { NodePose::REST };
+            let posed = !pose.is_rest();
+            let (from, to, dir, y_lo, y_hi) = if posed {
+                let (f, t) = (pose.inverse_apply(from), pose.inverse_apply(to));
+                (f, t, pose.inverse_apply(add(pose.translation, dir)), f[1].min(t[1]) - r, f[1].max(t[1]) + r)
+            } else {
+                (from, to, dir, y_lo, y_hi)
+            };
             // Bounding-sphere reject.
             let reach = node.radius + r;
             let rel = sub(node.center, from);
@@ -749,7 +869,12 @@ impl LevelCollision {
                     score *= 0.95; // grazing hits count as a little nearer
                 }
                 if score < node_best.map_or(NO_SCORE, |h| h.score) {
-                    node_best = Some(Hit { node: ni, triangle: ti, point: add(p, off), normal: tri.normal, score });
+                    let (point, normal) = if posed {
+                        (pose.apply(add(p, off)), pose.apply_vector(tri.normal))
+                    } else {
+                        (add(p, off), tri.normal)
+                    };
+                    node_best = Some(Hit { node: ni, triangle: ti, point, normal, score });
                 }
             }
             if let Some(h) = node_best
@@ -1332,6 +1457,51 @@ mod tests {
         put_u32(&mut f, rows_at + 4, 1); // row 0: column 0 only, cell 1
         let world = WorldFile::parse(&f).unwrap();
         LevelCollision::new(&world).unwrap()
+    }
+
+    #[test]
+    fn poses_compose_and_invert() {
+        let a = NodePose::turn_about([1.0, 0.0, 2.0], 0.7);
+        let b = NodePose::translation([0.0, 3.0, -1.0]);
+        let p = [4.0, 5.0, -6.0];
+        assert!(close(a.inverse_apply(a.apply(p)), p, 1e-5));
+        assert!(close(a.then(&b).apply(p), b.apply(a.apply(p)), 1e-5));
+        assert!(close(a.then(&a.delta_to(&b)).apply(p), b.apply(p), 1e-4));
+        // The pivot stays put; +X turns toward +Z.
+        assert!(close(a.apply([1.0, 0.0, 2.0]), [1.0, 0.0, 2.0], 1e-6));
+        let q = NodePose::turn_about([0.0; 3], std::f32::consts::FRAC_PI_2);
+        assert!(close(q.apply([1.0, 0.0, 0.0]), [0.0, 0.0, 1.0], 1e-6));
+    }
+
+    /// A moving node's collision follows its pose: lifted, a floor is found
+    /// higher; turned, a wall faces the new way.
+    #[test]
+    fn moving_nodes_collide_where_they_are() {
+        // Node space: a floor over x, z in [-5, 5] and a wall at x = 2
+        // facing -x, around the node's origin.
+        let mut tris: Vec<CollisionTriangle> = floor(-5.0, 5.0, 0.0).to_vec();
+        for t in &mut tris {
+            t.origin[2] -= 5.0;
+        }
+        let mut walls = wall_facing_neg_x(2.0, 0.0, 4.0).to_vec();
+        for t in &mut walls {
+            t.origin[2] -= 5.0;
+        }
+        tris.extend(walls);
+        let mut level = one_node_level(&tris, node_flags::MOVES | 0x6);
+        let at = level.nodes[0].center;
+        let probe = |c: &LevelCollision| c.floor_probe([at[0] + 1.0, 6.0, at[2] + 1.0], 0.0, -10.0, 0.5, 0);
+        let rest = probe(&level).unwrap().point[1];
+        level.set_pose(0, NodePose::translation([0.0, 3.0, 0.0]));
+        assert!((probe(&level).unwrap().point[1] - (rest + 3.0)).abs() < 1e-4);
+
+        level.set_pose(0, NodePose::REST);
+        let along_z = |c: &LevelCollision| c.wall([at[0], at[1] + 1.0, at[2]], [at[0], at[1] + 1.0, at[2] + 4.0], 0.5);
+        assert!(along_z(&level).is_none(), "at rest the wall runs along the path");
+        level.set_pose(0, NodePose::turn_about(at, std::f32::consts::FRAC_PI_2));
+        let hit = along_z(&level).expect("turned a quarter, the wall crosses the path");
+        assert!(close(hit.normal, [0.0, 0.0, -1.0], 1e-5), "{:?}", hit.normal);
+        assert!((hit.point[2] - (at[2] + 2.0)).abs() < 1e-3, "{:?}", hit.point);
     }
 
     /// Every level's collision: triangles decode to the faces their normals

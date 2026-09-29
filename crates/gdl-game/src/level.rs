@@ -18,6 +18,7 @@ pub struct LevelSummary {
 }
 
 /// A level's parsed data, ready to turn into meshes.
+#[allow(dead_code)] // `placement_nodes`, `nodes`: for the level mechanics runtime (work in progress).
 pub struct LevelData {
     pub name: String,
     pub model: ModelFile,
@@ -25,6 +26,10 @@ pub struct LevelData {
     /// Model placements: (object index into `model.objects`, world
     /// position, the node's render flags).
     pub placements: Vec<(usize, [f32; 3], u32)>,
+    /// The `WORLDS.PS2` node each of `placements` comes from.
+    pub placement_nodes: Vec<usize>,
+    /// The scene graph, for what moves nodes (`mechanics.rs`).
+    pub nodes: Vec<gdl_formats::WorldNode>,
     /// Items, generators, monsters, player starts and the rest.
     pub population: Population,
     pub collision: LevelCollision,
@@ -118,20 +123,22 @@ pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, St
     // Nodes find their model by name, like the game does.
     let by_name: std::collections::HashMap<&str, usize> =
         model.objects.iter().enumerate().map(|(i, o)| (o.name.as_str(), i)).collect();
-    let placements = world
+    let (placements, placement_nodes) = world
         .nodes
         .iter()
         .zip(positions)
-        .filter(|(n, _)| n.has_model)
-        .filter_map(|(n, p)| Some((*by_name.get(n.name.as_str())?, p?, n.render_flags)))
-        .collect();
+        .enumerate()
+        .filter(|(_, (n, _))| n.has_model)
+        .filter_map(|(i, (n, p))| Some(((*by_name.get(n.name.as_str())?, p?, n.render_flags), i)))
+        .unzip();
 
     let texmods = match install.read(&format!("LEVELS/{name}/ANIM.PS2")) {
         Ok(b) => TexMod::parse_all(&b).map_err(|e| format!("ANIM.PS2: {e}"))?,
         Err(_) => Vec::new(),
     };
 
-    Ok(LevelData { name: name.to_string(), model, textures, placements, population, collision, texmods })
+    let nodes = world.nodes;
+    Ok(LevelData { name: name.to_string(), model, textures, placements, placement_nodes, nodes, population, collision, texmods })
 }
 
 fn summarize(level: &LevelData) -> LevelSummary {
