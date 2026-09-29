@@ -4,7 +4,11 @@
 
 mod autoshot;
 mod bootstrap;
+mod camera;
+mod hud;
 mod level;
+mod level_material;
+mod world;
 
 use bevy::prelude::*;
 
@@ -46,19 +50,27 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("{}", game.summary_line());
+    println!("{}; starting in {}", game.summary_line(), game.current_name());
+    for (name, why) in &game.failures {
+        eprintln!("warning: level {name} failed to load: {why}");
+    }
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: format!("Gauntlet: Dark Legacy — {}", game.current_level),
+                title: "Gauntlet: Dark Legacy".into(),
                 ..default()
             }),
             ..default()
         }))
         .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.03)))
-        .add_plugins(autoshot::AutoShotPlugin)
         .insert_resource(game)
-        .add_systems(Startup, level::spawn_boot_screen)
+        .add_plugins((
+            level_material::LevelMaterialPlugin,
+            camera::CameraPlugin,
+            world::WorldPlugin,
+            hud::HudPlugin,
+            autoshot::AutoShotPlugin,
+        ))
         .run();
 }

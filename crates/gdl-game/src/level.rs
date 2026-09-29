@@ -1,18 +1,26 @@
-//! Loads and validates every level's model data at boot, and holds the game
-//! install for later on-demand reads.
+//! Validates every level at boot and loads level data on demand.
 
-use std::io::Cursor;
+use gdl_formats::{ModelFile, WorldFile, texture};
+use gdl_install::GameInstall;
 
 use bevy::prelude::*;
-use gdl_formats::{MaterialBinding, ModelHeader};
-use gdl_install::GameInstall;
 
 pub struct LevelSummary {
     pub name: String,
-    pub objects: u32,
-    pub bindings: usize,
-    pub textured: usize,
-    pub texture_bytes: usize,
+    pub objects: usize,
+    pub triangles: usize,
+    pub textures: usize,
+    /// Textures using format selectors the game's own tables don't cover.
+    pub unsupported_textures: usize,
+}
+
+/// A level's parsed data, ready to turn into meshes.
+pub struct LevelData {
+    pub name: String,
+    pub model: ModelFile,
+    pub textures: Vec<u8>,
+    /// Model placements: (object index into `model.objects`, world position).
+    pub placements: Vec<(usize, [f32; 3])>,
 }
 
 #[derive(Resource)]
@@ -21,123 +29,114 @@ pub struct LoadedGame {
     pub levels: Vec<LevelSummary>,
     /// Levels whose data failed to parse, with the reason.
     pub failures: Vec<(String, String)>,
-    pub current_level: String,
+    /// Index into `levels` of the level currently shown.
+    pub current: usize,
 }
 
 impl LoadedGame {
+    /// Parses every level fully (geometry and textures) so a broken level
+    /// is reported up front rather than when someone walks into it.
     pub fn load(mut install: GameInstall, wanted_level: Option<&str>) -> Result<Self, String> {
         let names = install.levels.clone();
         if names.is_empty() {
             return Err("The game data has no levels.".into());
         }
 
-        let current_level = match wanted_level {
-            Some(want) => names
-                .iter()
-                .find(|n| n.eq_ignore_ascii_case(want))
-                .cloned()
-                .ok_or_else(|| format!("No level named '{want}'. Levels: {}", names.join(", ")))?,
-            None => names
-                .iter()
-                .find(|n| n.eq_ignore_ascii_case("levelA1"))
-                .unwrap_or(&names[0])
-                .clone(),
-        };
-
         let mut levels = Vec::new();
         let mut failures = Vec::new();
         for name in &names {
-            match load_level(&mut install, name) {
+            match load_level(&mut install, name).map(|data| summarize(&data)) {
                 Ok(summary) => levels.push(summary),
                 Err(why) => failures.push((name.clone(), why)),
             }
         }
-        if failures.iter().any(|(n, _)| *n == current_level) {
-            let why = &failures.iter().find(|(n, _)| *n == current_level).unwrap().1;
-            return Err(format!("Level {current_level} failed to load: {why}"));
+        if levels.is_empty() {
+            return Err(format!("No level could be loaded. First failure: {:?}", failures.first()));
         }
 
-        Ok(Self { install, levels, failures, current_level })
+        let current = match wanted_level {
+            Some(want) => levels
+                .iter()
+                .position(|l| l.name.eq_ignore_ascii_case(want))
+                .ok_or_else(|| match failures.iter().find(|(n, _)| n.eq_ignore_ascii_case(want)) {
+                    Some((n, why)) => format!("Level {n} failed to load: {why}"),
+                    None => format!("No level named '{want}'. Levels: {}", names.join(", ")),
+                })?,
+            None => levels.iter().position(|l| l.name == "levelA1").unwrap_or(0),
+        };
+
+        Ok(Self { install, levels, failures, current })
+    }
+
+    pub fn current_name(&self) -> &str {
+        &self.levels[self.current].name
+    }
+
+    pub fn load_current(&mut self) -> Result<LevelData, String> {
+        let name = self.levels[self.current].name.clone();
+        load_level(&mut self.install, &name)
     }
 
     pub fn summary_line(&self) -> String {
-        let bindings: usize = self.levels.iter().map(|l| l.bindings).sum();
+        let triangles: usize = self.levels.iter().map(|l| l.triangles).sum();
+        let textures: usize = self.levels.iter().map(|l| l.textures).sum();
         format!(
-            "Loaded {}/{} levels ({} material bindings); starting in {}",
+            "Loaded {}/{} levels: {} triangles, {} textures",
             self.levels.len(),
             self.levels.len() + self.failures.len(),
-            bindings,
-            self.current_level
+            triangles,
+            textures
         )
     }
 }
 
-fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelSummary, String> {
+pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, String> {
     let objects = install
         .read(&format!("LEVELS/{name}/objects.ngc"))
         .map_err(|e| e.to_string())?;
-    let texture_bytes = install
+    let textures = install
         .read(&format!("LEVELS/{name}/textures.ngc"))
-        .map_err(|e| e.to_string())?
-        .len();
+        .map_err(|e| e.to_string())?;
+    let world_file = install
+        .read(&format!("LEVELS/{name}/WORLDS.PS2"))
+        .map_err(|e| e.to_string())?;
+    let model = ModelFile::parse(&objects).map_err(|e| format!("objects.ngc: {e}"))?;
+    let world = WorldFile::parse(&world_file).map_err(|e| format!("WORLDS.PS2: {e}"))?;
+    let positions = world.world_positions().map_err(|e| format!("WORLDS.PS2: {e}"))?;
 
-    let mut cursor = Cursor::new(&objects);
-    let header = ModelHeader::read_from(&mut cursor).map_err(|e| e.to_string())?;
-    let bindings = MaterialBinding::read_all_from(&mut cursor, &header).map_err(|e| e.to_string())?;
+    // Nodes find their model by name, like the game's FUN_800b8684.
+    let by_name: std::collections::HashMap<&str, usize> =
+        model.objects.iter().enumerate().map(|(i, o)| (o.name.as_str(), i)).collect();
+    let placements = world
+        .nodes
+        .iter()
+        .zip(positions)
+        .filter(|(n, _)| n.has_model)
+        .filter_map(|(n, p)| Some((*by_name.get(n.name.as_str())?, p?)))
+        .collect();
 
-    let mut textured = 0;
-    for (i, b) in bindings.iter().enumerate().filter(|(_, b)| b.is_textured()) {
-        if b.texture_offset as usize >= texture_bytes {
-            return Err(format!("binding {i} points past the end of textures.ngc"));
-        }
-        textured += 1;
-    }
-
-    Ok(LevelSummary {
-        name: name.to_string(),
-        objects: header.num_objects,
-        bindings: bindings.len(),
-        textured,
-        texture_bytes,
-    })
+    Ok(LevelData { name: name.to_string(), model, textures, placements })
 }
 
-pub fn spawn_boot_screen(mut commands: Commands, game: Res<LoadedGame>) {
-    commands.spawn(Camera2d);
-
-    let install = &game.install;
-    let mut text = format!(
-        "{}  [{}]\n{}: {}\n\n{}\n",
-        install.title.as_deref().unwrap_or("Gauntlet: Dark Legacy"),
-        install.game_id.as_deref().unwrap_or("id unknown"),
-        install.source_kind(),
-        install.origin.display(),
-        game.summary_line(),
-    );
-    if let Some(level) = game.levels.iter().find(|l| l.name == game.current_level) {
-        text += &format!(
-            "\n{}: {} objects, {} material bindings ({} textured), {} KiB of textures\n",
-            level.name,
-            level.objects,
-            level.bindings,
-            level.textured,
-            level.texture_bytes / 1024
-        );
+fn summarize(level: &LevelData) -> LevelSummary {
+    let mut textures = 0;
+    let mut unsupported_textures = 0;
+    for b in level.model.bindings.iter().filter(|b| b.is_textured()) {
+        match texture::decode(&level.textures, b) {
+            Ok(_) => textures += 1,
+            Err(_) => unsupported_textures += 1,
+        }
     }
-    for (name, why) in &game.failures {
-        text += &format!("\nfailed: {name}: {why}");
+    LevelSummary {
+        name: level.name.clone(),
+        objects: level.placements.len(),
+        triangles: level
+            .placements
+            .iter()
+            .flat_map(|&(i, _)| &level.model.objects[i].submeshes)
+            .map(|s| s.triangles.len())
+            .sum(),
+        textures,
+        unsupported_textures,
     }
-    // Bevy's built-in font is ASCII-only; keep on-screen text ASCII.
-    text += "\n\nLevel geometry isn't reverse engineered yet - see docs/INDEX.md.";
-
-    commands.spawn((
-        Text::new(text),
-        TextFont { font_size: 18.0, ..default() },
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(24.0),
-            left: Val::Px(24.0),
-            ..default()
-        },
-    ));
 }

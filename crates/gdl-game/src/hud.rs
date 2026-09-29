@@ -1,0 +1,75 @@
+//! On-screen status: which game is loaded, current level, controls.
+//! Bevy's built-in font is ASCII-only, so keep all text here ASCII.
+
+use bevy::prelude::*;
+
+use crate::level::LoadedGame;
+use crate::world::CurrentLevelStats;
+
+pub struct HudPlugin;
+
+impl Plugin for HudPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, spawn_hud).add_systems(Update, update_hud);
+    }
+}
+
+#[derive(Component)]
+struct HudText;
+
+fn spawn_hud(mut commands: Commands) {
+    commands.spawn((
+        HudText,
+        Text::new(""),
+        TextFont { font_size: 15.0, ..default() },
+        TextShadow::default(),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(12.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+    ));
+}
+
+fn update_hud(
+    game: Res<LoadedGame>,
+    stats: Option<Res<CurrentLevelStats>>,
+    mut text: Query<&mut Text, With<HudText>>,
+) {
+    let Some(stats) = stats else { return };
+    if !stats.is_changed() && !game.is_changed() {
+        return;
+    }
+    let Ok(mut text) = text.single_mut() else { return };
+
+    let install = &game.install;
+    let mut s = format!(
+        "{} [{}] - {}\n{}\n\n{} ({}/{}): ",
+        install.title.as_deref().unwrap_or("Gauntlet: Dark Legacy"),
+        install.game_id.as_deref().unwrap_or("?"),
+        install.source_kind(),
+        game.summary_line(),
+        stats.name,
+        game.current + 1,
+        game.levels.len(),
+    );
+    match &stats.error {
+        Some(e) => s += &format!("failed to load: {e}"),
+        None => {
+            s += &format!(
+                "{} objects, {} triangles in {} meshes",
+                game.levels[game.current].objects, stats.triangles, stats.meshes
+            )
+        }
+    }
+    let summary = &game.levels[game.current];
+    if summary.unsupported_textures > 0 {
+        s += &format!(" ({} textures in unsupported formats)", summary.unsupported_textures);
+    }
+    for (name, why) in &game.failures {
+        s += &format!("\nlevel {name} failed: {why}");
+    }
+    s += "\n\nWASD move  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed  [ ] level";
+    text.0 = s;
+}

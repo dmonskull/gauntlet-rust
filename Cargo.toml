@@ -19,6 +19,11 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
 
+# Parses every level and decodes every texture at boot; keep that fast in
+# debug builds too.
+[profile.dev.package.gdl-formats]
+opt-level = 3
+
 [profile.release]
 debug = 1
 strip = false
