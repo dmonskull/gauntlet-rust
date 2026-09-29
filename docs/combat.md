@@ -328,8 +328,9 @@ When `+0x900 & 0xFE` is set:
   co-op combos; turbo + attack leaves the request unchanged, as the game
   does below 40 turbo. Magic without potions just walks, as the game does
   for a hero with none (without the cue).
-- Projectiles (throws, strafe attacks, power throw) play their actions but
-  release nothing yet.
+- Projectiles (throws, strafe attacks, power throw) are released as the
+  game does ([projectiles.md](projectiles.md)); the weapon power-up shots
+  (`0x800`, `0x6000`) aren't.
 - A looping clip counts as ended each time it comes round (the game's end
   flag for loops isn't traced; DEFEND2 needs it to finish).
 - Searches start from the hero's position before this tick's move, not
