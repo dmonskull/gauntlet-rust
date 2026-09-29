@@ -37,7 +37,8 @@ One file per system, written only once it's confirmed against the actual
   generators, monsters, doors, triggers, exits, transporters) and locators
   (player starts, boss spawn, camera points) — shown in the level view.
 - Level collision (triangles, grid) and the game's floor, wall and
-  move-with-collision queries.
+  move-with-collision queries, including the player's own wall/floor chain
+  and its size from `PDAT`.
 
 ## Reverse engineering setup
 
@@ -72,4 +73,5 @@ names), which is how most systems here were found.
 - The rest of `WORLDS.PS2` (header words 4 and 6).
 - Audio behaviour beyond playback: music track switching, ducking,
   positional sound.
-- Character type data (collision radius, step height) that the movers read.
+- Monster/actor type data (collision radius, step height) that the actor
+  movers read (players' is decoded), and actor-vs-actor collision.
