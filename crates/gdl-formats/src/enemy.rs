@@ -262,6 +262,96 @@ pub fn atree_name(id: i32, tier: i32) -> Option<String> {
     })
 }
 
+/// The sounds a monster type makes when a blow lands on it and when it
+/// dies, as catalog names (`docs/monsters.md`, "Hit and death sounds").
+/// Each is the heard-close version; the far ones (`…FAR`) are for blows
+/// from far away (thrown missiles).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonsterSounds {
+    /// Dying: strength 1, and stronger.
+    pub die: [String; 2],
+    /// Hit: strength 1; stronger ones on their first blow, then later ones.
+    pub hit: [String; 3],
+}
+
+impl MonsterSounds {
+    /// The death sound for a monster of this strength.
+    pub fn die(&self, strength: i16) -> &str {
+        &self.die[usize::from(strength >= 2)]
+    }
+
+    /// The hit sound for a monster of this strength that has now taken
+    /// `hits` blows (counting this one).
+    pub fn hit(&self, strength: i16, hits: i16) -> &str {
+        match (strength < 2, hits < 2) {
+            (true, _) => &self.hit[0],
+            (false, true) => &self.hit[1],
+            (false, false) => &self.hit[2],
+        }
+    }
+}
+
+/// Enemy types whose sounds come in a weak (`<name>1`) and a strong
+/// (`<name>2`) set, the strong one with two hit sounds.
+const PAIRED_SOUND_TYPES: [i32; 18] = [1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17, 19, 20, 23, 24, 25, 26];
+const BGRUNT_TYPE: i32 = 0x1B;
+const GOLEM_TYPE: i32 = 0x1D;
+
+/// Builds a realm enemy's sound names from its `ENMY` name (`GRUNT`), its
+/// subtype, the level's boss (`LevelTuning::boss_enemy`) and the
+/// realm's letter (`A` for `levelA1`). `None` for critters and bosses
+/// (subtypes 5 and 9), which have their own sounds, and unnamed records.
+pub fn monster_sounds(enemy: i32, subtype: i32, name: &str, boss: i32, realm: char) -> Option<MonsterSounds> {
+    if subtype == 5 || subtype == 9 || name.is_empty() {
+        return None;
+    }
+    // The two name prefixes, and whether the strong set has two hit sounds
+    // (0: one set, 1: weak + strong, 2: strong only).
+    let (weak, strong, sets) = if PAIRED_SOUND_TYPES.contains(&enemy) {
+        if subtype < 10 && boss < 0 {
+            (format!("{name}1"), format!("{name}2"), 1)
+        } else {
+            (format!("{name}2"), format!("{name}2"), 2)
+        }
+    } else if enemy == BGRUNT_TYPE {
+        (format!("{name}1"), format!("{name}1"), 0)
+    } else if enemy == GOLEM_TYPE {
+        let letter = if realm == 'T' { 'G' } else { realm };
+        (format!("GOL{letter}"), format!("GOL{letter}"), 0)
+    } else {
+        (name.to_string(), name.to_string(), 0)
+    };
+    let die = if enemy == GOLEM_TYPE { "KILL" } else { "DIE" };
+    // Some boss levels use their own recordings: the name cut to 14
+    // characters and the level's letter added.
+    let variant = match boss {
+        0x24 => Some('C'),
+        0x25 => Some('D'),
+        0x29 => Some('B'),
+        _ => None,
+    };
+    let finish = |mut s: String| {
+        if let Some(v) = variant {
+            s.truncate(14);
+            s.push(v);
+        }
+        // Catalog names hold 15 characters.
+        s.truncate(15);
+        s
+    };
+    let strong_hits = if sets == 0 {
+        [format!("S_{strong}HITCLOSE"), format!("S_{strong}HITCLOSE")]
+    } else {
+        [format!("S_{strong}HIT1CLOSE"), format!("S_{strong}HIT2CLOSE")]
+    };
+    let [first, later] = strong_hits.map(finish);
+    let weak_hit = if sets < 2 { finish(format!("S_{weak}HITCLOSE")) } else { first.clone() };
+    Some(MonsterSounds {
+        die: [finish(format!("S_{weak}{die}CLOSE")), finish(format!("S_{strong}{die}CLOSE"))],
+        hit: [weak_hit, first, later],
+    })
+}
+
 /// Which enemy types a level loads, from its realm's `ENMY` records
 /// (`world_data::RealmEnemy`): each is a (type, subtype) pair, and the
 /// subtypes 1–5 are slots — 1 small, 2 main, 3 elite, 4 special variants,
@@ -499,6 +589,25 @@ mod tests {
         }
         eprintln!("{made} generators/monsters resolve to a model, {refused} refused");
         assert!(made > 1000);
+    }
+
+    #[test]
+    fn sound_names() {
+        let grunt = monster_sounds(4, 2, "GRUNT", -1, 'A').unwrap();
+        assert_eq!(grunt.hit(1, 1), "S_GRUNT1HITCLOS");
+        assert_eq!(grunt.hit(3, 1), "S_GRUNT2HIT1CLO");
+        assert_eq!(grunt.hit(3, 2), "S_GRUNT2HIT2CLO");
+        assert_eq!(grunt.die(1), "S_GRUNT1DIECLOS");
+        assert_eq!(grunt.die(2), "S_GRUNT2DIECLOS");
+        let rat = monster_sounds(3, 1, "RAT", -1, 'A').unwrap();
+        assert_eq!((rat.hit(2, 5), rat.die(1)), ("S_RATHITCLOSE", "S_RATDIECLOSE"));
+        let ske = monster_sounds(0x1A, 2, "SKE", 0x24, 'C').unwrap();
+        assert_eq!((ske.hit(1, 1), ske.die(1)), ("S_SKE2HIT1CLOSC", "S_SKE2DIECLOSEC"));
+        let spider = monster_sounds(9, 1, "SPID", 0x25, 'D').unwrap();
+        assert_eq!(spider.die(3), "S_SPIDDIECLOSED");
+        let forest = monster_sounds(0x18, 13, "FTRENT", -1, 'F').unwrap();
+        assert_eq!(forest.hit(1, 1), "S_FTRENT2HIT1CL");
+        assert_eq!(monster_sounds(0x1D, 5, "GOLLUM", -1, 'A'), None);
     }
 
     #[test]

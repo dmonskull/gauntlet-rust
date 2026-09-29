@@ -78,7 +78,10 @@ pub struct MonsterHit {
 /// Each level's tuning record and the enemy types it loads, by lower-case
 /// level folder (`levela1`).
 #[derive(Resource, Default)]
-struct LevelTunings(HashMap<String, (LevelTuning, LevelEnemies)>);
+struct LevelTunings(HashMap<String, (LevelTuning, LevelEnemies, MonsterSoundTable)>);
+
+/// Each enemy type's hit and death sounds on a level.
+pub type MonsterSoundTable = HashMap<i32, Arc<enemy::MonsterSounds>>;
 
 fn load_level_tunings(mut commands: Commands, mut game: ResMut<LoadedGame>) {
     let mut tunings = LevelTunings::default();
@@ -97,8 +100,17 @@ fn load_level_tunings(mut commands: Commands, mut game: ResMut<LoadedGame>) {
         match parsed.and_then(|b| WorldData::parse(&b).map_err(|e| e.to_string())) {
             Ok(world) => {
                 for level in &world.levels {
-                    let loaded = world.level_enemies(level).iter().map(|e| (e.enemy, e.subtype)).collect();
-                    tunings.0.insert(level.folder().to_ascii_lowercase(), (level.tuning, LevelEnemies { loaded }));
+                    let realm_enemies = world.level_enemies(level);
+                    let loaded = realm_enemies.iter().map(|e| (e.enemy, e.subtype)).collect();
+                    let realm = level.name.chars().next().unwrap_or('A').to_ascii_uppercase();
+                    let sounds = realm_enemies
+                        .iter()
+                        .filter_map(|e| {
+                            let s = enemy::monster_sounds(e.enemy, e.subtype, &e.name, level.tuning.boss_enemy, realm)?;
+                            Some((e.enemy, Arc::new(s)))
+                        })
+                        .collect();
+                    tunings.0.insert(level.folder().to_ascii_lowercase(), (level.tuning, LevelEnemies { loaded }, sounds));
                 }
             }
             Err(e) => warn!("{path}: {e}"),
@@ -131,6 +143,8 @@ pub struct MonsterLevel {
     pub slots: usize,
     /// The level's experience level and scale (`LevelTuning`).
     pub experience: (f32, f32),
+    /// Each enemy type's hit and death sounds.
+    pub sounds: MonsterSoundTable,
     /// Per (enemy type, tier): the model, if one could be found.
     models: HashMap<(i32, i32), Option<Arc<MonsterModel>>>,
     /// 30 Hz ticks since the level started.
@@ -178,6 +192,11 @@ pub struct Monster {
     pub ai: i16,
     pub stats: EnemyInstance,
     pub hit_points: f32,
+    /// 1–3 by its hit points when it was made against its type's full
+    /// ones (the tier; special variants count as 2). Picks its sounds.
+    pub strength: i16,
+    /// Blows that have done damage.
+    pub hits: i16,
     /// Feet.
     pub position: [f32; 3],
     /// Which way the body faces (turns at the type's rate).
@@ -348,6 +367,12 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         tier: new.tier,
         ai: new.ai,
         hit_points: instance.hit_points,
+        strength: match new.tier {
+            ..=1 => 1,
+            2 | 3 => new.tier as i16,
+            _ => 2,
+        },
+        hits: 0,
         stats: instance,
         position: new.position,
         facing: new.facing,
@@ -398,9 +423,9 @@ fn setup_level(
 ) {
     let Some(ground) = ground else { return };
     let entry = tunings.and_then(|t| t.0.get(&population.level.to_ascii_lowercase()).cloned());
-    let (raw, enemies) = match entry {
-        Some((t, e)) => (Some(t), e),
-        None => (None, LevelEnemies::default()),
+    let (raw, enemies, sounds) = match entry {
+        Some((t, e, s)) => (Some(t), e, s),
+        None => (None, LevelEnemies::default(), MonsterSoundTable::default()),
     };
     let tuning = level_tuning(raw);
     let scales = EnemyScales {
@@ -448,6 +473,7 @@ fn setup_level(
         slots: tuning.monster_slots.max(1) as usize,
         experience: (tuning.experience_level, tuning.experience_scale),
         scales,
+        sounds,
         models,
         tick: 0,
         rng: 0x1234_5678,
@@ -471,6 +497,7 @@ fn level_tuning(raw: Option<LevelTuning>) -> LevelTuning {
         generator_max: 1.0,
         experience_level: 0.0,
         experience_scale: 1.0,
+        boss_enemy: -1,
     });
     for v in [
         &mut t.monster_hit_points,
