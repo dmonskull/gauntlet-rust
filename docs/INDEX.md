@@ -17,6 +17,7 @@ One file per system, written only once it's confirmed against the actual
 | [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning |
 | [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music |
 | [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |
+| [combat.md](combat.md) | Controls → logical buttons, attack intents and chaining, target search, blows, damage |
 | [monsters.md](monsters.md) | Monster stats and tiers, the realm's monster slots, generators, placed monsters, the monster AI and mover; `CRITTER` files |
 
 ## Confirmed and implemented
@@ -47,6 +48,11 @@ One file per system, written only once it's confirmed against the actual
   generators spawning at the game's rate and limits, placed monsters, and
   the chase/wander AIs walking at the player on the level's collision and
   attacking (hits are messages; no health yet).
+- The hero's melee combat: the default GameCube control scheme, attack
+  intents, the quick combo, recoveries, slow/power attacks and finishers,
+  lunges, low attacks, directional swings, strafing, the target search and
+  hit test, strength-derived damage — emitted as `Hit` messages against
+  `Targetable` entities.
 
 ## Reverse engineering setup
 
@@ -75,7 +81,8 @@ names), which is how most systems here were found.
 - The critter system (bosses, golem, gargoyles; `CRITTER/*.WAD` beyond
   hit points and table spans) and most monster AIs beyond chase/wander;
   hand/effect glows, blending between actions.
-- Gameplay: the main loop, combat and health, item behaviour, co-op.
+- Gameplay: the main loop, health and damage to/from monsters, projectiles,
+  turbo and magic, item behaviour, co-op.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
   `FUN_80058074`: cameras, enemies, maps, 14 named realm types). The chunk
   directory, level names, camera, audio and enemy records and the monster

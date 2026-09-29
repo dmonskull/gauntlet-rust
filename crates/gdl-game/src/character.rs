@@ -42,6 +42,11 @@ const CLASS_HAND_BONES: [(&str, &str); 17] = [
     ("SUM", "R_WRIST"),
 ];
 
+/// The game's index for a player class (its position in the class order).
+pub fn class_index(class: &str) -> Option<usize> {
+    CLASS_HAND_BONES.iter().position(|(c, _)| c.eq_ignore_ascii_case(class))
+}
+
 /// Everything needed to spawn one player class in one colour/armour.
 pub struct CharacterData {
     /// e.g. `ARC/BLU`.
