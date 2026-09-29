@@ -47,7 +47,7 @@ impl Plugin for ItemsPlugin {
 
 // Item flags (the record's `+0xC4`, starting from the type's `+0x46`).
 /// Activated: a door or chest opened, an exit in use.
-const USED: u16 = 0x1;
+pub const USED: u16 = 0x1;
 /// Collides even off screen (doors, exits, placements with flag bit 0).
 const ALWAYS_ACTIVE: u16 = 0x40;
 /// A locked container: a key opens it on touch.
@@ -335,6 +335,145 @@ pub struct LevelItems {
     transport: Option<Transport>,
     transport_cooldown: i32,
     leaving: Option<Leaving>,
+    /// Items released so far this level (container contents).
+    #[allow(dead_code)]
+    released: usize,
+}
+
+/// What the level's other item code (`mechanics.rs`, `hazards.rs`,
+/// `breakables.rs`) sees of one item.
+#[allow(dead_code)] // For the level mechanics runtime (work in progress).
+pub struct ItemView<'a> {
+    /// The placement it came from; released items get numbers from
+    /// [`RELEASED_BASE`] on.
+    pub placement: usize,
+    pub ty: &'a ItemType,
+    pub params: &'a PlacementParams,
+    /// Its touch shape, where it stands (floor-dropped).
+    pub shape: Shape,
+    /// `+0xC4`.
+    pub flags: u16,
+    /// `+0xC8`: the action it has reached; `+0xCA`: the one playing.
+    pub state: usize,
+    pub action: usize,
+    /// The playing action has finished (or come round, looping).
+    pub done: bool,
+    /// How many actions its atree has (0 without one).
+    pub actions: usize,
+    /// Neither picked up, opened for good nor freed.
+    pub live: bool,
+}
+
+/// Placement numbers of items released at run time (container contents)
+/// start here, clear of the level's own.
+#[allow(dead_code)]
+pub const RELEASED_BASE: usize = 1 << 20;
+
+#[allow(dead_code)] // For the level mechanics runtime (work in progress).
+impl LevelItems {
+    fn find(&self, placement: usize) -> Option<&Item> {
+        self.items.iter().find(|i| i.placement == placement)
+    }
+
+    fn find_mut(&mut self, placement: usize) -> Option<&mut Item> {
+        self.items.iter_mut().find(|i| i.placement == placement)
+    }
+
+    fn view_of(item: &Item) -> ItemView<'_> {
+        ItemView {
+            placement: item.placement,
+            ty: &item.ty,
+            params: &item.params,
+            shape: item.shape,
+            flags: item.flags,
+            state: item.state,
+            action: item.action,
+            done: item.done,
+            actions: item.action_count(),
+            live: !item.gone && !item.leaving,
+        }
+    }
+
+    pub fn view(&self, placement: usize) -> Option<ItemView<'_>> {
+        self.find(placement).map(Self::view_of)
+    }
+
+    /// Every item not freed yet.
+    pub fn views(&self) -> impl Iterator<Item = ItemView<'_>> {
+        self.items.iter().filter(|i| !i.gone).map(Self::view_of)
+    }
+
+    /// The realm id (`REALM_LETTERS`) of the level.
+    pub fn realm(&self) -> usize {
+        self.realm
+    }
+
+    /// Starts action `action` of the item's atree (its model follows).
+    pub fn play(&mut self, placement: usize, action: usize) {
+        if let Some(i) = self.find_mut(placement) {
+            i.play(action);
+        }
+    }
+
+    /// Sets the state its animation has reached (`+0xC8`).
+    pub fn set_state(&mut self, placement: usize, state: usize) {
+        if let Some(i) = self.find_mut(placement) {
+            i.state = state;
+        }
+    }
+
+    /// Sets flag bits (`+0xC4`): [`USED`] starts an opened door, chest or
+    /// broken barrel stepping through its actions.
+    pub fn set_flags(&mut self, placement: usize, flags: u16) {
+        if let Some(i) = self.find_mut(placement) {
+            i.flags |= flags;
+        }
+    }
+
+    /// Frees the item at once, model and all (the game's `+0xC4 = 0xFFFF`).
+    pub fn free(&mut self, placement: usize, commands: &mut Commands) {
+        if let Some(i) = self.find_mut(placement) {
+            i.gone = true;
+            if let Some(m) = i.model.take() {
+                commands.entity(m).try_despawn();
+            }
+        }
+    }
+
+    /// A new item of type `ty` standing at `position` (turned by the
+    /// placement-style `rotation`), the way the game releases a container's
+    /// contents: `amount` overrides the type's (keys take the container's
+    /// count), and it can't be picked up for `delay` fields. Returns its
+    /// placement number; its model, if one was built for the level, is
+    /// spawned by the caller with it ([`crate::population::ItemModels`]).
+    pub fn release(&mut self, ty: ItemType, position: [f32; 3], rotation: [f32; 9], amount: Option<i32>, delay: i32) -> usize {
+        let placement = RELEASED_BASE + self.released;
+        self.released += 1;
+        let params = match ty.class {
+            ItemClass::Powerup => PlacementParams::Powerup { count: amount.unwrap_or(ty.amount as i32) as i16 },
+            _ => PlacementParams::None,
+        };
+        self.items.push(Item {
+            placement,
+            shape: Shape::of(&ty, position, rotation),
+            amount: amount.unwrap_or(ty.amount as i32),
+            flags: ty.flags,
+            ty,
+            params,
+            state: 0,
+            action: 0,
+            frame: 0.0,
+            done: false,
+            timer: 0,
+            delay,
+            leaving: false,
+            gone: false,
+            atree: None,
+            model: None,
+            contents: None,
+        });
+        placement
+    }
 }
 
 /// Plays an item's atree actions on its model.
@@ -923,7 +1062,9 @@ fn update_items(items: &mut LevelItems, dt: f32, commands: &mut Commands) {
             continue;
         }
         match item.class() {
-            ItemClass::Door | ItemClass::Container if item.flags & USED != 0 => open_step(item),
+            // Broken barrels and obstacles step through their actions like
+            // opened doors and chests (`breakables.rs` marks them used).
+            ItemClass::Door | ItemClass::Container | ItemClass::Obstacle if item.flags & USED != 0 => open_step(item),
             _ => {}
         }
     }
