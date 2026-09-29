@@ -9,6 +9,7 @@
 //!   order, so it's recorded here explicitly.
 //! - The body measurements the player setup copies out when a player joins
 //!   (`docs/chunk-files.md`, `docs/collision.md` "Moving a player").
+//! - The class's powerup duration factor (`docs/items.md`).
 
 use crate::chunk::{ChunkError, ChunkFile};
 
@@ -41,12 +42,15 @@ pub struct PlayerStats {
     pub armor: Stat,
     pub magic: Stat,
     pub body: PlayerBody,
+    /// `+0x58`: multiplies the duration of every timed powerup the hero
+    /// picks up (1.0–1.3; the magic classes get the most).
+    pub powerup_time: f32,
 }
 
 impl PlayerStats {
     pub fn parse(data: &[u8]) -> Result<Option<Self>, ChunkError> {
         let file = ChunkFile::parse(data)?;
-        let Some(r) = file.bytes("PDAT").filter(|b| b.len() >= 0x58) else { return Ok(None) };
+        let Some(r) = file.bytes("PDAT").filter(|b| b.len() >= 0x5C) else { return Ok(None) };
         let f = |at: usize| f32::from_le_bytes(r[at..at + 4].try_into().unwrap());
         let stat = |at: usize| Stat { start: f(at), max: f(at + 4) };
         Ok(Some(Self {
@@ -55,6 +59,7 @@ impl PlayerStats {
             armor: stat(0x38),
             magic: stat(0x40),
             body: PlayerBody { height: f(0x48), radius: f(0x4C), head_height: f(0x50), centre_height: f(0x54) },
+            powerup_time: f(0x58),
         }))
     }
 }
@@ -81,6 +86,7 @@ mod tests {
             // Every class has the same body (the collision code's defaults).
             let b = s.body;
             assert_eq!((b.height, b.radius, b.head_height, b.centre_height), (5.0, 1.5, 4.4, 2.5), "{p:?}");
+            assert!((1.0..=1.5).contains(&s.powerup_time), "{p:?} {s:?}");
             all.insert(p.file_stem().unwrap().to_string_lossy().into_owned(), s);
         }
         // The eight original classes (the unlockable Minotaur and Ogre are

@@ -1,4 +1,5 @@
-//! On-screen status: which game is loaded, current level, audio, controls.
+//! Developer overlay: which game is loaded, current level, audio, controls.
+//! Hidden by default; F1 toggles it (`GDL_DEBUG_HUD=1` starts with it on).
 //! Bevy's built-in font is ASCII-only, so keep all text here ASCII.
 
 use bevy::prelude::*;
@@ -12,16 +13,26 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_hud).add_systems(Update, update_hud);
+        app.add_systems(Startup, spawn_hud).add_systems(Update, (toggle_hud, update_hud));
     }
 }
 
 #[derive(Component)]
 struct HudText;
 
+fn toggle_hud(keys: Res<ButtonInput<KeyCode>>, mut hud: Query<&mut Visibility, With<HudText>>) {
+    if keys.just_pressed(KeyCode::F1)
+        && let Ok(mut v) = hud.single_mut()
+    {
+        *v = if *v == Visibility::Hidden { Visibility::Inherited } else { Visibility::Hidden };
+    }
+}
+
 fn spawn_hud(mut commands: Commands) {
+    let shown = std::env::var("GDL_DEBUG_HUD").is_ok_and(|v| !v.is_empty() && v != "0");
     commands.spawn((
         HudText,
+        if shown { Visibility::Inherited } else { Visibility::Hidden },
         Text::new(""),
         TextFont { font_size: 15.0, ..default() },
         TextShadow::default(),
