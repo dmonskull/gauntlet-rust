@@ -18,7 +18,6 @@ pub struct LevelSummary {
 }
 
 /// A level's parsed data, ready to turn into meshes.
-#[allow(dead_code)] // `placement_nodes`, `nodes`: for the level mechanics runtime (work in progress).
 pub struct LevelData {
     pub name: String,
     pub model: ModelFile,

@@ -23,6 +23,7 @@ mod items;
 mod level;
 mod level_material;
 mod locomotion;
+mod mechanics;
 mod model_mesh;
 mod options;
 mod monsters;
@@ -135,6 +136,7 @@ fn main() {
             .add_plugins((
                 player_state::PlayerStatePlugin,
                 items::ItemsPlugin,
+                mechanics::MechanicsPlugin,
                 exits::ExitsPlugin,
                 hints::HintsPlugin,
                 status_hud::StatusHudPlugin,
