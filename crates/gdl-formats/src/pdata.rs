@@ -1,7 +1,7 @@
 //! `PDATA/<class>.WAD` — per-class player data (loaded by the game's
-//! player-data loader, `docs/chunk-files.md`). Only the four stats are
-//! decoded so far: the `PDAT` chunk's single record holds `(start, max)`
-//! float pairs. Their order is fixed by the classes themselves — the Dwarf
+//! player-data loader, `docs/chunk-files.md`). Decoded so far: the four
+//! stats — the `PDAT` chunk's single record holds `(start, max)` float
+//! pairs — and the hero's collision size. Their order is fixed by the classes themselves — the Dwarf
 //! is strongest and slowest, the Wizard has the most magic, the Knight and
 //! Valkyrie the most armour — and matches the game's stat names table
 //! (STRENTH, ARMOR, MAGIC, SPEED) only up to order, so it's recorded here
@@ -21,15 +21,27 @@ pub struct PlayerStats {
     pub speed: Stat,
     pub armor: Stat,
     pub magic: Stat,
+    /// Collision radius (`+0x4C`); the game measures reach and wall
+    /// clearance from it.
+    pub radius: f32,
+    /// Collision height (`+0x48`); the game keeps half of it.
+    pub height: f32,
 }
 
 impl PlayerStats {
     pub fn parse(data: &[u8]) -> Result<Option<Self>, ChunkError> {
         let file = ChunkFile::parse(data)?;
-        let Some(r) = file.bytes("PDAT").filter(|b| b.len() >= 0x48) else { return Ok(None) };
+        let Some(r) = file.bytes("PDAT").filter(|b| b.len() >= 0x50) else { return Ok(None) };
         let f = |at: usize| f32::from_le_bytes(r[at..at + 4].try_into().unwrap());
         let stat = |at: usize| Stat { start: f(at), max: f(at + 4) };
-        Ok(Some(Self { strength: stat(0x28), speed: stat(0x30), armor: stat(0x38), magic: stat(0x40) }))
+        Ok(Some(Self {
+            strength: stat(0x28),
+            speed: stat(0x30),
+            armor: stat(0x38),
+            magic: stat(0x40),
+            radius: f(0x4C),
+            height: f(0x48),
+        }))
     }
 }
 
@@ -52,6 +64,8 @@ mod tests {
             for st in [s.strength, s.speed, s.armor, s.magic] {
                 assert!(st.start > 0.0 && st.start <= st.max && st.max <= 999.0, "{p:?} {st:?}");
             }
+            // Every class is the same size.
+            assert_eq!((s.radius, s.height), (1.5, 5.0), "{p:?}");
             all.insert(p.file_stem().unwrap().to_string_lossy().into_owned(), s);
         }
         // The eight original classes (the unlockable Minotaur and Ogre are

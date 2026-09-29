@@ -1,6 +1,7 @@
-//! Player locomotion: how the stick turns into movement, facing and the
-//! idle/walk/run actions. Pure logic stepped at the game's 30 Hz tick; the
-//! numbers are the game's own (`docs/player-movement.md`).
+//! Player locomotion: how the stick turns into movement and facing, and the
+//! idle/walk/run gaits it asks for. Pure logic stepped at the game's 30 Hz
+//! tick; the numbers are the game's own (`docs/player-movement.md`). Which
+//! action plays is `actions.rs`.
 
 use std::f32::consts::PI;
 
@@ -62,66 +63,6 @@ impl Gait {
             Gait::Run
         }
     }
-
-    /// The player action the game asks for with this gait.
-    pub fn action(self) -> &'static str {
-        match self {
-            Gait::Idle => "READY",
-            Gait::Walk => "WALK1",
-            Gait::Run => "RUN1",
-        }
-    }
-}
-
-/// Movement and turn factors the game gives an action when it starts:
-/// running covers 1.3× the ground, strafing 0.667×, a shove 1.5×, a web
-/// 0.4×; everything else in the locomotion range 1.0 (attacks aren't
-/// covered yet and also get 1.0).
-pub fn action_factors(action: &str) -> (f32, f32) {
-    match action {
-        "RUN1" | "RUN2" | "SHIELD_RUN" => (1.3, 1.0),
-        "SHOVE" => (1.5, 1.0),
-        "WEBREACT" => (0.4, 0.5),
-        a if a.starts_with("STRAFE_WLK") => (0.667, 1.0),
-        _ => (1.0, 1.0),
-    }
-}
-
-/// When a new action takes over from the playing one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Switch {
-    /// Right away.
-    Now,
-    /// Once the playing action has finished (and only if it differs).
-    AtEnd,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Transition {
-    pub action: &'static str,
-    pub switch: Switch,
-    /// Seconds to blend from the old pose into the new action.
-    pub blend: f32,
-}
-
-/// Seconds the game blends back into READY.
-pub const READY_BLEND: f32 = 0.066_667;
-
-/// The game's action chaining for locomotion: steps alternate WALK1/WALK2
-/// and RUN1/RUN2 (each clip is half a stride), and a change of gait waits
-/// for the current step to end; from READY anything starts at once.
-/// Returning to READY blends over two ticks.
-pub fn transition(current: &str, wanted: Gait) -> Transition {
-    let want = wanted.action();
-    let (action, switch) = match current {
-        "WALK1" => (if want == "WALK1" { "WALK2" } else { want }, Switch::AtEnd),
-        "WALK2" => (want, Switch::AtEnd),
-        "RUN1" => (if want == "RUN1" { "RUN2" } else { want }, Switch::AtEnd),
-        "RUN2" => (want, Switch::AtEnd),
-        _ => (want, Switch::Now),
-    };
-    let blend = if action == "READY" && current != "READY" { READY_BLEND } else { 0.0 };
-    Transition { action, switch, blend }
 }
 
 /// Stick input already turned into the world: `heading` is the direction to
@@ -144,7 +85,7 @@ pub struct Mover {
     pub knockback: [f32; 3],
     pub gait: Gait,
     /// Movement and turn factors of the action playing
-    /// ([`action_factors`]).
+    /// (`actions::factors`).
     pub factors: (f32, f32),
 }
 
@@ -153,10 +94,11 @@ impl Mover {
         Self { position, facing, speed, knockback: [0.0; 3], gait: Gait::Idle, factors: (1.0, 1.0) }
     }
 
-    /// Advances one tick. Returns the displacement the tick wants; the
+    /// Advances one tick, moving with the stick and turning toward `face`
+    /// (`None`: keep facing). Returns the displacement the tick wants; the
     /// caller resolves it against collision and writes the result back to
     /// `position`.
-    pub fn step(&mut self, stick: Stick, dt: f32) -> [f32; 3] {
+    pub fn step(&mut self, stick: Stick, face: Option<f32>, dt: f32) -> [f32; 3] {
         let (move_factor, turn_factor) = self.factors;
         let mut magnitude = stick.magnitude.clamp(0.0, 1.0);
 
@@ -175,9 +117,9 @@ impl Mover {
         d[2] = (d[2] + run * stick.heading.cos()).clamp(-limit, limit);
         self.knockback = self.knockback.map(|v| v * KNOCKBACK_DECAY);
 
-        if magnitude > 0.0 {
+        if let Some(face) = face {
             let max_turn = TURN_RATE * dt * turn_factor;
-            let turn = wrap(stick.heading - self.facing).clamp(-max_turn, max_turn);
+            let turn = wrap(face - self.facing).clamp(-max_turn, max_turn);
             self.facing = wrap(self.facing + turn);
         }
         self.gait = Gait::from_magnitude(magnitude);
@@ -225,34 +167,32 @@ mod tests {
     fn running_covers_more_ground_once_the_run_action_plays() {
         let mut m = Mover::new([0.0; 3], 0.0, 8.0);
         let stick = Stick { heading: 0.0, magnitude: 1.0 };
-        let first = m.step(stick, DT);
+        let first = m.step(stick, Some(0.0), DT);
         assert!((first[2] - 8.0 * DT).abs() < 1e-6, "{first:?}");
         assert_eq!(m.gait, Gait::Run);
-        m.factors = action_factors(transition("READY", m.gait).action);
-        let second = m.step(stick, DT);
+        m.factors = crate::actions::factors(crate::actions::Action::RUN1, 0);
+        let second = m.step(stick, Some(0.0), DT);
         assert!((second[2] - 1.3 * 8.0 * DT).abs() < 1e-6, "{second:?}");
     }
 
     #[test]
-    fn strides_alternate_and_gait_changes_wait_for_the_step() {
-        let t = transition("RUN1", Gait::Run);
-        assert_eq!((t.action, t.switch), ("RUN2", Switch::AtEnd));
-        assert_eq!(transition("RUN2", Gait::Run).action, "RUN1");
-        assert_eq!(transition("WALK1", Gait::Walk).action, "WALK2");
-        let stop = transition("RUN2", Gait::Idle);
-        assert_eq!((stop.action, stop.switch), ("READY", Switch::AtEnd));
-        assert!(stop.blend > 0.0);
-        let go = transition("READY", Gait::Walk);
-        assert_eq!((go.action, go.switch, go.blend), ("WALK1", Switch::Now, 0.0));
+    fn facing_only_turns_toward_a_target() {
+        let mut m = Mover::new([0.0; 3], 0.0, 8.0);
+        let d = m.step(Stick { heading: PI / 2.0, magnitude: 1.0 }, None, DT);
+        assert_eq!(m.facing, 0.0);
+        assert!(d[0] > 0.0, "strafing still moves: {d:?}");
+        m.step(Stick::default(), Some(-PI / 2.0), DT);
+        assert!((m.facing + 5.0 * PI * DT).abs() < 1e-5);
     }
 
     #[test]
     fn facing_turns_at_five_pi_per_second() {
         let mut m = Mover::new([0.0; 3], 0.0, 8.0);
-        m.step(Stick { heading: PI / 2.0, magnitude: 1.0 }, DT);
+        let stick = Stick { heading: PI / 2.0, magnitude: 1.0 };
+        m.step(stick, Some(stick.heading), DT);
         assert!((m.facing - 5.0 * PI * DT).abs() < 1e-5);
         for _ in 0..3 {
-            m.step(Stick { heading: PI / 2.0, magnitude: 1.0 }, DT);
+            m.step(stick, Some(stick.heading), DT);
         }
         assert!((m.facing - PI / 2.0).abs() < 1e-5);
     }
@@ -262,7 +202,7 @@ mod tests {
         let mut m = Mover::new([0.0; 3], 0.0, 8.0);
         m.knockback = [0.0, 0.0, 30.0];
         // Pushing straight against the knockback does nothing.
-        let d = m.step(Stick { heading: PI, magnitude: 1.0 }, DT);
+        let d = m.step(Stick { heading: PI, magnitude: 1.0 }, Some(PI), DT);
         assert!((d[2] - 1.5 * 8.0 * DT).abs() < 1e-6, "clamped to the step limit: {d:?}");
         assert!((m.knockback[2] - 30.0 * KNOCKBACK_DECAY).abs() < 1e-4);
     }

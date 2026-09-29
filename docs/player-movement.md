@@ -1,8 +1,10 @@
 # Player movement
 
 Implemented in [`locomotion.rs`](../crates/gdl-game/src/locomotion.rs)
-(pure, unit-tested) and [`player.rs`](../crates/gdl-game/src/player.rs)
-(input, 30 Hz fixed tick, render interpolation, follow camera).
+and [`actions.rs`](../crates/gdl-game/src/actions.rs) (pure, unit-tested)
+and [`player.rs`](../crates/gdl-game/src/player.rs) (input, 30 Hz fixed
+tick, render interpolation, follow camera). Attacks are in
+[combat.md](combat.md).
 
 The game updates each player once per tick in `FUN_80080d3c`; the tick is
 `r13-0x7570` seconds (1/30). Constants below are `r2` doubles/floats read
@@ -31,9 +33,11 @@ Speed power-ups (effect type 7) add straight to `+0x110` before the clamp.
 ## Stick → intent → action
 
 `FUN_80032b94` turns each pad into polar form: angle (`atan2(x, y)`) and
-magnitude 0–1. `FUN_80088170` classifies the stick: magnitude 0 → idle,
-≤ 0.75 → walk, above → run; the player update then requests READY, WALK1
-or RUN1 (indices 0, 0x11, 0x13 in the action table at `0x80126430`).
+magnitude 0–1. `FUN_80088170` classifies the controls into an intent
+([combat.md](combat.md)); with no button that matters, the stick decides:
+magnitude 0 → idle, ≤ 0.75 → walk, above → run, and the player update
+requests READY, WALK1 or RUN1 (indices 0, 0x11, 0x13 in the action table
+at `0x80126430`). Holding strafe (R) instead requests the strafe steps.
 
 ## Action chaining
 
@@ -49,16 +53,27 @@ has finished (if different), 1 = when it has finished. For locomotion:
 | WALK2 | WALK1 | WALK1 | at end |
 | RUN1 | RUN1 | RUN2 | at end |
 | RUN2 | RUN1 | RUN1 | at end |
-| WALK*/RUN* | another gait | it | at end (now for attacks, hits) |
+| WALK*/RUN* | another gait | it | at end (now for anything past index 0x1A or of another category: attacks, hits; from RUN2 only HITREACT or another category) |
+| STRAFE_WLK?1 | its group's first step | that group's second step | at end (now for other categories) |
+| STRAFE_WLK?2 | its group's first step | it | at end |
+
+The strafe groups are front/back (F1 → F2, B1 → B2, and F1 asked for B1
+gives B2) and left/right. The attack actions are in
+[combat.md](combat.md); `actions.rs` ports the whole state machine for
+the actions reachable so far.
 
 WALK1/2 and RUN1/2 are non-looping half strides (10–12 frames), so a walk
 alternates the two clips. The blend time is 0 except when going back to
-READY from most actions: 0.0667 s (`r2-0x4dcc`); `FUN_8000f534` then
+READY: 0.0667 s (`r2-0x4dcc`), except after `0x56`–`0x93`, HITREACT,
+`0x81`/`0x82` and the archer's ATTQUICK2R; `FUN_8000f534` then
 lerps each bone's angles and offsets from the snapshot of the old pose
 (`FUN_8000f788`/`FUN_8000f74c`) while the weight falls to 0. We slerp.
 Standing still in READY for 600/1800 ticks switches to IDLE2/IDLE1 (not
-implemented yet); the action's movement/turn factors (below) are set when
-it starts, so a run's 1.3× applies from the first RUN1 frame.
+implemented yet). The movement/turn factors (below) are set by the state
+machine each tick for the action playing when it runs (`iVar12`, before any
+switch); the update computes the step before calling it and turns after,
+so a new action's movement factor applies from its second tick and its
+turn factor from its first.
 
 `FUN_800ad42c` gives each action a category: 0 locomotion and misc, 1
 defend/shove, 2 ATTSTART–ATTSLOW, 3 ATTQUICK1–3 and recoveries, 4 the
@@ -78,23 +93,28 @@ d  += factor × dt × speed × magnitude × (sin heading, cos heading)
 d.x, d.z clamped to ±1.5 × speed × dt
 ```
 
-`factor` is set per action when it starts (`FUN_800ab898`): RUN1, RUN2,
+`factor` (`+0xA48`) is set per action by `FUN_800ab898`: RUN1, RUN2,
 SHIELD_RUN 1.3; strafe walks 0.667; SHOVE 1.5; WEBREACT 0.4; other
-locomotion 1.0; most attacks 0, 0.25 or 0.5. The same function sets a turn
-factor (`+0xA4C`), 1.0 for locomotion.
+locomotion 1.0; attacks per the table in [combat.md](combat.md). The same
+function sets a turn factor (`+0xA4C`), 1.0 for locomotion, and a stick
+scale (`+0xA50`), 0 while defending or casting.
 
 If knockback moves the player more than 0.05 units in a tick, stick input
 more than 120° away from it is ignored.
 
 ## Facing
 
-The body turns toward the stick heading at up to 5π rad/s × turn factor
-(`r2-0x5ac0` = 15.708), shortest way round. Movement itself follows the
-stick immediately; only the body lags.
+The body turns toward a desired facing at up to 5π rad/s × turn factor
+(`r2-0x5ac0` = 15.708), shortest way round: the stick heading, or the
+current facing (no turn) with the stick released or while strafing or
+defending; attacking in place aims it at the target
+([combat.md](combat.md)). Movement itself follows the stick immediately;
+only the body lags.
 
 ## Not yet
 
 - The player's own collision chain: movement goes through the generic
   actor mover ([collision.md](collision.md)) with a stand-in radius (1.0)
   and step (2.0) for now.
-- Attacks, strafing, the shove, and blends between actions.
+- The shove, hit reactions, idles, and blends between actions other than
+  into READY.

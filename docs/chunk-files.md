@@ -51,6 +51,9 @@ pairs — strength `+0x28`, speed `+0x30`, armour `+0x38`, magic `+0x40`.
 The order is fixed by the class archetypes among the eight original
 classes (Dwarf strongest and slowest, Wizard/Sorceress most magic,
 Knight/Valkyrie most armour); values run 100–650 at start, up to 999.
-`+0x58` (1.0–1.3) and `+0x5C..+0x7C` are further per-class tuning, not
-named yet. The player movement code multiplies stick magnitude by a speed
+`+0x4C` is the collision radius (1.5 for every class; `FUN_80079ed8`
+copies it to the player's `+0x850`) and `+0x48` the height (5.0; the game
+keeps half, `+0x854`). `+0x0C`–`+0x1E` are i16 sound indices the player
+update plays (not traced). `+0x58` (1.0–1.3) and `+0x5C..+0x7C` are
+further per-class tuning, not named yet. The player movement code multiplies stick magnitude by a speed
 value derived from this stat; the derivation isn't traced yet.

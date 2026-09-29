@@ -17,6 +17,7 @@ One file per system, written only once it's confirmed against the actual
 | [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning |
 | [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music |
 | [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |
+| [combat.md](combat.md) | Controls → logical buttons, attack intents and chaining, target search, blows, damage |
 
 ## Confirmed and implemented
 
@@ -40,6 +41,11 @@ One file per system, written only once it's confirmed against the actual
   (player starts, boss spawn, camera points) — shown in the level view.
 - Level collision (triangles, grid) and the game's floor, wall and
   move-with-collision queries.
+- The hero's melee combat: the default GameCube control scheme, attack
+  intents, the quick combo, recoveries, slow/power attacks and finishers,
+  lunges, low attacks, directional swings, strafing, the target search and
+  hit test, strength-derived damage — emitted as `Hit` messages against
+  `Targetable` entities.
 
 ## Reverse engineering setup
 
@@ -67,7 +73,8 @@ names), which is how most systems here were found.
 
 - Monster stats (`CRITTER/*.WAD`), hand/effect glows, blending between
   actions.
-- Gameplay: the main loop, entity update, combat, item behaviour, co-op.
+- Gameplay: the main loop, entity update, monster combat, projectiles,
+  turbo and magic, item behaviour, co-op.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
   `FUN_80058074`: cameras, enemies, maps, 14 named realm types). Only the
   chunk directory, level names and audio records are parsed so far.
