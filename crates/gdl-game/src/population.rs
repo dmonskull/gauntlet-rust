@@ -3,7 +3,7 @@
 //! coloured markers and, where the item's model can be found, the model.
 //!
 //! `I` cycles models + markers / models / markers / hidden; `GDL_POPULATION`
-//! (`all`, `models`, `markers`, `off`) picks the starting view.
+//! (`all`, `models`, `markers`, `off`; default `models`) picks the starting view.
 
 use std::collections::HashMap;
 
@@ -40,10 +40,11 @@ pub enum PopulationView {
 impl PopulationView {
     fn from_env() -> Self {
         match std::env::var("GDL_POPULATION").unwrap_or_default().to_ascii_lowercase().as_str() {
-            "models" => Self::Models,
+            "all" => Self::All,
             "markers" => Self::Markers,
             "off" | "none" | "0" | "hidden" => Self::Hidden,
-            _ => Self::All,
+            // Playing: the items as the game draws them, no debug markers.
+            _ => Self::Models,
         }
     }
 

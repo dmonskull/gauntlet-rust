@@ -3,7 +3,7 @@
 Implemented in [`crates/gdl-formats/src/population.rs`](../crates/gdl-formats/src/population.rs),
 shown by [`crates/gdl-game/src/population.rs`](../crates/gdl-game/src/population.rs)
 (`I` cycles models + markers / models / markers / hidden; `GDL_POPULATION`
-= `all` | `models` | `markers` | `off`; `GDL_CAMERA=start` starts the
+= `all` | `models` (default) | `markers` | `off`; `GDL_CAMERA=start` starts the
 camera behind the player start).
 
 Verified: all 68 `WORLDS.PS2` files parse — 21,111 placements, 5,742

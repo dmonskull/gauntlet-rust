@@ -13,6 +13,7 @@ One file per system, written only once it's confirmed against the actual
 | [chunk-files.md](chunk-files.md) | The `.WAD`/`.ROM` tagged-chunk container, and game text |
 | [level-population.md](level-population.md) | Items, generators, monsters, exits and player starts in `WORLDS.PS2` |
 | [rendering.md](rendering.md) | How a level is drawn: diffuse × colour × lightmap |
+| [camera.md](camera.md) | The play camera: level camera points, per-level distance and bounds, smoothing |
 | [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning |
 | [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music |
 | [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |
@@ -29,8 +30,9 @@ One file per system, written only once it's confirmed against the actual
 - Skeletons and animation for every player class and monster, skeletal and
   flipbook (`--viewer`).
 - The `.WAD`/`.ROM` container every data file uses, and all game text.
-- Player class stats, and walking/running a hero around a level at the
-  game's 30 Hz tick with its speeds and turn rate.
+- Player class stats, and walking/running a hero around a level from its
+  start point at the game's 30 Hz tick with its speeds and turn rate, on the
+  level's collision, followed by the game's own play camera.
 - Audio: all 65 sound banks, the sound catalog and all 111 music streams
   decode; each level plays its own music, sound effects play by name.
 - What populates every level — item types, placements (pickups,
