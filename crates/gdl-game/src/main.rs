@@ -13,6 +13,7 @@ mod level_material;
 mod locomotion;
 mod model_mesh;
 mod player;
+mod population;
 mod viewer;
 mod world;
 
@@ -95,7 +96,7 @@ fn main() {
         };
         app.insert_resource(game)
             .insert_resource(choice)
-            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, audio::GameAudioPlugin));
+            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, audio::GameAudioPlugin, population::PopulationPlugin));
     }
     app.run();
 }
