@@ -1,5 +1,7 @@
 # Implementation notes
 
+**Resuming work? Start with [HANDOFF.md](HANDOFF.md).**
+
 One file per system, written only once it's confirmed against the actual
 `main.dol` — not assumed from other Gauntlet ports or similarly-shaped games.
 
