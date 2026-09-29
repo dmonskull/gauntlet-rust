@@ -1,8 +1,9 @@
-//! On-screen status: which game is loaded, current level, controls.
+//! On-screen status: which game is loaded, current level, audio, controls.
 //! Bevy's built-in font is ASCII-only, so keep all text here ASCII.
 
 use bevy::prelude::*;
 
+use crate::audio::AudioStatus;
 use crate::level::LoadedGame;
 use crate::world::CurrentLevelStats;
 
@@ -35,10 +36,11 @@ fn spawn_hud(mut commands: Commands) {
 fn update_hud(
     game: Res<LoadedGame>,
     stats: Option<Res<CurrentLevelStats>>,
+    audio: Res<AudioStatus>,
     mut text: Query<&mut Text, With<HudText>>,
 ) {
     let Some(stats) = stats else { return };
-    if !stats.is_changed() && !game.is_changed() {
+    if !stats.is_changed() && !game.is_changed() && !audio.is_changed() {
         return;
     }
     let Ok(mut text) = text.single_mut() else { return };
@@ -67,9 +69,13 @@ fn update_hud(
     if summary.unsupported_textures > 0 {
         s += &format!(" ({} textures in unsupported formats)", summary.unsupported_textures);
     }
+    s += &format!("\nmusic: {}{}", audio.music, if audio.muted { " (muted)" } else { "" });
+    if !audio.last_sound.is_empty() {
+        s += &format!("  sound: {}", audio.last_sound);
+    }
     for (name, why) in &game.failures {
         s += &format!("\nlevel {name} failed: {why}");
     }
-    s += "\n\nWASD move  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed  [ ] level";
+    s += "\n\nWASD move  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed  [ ] level\nM mute music  N play next sound of this level's bank";
     text.0 = s;
 }

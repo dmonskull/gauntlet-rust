@@ -45,9 +45,11 @@ with `GDL_ARTIFACTS`).
 ## Status
 
 Boots straight from your disc, validates all 67 levels, and renders any of
-them in 3D with the game's own geometry, textures and baked lightmaps. Fly
-around with WASD (Space/Ctrl up/down, Shift fast, right-drag to look, mouse
-wheel for speed) and switch levels with `[` / `]`.
+them in 3D with the game's own geometry, textures and baked lightmaps, with
+the level's own music playing. Fly around with WASD (Space/Ctrl up/down,
+Shift fast, right-drag to look, mouse wheel for speed), switch levels with
+`[` / `]`, mute the music with `M`, and step through the level's sound
+effects with `N`.
 
 Not playable yet: characters, animation and gameplay haven't been reverse
 engineered. See [`docs/INDEX.md`](docs/INDEX.md) for what's confirmed and
@@ -57,14 +59,16 @@ what's next.
 
 | crate | about |
 | --- | --- |
-| `gdl-formats` | Parsers for the game's on-disc formats (disc, FST, models, textures, worlds) |
+| `gdl-formats` | Parsers for the game's on-disc formats (disc, FST, models, textures, worlds, audio) |
 | `gdl-install` | Finds and validates a user's copy of the game, read-only file access |
 | `gdl-game` | The runtime: launcher, boot, level rendering, camera |
 
 ## Development
 
 `GDL_SCREENSHOT=out.png cargo run -p gdl-game` renders a few frames, saves a
-screenshot and exits. Tests that need game data use your own copy via
+screenshot and exits. `cargo run -p gdl-formats --example audio_dump --
+STREAMS/CASTLE1.ads out.wav` (or a `.VBK` and an output folder) decodes
+game audio to `.wav`. Tests that need game data use your own copy via
 `GAUNTLET_DISC` / `GAUNTLET_ASSET_ROOT` and skip cleanly without it.
 
 ## Reverse engineering
