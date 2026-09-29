@@ -725,7 +725,6 @@ fn to_transform(p: &NodePose) -> Transform {
 
 /// Hit switches (subtype 0x1F): a blow presses them for every player, down
 /// their chain.
-#[allow(dead_code)] // For breakables.rs: blows on items aren't routed yet.
 pub fn hit_switch(mech: &mut Mechanics, placement: usize) {
     let Some(i) = mech.triggers.iter().position(|t| t.placement == placement && t.subtype == HIT_SWITCH) else {
         return;
