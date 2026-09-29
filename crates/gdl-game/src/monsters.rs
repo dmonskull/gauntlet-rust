@@ -865,6 +865,19 @@ fn tick_monsters(
             );
         }
         match event {
+            // The fireball AIs let fly on their attack blows instead of
+            // hitting.
+            Some(Event::Blow(_)) if matches!(m.ai, 0x1C | 0x1D | 0x1F) => {
+                let centre = enemy::enemy_stats(m.enemy).map_or(0.0, |s| s.center_height);
+                let from = Vec3::from(m.position) + Vec3::Y * centre;
+                let at = match target {
+                    Some(t) => Vec3::from(t.feet) + Vec3::Y * projectiles::PLAYER_CENTRE,
+                    None => from + 20.0 * Vec3::new(m.facing.sin(), 0.0, m.facing.cos()),
+                };
+                let random = level.random(1000) as f32 / 1000.0;
+                shots.write(MonsterShot { monster: entity, enemy: m.enemy, ai: m.ai, from, at, facing: m.facing, random });
+                m.attacks = m.attacks.wrapping_add(1);
+            }
             Some(Event::Blow(hit)) => {
                 if let Some(player) = m.strike {
                     hits.write(MonsterHit {
