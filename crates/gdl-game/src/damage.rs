@@ -10,9 +10,12 @@
 //!
 //! Monster blows (`MonsterHit`) hurt the hero through `DamagePlayer`.
 //!
+//! The flinch/knockdown and push the blow causes play out in the monster's
+//! next tick (`monsters.rs`).
+//!
 //! Stand-ins: the level-versus-player-level damage scale, the monster
-//! resistances and the hero's armour aren't applied; pushes aren't; there's
-//! no hit reaction, sound or score yet. When the hero dies it plays DEATH
+//! resistances and the hero's armour aren't applied; there's no hit
+//! sound, effect or score yet. When the hero dies it plays DEATH
 //! and comes back at the level start at full health (lives and the
 //! game-over flow aren't done).
 
@@ -59,7 +62,7 @@ fn apply_hits(
         match hit.target_kind {
             TargetKind::Monster => {
                 let Ok((mut m, mut animator)) = monsters.get_mut(hit.target) else { continue };
-                m.hit_points -= hit.damage;
+                m.take_hit(hit.damage, hit.kind, hit.push.to_array());
                 if m.hit_points > 0.0 {
                     // Wounded monsters hit softer.
                     if let (Some(stats), Some(level)) = (enemy::enemy_stats(m.enemy), level.as_ref()) {

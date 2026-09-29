@@ -373,3 +373,24 @@ tool text. Nothing else named.
   system aren't done.
 - Animations advance on the frame clock at the action's rate, as for
   players.
+
+## Hit reactions and knockback
+
+`FUN_8004e660` (damage) takes the hit points off at once and accumulates
+the blow into the monster: damage `+0x2A0`, kind bits `+0x2A4`, push
+`+0x2A8..+0x2B0`. The monster's next update (`FUN_8004db94`, from
+`FUN_8004cfe0`) turns that into a reaction:
+
+- kind & `0x10160`, or damage > 10 (`r2-0x6d54`) with kind `0x200`:
+  knocked down — action HIT2 (`0x1D`), knockback velocity (`+0x25C`) +=
+  push × 40 (`r2-0x6d4c`; 20 when the monster's `+0x23C` exceeds 2, 2 for
+  type `0x1D`, 0 for type `0x15`);
+- otherwise kind & `0x10`: HIT1 (`0x1C`) with push × 8 (`r2-0x6d48`);
+- otherwise: HIT1, no push.
+
+The knockback speed is capped at 40 (`r2-0x6d40` = 40², `r2-0x6d38`).
+Every update it keeps 0.8 of itself (`r2-0x6de0`), components under 0.01
+stop (`r2-0x6ea8`), and upward speed falls at 100/s (`r2-28000`). While
+HIT1, HIT2 or DEATH plays the monster skips its AI and only slides
+(`FUN_8005a3b4`). Implemented in `monsters.rs` (`react`, `settle_knock`);
+stand-in: `+0x23C` isn't traced, so "big" is a radius over 2.
