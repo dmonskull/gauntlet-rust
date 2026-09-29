@@ -57,11 +57,27 @@ the levelA2 Death barrel).
 
 ## Work in progress
 
-- **Bosses** (helper agent, branch `worktree-agent-abe3330002fa1838d`, in
-  `.claude/worktrees/agent-abe3330002fa1838d`). It was asked to commit
-  its WIP and note its status in [critters.md](critters.md) ("Boss work in
-  progress"). To continue: `git merge` that branch into master (or have the
-  agent finish first), then build, test and smoke test.
+- **Bosses**: WIP commit `13b2b16` on branch
+  `worktree-agent-abe3330002fa1838d`, not merged into master yet.
+  - The helper picked the **B6 dragon** (one body, no patterns). On B6 it
+    wakes, uses missiles, breath, claws and stomp, hits the hero, takes
+    hits and dies, logged both ways. Screenshots are in the session
+    scratchpad `critters/shots/b6_*`.
+  - **Not run** after the boss changes: `cargo test` and
+    `cargo clippy --all-targets`. Run both after merging, then the smoke
+    test.
+  - **Known bug**: since critters take hits on their body-part spheres,
+    many blows on the C2 golems leave its hit points unchanged. Check the
+    hit-sphere mapping in `damage.rs`.
+  - Stand-in: the dragon's fireball model draws nothing without the effects
+    system, so an orange glow sphere is shown instead.
+  - Not done: the boss key drop (only logged; it needs a hook to build
+    extra item models in `population.rs` `ContentModels`), the boss intro
+    and camera, and multi-part bosses such as the chimera.
+  - Shared-file edits on that branch: `projectiles.rs`
+    (`spawn_critter_missile`; `spawn_projectile` returns its entity) and
+    `damage.rs` (hits on a critter's body-part spheres map back to the
+    critter).
 - **Warm-up hitches**
   - The early frames of a level can take 20–40 ms.
   - A pre-warm was added (level meshes skip frustum culling for 3 frames).
