@@ -214,6 +214,91 @@ pub struct Monster {
     /// Turns a wanderer has made since it last swapped direction.
     wander_turns: u8,
     number: u32,
+    /// Blows taken since the last tick: damage, kind bits, push.
+    pending: (f32, u32, [f32; 3]),
+    /// Knockback velocity, units per second.
+    knock: [f32; 3],
+}
+
+impl Monster {
+    /// A blow lands: hit points go at once; the reaction (flinch or
+    /// knockdown, and the push) follows on its next tick.
+    pub fn take_hit(&mut self, damage: f32, kind: u32, push: [f32; 3]) {
+        self.hit_points -= damage;
+        self.pending.0 += damage;
+        self.pending.1 |= kind;
+        self.pending.2 = add(self.pending.2, push);
+    }
+}
+
+/// Hit kinds that knock a monster down (HIT2 and a big push), and the one
+/// that pushes a flinch a little (the `Hit::kind` bits).
+const KNOCKDOWN_KINDS: u32 = 0x10160;
+const BIG_HIT_KIND: u32 = 0x200;
+const BIG_HIT_DAMAGE: f32 = 10.0;
+const STRONG_KIND: u32 = 0x10;
+/// Push multipliers: knocked down (a big monster gets half), a strong
+/// flinch; knockback speed is capped at 40, keeps 0.8 of itself each tick
+/// (components under 0.01 stop) and upward speed falls at 100/s.
+const KNOCKDOWN_PUSH: f32 = 40.0;
+const KNOCKDOWN_PUSH_BIG: f32 = 20.0;
+const FLINCH_PUSH: f32 = 8.0;
+const KNOCK_MAX: f32 = 40.0;
+const KNOCK_DECAY: f32 = 0.8;
+const KNOCK_STOP: f32 = 0.01;
+const KNOCK_FALL: f32 = 100.0;
+/// Stand-in for the game's "big monster" test (a per-monster value above 2
+/// that isn't traced): monsters this wide take half the knockdown push.
+const BIG_RADIUS: f32 = 2.0;
+
+const HIT1: u8 = 0x1C;
+const HIT2: u8 = 0x1D;
+
+/// Turns the blows a monster took into its reaction: the action it plays
+/// and the push added to its knockback.
+fn react(m: &mut Monster, animator: &mut Animator) {
+    let (damage, kind, push) = std::mem::take(&mut m.pending);
+    if damage < 1.0 {
+        return;
+    }
+    let (action, factor) = reaction(damage, kind, m.stats.radius);
+    m.knock = add(m.knock, scale(push, factor));
+    let speed = (m.knock[0] * m.knock[0] + m.knock[1] * m.knock[1] + m.knock[2] * m.knock[2]).sqrt();
+    if speed > KNOCK_MAX {
+        m.knock = scale(m.knock, KNOCK_MAX / speed);
+    }
+    let action = if m.model.has(action) { action } else if m.model.has(HIT1) { HIT1 } else { return };
+    m.action = action;
+    if let Some(a) = m.model.actions[action as usize] {
+        animator.play(a);
+    }
+    debug!("monster {} reacts: {} with push {:?} ({:.1} hp left)", m.number, ACTION_NAMES[action as usize], m.knock, m.hit_points);
+}
+
+/// The reaction to `damage` of `kind` on a monster this wide: the action
+/// and how much of the blow's push it takes.
+fn reaction(damage: f32, kind: u32, radius: f32) -> (u8, f32) {
+    let knockdown = kind & KNOCKDOWN_KINDS != 0 || (damage > BIG_HIT_DAMAGE && kind & BIG_HIT_KIND != 0);
+    if knockdown {
+        (HIT2, if radius > BIG_RADIUS { KNOCKDOWN_PUSH_BIG } else { KNOCKDOWN_PUSH })
+    } else if kind & STRONG_KIND != 0 {
+        (HIT1, FLINCH_PUSH)
+    } else {
+        (HIT1, 0.0)
+    }
+}
+
+/// Knockback decays each tick.
+fn settle_knock(m: &mut Monster, dt: f32) {
+    for (i, v) in m.knock.iter_mut().enumerate() {
+        *v *= KNOCK_DECAY;
+        if v.abs() < KNOCK_STOP {
+            *v = 0.0;
+        }
+        if i == 1 && *v > 0.0 {
+            *v = (*v - KNOCK_FALL * dt).max(0.0);
+        }
+    }
 }
 
 /// Stand-in height of a generator for the hit search.
@@ -286,6 +371,8 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         last_heading: new.facing,
         wander_turns: 0,
         number: level.created,
+        pending: (0.0, 0, [0.0; 3]),
+        knock: [0.0; 3],
         model: model.clone(),
     };
     // Hittable: its radius, and (a stand-in for the game's height test)
@@ -546,6 +633,24 @@ fn tick_monsters(
         m.near_screen = on_screen(frustum, m.position, 2.0 * r + 15.0);
         select_target(m, &targets, level.tick);
 
+        // Blows taken: flinch or knockdown. While the reaction plays the
+        // monster only slides on its knockback.
+        react(m, &mut animator);
+        let knock = scale(m.knock, dt);
+        settle_knock(m, dt);
+        if matches!(m.action, HIT1 | HIT2) {
+            if animator.finished() {
+                m.action = READY;
+            } else {
+                let moved = monster_move(collision, m, knock, MAX_DROP_PER_SECOND * dt);
+                m.position = add(m.position, moved.delta);
+                if moved.fell {
+                    despawn_monster(&mut commands, entity, m, &mut generators);
+                }
+                continue;
+            }
+        }
+
         // Asleep unless a player is in range or it's near the screen.
         if m.target_distance > m.stats.awareness && !m.near_screen {
             continue;
@@ -586,6 +691,7 @@ fn tick_monsters(
         }
 
         // Walls and floor, then players and other monsters in the way.
+        let velocity = add(velocity, knock);
         let moved = monster_move(collision, m, velocity, MAX_DROP_PER_SECOND * dt);
         let delta = moved.delta;
         if moved.wall {
@@ -1027,6 +1133,16 @@ fn interpolate(fixed: Res<Time<Fixed>>, mut monsters: Query<(&Monster, &mut Tran
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blows_flinch_or_knock_down_like_the_game() {
+        assert_eq!(reaction(5.0, 0, 1.0), (HIT1, 0.0));
+        assert_eq!(reaction(5.0, 0x10, 1.0), (HIT1, 8.0), "strong: flinch with a push");
+        assert_eq!(reaction(5.0, 0x20, 1.0), (HIT2, 40.0), "heavy: knocked down");
+        assert_eq!(reaction(5.0, 0x20, 3.0), (HIT2, 20.0), "big monsters half as far");
+        assert_eq!(reaction(12.0, 0x200, 1.0).0, HIT2);
+        assert_eq!(reaction(8.0, 0x200, 1.0).0, HIT1);
+    }
 
     #[test]
     fn bump_test_is_a_swept_cylinder() {
