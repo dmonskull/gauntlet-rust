@@ -1,0 +1,344 @@
+# Melee combat
+
+Implemented in [`combat.rs`](../crates/gdl-game/src/combat.rs) (buttons,
+intents, target search, blows, the `Targetable`/`Hit` interface),
+[`actions.rs`](../crates/gdl-game/src/actions.rs) (action table, categories,
+factors, the action state machine) and
+[`player.rs`](../crates/gdl-game/src/player.rs) (the 30 Hz tick that runs it
+all). Both logic modules are pure and unit-tested. Addresses are in
+`main.dol`; `r2`/`r13` as in [INDEX.md](INDEX.md). Movement and the
+locomotion half of the chaining are in [player-movement.md](player-movement.md).
+
+## Controls
+
+### Logical buttons
+
+Each pad is turned into three words per player (a `0x3C`-byte record per
+player at `0x802407a4`): held (`+0x00`, from `0x8023ff78`), pressed this
+frame (`+0x04`, from `0x8023ffd8`; `FUN_800330b4` computes it as held &
+!previous) and pressed-with-autorepeat (`+0x08`), then the left stick as
+angle/magnitude (`+0x18`/`+0x1C`) and the C-stick (`+0x20`/`+0x24`, read
+only by scheme 2). `FUN_800330b4` sets logical bit `0x100 << i` when the raw
+pad word matches the scheme's mask for button `i` (table `0x8011a730`, 10
+buttons × 4 schemes × two words). Names from the debug table at
+`0x8011a8a4` (`"Control %d has %s pressed"` in `FUN_80032b94`):
+
+| bit | name | default (GameCube) | keyboard here |
+| --- | --- | --- | --- |
+| `0x100` | `S_MAGIC` | X | U |
+| `0x200` | `S_ATK_QUICK` | A | J |
+| `0x400` | `S_ATK_SLOW` | Y | L |
+| `0x800` | `S_TURBO` | B | H |
+| `0x1000` | `S_DEFEND` | B (same button as turbo) | H |
+| `0x2000` | `S_CHARGE` | L | P |
+| `0x4000` | `S_STRAFE` | R | O |
+| `0x8000` | `S_MAGIC_SHIELD` | — | — |
+| `0x10000` | `S_THROW_MAGIC` | — | — |
+| `0x20000` | `S_COMBO_MOVE` | Z | G |
+
+The gamepad is mapped by position (A south, B west, X east, Y north, L
+left trigger/bumper, R right trigger, Z right bumper).
+
+How a GameCube button reaches a raw bit: the port emulates PS2 `libpad`.
+`FUN_800aea9c` builds a DualShock 2 buffer from `PADStatus` (button query
+`FUN_800cb5f0`; digital bits from the table at `0x80126f60`, pressure bytes
+from the index table at `0x80126fa0`); the pad state machine in
+`FUN_80031a50` ends in pressure mode (5) because the emulated `scePad*`
+stubs return constants (`FUN_800aea8c` → 7, `FUN_800aea7c` → 1, …).
+`FUN_80031e84` copies that buffer into 24 `{flags, value}` pairs and
+`FUN_80033c3c` packs them into the raw word: D-pad left/right/up/down
+`0x10000000`/`0x20000000`/`0x40000000`/`0x80000000`, Y `0x4000000`, X
+`0x1000000`, B `0x8000000`, A `0x2000000`, L `0x100000`, R `0x400000`, Z
+`0x800000`, Start `0x40000`, the sticks' directions in the low byte.
+
+The four schemes (names at `0x8011e810`, the options menu cycles the first
+three in `FUN_80070c24`; default 0 from `FUN_80032974`):
+
+| scheme | magic | attack | power | turbo/defend | charge | strafe | combo |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 Default | X | A | Y | B | L | R | Z |
+| 1 Arcade | X | A | B | Y | L | R | Z |
+| 2 Robotron | B | A | L | R | Y or X | — (C-stick attacks) | Z |
+| 3 One Handed | B | A | L | R | — | — | Z |
+
+Two more per-pad options, both on by default (`FUN_80032974`), toggled in
+the same menu: `+0x30` "attack aim" (attacking in place turns toward the
+target) and `+0x34` "walk-into attack". Their on-screen names weren't
+looked up.
+
+### Intents (`FUN_80088170`)
+
+Called at the top of the player update `FUN_80080d3c` with the camera
+heading. In order:
+
+1. THROW_MAGIC → `0x19`, MAGIC_SHIELD → `0x1A`, MAGIC → `0x18` (held).
+2. COMBO_MOVE held, turbo ≥ 50 (`r2-0x5bf8`), a partner in reach
+   (`FUN_8008872c`) → `0x16`.
+3. TURBO held + ATK_QUICK pressed, turbo ≥ 0 → `0x15` (turbo attack).
+4. DEFEND pressed → `2`.
+5. Scheme without C-stick: if STRAFE is held and the stick is pushed, the
+   side (stick heading − facing: within ±45° front, beyond ±135° back,
+   positive right) gives strafe walks `9`–`0xC` (F, B, L, R), or strafe
+   attacks `0x11`–`0x14` if an attack button is held. Otherwise CHARGE
+   pressed with turbo ≥ 5 → `7`; ATK_QUICK held → `0xF`; ATK_SLOW held →
+   `0x10`. (With the C-stick in scheme 2, pushing it attacks toward it.)
+6. Stick magnitude > 0.75 → `0xD` run, > 0 → `8` walk, else `1` idle.
+
+It also keeps two attack-button words: `+0x8F4` latches the attack bits
+while either attack button is held (cleared when both are up) and `+0x8F8`
+accumulates presses since the last attack began (`held ^ latch`), cleared
+when most actions start (below).
+
+Note that attacking is on the *held* word: holding A keeps attacking.
+
+## Targets
+
+### Search (`FUN_800864b0`)
+
+From the hero's position after this tick's move, in a heading, up to 30
+units (`r2-0x5b28`; 200 in some special mode). Nothing hit last tick is
+tried first (the monster bumped into while moving, within a 60° cone, and
+the last generator, within 45°); otherwise the nearest of:
+
+- **Monsters** (`FUN_80044428`, records at `0x802515e8`, `0x394` bytes;
+  state `+0xB4` 1 or 6; position `+0x54`, radius `+0x238`): within 10
+  units vertically (`r2-0x6f08`), distance = |v| − radius.
+- **Objects** (`FUN_80037e9c`/`FUN_80038008`, records at `0x80240bd4`,
+  `0xAE0` bytes, state `+0x08` ≥ 2, hit points `+0x4B0` > 0; centre `+0x5C`,
+  radius type `+0x7C`; multi-part objects test each part): |v| ≤ 30,
+  distance = |v| − radius.
+- **Generators and breakables** (`FUN_8005b260`, `0xF0`-byte records at
+  `r13-0x71a8`: placement class 3 GENERATOR, 2 CONTAINER barrels
+  `0x2B`–`0x2D`, 10 OBSTACLE except `0x29`, 5 TRIGGER `0x1F`): within 2 ×
+  height (type `+0x10`) vertically, distance = |v| × scale − min(radius,
+  5), scale 1 for generators, 0.9 for exploding/poison barrels and 1.2 for
+  the rest.
+
+For all, the cone narrows linearly with distance: accept when
+`horizontal(n) × (cone + distance × (1 − cone) / 30) ≤ n·dir` for the unit
+vector `n` to the target — `cone` = 0.5 (60° either side next to the hero,
+`r2-0x5ca0`), straight ahead at 30 units; 0.707 when `0x80274874` ≥ 1
+(not traced). With nothing found the direction returned is the hero's
+facing.
+
+### Range flags (`+0x90C`)
+
+Set every tick in `FUN_80080d3c` from the search toward where the hero is
+heading (stick heading, or facing):
+
+| bit | meaning |
+| --- | --- |
+| 1 | close: distance < 1 + radius + e |
+| 4 | medium: < 2 + radius + e |
+| 8 | far (also: nothing found) |
+| 2 | low target: a monster with height `+0x23C` ≤ 2, or a generator/breakable with height ≤ 3.5, within 2 + radius |
+| `0x10` | target is a monster or object |
+| `0x20` | target is a generator or breakable |
+
+`e` is 1 when the intent is an attack (`r2-0x5c70`), 0 otherwise. The
+hero's radius is `PDAT +0x4C` (1.5 for every class; `FUN_80079ed8` copies
+it to `+0x850`, and half of `PDAT +0x48`, 2.5, to `+0x854` as height).
+
+`+0x904` is the angle from the facing to the target (or, while strafing or
+defending, with attack aim off or with the C-stick, to where the controls
+point).
+
+**Walk-into attack**: with the option on, intent walk/run, no pending
+press, not already attacking (action outside `0x27`–`0x72`), and a monster,
+object (except runtime category 4) or generator within 1 + radius
+(`r2-0x5be0`), the intent becomes a quick attack and `e` = 0.
+
+### Requested action (switch at the end of `FUN_80080d3c`, into `+0x20C`)
+
+| intent | requested |
+| --- | --- |
+| idle / walk / run | READY / WALK1 / RUN1 (or hit reactions, PUSHED) |
+| 2 | DEFEND1 |
+| 9–0xC | STRAFE_WLKF1 / B1 / L1 / R1 |
+| 0x11–0x14 | STRAFE_ATKF1 / B1 / L1 / R1 |
+| `0xF` quick | medium, not low, stick pushed → ATTSTEP1 (and `+0x904` = stick heading − facing); close or walked into → ATTLOWK if low else ATTQUICK1; otherwise THROW1S (a thrown weapon) |
+| `0x10` power | combo count ≠ 0, stick pushed, close or medium → ATTSTART; medium, not low, stick → ATTSTEP1; close or walked into → ATTLOW1 if low else ATTSTART; otherwise ATTPWRATHROW |
+| `0x15` turbo | turbo ≥ 100 → ATTPWRC, ≥ 40 → ATTPWRB (costing it); else unchanged |
+| `0x16` / `7` | COMBOACT1 / SHOVE |
+| magic | MAGICS / THROWPOTIONS, or with no potions a "no magic" cue and locomotion |
+
+Weapon power-ups (`+0x124`/`+0x11C` flags) replace attacks with
+fire/breath/chop/shot actions; not modelled.
+
+## The action state machine (`FUN_800ab898`)
+
+Picks the next action from the playing one (`+0x208`) and the requested one
+(`+0x20C`), with a transition mode applied by `FUN_80011134` →
+`FUN_8000eb70`: **2** now if the clip differs or has ended, **0** once
+ended if different (the default), **1** once ended, **3** always. It logs
+`"ACTION %s NEXT %s D %s INT %d RP %d …"` in a debug mode. Before the
+switch: a request above `0x72` while an action of category 1–10 plays, or a
+request of category > 10, is treated as coming from READY (mode 2); the
+combo count `+0x908` resets unless the playing action is in categories 2–6
+or 8. Action names are the table at `0x80126430`; categories are
+`FUN_800ad42c` ([player-movement.md](player-movement.md)).
+
+| playing | next (mode 0 unless noted) |
+| --- | --- |
+| ATTQUICK1/2/3 | power pressed and combo ≠ 0 → by combo count 1 ATTPWRACLOSE, 2 ATTPWRAMED, ≥3 ATT360; no press pending and nothing held, or far → recovery (Q2 → ATTQUICK2R, else ATTQUICK3R); medium → ATTSTEP3 from Q2 else ATTSTEP2; else Q2 → Q3, Q1/Q3 → Q2 |
+| ATTQUICK2R/3R | finisher as above; a press pending, frame ≤ 2 (`r2-0x4dd8`) and close → back into the combo (Q2R → Q3, Q3R → Q2) **now**; defend request → now |
+| ATTSTEP1/2/3 | like the quick attacks, with recoveries ATTSTEP2R/3R and steps continuing into Q3 (from STEP2) / Q2 |
+| ATTSTEP2R/3R | finisher, or defend now |
+| ATTSTART | ATTSLOW1 (unless a throw/fire/special is requested: now) |
+| ATTSLOW1 → ATTSLOW1R | then the request (defend now) |
+| ATTPWRACLOSE → ATTPWRACLOSER, ATTPWRAMED → ATTPWRAMEDR, ATTPWRALOW → ATTPWRALOWR, ATTPWRATHROW → ATTPWRATHROWR | not interruptible except by being grabbed |
+| ATT360 | ATTPWRAMED on a power press with combo, else ATT360R |
+| directional swings (below) | their own recovery (`0x2C`→`0x2E`, `0x2D`→`0x2F`, `0x30`→`0x32`, `0x31`→`0x33`, `0x34`→`0x36`, `0x35`→`0x37`, `0x38`→`0x3A`, `0x39`→`0x3B`) |
+| ATTLOW1/2 | alternate while ATTLOW1 is requested, else ATTLOWR |
+| ATTLOWK | ATTPWRALOW on power + combo, else ATTLOWKR (mode 1) |
+| THROW1S / THROW2S | THROW1 / THROW2 — at the clip's end, or now once past frame 2 |
+| THROW1 / THROW2 | THROW1R / THROW2R |
+| STRAFE_ATK*1/2, STRAFE_WLK*1/2 | alternate first/second clips like WALK1/WALK2 |
+| DEFEND1 → DEFEND2 → DEFENDR | mode 1 |
+
+Then the next action is rewritten:
+
+- A quick attack or lunge toward a target off to the side or behind
+  (`+0x904`) turns into a directional swing: beyond 3π/4 (`r2-0x4dc8`) →
+  ATTQ2180 (after Q1/Q3/steps 1 and 3) or ATTQ3180 (after Q2/step 2);
+  below −3π/4 → ATTQ2180L / ATTQ3180L; beyond π/3 (`r2-0x4db8`) →
+  ATTQ3RIGHT / ATTQ2RIGHT; below −π/3 → ATTQ3LEFT / ATTQ2LEFT. (The
+  names' 2 and 3 are the game's.)
+- ATTSTEP1 from WALK2/RUN2 → ATTWALK2, from ATTQUICK1/3 → ATTQ3TOSTEP1.
+- THROW1S from WALK1/RUN1 → THROW2S.
+- ATTPWRACLOSE against a low target → ATTPWRALOW; if the class has no
+  ATTPWRALOW(R) clip the close finisher's clip plays instead (the archer
+  has none). A missing clip plays the first clip.
+
+Returning to READY blends over 0.0667 s (`r2-0x4dcc`) except after
+`0x56`–`0x93`, HITREACT and `0x81`/`0x82`, and the archer's ATTQUICK2R.
+
+### On a switch
+
+Keyed on the action that **ended**, bits go into the event word `+0x900`:
+
+| ended | bit | effect |
+| --- | --- | --- |
+| ATTSLOW1, ATTSTEP1–3, ATTQ3TOSTEP1, ATTWALK2 | 4 | strong blow |
+| ATTPWRACLOSE, ATTPWRAMED (not the sorceress), ATTPWRALOW | `0x10` | finisher blow |
+| ATTQUICK1–3, directional swings, ATT360, ATTLOW1/2 | 2 | blow |
+| ATTLOWK | 8 | kick |
+| strafe attacks, THROW1/2 | `0x100` | projectile |
+| ATTPWRATHROW | `0x1000` | power projectile |
+
+So a swing lands when its clip ends and hands over to the next action.
+Keyed on the action that **starts**: the attacks (ATTSTART, ATTSLOW1, the
+quick attacks and swings, ATT360, steps, ATTLOW1/2, ATTLOWK) set bit 1 and
+count the combo — `+0x908` += 1 if a press is pending, else 0 — then
+clear the pending presses; strafe attacks and throws set bit 1 and clear
+them; recoveries, strafe walks and defends keep them; everything else
+clears them.
+
+### Movement and turn factors
+
+Set by the same function for the action playing when it runs (`+0xA48`
+move, `+0xA4C` turn; the movement one scales the next tick's step, the
+turn one this tick's turn):
+
+| actions | move | turn |
+| --- | --- | --- |
+| ATTSTART, ATTSLOW1, ATTSLOW1R | 0 | 1 |
+| ATTPWRACLOSE(R), ATTPWRAMEDR | 0.5 (wizard 0.25; knight, sorceress 0) | 1 (0) |
+| ATTPWRAMED | 0.5 (wizard, archer 0.25; sorceress, jester 0) | 1 (0) |
+| ATTQUICK1–3 and recoveries | 0.25 | 0 |
+| directional swings | 1 | 1 |
+| ATT360(R) | 0.5 | 1 |
+| steps, ATTQ3TOSTEP1, ATTWALK2 (`0x3E`–`0x46`) | 1 | 0.25 |
+| strafe attacks | 0.667 | 1 |
+| low attacks and kick | 1 | 1 |
+| ATTPWRALOW(R) | 0.25 | 1 |
+| throws (`0x5B`–`0x62`) | 0 | 0.5 |
+| ATTPWRATHROW(R) | 0.25 | 1 |
+
+`+0xA50` scales the stick: 0 for the actions from MAGICS (`0x73`) on
+outside the attack range, except VICTORY, WEBREACT and `0x8F` — so a
+defending hero stands still. With the stick released, the actions
+`0x3E`–`0x4E` (steps, strafe attacks) move at stick 0.5 along the facing.
+
+### Facing while attacking
+
+After the state machine, if the action's category is 1–10 but not 7, no
+defend/strafe button is held, attack aim is on and neither stick is
+pushed, the desired facing becomes the direction to the target found this
+tick — the hero turns toward it at 5π rad/s × turn factor (not at all
+during the quick attacks, whose turn factor is 0).
+
+## Blows (`FUN_80080d3c`, after the state machine)
+
+When `+0x900 & 0xFE` is set:
+
+1. Damage = the hero's strength (`+0x104`: 5 + 0.015 × strength stat,
+   clamped 5–20, `FUN_8007c4f0`). Kind = the hero's weapon power-up bits
+   (`+0x11C`). Finisher (`0xF0`): kind `|= 0x20`, damage × 3
+   (`r2-0x5c88`), and any turbo cost is paid. Else strong (4): kind `|=
+   0x10`, damage × 2. Else kick (8) on a monster ≤ 2 tall: kind `|= 0x20`.
+2. (With no stick and no generator lock, `FUN_80086e44` nudges the hero
+   toward position + facing × 2 × radius — not ported.)
+3. Search again, from the hero's position in the **facing** direction.
+4. Hit if the distance < 2 + radius (`r2-0x5b88`). Monsters and objects
+   also need a clear line from the hero to them (`FUN_8000d308`, walls,
+   radius 0.1); then `FUN_8008625c(damage, cooldown 0, …, kind, hit point,
+   1)`. Generators and breakables go to `FUN_8008615c` (no push, no
+   strength power-up), other players in versus mode to `FUN_80086028`.
+5. The hit point is position + facing × (2 + radius).
+
+`FUN_8008625c(damage, cooldown, player, target, kind, point, effects)`:
+
+- A positive cooldown first checks the target's per-attacker slot (monster
+  `+0x2B8 + 4 × player`, the time until which that player can't hit it;
+  objects keep four `{attacker, until}` pairs at `+0x4E0`/`+0x4E8`,
+  `FUN_80037c5c`/`FUN_80037de8`) and afterwards sets it to now + cooldown.
+  Melee blows pass 0: no cooldown. The charge (SHOVE) passes 1 s with
+  damage 3 and kind `0x20`.
+- Damage 0 means strength; the strength power-up (`+0x124 & 0x100`)
+  doubles it.
+- Push = (facing X, min(0.05 × damage, 2), facing Z), added by the monster
+  to its `+0x2A8` accumulator (`FUN_8004e660`); objects get it too
+  (`FUN_800382c0`).
+- Monsters take it through `FUN_8004e660` (only in state 1 or 6 with hit
+  points `+0x200` > 0; resistances `FUN_8002f58c`, difficulty, death,
+  score); objects through `FUN_800382c0`.
+
+## In this rewrite
+
+- `Targetable { kind, radius, height }` on any entity; its
+  `GlobalTransform` translation is the reference point (feet, like the
+  hero's). Kinds: `Monster`, `Generator`, `Breakable` (containers and
+  obstacles), `Object` (the second object table). Remove the component
+  when the thing can't be hit any more — the game's state/hit-point checks
+  are the owner's.
+- `Hit { target, attacker, damage, kind, push, at, target_kind }` message:
+  damage before the target's resistances; `kind` bits `0x10` strong, `0x20`
+  heavy; `push` as above (zero for generators and breakables). Owners
+  apply it.
+- `Targetable::can_be_hit_by` / `start_cooldown` implement the per-attacker
+  cooldown for blows that use one (none of the melee ones do).
+- `GDL_DUMMY=<distance>[,<kind>[,<radius>[,<height>]]]` spawns a practice
+  target in front of the hero that logs and flashes on hits;
+  `GDL_BUTTONS=attack@30-32,power@60-62` scripts buttons by tick.
+
+### Stand-ins and differences
+
+- The turbo meter isn't modelled (stays 0): no turbo attacks, charge or
+  co-op combos; turbo + attack leaves the request unchanged, as the game
+  does below 40 turbo. Magic without potions just walks, as the game does
+  for a hero with none (without the cue).
+- Projectiles (throws, strafe attacks, power throw) play their actions but
+  release nothing yet.
+- A looping clip counts as ended each time it comes round (the game's end
+  flag for loops isn't traced; DEFEND2 needs it to finish).
+- Searches start from the hero's position before this tick's move, not
+  after it.
+- Last tick's bumped monster / locked generator aren't preferred, and the
+  0.9 scale for exploding/poison barrels isn't distinguished (breakables
+  all use 1.2). Multi-part objects are one target.
+- Knockback on the hero, hit reactions, pushing, the idle timers, the
+  start-frame offset for interrupted throws, and animation speed (DEFEND2
+  plays at 0.2 × armour) aren't done. The attack-sound indices in `PDAT`
+  (`+0x0C`–`+0x1E`) aren't played.
+- Only the Default scheme; the C-stick isn't used.

@@ -87,6 +87,6 @@ fn update_hud(
     for (name, why) in &game.failures {
         s += &format!("\nlevel {name} failed: {why}");
     }
-    s += "\n\nWASD/stick move  Shift walk  C free camera  [ ] level  I population  K collision  M mute music  N next sound\nfree camera: WASD fly  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed";
+    s += "\n\nWASD/stick move  Shift walk  J attack  L power  H turbo/defend  O strafe  C free camera  [ ] level  I population  K collision  M mute music  N next sound\nfree camera: WASD fly  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed";
     text.0 = s;
 }

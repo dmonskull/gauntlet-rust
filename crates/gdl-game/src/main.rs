@@ -2,6 +2,7 @@
 //! disc image, extracted folder or main.dol — and it finds, validates and
 //! loads the rest. No game assets ship with this program.
 
+mod actions;
 mod audio;
 mod autoshot;
 mod bootstrap;
@@ -9,6 +10,7 @@ mod camera;
 mod camera_rig;
 mod character;
 mod collision_debug;
+mod combat;
 mod hud;
 mod level;
 mod level_material;
@@ -99,7 +101,7 @@ fn main() {
         };
         app.insert_resource(game)
             .insert_resource(choice)
-            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin));
+            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin));
     }
     app.run();
 }
