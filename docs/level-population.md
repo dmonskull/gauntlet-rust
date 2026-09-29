@@ -45,8 +45,8 @@ Level setup (`FUN_80057020`) then calls `FUN_80063fb0` (items) and
 | --- | --- |
 | +0x00 | class (i32): −1 random, 1 POWERUP, 2 CONTAINER, 3 GENERATOR, 4 ENEMYINFO, 5 TRIGGER, 6 TRAP, 7 DOOR, 8 DAMAGETILE, 9 EXIT, 10 OBSTACLE, 11 TRANSPORTER, 12 ROTATOR, 13 SOUND — names from the game's table at `0x801185b0` |
 | +0x04 | subtype (i32); names at `0x801185e8`: 1 GOLD 2 KEY 3 FOOD 4 POTION 5 WEAPON 6 ARMOR 7 SPEED 8 MAGIC 9 SPECIAL 10 RUNESTONE, 20–29 trigger kinds (BRIDGEPAD…LIFTEND), 40–49 obstacle kinds (FALLING, SAFEROCK, WALL, BARREL, EXP BARREL, POI BARREL, CHEST…) |
-| +0x08 | u16, u16 — not named (values 0–4 / 0–1; looks like a collision shape selector) |
-| +0x0C..+0x1C | 4 × f32; the item's radius is half the larger of the first two |
+| +0x08 | u16 collision shape (0 none, 1 cylinder, 2 sphere, 3 box, 4 walls), u16 bit 0 keeps height ([items.md](items.md)) |
+| +0x0C..+0x1C | 4 × f32 extents: touch radius, vertical reach, box half widths along X and Z; the item's visibility radius is twice the larger of the first two |
 | +0x1C | vec3: centre offset, turned with the item (`FUN_8005a400`) |
 | +0x28 | name[16]: model/atree name, or the monster for generators/monsters |
 | +0x38 | i32, not named |

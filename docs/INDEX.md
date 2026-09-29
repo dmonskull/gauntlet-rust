@@ -17,6 +17,7 @@ One file per system, written only once it's confirmed against the actual
 | [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning |
 | [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music |
 | [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |
+| [items.md](items.md) | The hero's state (health, gold, keys, potions, powerups), item touch, pickups, doors, chests, exits, transporters, hints |
 
 ## Confirmed and implemented
 
@@ -40,6 +41,9 @@ One file per system, written only once it's confirmed against the actual
   (player starts, boss spawn, camera points) — shown in the level view.
 - Level collision (triangles, grid) and the game's floor, wall and
   move-with-collision queries.
+- The hero's record (health, gold, keys, potions, timed powerups) and the
+  items it touches: pickups, keyed doors and chests, exits, transporters,
+  item animation and the game's hints.
 
 ## Reverse engineering setup
 
@@ -67,7 +71,7 @@ names), which is how most systems here were found.
 
 - Monster stats (`CRITTER/*.WAD`), hand/effect glows, blending between
   actions.
-- Gameplay: the main loop, entity update, combat, item behaviour, co-op.
+- Gameplay: the main loop, combat, damage tiles, triggers, co-op.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
   `FUN_80058074`: cameras, enemies, maps, 14 named realm types). Only the
   chunk directory, level names and audio records are parsed so far.
