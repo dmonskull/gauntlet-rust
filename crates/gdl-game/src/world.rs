@@ -91,7 +91,10 @@ fn change_level(
     let mut stats = CurrentLevelStats { name: game.current_name().to_string(), ..default() };
     match game.load_current() {
         Ok(level) => {
-            let built = spawn_level(&level, &mut commands, &mut meshes, &mut materials, &mut images);
+            // Some level textures animate through frames kept in the always
+            // loaded WEAPONS model file (torches).
+            let shared = shared_textures(&mut game.install);
+            let built = spawn_level(&level, shared.as_ref(), &mut commands, &mut meshes, &mut materials, &mut images);
             collision_debug::spawn_overlay(
                 &level.collision,
                 overlay.visible,
@@ -150,8 +153,15 @@ struct Built {
 
 /// Places every model the world file references and merges them into a few
 /// hundred meshes (one per diffuse/lightmap pair).
+/// `WEAPONS/objects.ngc` + `textures.ngc`: textures every level can use.
+fn shared_textures(install: &mut gdl_install::GameInstall) -> Option<(gdl_formats::ModelFile, Vec<u8>)> {
+    let model = gdl_formats::ModelFile::parse(&install.read("WEAPONS/objects.ngc").ok()?).ok()?;
+    Some((model, install.read("WEAPONS/textures.ngc").ok()?))
+}
+
 fn spawn_level(
     level: &LevelData,
+    common: Option<&(gdl_formats::ModelFile, Vec<u8>)>,
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<LevelMaterial>,
@@ -194,18 +204,27 @@ fn spawn_level(
     for b in built.iter().chain(shared.values().flatten()) {
         by_binding.entry(b.diffuse).or_default().push(b.material.clone());
     }
+    let mut shared_cache = common.map(|(model, textures)| TextureCache::new(model, textures));
     let anims: Vec<TexAnim> = level
         .texmods
         .iter()
         .filter_map(|m| {
             let materials = by_binding.get(&m.binding)?.clone();
+            let n = m.count.unsigned_abs();
             let frames = match &m.kind {
-                TexModKind::Frames(first) => {
-                    let first = match first {
-                        FirstFrame::Binding(b) => *b,
-                        FirstFrame::Named(name) => level.model.texture_names.iter().find(|t| &t.name == name)?.binding,
-                    };
-                    (0..m.count.unsigned_abs()).map(|k| cache.get(first + k, images).map(|(image, _)| image)).collect()
+                TexModKind::Frames(FirstFrame::Binding(first)) => {
+                    (0..n).map(|k| cache.get(first + k, images).map(|(image, _)| image)).collect()
+                }
+                TexModKind::Frames(FirstFrame::Named(name)) => {
+                    let find = |model: &gdl_formats::ModelFile| model.texture_names.iter().find(|t| &t.name == name).map(|t| t.binding);
+                    match (find(&level.model), common.and_then(|(model, _)| find(model))) {
+                        (Some(first), _) => (0..n).map(|k| cache.get(first + k, images).map(|(i, _)| i)).collect(),
+                        (None, Some(first)) => {
+                            let sc = shared_cache.as_mut()?;
+                            (0..n).map(|k| sc.get(first + k, images).map(|(i, _)| i)).collect()
+                        }
+                        (None, None) => return None,
+                    }
                 }
                 _ => Vec::new(),
             };
