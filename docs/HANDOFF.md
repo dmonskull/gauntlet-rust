@@ -64,9 +64,18 @@ the levelA2 Death barrel).
     in full, as in the game. The golems used to stop taking damage.
   - Stand-in: the dragon's fireball draws as an orange glow sphere (its
     model needs the effects system).
-  - Not done: the boss key drop (only logged; it needs extra item models
-    via `population.rs` `ContentModels`), the boss intro and camera, and
-    multi-part bosses such as the chimera; the other bosses are untested.
+  - Victory: the boss's death marks the realm in `PlayerState::realms_beaten`
+    (the record's `+0x1EC8`, `FUN_8001b854`). After 5 s the party goes back
+    to the tower (a stand-in: the game's heroes cheer (action `0x1C`), the
+    `BOSSKEY`/`BOSSKEY2` effect shows, and their exit state
+    (`FUN_8007692c` case 4 → `FUN_80077ccc`) ends the level). Tested on B6
+    with `GDL_WARP="-3.2,29.7,-12" GDL_CRITTER_HP=0.02` + attack.
+  - Not done: the `BOSSKEY` effect, the victory cheer, the boss intro and
+    camera, and multi-part bosses such as the chimera; the other bosses are
+    untested.
+- **Throw aim** (a user report): throws now aim from the release height at
+  the target's centre, tilting up or down, and look 200 units out on boss
+  levels. See [projectiles.md](projectiles.md), "The throw's target".
 - **Warm-up hitches**
   - The early frames of a level can take 20–40 ms.
   - A pre-warm was added (level meshes skip frustum culling for 3 frames).
