@@ -65,4 +65,6 @@ joins (`FUN_80079ed8`, reading through the `PDAT` pointer at
 
 See [collision.md](collision.md) "Moving a player". `+0x58` (1.0–1.3) and
 `+0x5C..+0x7C` are further per-class tuning, not named yet. The player movement code multiplies stick magnitude by a speed
+
+`+0x0C`–`+0x1E` are i16 sound indices the player update plays (not traced).
 value derived from this stat; the derivation isn't traced yet.
