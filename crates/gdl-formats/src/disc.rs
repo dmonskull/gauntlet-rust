@@ -3,7 +3,7 @@
 //! Layout reverse engineered from the public GC-Forever / WiiBrew "Disc" and
 //! "Apploader" documentation and confirmed against Gauntlet: Dark Legacy's
 //! own disc image (game ID `GUNE5D`): boot.bin's `dol_offset` at 0x420 points
-//! at a valid DOL whose entry point Ghidra resolves cleanly at 0x800051fc.
+//! at a valid DOL that Ghidra loads and analyses cleanly.
 
 use std::io::{self, Read, Seek, SeekFrom};
 

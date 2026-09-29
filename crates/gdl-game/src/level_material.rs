@@ -1,5 +1,5 @@
 //! Material for level geometry: the diffuse texture and lightmap pairing the
-//! game's draw loop (`FUN_800c3bbc`) binds to GX texture maps 0 and 1.
+//! game's draw loop binds to GX texture maps 0 and 1 (`docs/rendering.md`).
 
 use bevy::asset::embedded_asset;
 use bevy::prelude::*;

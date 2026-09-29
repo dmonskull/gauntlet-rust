@@ -104,7 +104,7 @@ pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, St
     let world = WorldFile::parse(&world_file).map_err(|e| format!("WORLDS.PS2: {e}"))?;
     let positions = world.world_positions().map_err(|e| format!("WORLDS.PS2: {e}"))?;
 
-    // Nodes find their model by name, like the game's FUN_800b8684.
+    // Nodes find their model by name, like the game does.
     let by_name: std::collections::HashMap<&str, usize> =
         model.objects.iter().enumerate().map(|(i, o)| (o.name.as_str(), i)).collect();
     let placements = world

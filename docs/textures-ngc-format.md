@@ -1,44 +1,45 @@
-# `textures.ngc` — status: not yet reverse engineered
+# `textures.ngc` — texture pixel data
 
-No file-level header found: real files (e.g. `levelE2/textures.ngc`) have
-no ASCII path comment and nothing that looks like a version magic in the
-first `0x40` bytes, unlike `objects.ngc`. See
-[objects-ngc-format.md](objects-ngc-format.md) for how `objects.ngc`'s
-`MaterialBinding::texture_offset` was confirmed (via 8,387 real bindings
-across every level) to be a valid file-relative offset into the sibling
-`textures.ngc`.
+Implemented in [`crates/gdl-formats/src/texture.rs`](../crates/gdl-formats/src/texture.rs).
+Verified: 8,315 of the disc's textured bindings decode (72 use selectors the
+game's own tables don't cover — see below).
 
-## What looking at real offsets shows
+No file header. Each [model binding](objects-ngc-format.md#texture-binding-0x40-bytes-on-disk)
+gives an offset, width, height and a format selector byte. Data is in
+GameCube-native form: GX tiled layout, big-endian.
 
-Dumping the bytes at every confirmed `texture_offset` in `levelE2` (128
-distinct offsets) shows:
+## Format selector
 
-- Several offsets start with a repeating `c2 10 c2 10 ...` byte pattern —
-  plausibly a single solid-color GX `CMPR` block tiled across a whole
-  texture (a `CMPR` block is 8 bytes: two RGB565 colors + 4×4 2-bit
-  indices; a flat color naturally repeats).
-- The gaps between consecutive sorted offsets (a rough proxy for one
-  texture's size, since textures are presumably packed back-to-back) take
-  only a handful of distinct values: `0x40`, `0x300`, `0x1200`, `0x2200`,
-  `0x4200` bytes. Consistent round sizes, but not yet matched to specific
-  width/height/GX-format combinations — `0x40` bytes is too small for any
-  plausible `CMPR` texture above 8×16, so more than one GX format is likely
-  in use (`CMPR`, `I4`/`I8`, `RGB565`, `RGB5A3` are all real possibilities
-  for a GC game of this era).
+Decoded exactly as `FUN_800c70c4` does when it builds GX texture objects.
+The selector names **PS2 pixel-storage modes** (`PSMT4 = 0x14`, `PSMT8 =
+0x13`, `PSMCT16 = 0x02`) through three 5-entry tables at `0x80127bb0`
+(format), `0x80127bc4` (palette bytes to skip) and `0x80127bd8` (direct
+formats), which the game maps to GX formats:
 
-## What's missing
+| selector | format | palette | pixels start at |
+| --- | --- | --- | --- |
+| `0x0?` (low 3 bits 0–1) | GX `RGB5A3` | — | offset |
+| `0x1?` | GX `CI4` | 16 × RGB5A3 | offset + 32 |
+| `0x2?` | GX `CI4` | 16 × RGB5A3 | offset + 64 |
+| `0x3?` | GX `CI8` | 256 × RGB5A3 | offset + 512 |
+| `0x4?` | GX `CI8` | 256 × RGB5A3 | offset + 1024 |
+| `0x8?` | GX `CI8` | shared (below) | offset |
+| `0x9?`–`0xF?` | GX `CI4` | shared (below) | offset |
 
-Width, height and GX texture format aren't visible in `textures.ngc`
-itself, and haven't been found in the confirmed part of `objects.ngc`'s
-`MaterialBinding` either — they're probably in `MaterialBinding`'s
-remaining ~13 unconfirmed 4-byte words, or built from a lookup elsewhere.
+Selectors `0x5?`–`0x7?` index past the end of the game's 5-entry tables, and
+direct formats other than PSMCT16 leave the texel size uninitialised — the
+retail game can't draw these correctly either, so they're reported as
+unsupported. All textures wrap (repeat) and have no mipmaps.
 
-## Next step
+## Shared palettes
 
-Find where the game actually constructs a GX texture object (the
-Nintendo SDK's `GXInitTexObj`-equivalent call) from a resolved
-`MaterialBinding`/texture pointer — that call's arguments give width,
-height and format directly. Not yet located; the two functions found so
-far that touch resolved texture pointers (`FUN_800ba1ac`, `FUN_800ba278`)
-only copy the raw `0x10`-byte binding record around (texture-scroll
-animation), they don't build a texture object.
+`FUN_800c76dc` builds two global palettes at runtime instead of reading
+them: RGB5A3 `(i × 0x800) | 0xFFF` (16 entries) and `(i × 0x80) | 0xFFF`
+(256 entries) — white with a 3-bit alpha ramp. Lightmaps (256×256 `0x92`
+textures) use these, so their intensity lives in alpha, in 8 levels.
+
+## Tiling
+
+GX tiles are row-major, texels row-major within a tile, dimensions padded to
+whole tiles: `CI4` 8×8, `CI8` 8×4, `RGB5A3` 4×4. `CI4` stores the high nibble
+first. RGB5A3: top bit set → opaque RGB555, clear → ARGB 3-4-4-4.

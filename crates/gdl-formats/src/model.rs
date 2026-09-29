@@ -5,13 +5,13 @@
 //! `docs/objects-ngc-format.md` for the full writeup and which function each
 //! rule comes from. In short:
 //!
-//! - The file is little-endian throughout (shared with the PS2 build). The
-//!   load-time fixup `FUN_800b7534` byte-swaps the header and tables.
+//! - The file is little-endian throughout (shared with the PS2 build); the
+//!   game byte-swaps the header and tables after loading.
 //! - Geometry is stored as **PS2 VIF packets** (DMA-tagged `UNPACK` streams
 //!   for the PS2's vector unit). The GameCube build interprets them in
-//!   software in `FUN_800c48c0`; [`Submesh::decode`] follows that function's
-//!   rules exactly, including its scale constants (read from `main.dol`'s
-//!   small-data area: positions ÷128, normals `(v−15)/15`, UVs ÷128).
+//!   software; the packet decoder here follows that interpreter's rules
+//!   exactly, including its scale constants (positions ÷128, normals
+//!   `(v−15)/15`, UVs ÷128).
 
 use thiserror::Error;
 
@@ -31,12 +31,12 @@ const STRIP_ENTRY_STRIDE: usize = 8;
 const LEGACY_STRIP_ENTRY_STRIDE: usize = 6;
 const LEGACY_VERSION: u32 = 0xF00B000C;
 
-/// `FUN_800c48c0` divides unpacked positions by this (`r2-0x481c`).
+/// The game divides unpacked positions by this.
 pub const POSITION_DIVISOR: f32 = 128.0;
-/// Normal components are 5-bit, biased by 15 and divided by 15 (`r2-0x482c`).
+/// Normal components are 5-bit, biased by 15 and divided by 15.
 pub const NORMAL_DIVISOR: f32 = 15.0;
-/// UVs are divided by 32768 (`r2-0x4830`) then scaled by 256 (`r2-0x4800` ×
-/// the default texture transform at `0x80127b68`), i.e. ÷128 overall.
+/// UVs are divided by 32768, then scaled by 256 by the default texture
+/// transform: ÷128 overall.
 pub const UV_DIVISOR: f32 = 128.0;
 /// The second UV pair is divided by 32768 with no texture-matrix scale.
 pub const LIGHTMAP_UV_DIVISOR: f32 = 32768.0;
@@ -107,8 +107,8 @@ impl ModelHeader {
 
 /// Binds a submesh to a texture in the sibling `textures.ngc`. Submeshes
 /// refer to these by index (the low 16 bits of the game's `texidx`).
-/// Confirmed from `FUN_800c7510` (load-time bind), `FUN_800c70c4` (GX
-/// texture object setup) and `FUN_800c6d0c` (draw-time bind).
+/// Confirmed from the game's load-time bind, GX texture object setup and
+/// draw-time bind (`docs/objects-ngc-format.md`).
 #[derive(Debug, Clone, Copy)]
 pub struct MaterialBinding {
     /// On-disk `+0x00`: texture format selector — see
@@ -136,7 +136,8 @@ impl MaterialBinding {
         }
     }
 
-    /// Mirrors `FUN_800c7510`: zero width or height means untextured.
+    /// Mirrors the game's load-time bind: zero width or height means
+    /// untextured.
     pub fn is_textured(&self) -> bool {
         self.width != 0 && self.height != 0
     }
@@ -153,9 +154,9 @@ pub struct TextureName {
 
 /// Which textures and how much packet data one submesh uses. The first
 /// submesh's descriptor lives in the object record at `+0x10`; the rest in
-/// the strip table. Field meanings come from the draw loop `FUN_800c3bbc`:
-/// `+2` goes through `FUN_800c3d60` to `FUN_800c6a78` (GX texture map 0),
-/// `+4` to `FUN_800c6bf0` (GX texture map 1, enabled only when non-zero).
+/// the strip table. Field meanings come from the game's draw loop: `+2` is
+/// bound to GX texture map 0, `+4` to GX texture map 1 (enabled only when
+/// non-zero).
 #[derive(Debug, Clone, Copy)]
 pub struct SubmeshDescriptor {
     /// Packet size in 16-byte quadwords, including the DMA tag.
@@ -294,7 +295,8 @@ impl ModelFile {
     }
 }
 
-/// Decodes one DMA-tagged VIF packet following `FUN_800c48c0`.
+/// Decodes one DMA-tagged VIF packet following the game's software
+/// interpreter.
 fn decode_packet(packet: &[u8]) -> Result<(Vec<Vertex>, Vec<[u32; 3]>), String> {
     let words = packet.len() / 4;
     let qwc = le_u16(packet, 0) as usize;
@@ -396,8 +398,8 @@ fn decode_packet(packet: &[u8]) -> Result<(Vec<Vertex>, Vec<[u32; 3]>), String> 
             });
         }
 
-        // Strip splitting exactly as FUN_800c48c0 does before each
-        // FUN_800c4254 (GX triangle strip) call.
+        // Strip splitting exactly as the game does before each GX triangle
+        // strip it emits.
         let mut start = 0;
         for (v, &flag) in restart.iter().enumerate() {
             if flag && v - start > 1 {

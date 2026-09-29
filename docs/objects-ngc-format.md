@@ -1,126 +1,110 @@
-# `objects.ngc` — model file header
+# `objects.ngc` — models
 
-Status: **header confirmed**, per-entry array layouts are hypotheses. Found by
-decompiling the fixup routine at `0x800b7534` in `main.dol` (Ghidra project
-`GauntletDarkLegacy`), which every level's `objects.ngc` passes through right
-after loading — see `docs/INDEX.md` for how to re-run that decompile.
+Implemented in [`crates/gdl-formats/src/model.rs`](../crates/gdl-formats/src/model.rs).
+Verified: all 67 levels parse completely — 51,007 objects, 79,252
+submeshes, ~598K triangles, every packet size agreeing with its DMA tag.
 
-## Byte order
+## Byte order and version
 
-The whole file is **little-endian on disk** (shared with the PS2 build,
-which is little-endian MIPS). `0x800b7534` byte-swaps every multi-byte header
-field and every per-entry array element after load, once it confirms the
-version field turns into the expected magic after exactly one 32-bit swap.
-Confirmed directly against real files: `levelE2/objects.ngc` offset `0x40` is
-literally the bytes `0d 00 0b f0`, i.e. `0xF00B000D` read little-endian.
+Little-endian throughout (shared with the PS2 build). `FUN_800b7534` byte
+swaps the header and tables after load and warns `"model %d %s has a bad
+version (%08x) (want %08x)"` unless the version at `0x40` is `0xF00B000D`.
+`levelL2` is `0xF00B000C` — the retail game flags it too; its strip table
+entries are 6 bytes instead of 8 (see below). Bytes `0x00..0x20` are the
+build-machine path as text; `0x20..0x40` are zero.
 
-## Header layout (offset from file start)
+## Header (`0x40..0x80`)
 
-Bytes `0x00..0x20` are a NUL-terminated ASCII path comment (build-machine
-path, e.g. `"...jects/GPS2/Disk/levels/levelE2/"`), not used by the game.
-`0x20..0x40` is zero-padded. The real header starts at `0x40`:
+| offset | field |
+| --- | --- |
+| 0x40 | version |
+| 0x44 | object count |
+| 0x48 | texture binding count |
+| 0x4C | object name count (= object count) |
+| 0x50 | texture name count |
+| 0x54 | objects offset (`0x40`-byte records) |
+| 0x58 | texture bindings offset (`0x40`-byte records) |
+| 0x5C | object names offset (`0x18`-byte records) |
+| 0x60 | texture names offset (`0x24`-byte records) |
+| 0x64 | strip table offset (extra submesh descriptors) |
+| 0x68 | geometry offset (VIF packets) |
+| 0x6C–0x7E | not named yet |
 
-| offset | size | field | notes |
-| --- | --- | --- | --- |
-| 0x40 | u32 | `version` | magic. Observed `0xF00B000D` (most levels) and `0xF00B000C` (`levelL2`) — treat as "known versions", not a single hardcoded constant |
-| 0x44 | u32 | `num_objects` | always observed equal to the field at `0x4c` across every level checked |
-| 0x48 | u32 | `num_b` | drives a second `0x40`-byte-entry array at `objects_b_offset`, later compacted **in place** down to `0x10` bytes/entry (material→texture remap table?) |
-| 0x4c | u32 | `num_objects_dup` | see `0x44`; used as the count for the array at `bounds_offset` (`0x18` bytes/entry) |
-| 0x50 | u32 | `num_d` | array at `d_offset`, `0x24` bytes/entry; trailing entries whose first byte is `0` get trimmed from the count after byte-swapping |
-| 0x54 | u32→ptr | `objects_offset` | array of `num_objects` entries, `0x40` bytes each — the main per-object/mesh record |
-| 0x58 | u32→ptr | `objects_b_offset` | array of `num_b` entries, `0x40` bytes each on disk, compacted to `0x10` bytes/entry after load |
-| 0x5c | u32→ptr | `bounds_offset` | array of `num_objects` entries, `0x18` bytes each; entry `+0x14` (u16) indexes back into the `objects_offset` array (sets that object's `+0x2c` back-pointer to this entry) |
-| 0x60 | u32→ptr | `d_offset` | array of `num_d` entries, `0x24` bytes each |
-| 0x64 | u32→ptr | unnamed | relocated the same way (`+= file_base`) |
-| 0x68 | u32→ptr | unnamed | relocated the same way |
-| 0x6c | u32→ptr | unnamed | relocated the same way |
-| 0x70 | u32→ptr | unnamed | relocated from a *different* base: `file_base + *(u32*)(header_table + entry*0x10 + 8)`, not from this header directly |
-| 0x74 | u32→ptr | unnamed | relocated from `file_base + that_table_entry[2] + that_table_entry[3]` |
-| 0x78 | u32→ptr | unnamed | relocated the same way as `0x64..0x6c` |
-| 0x7c | u16 | unnamed | byte-swapped only, not relocated |
-| 0x7e | u16 | unnamed | byte-swapped only, not relocated |
+## Object record (`0x40` bytes)
 
-All `offset` fields are file-relative on disk and become absolute pointers
-(`+= file_base`) once loaded into memory — for our purposes (reading from a
-file, not emulating GC memory), they stay file-relative offsets.
+| offset | field |
+| --- | --- |
+| +0x04 | bounding value (a float; duplicated in `WORLDS.PS2` nodes) |
+| +0x08 | flags |
+| +0x0C | submesh count |
+| +0x10 | first submesh descriptor (8 bytes, below) |
+| +0x18 | offset of the remaining descriptors in the strip table |
+| +0x1C | offset of the first submesh's packet |
 
-## Per-`objects_offset` entry validation (confirmed from `0x800b7534`)
+Submesh packets are back to back; each descriptor gives its size.
 
-An entry is considered invalid (zeroes out its "count" field at `+0xc`) unless
-**all** of:
-- `*(i32*)(entry+0xc) >= 1`
-- `*(i16*)(entry+0x10) != 0`
-- `*(i32*)(entry+0x1c) != 0`
-- if `*(i32*)(entry+0xc) > 1`, also `*(i32*)(entry+0x18) != 0`
+## Submesh descriptor
 
-This strongly suggests `entry+0xc` is a sub-mesh/strip count, `entry+0x10` a
-flags or material-index field, and `entry+0x18`/`entry+0x1c` are pointers to
-per-strip data present only when the count allows it.
+From the draw loop `FUN_800c3bbc`:
 
-## `objects_b_offset` array — material/texture bindings (partially confirmed)
+| offset | field |
+| --- | --- |
+| +0 | packet size in 16-byte quadwords, including the DMA tag |
+| +2 | **diffuse** binding → `FUN_800c3d60` → `FUN_800c6a78` → GX texture map 0 |
+| +4 | **lightmap** binding → `FUN_800c6bf0` → GX texture map 1; 0 = none |
+| +6 | signed parameter passed with the lightmap (not named yet) |
 
-Confirmed from `FUN_800c7510` (`main.dol`), called right after both a
-model *and* its texture finish loading (from `FUN_800b7344`). It walks
-`num_b` entries at the *compacted* `objects_b_offset` array and binds each
-to texture data. Cross-referencing the compaction copy in `0x800b7534`
-(which shrinks each on-disk `0x40`-byte entry down to `0x10` bytes) resolves
-which on-disk bytes back each compacted field:
+Legacy `0xF00B000C` strip entries are 6 bytes: size, diffuse, lightmap.
 
-| on-disk offset (within 0x40-byte entry) | compacted offset | meaning |
-| --- | --- | --- |
-| `+0x00` (u8) | `+0x00` | copied through, meaning unconfirmed |
-| `+0x08` (u16) | `+0x02` | becomes the runtime "flags" field; bit `0x100` = untextured |
-| `+0x0C` (u32) | `+0x04` | texture data offset, used only when textured |
-| `+0x12` (u16) | `+0x08` | copied through, meaning unconfirmed |
-| `+0x16` (u16) | `+0x0A` | if `0`, this binding is marked untextured |
-| `+0x18` (u16) | `+0x0C` | if `0` (or already untextured), also marked untextured |
+## Names
 
-Compacted `+0x0E` and `+0x01` are **not** written by the compaction copy —
-they're leftover memory, unconditionally overwritten at runtime (`0xFFFF`
-and a model index respectively), so they carry no on-disk meaning. The rest
-of each `0x40`-byte on-disk entry (most of it) is still unconfirmed — likely
-a material name and additional texture/UV info, given the array's job.
+Object names (`0x18`): `name[16]`, bounding value (u32), object index (u16),
+pad. Sorted by name — `FUN_800b8684` (`MBOX_FindObject`) binary-searches it.
 
-Cross-checked against the `texidx` lookup path (`FUN_800ba314`
-`"MBRomTexPtr"`, `FUN_800ba278`, `FUN_800ba1ac`): all three independently
-index this exact same array (`model_base + 0x58`, stride `0x10`, by the
-low 16 bits of a `texidx`), confirming it's the canonical texture-binding
-table used throughout the game, not something local to the one fixup
-routine.
+Texture names (`0x24`): `name[0x1E]`, binding index, width, height. Used for
+looking textures up by name (animated/scrolling textures).
 
-Implemented as `gdl_formats::MaterialBinding` — `flags_raw` (`+0x08`),
-`texture_offset` (`+0x0C`), and the two "untextured" check fields
-(`+0x16`/`+0x18`). **Verified**: across all 67 real `objects.ngc` files,
-every one of the 8,387 bindings whose checks mark it "textured" has a
-`texture_offset` that lands inside its level's actual `textures.ngc` file
-size (`cargo test -p gdl-formats textured_bindings_point_inside`) — strong
-evidence `texture_offset` really is a file-relative offset into
-`textures.ngc`.
+## Texture binding (`0x40` bytes on disk)
 
-## Not yet reverse engineered
+The load path compacts these to `0x10` bytes in memory; only these on-disk
+fields are read (`FUN_800b7534`, `FUN_800c7510`, `FUN_800c70c4`,
+`FUN_800c6d0c`):
 
-- Most of the `objects_b_offset` entry (only 4 of ~16 four-byte words
-  confirmed — see above).
-- The exact meaning of the `d_offset` array (`0x24` bytes/entry) — likely
-  collision or trigger geometry given the trailing-empty-entry trimming.
-- The unnamed pointers at `0x64`–`0x78`.
-- Vertex/index/strip data layout inside the `objects_offset` entries once
-  `entry+0xc` submesh count is followed.
+| on disk | meaning |
+| --- | --- |
+| +0x00 (u8) | format selector — see [textures-ngc-format.md](textures-ngc-format.md) |
+| +0x08 (u16) | runtime flags; bit `0x100` = untextured |
+| +0x0C (u32) | offset into `textures.ngc` (palette first, if any) |
+| +0x16 (u16) | width; 0 = untextured |
+| +0x18 (u16) | height; 0 = untextured |
 
-`textures.ngc` does **not** appear to share this pattern: real files (e.g.
-`levelE2/textures.ngc`) have no ASCII path comment and no obvious version
-magic in the first `0x40` bytes — byte patterns from `0x40` onward already
-look like GX `CMPR`-style compressed texture block data (repeating
-plausible RGB565 colour shorts), suggesting little or no file-level header.
-Not yet confirmed against decompiled code — the `objects.ngc`/`textures.ngc`
-load path in `FUN_800b7344` doesn't call an equivalent byte-swap routine for
-textures, which would make sense if GX-compressed texel data is stored as
-opaque byte blocks that don't need endian conversion.
+## Geometry: PS2 VIF packets
 
-Next step to make progress on `objects.ngc`: decompile `0x800b7fec`/
-`0x800b719c`'s caller chain forward into whatever actually walks
-`objects_offset` entries for rendering, to name the remaining fields. For
-`textures.ngc`: find the function that actually builds a GX `GXTexObj` from
-the loaded data (search for code indexing off the texture pointer stored at
-`objects.ngc`'s material-binding `+0x04` field) to confirm the container
-format (TPL-style multi-image table vs. one texture per file).
+Each packet is a PS2 DMA tag (qwc in the low 16 bits) followed by VIF
+`UNPACK` streams — the PS2 vector-unit upload format. The GameCube build
+walks them in software in **`FUN_800c48c0`**; `decode_packet` follows it
+exactly. Per batch (one triangle strip), in words:
+
+| VIF write | contents |
+| --- | --- |
+| `V4-32` @0 | vertex count *N*, 0, 1.0, −1.0 |
+| positions | cmd `0x69` s16×3, `0x6A` s8×3, else s32×3; *N*+1 entries (last is a trailer) |
+| `V4-5` @2 | normal: 5 bits/axis, `(v − 15) / 15`; **bit 15 = strip restart** |
+| `V4-5` @3 | optional prelit colour, present iff this write targets VU address 3 |
+| UVs | cmd `0x6D` u16×4, `0x66` u8×2, else u16×2 |
+| `MSCAL`/`MSCNT` | ends the batch |
+
+Scale constants, read from the small-data area (`r2 = 0x8034D100`):
+positions ÷128 (`r2−0x481c`), UVs ÷32768 (`r2−0x4830`) then ×256 (the
+default texture transform `r2−0x4800` × `0x80127b68`), so ÷128 overall.
+With `0x6D`, components 3–4 are the lightmap UV, ÷32768.
+
+Strips split where a vertex has the restart flag and at least two vertices
+precede it since the last split; the new strip starts at the previous
+vertex.
+
+## Not reverse engineered yet
+
+- Header fields `0x6C`–`0x7E`; object `+0x08` flags and `+0x20..0x2C`.
+- The descriptor's `+6` lightmap parameter.
+- Binding fields other than the five above.

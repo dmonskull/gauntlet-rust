@@ -5,52 +5,47 @@ One file per system, written only once it's confirmed against the actual
 
 | file | about |
 | --- | --- |
-| [disc-format.md](disc-format.md) | GameCube disc boot header and DOL executable layout |
-| [objects-ngc-format.md](objects-ngc-format.md) | Model file (`objects.ngc`) header, byte order, and material/texture bindings |
-| [textures-ngc-format.md](textures-ngc-format.md) | Texture file (`textures.ngc`) — status: not yet reverse engineered, what's known |
+| [disc-format.md](disc-format.md) | GameCube disc boot header, DOL layout, FST filesystem |
+| [objects-ngc-format.md](objects-ngc-format.md) | Models: header, names, texture bindings, PS2 VIF geometry |
+| [textures-ngc-format.md](textures-ngc-format.md) | Texture formats, palettes, lightmaps |
+| [worlds-format.md](worlds-format.md) | Level scene graph and model placement |
+| [rendering.md](rendering.md) | How a level is drawn: diffuse × colour × lightmap |
 
-## Ghidra project
+## Confirmed and implemented
 
-`~/ghidra-projects/projects/GauntletDarkLegacy` — `main.dol` imported and
-auto-analyzed (2962 functions, entry point `0x800051fc`). Driven headlessly
-via `analyzeHeadless` and the Cerberus RE bridge
+- Disc image: boot header, `main.dol` layout, FST — every game file read
+  straight from the `.iso` (all 2,481 match an extracted copy byte-for-byte).
+- Locating a user's copy from a disc image, extracted folder or `main.dol`
+  (`gdl-install`).
+- Models, textures, lightmaps and world placement for all 67 levels.
+
+## Reverse engineering setup
+
+Ghidra project: `~/ghidra-projects/projects/GauntletDarkLegacy` (`main.dol`,
+GameCube loader + Gekko/Broadway language). Drive it with `analyzeHeadless`
+and small Java `GhidraScript`s, or the Cerberus RE bridge
 (`~/start-cerberus-bridge.sh`).
 
-Debug strings survived in the retail binary (asserts, error prints, file
-paths) — grepping defined strings for things like `.ngc`, `WORLDS`, `LEVELS`
-and decompiling their referencing functions is the fastest way in so far;
-see `objects-ngc-format.md` for how that found the model header.
+A full decompilation of every function lives at
+`~/ghidra-projects/exports/GauntletDarkLegacy-main.dol.c` (2,962 functions,
+one `//// FUNCTION <addr> <name>` header each). Grepping it is the fastest
+way in: for strings, constants, callers (`FUN_xxxxxxxx(`), and GPU FIFO
+writes (`DAT_cc008000`).
 
-## Confirmed so far
+Globals are addressed off two base registers set in the entry stub at
+`0x80005310`: **`r2 = 0x8034D100`** (read-only constants: `unaff_r2 + -0x...`)
+and **`r13 = 0x8034B4E0`** (mutable globals: `unaff_r13 + -0x...`). Map an
+address to a file offset with the DOL section table
+([disc-format.md](disc-format.md)).
 
-- GameCube disc boot header + `main.dol` layout (`disc-format.md`)
-- `objects.ngc` header: version magic, object/sub-array counts and offsets
-  (`objects-ngc-format.md`). Verified by parsing all 67 real `objects.ngc`
-  files across every level — `cargo test -p gdl-formats`.
-- `objects.ngc`'s `objects_b_offset` array (material/texture bindings): 4 of
-  its fields, enough to resolve which bytes of the sibling `textures.ngc`
-  each binding's texture lives at. Verified against all 8,387 textured
-  bindings across every level.
+The retail binary kept its debug strings (asserts, error messages, file
+names), which is how most systems here were found.
 
-## Corrections to earlier notes
+## Not reverse engineered yet
 
-The `"World Data %s has no cameras"` / `"No world data file: %s"` style
-strings turned out to belong to a *different*, global per-world-type
-`"gar_%s.wad"` resource system (14 named types, e.g. `"castle"`), reached
-from `FUN_8005a094`/`FUN_80058074`/`FUN_800a8dfc` — **not** the per-level
-`WORLDS.PS2` file sitting in each `LEVELS/levelXX/` folder. The real
-`WORLDS.PS2` loader hasn't been located yet.
-
-## Not started yet
-
-- `objects.ngc` per-entry array layouts (mesh/strip data, the `num_b` array
-  beyond its 4 confirmed fields, and the `num_d` array) — see "Not yet
-  reverse engineered" in `objects-ngc-format.md`
-- `textures.ngc` — no header found yet; width/height/GX-format still
-  unknown (`textures-ngc-format.md`)
-- `WORLDS.PS2` (the actual per-level file — not yet located in the binary;
-  see "Corrections" above)
-- `ANIM.PS2` (animation data)
-- Actor/monster data (`MONSTERS/`, `CRITTER/`)
-- Main game loop / entity update
-- Co-op and combat systems
+- Characters: `PLAYERS/`, `MONSTERS/`, `CRITTER/` models, and `ANIM.PS2`
+  (animation) — models likely reuse the `objects.ngc` format.
+- Gameplay: the main loop, entity update, combat, items, co-op.
+- `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
+  `FUN_80058074`: cameras, audio, 14 named realm types).
+- The rest of `WORLDS.PS2` (collision/grid tables) and audio.
