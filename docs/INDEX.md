@@ -19,6 +19,7 @@ One file per system, written only once it's confirmed against the actual
 | [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |
 | [combat.md](combat.md) | Controls → logical buttons, attack intents and chaining, target search, blows, damage |
 | [monsters.md](monsters.md) | Monster stats and tiers, the realm's monster slots, generators, placed monsters, the monster AI and mover; `CRITTER` files |
+| [projectiles.md](projectiles.md) | Thrown weapons and monster missiles: release, aim, lob, flight, collision, blasts, the throwing AIs |
 | [items.md](items.md) | The hero's state (health, gold, keys, potions, powerups), item touch, pickups, doors, chests, exits, transporters, hints |
 
 ## Confirmed and implemented
@@ -54,6 +55,10 @@ One file per system, written only once it's confirmed against the actual
   lunges, low attacks, directional swings, strafing, the target search and
   hit test, strength-derived damage — emitted as `Hit` messages against
   `Targetable` entities.
+- Projectiles: the hero's thrown weapon per class (release, aim, reach by
+  wind-up, lob, stat-derived damage and speed, models) and the throwing
+  monster AIs' arrows and bombs, flying and hitting monsters, generators,
+  the hero and the level; bombs burst.
 - The hero's record (health, gold, keys, potions, timed powerups) and the
   items it touches: pickups, keyed doors and chests, exits, transporters,
   item animation and the game's hints.
@@ -85,7 +90,8 @@ names), which is how most systems here were found.
 - The critter system (bosses, golem, gargoyles; `CRITTER/*.WAD` beyond
   hit points and table spans) and most monster AIs beyond chase/wander;
   hand/effect glows, blending between actions.
-- Gameplay: the main loop, damage from monsters to the hero, projectiles,
+- Gameplay: the main loop, damage from monsters to the hero, missile
+  effects and powerups (pierce, bounce, spreads), the fireball AIs,
   turbo and magic, damage tiles, triggers, co-op.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
   `FUN_80058074`: cameras, enemies, maps, 14 named realm types). The chunk
