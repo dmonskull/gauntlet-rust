@@ -849,4 +849,45 @@ mod tests {
         eprintln!("{checked} critter bodies resolve; move nodes that fall back to the root: {missing:?}");
         assert!(missing.len() <= 40, "{missing:?}");
     }
+
+    /// The placed critters (statues) in every level, and which of them a
+    /// wake trigger (flag 0x2000) stands within the game's reach (10 units,
+    /// less the statue item's radius) of — the only way a placed statue
+    /// comes alive.
+    #[test]
+    fn every_real_statue_and_its_wake_trigger() {
+        use crate::population::{ItemClass, PlacementParams, Population};
+        let Ok(entries) = std::fs::read_dir(root().join("LEVELS")) else { return };
+        let (mut statues, mut woken) = (0, 0);
+        let mut report = Vec::new();
+        for level in entries.flatten().map(|e| e.path()) {
+            let Ok(bytes) = std::fs::read(level.join("WORLDS.PS2")) else { continue };
+            let Ok(pop) = Population::parse(&bytes) else { continue };
+            let wakes: Vec<[f32; 3]> = pop
+                .placements
+                .iter()
+                .filter(|p| {
+                    let ty = pop.resolved_type(p);
+                    matches!(p.params(ty.class), PlacementParams::Trigger { flags, .. } if flags & 0x2000 != 0)
+                })
+                .map(|p| p.position)
+                .collect();
+            for p in &pop.placements {
+                let ty = pop.resolved_type(p);
+                if ty.class != ItemClass::EnemyInfo || !matches!(ty.enemy(), Some(0x1D | 0x20 | 0x21)) {
+                    continue;
+                }
+                statues += 1;
+                let radius = 0.5 * ty.extent[0].max(ty.extent[1]);
+                let near = wakes.iter().any(|w| {
+                    ((w[0] - p.position[0]).powi(2) + (w[2] - p.position[2]).powi(2)).sqrt() - radius < 10.0
+                });
+                if near {
+                    woken += 1;
+                    report.push(format!("{} {} {:?}", level.file_name().unwrap().to_string_lossy(), ty.name, p.position));
+                }
+            }
+        }
+        eprintln!("{statues} placed critters, {woken} with a wake trigger: {report:?}");
+    }
 }

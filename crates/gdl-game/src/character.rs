@@ -238,6 +238,12 @@ impl Animator {
         }
     }
 
+    /// The entity posing skeleton node `node` (its `GlobalTransform` is the
+    /// node's world matrix as of the last frame).
+    pub fn bone(&self, node: usize) -> Option<Entity> {
+        self.bones.get(node).copied()
+    }
+
     /// Name of the action playing.
     pub fn action_name(&self) -> &str {
         self.clips.actions.get(self.action).map_or("", |a| a.name.as_str())
