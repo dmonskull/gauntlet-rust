@@ -182,6 +182,18 @@ pub struct Animator {
     pub action: usize,
     pub frame: f32,
     tracks: Vec<Option<Track>>,
+    blend: Blend,
+}
+
+/// Blending from the pose an action was interrupted in: the old pose's
+/// weight falls from 1 to 0 over `duration` seconds.
+#[derive(Default)]
+enum Blend {
+    #[default]
+    None,
+    /// Snapshot the bones on the next frame.
+    Pending { duration: f32 },
+    Active { from: Vec<Transform>, elapsed: f32, duration: f32 },
 }
 
 impl Animator {
@@ -196,15 +208,34 @@ impl Animator {
     }
 
     pub fn play_named(&mut self, name: &str) -> bool {
+        self.play_blended(name, 0.0)
+    }
+
+    /// Starts `name` unless it's already playing, blending from the current
+    /// pose over `blend` seconds.
+    pub fn play_blended(&mut self, name: &str, blend: f32) -> bool {
         match self.clips.actions.iter().position(|a| a.name == name) {
             Some(i) => {
                 if i != self.action || self.tracks.is_empty() {
                     self.play(i);
+                    if blend > 0.0 {
+                        self.blend = Blend::Pending { duration: blend };
+                    }
                 }
                 true
             }
             None => false,
         }
+    }
+
+    /// Name of the action playing.
+    pub fn action_name(&self) -> &str {
+        self.clips.actions.get(self.action).map_or("", |a| a.name.as_str())
+    }
+
+    /// A non-looping action has reached its last frame.
+    pub fn finished(&self) -> bool {
+        self.clips.actions.get(self.action).is_none_or(|a| !a.loops() && self.frame >= a.frames.saturating_sub(1) as f32)
     }
 }
 
@@ -304,6 +335,7 @@ pub fn spawn_character(
         action: 0,
         frame: 0.0,
         tracks: Vec::new(),
+        blend: Blend::None,
     };
     animator.play(0);
     commands.entity(root).insert(animator);
@@ -339,9 +371,21 @@ fn animate(
             a.frame = 0.0;
         }
 
+        if let Blend::Pending { duration } = a.blend {
+            let from = a.bones.iter().map(|&b| bones.get(b).copied().unwrap_or_default()).collect();
+            a.blend = Blend::Active { from, elapsed: 0.0, duration };
+        }
+        let weight = match &mut a.blend {
+            Blend::Active { elapsed, duration, .. } => {
+                *elapsed += time.delta_secs();
+                (1.0 - *elapsed / *duration).max(0.0)
+            }
+            _ => 0.0,
+        };
+        let a = &mut *a;
         for (i, &bone) in a.bones.iter().enumerate() {
             let Ok(mut t) = bones.get_mut(bone) else { continue };
-            *t = match &a.tracks[i] {
+            let pose = match &a.tracks[i] {
                 Some(track) => {
                     let pose = track.sample(a.frame);
                     let m = Mat4::from_cols_array(&rotation_matrix(pose.rotation, track.flags));
@@ -353,6 +397,17 @@ fn animate(
                 }
                 None => Transform::from_translation(a.rest[i]),
             };
+            *t = match &a.blend {
+                Blend::Active { from, .. } if weight > 0.0 => Transform {
+                    translation: pose.translation.lerp(from[i].translation, weight),
+                    rotation: pose.rotation.slerp(from[i].rotation, weight),
+                    scale: pose.scale.lerp(from[i].scale, weight),
+                },
+                _ => pose,
+            };
+        }
+        if weight <= 0.0 && matches!(a.blend, Blend::Active { .. }) {
+            a.blend = Blend::None;
         }
 
         let (action, frame) = (a.action, a.frame as usize);

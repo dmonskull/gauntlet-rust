@@ -35,6 +35,36 @@ magnitude 0–1. `FUN_80088170` classifies the stick: magnitude 0 → idle,
 ≤ 0.75 → walk, above → run; the player update then requests READY, WALK1
 or RUN1 (indices 0, 0x11, 0x13 in the action table at `0x80126430`).
 
+## Action chaining
+
+`FUN_800ab898` picks the next action from the playing one (`+0x208`) and
+the requested one (`+0x20C`), plus how it takes over, which
+`FUN_8000eb70` applies: 2 = now (if different), 0 = when the playing clip
+has finished (if different), 1 = when it has finished. For locomotion:
+
+| playing | requested | next | when |
+| --- | --- | --- | --- |
+| READY | anything | it | now |
+| WALK1 | WALK1 | WALK2 | at end |
+| WALK2 | WALK1 | WALK1 | at end |
+| RUN1 | RUN1 | RUN2 | at end |
+| RUN2 | RUN1 | RUN1 | at end |
+| WALK*/RUN* | another gait | it | at end (now for attacks, hits) |
+
+WALK1/2 and RUN1/2 are non-looping half strides (10–12 frames), so a walk
+alternates the two clips. The blend time is 0 except when going back to
+READY from most actions: 0.0667 s (`r2-0x4dcc`); `FUN_8000f534` then
+lerps each bone's angles and offsets from the snapshot of the old pose
+(`FUN_8000f788`/`FUN_8000f74c`) while the weight falls to 0. We slerp.
+Standing still in READY for 600/1800 ticks switches to IDLE2/IDLE1 (not
+implemented yet); the action's movement/turn factors (below) are set when
+it starts, so a run's 1.3× applies from the first RUN1 frame.
+
+`FUN_800ad42c` gives each action a category: 0 locomotion and misc, 1
+defend/shove, 2 ATTSTART–ATTSLOW, 3 ATTQUICK1–3 and recoveries, 4 the
+directional quick attacks, 5 ATT360, 6 steps/walks, 7 strafe attacks, 8 low
+and power-A attacks, 9 throws, 10 fire, 11 the rest, 12 combos.
+
 ## Displacement per tick
 
 Heading = stick angle + camera yaw (stick up moves away from the camera;

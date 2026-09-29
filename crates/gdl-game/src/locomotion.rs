@@ -63,7 +63,7 @@ impl Gait {
         }
     }
 
-    /// The player action the game plays for this gait.
+    /// The player action the game asks for with this gait.
     pub fn action(self) -> &'static str {
         match self {
             Gait::Idle => "READY",
@@ -71,15 +71,57 @@ impl Gait {
             Gait::Run => "RUN1",
         }
     }
+}
 
-    /// Movement and turn factors the game gives the gait's action when it
-    /// starts: running covers 1.3× the ground.
-    pub fn factors(self) -> (f32, f32) {
-        match self {
-            Gait::Run => (1.3, 1.0),
-            Gait::Idle | Gait::Walk => (1.0, 1.0),
-        }
+/// Movement and turn factors the game gives an action when it starts:
+/// running covers 1.3× the ground, strafing 0.667×, a shove 1.5×, a web
+/// 0.4×; everything else in the locomotion range 1.0 (attacks aren't
+/// covered yet and also get 1.0).
+pub fn action_factors(action: &str) -> (f32, f32) {
+    match action {
+        "RUN1" | "RUN2" | "SHIELD_RUN" => (1.3, 1.0),
+        "SHOVE" => (1.5, 1.0),
+        "WEBREACT" => (0.4, 0.5),
+        a if a.starts_with("STRAFE_WLK") => (0.667, 1.0),
+        _ => (1.0, 1.0),
     }
+}
+
+/// When a new action takes over from the playing one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    /// Right away.
+    Now,
+    /// Once the playing action has finished (and only if it differs).
+    AtEnd,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transition {
+    pub action: &'static str,
+    pub switch: Switch,
+    /// Seconds to blend from the old pose into the new action.
+    pub blend: f32,
+}
+
+/// Seconds the game blends back into READY.
+pub const READY_BLEND: f32 = 0.066_667;
+
+/// The game's action chaining for locomotion: steps alternate WALK1/WALK2
+/// and RUN1/RUN2 (each clip is half a stride), and a change of gait waits
+/// for the current step to end; from READY anything starts at once.
+/// Returning to READY blends over two ticks.
+pub fn transition(current: &str, wanted: Gait) -> Transition {
+    let want = wanted.action();
+    let (action, switch) = match current {
+        "WALK1" => (if want == "WALK1" { "WALK2" } else { want }, Switch::AtEnd),
+        "WALK2" => (want, Switch::AtEnd),
+        "RUN1" => (if want == "RUN1" { "RUN2" } else { want }, Switch::AtEnd),
+        "RUN2" => (want, Switch::AtEnd),
+        _ => (want, Switch::Now),
+    };
+    let blend = if action == "READY" && current != "READY" { READY_BLEND } else { 0.0 };
+    Transition { action, switch, blend }
 }
 
 /// Stick input already turned into the world: `heading` is the direction to
@@ -101,18 +143,21 @@ pub struct Mover {
     /// Knockback velocity, units per second, decaying each tick.
     pub knockback: [f32; 3],
     pub gait: Gait,
+    /// Movement and turn factors of the action playing
+    /// ([`action_factors`]).
+    pub factors: (f32, f32),
 }
 
 impl Mover {
     pub fn new(position: [f32; 3], facing: f32, speed: f32) -> Self {
-        Self { position, facing, speed, knockback: [0.0; 3], gait: Gait::Idle }
+        Self { position, facing, speed, knockback: [0.0; 3], gait: Gait::Idle, factors: (1.0, 1.0) }
     }
 
     /// Advances one tick. Returns the displacement the tick wants; the
     /// caller resolves it against collision and writes the result back to
     /// `position`.
     pub fn step(&mut self, stick: Stick, dt: f32) -> [f32; 3] {
-        let (move_factor, turn_factor) = self.gait.factors();
+        let (move_factor, turn_factor) = self.factors;
         let mut magnitude = stick.magnitude.clamp(0.0, 1.0);
 
         let mut d = self.knockback.map(|v| v * dt);
@@ -177,14 +222,28 @@ mod tests {
     }
 
     #[test]
-    fn running_uses_the_run_factor_after_the_first_tick() {
+    fn running_covers_more_ground_once_the_run_action_plays() {
         let mut m = Mover::new([0.0; 3], 0.0, 8.0);
         let stick = Stick { heading: 0.0, magnitude: 1.0 };
         let first = m.step(stick, DT);
         assert!((first[2] - 8.0 * DT).abs() < 1e-6, "{first:?}");
         assert_eq!(m.gait, Gait::Run);
+        m.factors = action_factors(transition("READY", m.gait).action);
         let second = m.step(stick, DT);
         assert!((second[2] - 1.3 * 8.0 * DT).abs() < 1e-6, "{second:?}");
+    }
+
+    #[test]
+    fn strides_alternate_and_gait_changes_wait_for_the_step() {
+        let t = transition("RUN1", Gait::Run);
+        assert_eq!((t.action, t.switch), ("RUN2", Switch::AtEnd));
+        assert_eq!(transition("RUN2", Gait::Run).action, "RUN1");
+        assert_eq!(transition("WALK1", Gait::Walk).action, "WALK2");
+        let stop = transition("RUN2", Gait::Idle);
+        assert_eq!((stop.action, stop.switch), ("READY", Switch::AtEnd));
+        assert!(stop.blend > 0.0);
+        let go = transition("READY", Gait::Walk);
+        assert_eq!((go.action, go.switch, go.blend), ("WALK1", Switch::Now, 0.0));
     }
 
     #[test]

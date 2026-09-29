@@ -13,7 +13,7 @@ use crate::camera::FreeLook;
 use crate::character::{self, Animator, CharacterData};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
-use crate::locomotion::{self, Mover, Stick};
+use crate::locomotion::{self, Mover, Stick, Switch};
 use crate::play_camera::PlayCamera;
 use crate::population::LevelPopulation;
 use crate::world::{LevelEntity, LevelGround};
@@ -170,7 +170,19 @@ fn tick(
         };
         player.mover.position = std::array::from_fn(|i| feet[i] + d[i]);
         trace!("player at {:?}", player.mover.position);
-        animator.play_named(player.mover.gait.action());
+
+        // The game's action chaining; the new action's factors apply from
+        // the next tick.
+        let current = animator.action_name().to_string();
+        let t = locomotion::transition(&current, player.mover.gait);
+        let switch = match t.switch {
+            Switch::Now => t.action != current,
+            Switch::AtEnd => t.action != current && animator.finished(),
+        };
+        if switch && animator.play_blended(t.action, t.blend) {
+            player.mover.factors = locomotion::action_factors(t.action);
+            trace!("action {current} -> {}", t.action);
+        }
     }
 }
 
