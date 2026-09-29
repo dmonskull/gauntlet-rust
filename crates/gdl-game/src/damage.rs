@@ -153,11 +153,42 @@ pub fn after_armor(damage: f32, armor: f32) -> f32 {
     }
 }
 
-fn hurt_hero(mut hits: MessageReader<MonsterHit>, players: Query<&Player>, mut damage: MessageWriter<DamagePlayer>) {
+/// Stand-in for the game's "big monster" value (`docs/monsters.md`).
+const BIG_MONSTER_RADIUS: f32 = 2.0;
+/// The monster type whose blows knock heroes down.
+const KNOCKDOWN_MONSTER: i32 = 0x1D;
+
+fn hurt_hero(
+    mut hits: MessageReader<MonsterHit>,
+    monsters: Query<&Monster>,
+    mut players: Query<&mut Player>,
+    mut damage: MessageWriter<DamagePlayer>,
+) {
     for hit in hits.read() {
-        let armor = players.get(hit.player).map_or(0.0, |p| p.armor);
-        let amount = after_armor(hit.damage, armor);
+        let Ok(mut p) = players.get_mut(hit.player) else { continue };
+        // The blow's kind, as the monster's attack sets it: a big monster's
+        // strong attack knocks back, one type knocks down, small monsters'
+        // blows only make the hero flinch.
+        let (mut flags, mut push) = (0u32, Vec3::ZERO);
+        if let Ok(m) = monsters.get(hit.monster) {
+            let big = m.stats.radius > BIG_MONSTER_RADIUS;
+            if hit.strong && big {
+                flags |= 0x10;
+            }
+            if m.enemy == KNOCKDOWN_MONSTER {
+                flags |= 0x20;
+            }
+            if !big {
+                flags |= 0x4000_0000;
+            }
+            if flags & 0x130 != 0 {
+                let d = Vec3::from(p.mover.position) - Vec3::from(m.position);
+                push = Vec3::new(d.x, 0.0, d.z).normalize_or_zero();
+            }
+        }
+        let amount = after_armor(hit.damage, p.armor);
         if amount > 0.0 {
+            p.queue_hit(amount, flags, push);
             damage.write(DamagePlayer { amount });
         }
     }

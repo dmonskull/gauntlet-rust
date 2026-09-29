@@ -99,6 +99,9 @@ pub struct Player {
     pub strength: f32,
     /// Derived armour, 0–5: taken off every blow that armour stops.
     pub armor: f32,
+    /// Blows taken since the last tick: damage, kind flags, summed push
+    /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
+    pending_hit: (f32, u32, Vec3),
     /// Collision radius: reach and range bands are measured from it.
     pub radius: f32,
     /// The game's class index.
@@ -138,7 +141,66 @@ fn level_stats(
     info!("level {}: strength {strength:.1}, armour {armor:.2}, speed {speed:.2}", state.level);
 }
 
+/// Knockback speeds the hero's reactions add along the blow's push.
+const STRONG_KNOCKBACK: f32 = 16.0;
+const KNOCKDOWN_KNOCKBACK: f32 = 32.0;
+const FLING_KNOCKBACK: f32 = 100.0;
+
+/// The game's reaction class for the blows a hero took this tick (see
+/// `docs/combat.md` "Blows that land on the hero"): 0 none, 1 a flinch,
+/// 2 a stun (kind 0x80), 3 kind 0x2000, 10 a strong knockback, 20 a
+/// knockdown, 30 fling; knockback classes gain 1 when the push comes from
+/// behind the facing. Returns the class, the knockback speed, and the
+/// heading to face (for the knockback classes).
+fn hit_reaction(damage: f32, flags: u32, push: Vec3, facing: f32) -> (u32, f32, Option<f32>) {
+    if damage <= 1.0 {
+        return (if flags & 0x80 != 0 { 2 } else { 0 }, 0.0, None);
+    }
+    let (mut class, speed) = if flags & 0x10000 != 0 {
+        (30, FLING_KNOCKBACK)
+    } else if flags & 0x40 != 0 {
+        (20, FLING_KNOCKBACK)
+    } else if flags & 0x120 != 0 {
+        (20, KNOCKDOWN_KNOCKBACK)
+    } else if flags & 0x10 != 0 {
+        (10, STRONG_KNOCKBACK)
+    } else if flags & 0x2000 != 0 {
+        (3, 0.0)
+    } else if flags & 0x80 != 0 {
+        (2, 0.0)
+    } else {
+        (1, 0.0)
+    };
+    if class < 10 {
+        return (class, speed, None);
+    }
+    let mut heading = push.x.atan2(push.z);
+    if wrap(heading - facing).abs() > std::f32::consts::FRAC_PI_2 {
+        class += 1;
+        heading = wrap(heading + std::f32::consts::PI);
+    }
+    (class, speed, Some(heading))
+}
+
+/// The action a reaction class asks for (`None`: no override).
+fn reaction_action(class: u32) -> Option<Action> {
+    match class {
+        10 | 11 => Some(Action(0x82)),
+        20 => Some(Action(0x85)),
+        21 => Some(Action(0x83)),
+        30 | 31 => Some(Action(0x87)),
+        _ => None,
+    }
+}
+
 impl Player {
+    /// A blow lands on the hero; the reaction follows on its next tick.
+    pub fn queue_hit(&mut self, damage: f32, flags: u32, push: Vec3) {
+        self.pending_hit.0 += damage;
+        self.pending_hit.1 |= flags;
+        self.pending_hit.2 += push;
+    }
+
     /// Moves the hero instantly (no interpolation smear), standing on a
     /// fresh floor.
     pub fn teleport(&mut self, at: [f32; 3], facing: f32) {
@@ -247,6 +309,7 @@ fn spawn_player(
         move_factor: 1.0,
         strength: hero.strength,
         armor: hero.armor,
+        pending_hit: (0.0, 0, Vec3::ZERO),
         radius: hero.radius,
         class: hero.class,
     };
@@ -447,7 +510,23 @@ fn tick(
         };
         p.actions.target_angle = wrap(aim - facing);
 
-        let requested = combat::request(intent, p.actions.range, stick.magnitude, walked_into, p.actions.combo, p.request);
+        let mut requested =
+            combat::request(intent, p.actions.range, stick.magnitude, walked_into, p.actions.combo, p.request);
+        // Blows taken: flinch, knockback or knockdown. A flinch only
+        // interrupts standing and moving about; the rest override.
+        let (hit_damage, hit_flags, hit_push) = std::mem::take(&mut p.pending_hit);
+        let (reaction, knock, reaction_face) = hit_reaction(hit_damage, hit_flags, hit_push, facing);
+        if knock > 0.0 {
+            let k = hit_push * knock;
+            for (v, add) in p.mover.knockback.iter_mut().zip(k.to_array()) {
+                *v += add;
+            }
+        }
+        if let Some(a) = reaction_action(reaction) {
+            requested = a;
+        } else if reaction == 1 && matches!(intent, Intent::Idle | Intent::Walk | Intent::Run) {
+            requested = Action::HITREACT;
+        }
         if requested == Action::ATTSTEP1 {
             p.actions.target_angle = wrap(wanted - facing);
         }
@@ -507,6 +586,9 @@ fn tick(
         if ATTACK_AIM && (1..=10).contains(&category) && category != 7 && !strafing && drive == 0.0 {
             face = Some(aim);
         }
+        if reaction_face.is_some() {
+            face = reaction_face;
+        }
 
         // Movement: this tick's step uses the movement factor from the last
         // tick's chaining, turning uses this tick's.
@@ -562,5 +644,22 @@ fn interpolate(fixed: Res<Time<Fixed>>, mut players: Query<(&Player, &mut Transf
         let (p1, f1) = (player.mover.position, player.mover.facing);
         transform.translation = Vec3::from(p0).lerp(Vec3::from(p1), t);
         transform.rotation = Quat::from_rotation_y(f0 + locomotion::wrap(f1 - f0) * t);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hits_flinch_knock_back_or_down_like_the_game() {
+        let from_front = Vec3::new(0.0, 0.0, -1.0);
+        assert_eq!(hit_reaction(0.5, 0, from_front, 0.0).0, 0, "a scratch does nothing");
+        assert_eq!(hit_reaction(5.0, 0x4000_0000, from_front, 0.0).0, 1);
+        let (class, speed, face) = hit_reaction(5.0, 0x10, from_front, 0.0);
+        assert_eq!((class, speed), (11, 16.0), "pushed back by a blow from the front");
+        assert!(face.unwrap().abs() < 1e-5, "turns to face the attacker");
+        assert_eq!(hit_reaction(5.0, 0x20, -from_front, 0.0).0, 20);
+        assert_eq!(reaction_action(21), Some(Action(0x83)));
     }
 }
