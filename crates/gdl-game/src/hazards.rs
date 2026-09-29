@@ -231,10 +231,10 @@ fn tiles(
             p.queue_hit(amount, flags, push);
             hurt.write(DamagePlayer { amount });
         }
-        if let Some(name) = TILE_SOUNDS.get(realm).and_then(|row| row.get(t.subtype.clamp(0, 6) as usize)) {
-            if !name.is_empty() {
-                sounds.write(PlaySound((*name).into()));
-            }
+        if let Some(name) = TILE_SOUNDS.get(realm).and_then(|row| row.get(t.subtype.clamp(0, 6) as usize))
+            && !name.is_empty()
+        {
+            sounds.write(PlaySound((*name).into()));
         }
         debug!("damage tile {} hurts the hero for {amount:.1}", t.placement);
         // Once per phase: until this one is over.
