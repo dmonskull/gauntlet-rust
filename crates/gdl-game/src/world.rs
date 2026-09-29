@@ -26,6 +26,10 @@ impl Plugin for WorldPlugin {
 #[derive(Message)]
 pub struct ChangeLevel(pub isize);
 
+/// The current level's collision, for anything that moves.
+#[derive(Resource, Clone)]
+pub struct LevelGround(pub std::sync::Arc<gdl_formats::LevelCollision>);
+
 /// Tags everything belonging to the level currently shown.
 #[derive(Component)]
 pub struct LevelEntity;
@@ -113,6 +117,7 @@ fn change_level(
                     _ => FlyCamera::looking_at_bounds(built.min, built.max, &mut transform),
                 };
             }
+            commands.insert_resource(LevelGround(std::sync::Arc::new(level.collision)));
             commands.insert_resource(LevelPopulation { level: level.name.clone(), population: level.population });
         }
         Err(why) => stats.error = Some(why),

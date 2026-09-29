@@ -1,11 +1,12 @@
-//! The player: one hero walking the current level. Movement runs on the
-//! game's fixed 30 Hz tick (`locomotion.rs`) and is interpolated for
-//! drawing, so it looks smooth at any frame rate. The camera follows unless
-//! free look is on (`C` toggles).
+//! The player: one hero walking the current level from its start point.
+//! Movement runs on the game's fixed 30 Hz tick (`locomotion.rs`), resolved
+//! against the level's collision, and is interpolated for drawing so it
+//! looks smooth at any frame rate.
 //!
-//! Controls: left stick or WASD/arrows to move (Shift walks), `C` free look.
+//! Controls: left stick or WASD/arrows to move (Shift walks).
 
 use bevy::prelude::*;
+use gdl_formats::MoveParams;
 use gdl_formats::pdata::PlayerStats;
 
 use crate::camera::FreeLook;
@@ -13,7 +14,16 @@ use crate::character::{self, Animator, CharacterData};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion::{self, Mover, Stick};
-use crate::world::{CurrentLevelStats, LevelEntity};
+use crate::play_camera::PlayCamera;
+use crate::population::LevelPopulation;
+use crate::world::{LevelEntity, LevelGround};
+
+/// Stand-ins until the player's own collision values are decoded: wall
+/// radius and floor step for the generic actor mover.
+const PLAYER_RADIUS: f32 = 1.0;
+const PLAYER_STEP: f32 = 2.0;
+/// The actor mover drops at most 16 units per second.
+const MAX_DROP_PER_SECOND: f32 = 16.0;
 
 pub struct PlayerPlugin;
 
@@ -29,8 +39,6 @@ pub struct PlayerChoice {
 struct Hero {
     data: CharacterData,
     speed: f32,
-    /// Rest-pose height, for the camera.
-    height: f32,
 }
 
 #[derive(Component)]
@@ -40,19 +48,18 @@ pub struct Player {
     previous: ([f32; 3], f32),
 }
 
+/// Player movement; the play camera ticks after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PlayerTick;
+
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Time::<Fixed>::from_hz(locomotion::TICK_HZ))
-            .insert_resource(FreeLook(false))
             .add_systems(Startup, load_hero)
-            .add_systems(FixedUpdate, tick)
+            .add_systems(FixedUpdate, tick.in_set(PlayerTick))
             .add_systems(
                 Update,
-                (
-                    spawn_player.run_if(resource_exists_and_changed::<CurrentLevelStats>),
-                    toggle_camera,
-                    (interpolate, follow_camera).chain(),
-                ),
+                (spawn_player.run_if(resource_exists_and_changed::<LevelPopulation>), interpolate).chain(),
             );
     }
 }
@@ -73,28 +80,38 @@ fn load_hero(mut commands: Commands, mut game: ResMut<LoadedGame>, choice: Res<P
     let speed_stat = stats.map_or(400.0, |s| locomotion::stat_at_level(s.speed.start, s.speed.max, 1, 0.0));
     let speed = locomotion::move_speed(speed_stat, 0.0);
     info!("player {}: speed stat {speed_stat} -> {speed:.2} units/s", data.name);
-    commands.insert_resource(Hero { data, speed, height: 0.0 });
+    commands.insert_resource(Hero { data, speed });
 }
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_player(
     mut commands: Commands,
-    hero: Option<ResMut<Hero>>,
-    level: Res<CurrentLevelStats>,
+    hero: Option<Res<Hero>>,
+    population: Res<LevelPopulation>,
+    ground: Option<Res<LevelGround>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let Some(mut hero) = hero else { return };
-    let Some((min, max)) = level.bounds else { return };
-    // Until the level's own player starts are wired in: the middle of the
-    // level, facing +Z.
-    let start = (min + max) / 2.0;
-    let transform = Transform::from_translation(start);
-    let (root, lo, hi) = character::spawn_character(&hero.data, transform, &mut commands, &mut meshes, &mut materials, &mut images);
-    hero.height = (hi.y - lo.y).max(1.0);
-    let mover = Mover::new(start.to_array(), 0.0, hero.speed);
-    commands.entity(root).insert((Player { mover, previous: (start.to_array(), 0.0) }, LevelEntity));
+    let (Some(hero), Some(ground)) = (hero, ground) else { return };
+    let collision = &ground.0;
+    let (mut feet, facing) = match population.player_start() {
+        Some(s) => (s.position, s.yaw),
+        None => {
+            let [lo, hi] = collision.bounds;
+            (std::array::from_fn(|i| (lo[i] + hi[i]) / 2.0), 0.0)
+        }
+    };
+    // Stand on the floor under the start.
+    if let Some(y) = collision.floor_height(feet).or_else(|| collision.top_floor(feet[0], feet[2])) {
+        feet[1] = y;
+    }
+    let transform = Transform::from_translation(Vec3::from(feet)).with_rotation(Quat::from_rotation_y(facing));
+    let (root, _, _) =
+        character::spawn_character(&hero.data, transform, &mut commands, &mut meshes, &mut materials, &mut images);
+    let mover = Mover::new(feet, facing, hero.speed);
+    commands.entity(root).insert((Player { mover, previous: (feet, facing) }, LevelEntity));
+    info!("player starts at {feet:?} facing {:.0} deg", facing.to_degrees());
 }
 
 /// The stick, in the camera's frame: +Y away from the camera, +X right.
@@ -123,29 +140,35 @@ fn read_stick(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Vec2 {
     if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) { v * 0.5 } else { v }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     free_look: Res<FreeLook>,
-    camera: Query<&Transform, (With<Camera3d>, Without<Player>)>,
+    play_camera: Option<Res<PlayCamera>>,
+    ground: Option<Res<LevelGround>>,
     mut players: Query<(&mut Player, &mut Animator)>,
 ) {
+    let dt = time.delta_secs();
     let raw = if free_look.0 { Vec2::ZERO } else { read_stick(&keys, &pads) };
-    let (forward, right) = camera.single().map_or((Vec3::Z, Vec3::NEG_X), |t| {
-        let f = Vec3::new(t.forward().x, 0.0, t.forward().z).normalize_or(Vec3::Z);
-        (f, Vec3::new(-f.z, 0.0, f.x))
-    });
+    // Stick up moves the way the play camera faces.
+    let yaw = play_camera.map_or(0.0, |c| c.rig.yaw);
+    let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+    let right = Vec3::new(-forward.z, 0.0, forward.x);
     let dir = right * raw.x + forward * raw.y;
     let stick = Stick { heading: dir.x.atan2(dir.z), magnitude: raw.length().min(1.0) };
+    let params = MoveParams::new(PLAYER_RADIUS, PLAYER_STEP, MAX_DROP_PER_SECOND * dt);
 
     for (mut player, mut animator) in &mut players {
         player.previous = (player.mover.position, player.mover.facing);
-        let d = player.mover.step(stick, time.delta_secs());
-        let p = &mut player.mover.position;
-        for (a, b) in p.iter_mut().zip(d) {
-            *a += b;
-        }
+        let d = player.mover.step(stick, dt);
+        let feet = player.mover.position;
+        let d = match &ground {
+            Some(g) => g.0.move_actor(feet, d, &params).delta,
+            None => d,
+        };
+        player.mover.position = std::array::from_fn(|i| feet[i] + d[i]);
         animator.play_named(player.mover.gait.action());
     }
 }
@@ -158,30 +181,4 @@ fn interpolate(fixed: Res<Time<Fixed>>, mut players: Query<(&Player, &mut Transf
         transform.translation = Vec3::from(p0).lerp(Vec3::from(p1), t);
         transform.rotation = Quat::from_rotation_y(f0 + locomotion::wrap(f1 - f0) * t);
     }
-}
-
-fn toggle_camera(keys: Res<ButtonInput<KeyCode>>, mut free_look: ResMut<FreeLook>) {
-    if keys.just_pressed(KeyCode::KeyC) {
-        free_look.0 = !free_look.0;
-    }
-}
-
-/// Looks down on the hero from behind and above, like the game's default
-/// view, easing after it.
-fn follow_camera(
-    time: Res<Time>,
-    free_look: Res<FreeLook>,
-    hero: Option<Res<Hero>>,
-    players: Query<&Transform, With<Player>>,
-    mut camera: Query<&mut Transform, (With<Camera3d>, Without<Player>)>,
-) {
-    if free_look.0 {
-        return;
-    }
-    let (Some(hero), Ok(player), Ok(mut cam)) = (hero, players.single(), camera.single_mut()) else { return };
-    let target = player.translation + Vec3::Y * hero.height * 0.5;
-    let eye = target + Vec3::new(0.0, 0.8, -0.6).normalize() * hero.height * 9.0;
-    let k = 1.0 - (-8.0 * time.delta_secs()).exp();
-    cam.translation = cam.translation.lerp(eye, k);
-    cam.look_at(target, Vec3::Y);
 }

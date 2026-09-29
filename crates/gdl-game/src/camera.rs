@@ -75,6 +75,13 @@ impl FlyCamera {
     }
 }
 
+impl FlyCamera {
+    /// Takes over from wherever the camera is now.
+    pub fn sync(&mut self, transform: &Transform) {
+        (self.yaw, self.pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
+    }
+}
+
 fn spawn_camera(mut commands: Commands) {
     let mut transform = Transform::default();
     let fly = FlyCamera::looking_at_bounds(Vec3::splat(-100.0), Vec3::splat(100.0), &mut transform);

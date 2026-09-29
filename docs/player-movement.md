@@ -37,7 +37,9 @@ or RUN1 (indices 0, 0x11, 0x13 in the action table at `0x80126430`).
 
 ## Displacement per tick
 
-Heading = stick angle + camera yaw (stick up moves away from the camera).
+Heading = stick angle + camera yaw (stick up moves away from the camera;
+[camera.md](camera.md)). Players start at the level's entry-0 start
+locator, facing its yaw, dropped onto the floor below.
 Per tick:
 
 ```
@@ -62,6 +64,7 @@ stick immediately; only the body lags.
 
 ## Not yet
 
-- Collision and floors (`WORLDS.PS2` collision, separate branch).
-- Level player starts and the game's camera (`WDATA` `CAMS`/`BCAM`).
+- The player's own collision chain: movement goes through the generic
+  actor mover ([collision.md](collision.md)) with a stand-in radius (1.0)
+  and step (2.0) for now.
 - Attacks, strafing, the shove, and blends between actions.
