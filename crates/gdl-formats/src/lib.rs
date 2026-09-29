@@ -17,7 +17,8 @@ pub mod world;
 pub mod world_data;
 
 pub use collision::{
-    CollisionTables, CollisionTriangle, Hit, LevelCollision, MoveParams, Moved, PlayerCollision, PlayerGround, Query,
+    CollisionTables, CollisionTriangle, Hit, LevelCollision, MoveParams, Moved, NodePose, PlayerCollision, PlayerGround,
+    Query,
 };
 pub use disc::{DiscError, DiscHeader, DolHeader, ImageKind};
 pub use fst::{Disc, DiscSource, FileEntry, Fst, FstError};
