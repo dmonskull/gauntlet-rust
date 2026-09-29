@@ -38,6 +38,21 @@ impl FlyCamera {
     }
 }
 
+impl FlyCamera {
+    /// Fits a box in view (vertical FOV 45°, 16:9) from slightly above the
+    /// front — for looking at one character rather than a whole level.
+    pub fn framing(min: Vec3, max: Vec3, transform: &mut Transform) -> Self {
+        let center = (min + max) / 2.0;
+        let size = max - min;
+        let fit = size.y.max(size.x.max(size.z) / 1.6).max(0.5);
+        let distance = fit * 0.5 / (22.5f32.to_radians()).tan() * 1.15;
+        let eye = center + Vec3::new(0.0, 0.3, 1.0).normalize() * (distance + size.z * 0.5);
+        *transform = Transform::from_translation(eye).looking_at(center, Vec3::Y);
+        let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
+        Self { yaw, pitch, speed: (fit * 0.5).clamp(1.0, 500.0) }
+    }
+}
+
 fn spawn_camera(mut commands: Commands) {
     let mut transform = Transform::default();
     let fly = FlyCamera::looking_at_bounds(Vec3::splat(-100.0), Vec3::splat(100.0), &mut transform);

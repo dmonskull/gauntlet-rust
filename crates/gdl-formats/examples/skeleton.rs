@@ -5,7 +5,7 @@ fn main() {
     for t in &anim.atrees {
         println!("atree {:?}: {} nodes, {} actions, clips: {}", t.name, t.nodes.len(), t.actions.len(), t.clips.is_some());
         for (i, n) in t.nodes.iter().enumerate() {
-            println!("  {i:2} {:14} parent={:?} offset={:.3?}", n.name, n.parent, n.offset);
+            println!("  {i:2} {:14} parent={:?} kind={:?} index={} flags={:#x} render={:#x} offset={:.3?}", n.name, n.parent, n.kind, n.index, n.node_flags, n.render_flags, n.offset);
         }
         let names: Vec<_> = t.actions.iter().map(|a| format!("{}({},{},{:?})", a.name, a.frames, a.rate, a.params)).collect();
         println!("  actions: {}", names.join(" "));

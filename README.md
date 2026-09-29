@@ -35,11 +35,12 @@ cargo run -p gdl-game -- --forget          # forget the remembered game
 
 `GAUNTLET_GAME` works in place of the path argument.
 
-A character viewer shows any player class with its animations
-(`[` / `]` action, `Tab` class):
+A character viewer shows any player class or monster with its animations
+(`[` / `]` action, `Tab` next character):
 
 ```bash
 cargo run -p gdl-game -- --viewer --character KNI --action RUN1
+cargo run -p gdl-game -- --viewer --monster LICH
 ```
 
 Dolphin's compressed formats (`.rvz`, `.gcz`, `.wia`, `.ciso`) aren't
