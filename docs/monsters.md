@@ -149,7 +149,8 @@ thrown missiles pass 2):
 points against the full ones), i.e. it follows the tier.
 
 Runtime: `enemy::monster_sounds` builds the names, `damage.rs` plays the
-close ones. Stand-ins: no far versions, sounds aren't positioned, and a
+close ones for hand blows and the far ones for missiles (`Hit::ranged`).
+Stand-ins: sounds aren't positioned, and a
 weak monster whose realm has only the strong set (the game leaves that
 slot unset) uses the strong first-hit sound.
 

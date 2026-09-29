@@ -240,6 +240,9 @@ pub struct Hit {
     /// (2 + its radius), for effects.
     pub at: Vec3,
     pub target_kind: TargetKind,
+    /// A thrown weapon or missile rather than a hand blow (the game's
+    /// "far" hits: they pick the far sound versions).
+    pub ranged: bool,
 }
 
 /// How far the search looks, units.

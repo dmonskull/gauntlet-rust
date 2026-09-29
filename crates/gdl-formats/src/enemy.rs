@@ -300,30 +300,31 @@ pub fn atree_name(id: i32, tier: i32) -> Option<String> {
 }
 
 /// The sounds a monster type makes when a blow lands on it and when it
-/// dies, as catalog names (`docs/monsters.md`, "Hit and death sounds").
-/// Each is the heard-close version; the far ones (`…FAR`) are for blows
-/// from far away (thrown missiles).
+/// dies, as catalog names (`docs/monsters.md`, "Hit and death sounds"):
+/// close versions for melee, far ones for thrown blows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonsterSounds {
-    /// Dying: strength 1, and stronger.
-    pub die: [String; 2],
-    /// Hit: strength 1; stronger ones on their first blow, then later ones.
-    pub hit: [String; 3],
+    /// Dying, close then far: strength 1, and stronger.
+    pub die: [[String; 2]; 2],
+    /// Hit, close then far: strength 1; stronger ones on their first
+    /// blow, then later ones.
+    pub hit: [[String; 3]; 2],
 }
 
 impl MonsterSounds {
     /// The death sound for a monster of this strength.
-    pub fn die(&self, strength: i16) -> &str {
-        &self.die[usize::from(strength >= 2)]
+    pub fn die(&self, strength: i16, far: bool) -> &str {
+        &self.die[usize::from(far)][usize::from(strength >= 2)]
     }
 
     /// The hit sound for a monster of this strength that has now taken
     /// `hits` blows (counting this one).
-    pub fn hit(&self, strength: i16, hits: i16) -> &str {
+    pub fn hit(&self, strength: i16, hits: i16, far: bool) -> &str {
+        let set = &self.hit[usize::from(far)];
         match (strength < 2, hits < 2) {
-            (true, _) => &self.hit[0],
-            (false, true) => &self.hit[1],
-            (false, false) => &self.hit[2],
+            (true, _) => &set[0],
+            (false, true) => &set[1],
+            (false, false) => &set[2],
         }
     }
 }
@@ -376,17 +377,22 @@ pub fn monster_sounds(enemy: i32, subtype: i32, name: &str, boss: i32, realm: ch
         s.truncate(15);
         s
     };
-    let strong_hits = if sets == 0 {
-        [format!("S_{strong}HITCLOSE"), format!("S_{strong}HITCLOSE")]
-    } else {
-        [format!("S_{strong}HIT1CLOSE"), format!("S_{strong}HIT2CLOSE")]
+    let set = |range: &str| {
+        let strong_hits = if sets == 0 {
+            [format!("S_{strong}HIT{range}"), format!("S_{strong}HIT{range}")]
+        } else {
+            [format!("S_{strong}HIT1{range}"), format!("S_{strong}HIT2{range}")]
+        };
+        let [first, later] = strong_hits.map(finish);
+        let weak_hit = if sets < 2 { finish(format!("S_{weak}HIT{range}")) } else { first.clone() };
+        (
+            [finish(format!("S_{weak}{die}{range}")), finish(format!("S_{strong}{die}{range}"))],
+            [weak_hit, first, later],
+        )
     };
-    let [first, later] = strong_hits.map(finish);
-    let weak_hit = if sets < 2 { finish(format!("S_{weak}HITCLOSE")) } else { first.clone() };
-    Some(MonsterSounds {
-        die: [finish(format!("S_{weak}{die}CLOSE")), finish(format!("S_{strong}{die}CLOSE"))],
-        hit: [weak_hit, first, later],
-    })
+    let (close_die, close_hit) = set("CLOSE");
+    let (far_die, far_hit) = set("FAR");
+    Some(MonsterSounds { die: [close_die, far_die], hit: [close_hit, far_hit] })
 }
 
 /// A generator's sounds in realm `realm` (the level folder's letter) for
@@ -657,19 +663,22 @@ mod tests {
     #[test]
     fn sound_names() {
         let grunt = monster_sounds(4, 2, "GRUNT", -1, 'A').unwrap();
-        assert_eq!(grunt.hit(1, 1), "S_GRUNT1HITCLOS");
-        assert_eq!(grunt.hit(3, 1), "S_GRUNT2HIT1CLO");
-        assert_eq!(grunt.hit(3, 2), "S_GRUNT2HIT2CLO");
-        assert_eq!(grunt.die(1), "S_GRUNT1DIECLOS");
-        assert_eq!(grunt.die(2), "S_GRUNT2DIECLOS");
+        assert_eq!(grunt.hit(1, 1, false), "S_GRUNT1HITCLOS");
+        assert_eq!(grunt.hit(3, 1, false), "S_GRUNT2HIT1CLO");
+        assert_eq!(grunt.hit(3, 2, false), "S_GRUNT2HIT2CLO");
+        assert_eq!(grunt.hit(3, 2, true), "S_GRUNT2HIT2FAR");
+        assert_eq!(grunt.die(1, false), "S_GRUNT1DIECLOS");
+        assert_eq!(grunt.die(2, false), "S_GRUNT2DIECLOS");
+        assert_eq!(grunt.die(2, true), "S_GRUNT2DIEFAR");
         let rat = monster_sounds(3, 1, "RAT", -1, 'A').unwrap();
-        assert_eq!((rat.hit(2, 5), rat.die(1)), ("S_RATHITCLOSE", "S_RATDIECLOSE"));
+        assert_eq!((rat.hit(2, 5, false), rat.die(1, false)), ("S_RATHITCLOSE", "S_RATDIECLOSE"));
         let ske = monster_sounds(0x1A, 2, "SKE", 0x24, 'C').unwrap();
-        assert_eq!((ske.hit(1, 1), ske.die(1)), ("S_SKE2HIT1CLOSC", "S_SKE2DIECLOSEC"));
+        assert_eq!((ske.hit(1, 1, false), ske.die(1, false)), ("S_SKE2HIT1CLOSC", "S_SKE2DIECLOSEC"));
+        assert_eq!(ske.hit(3, 3, true), "S_SKE2HIT2FARC");
         let spider = monster_sounds(9, 1, "SPID", 0x25, 'D').unwrap();
-        assert_eq!(spider.die(3), "S_SPIDDIECLOSED");
+        assert_eq!(spider.die(3, false), "S_SPIDDIECLOSED");
         let forest = monster_sounds(0x18, 13, "FTRENT", -1, 'F').unwrap();
-        assert_eq!(forest.hit(1, 1), "S_FTRENT2HIT1CL");
+        assert_eq!(forest.hit(1, 1, false), "S_FTRENT2HIT1CL");
         assert_eq!(monster_sounds(0x1D, 5, "GOLLUM", -1, 'A'), None);
     }
 
