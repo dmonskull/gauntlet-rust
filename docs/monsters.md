@@ -400,10 +400,12 @@ tool text. Nothing else named.
 - **Player cylinder**: radius 1.0, height 5.0 for the bump tests (the
   player record's `+0x850`/`+0x854` aren't decoded; `player.rs` uses 1.0
   too).
-- **AIs**: 7 and 2/4 are ported; 0 uses 7's chase (its nine-angle search
-  isn't); every other AI (the special variants' throw/bomb/suicide AIs,
-  3, 5/6, 14…) uses the chase too, and variants without a WALK or RUN
-  animation (throwers, bombers) stand still instead of gliding. The crowd
+- **AIs**: 7 and 2/4 are ported, and the throwing AIs `0x10`, `0x11`,
+  `0x17`, `0x1A` ([projectiles.md](projectiles.md): facing, throwing,
+  backing off, the throw pause); 0 uses 7's chase (its nine-angle search
+  isn't); every other AI (suicide runners `0x12`, fireball casters
+  `0x1C`/`0x1D`/`0x1F`, 3, 5/6, 14…) uses the chase too, and variants
+  without a WALK or RUN animation stand still instead of gliding. The crowd
   penalty in target choice isn't applied (one player).
 - **Unaware** monsters (AI 5/6) stand still.
 - Zero level scales are read as 1 (above).
