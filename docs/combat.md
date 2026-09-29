@@ -399,3 +399,18 @@ facing (FALLFRNT → FALLDOWN) and turn the hero to face the blow. Ported in
 `player.rs` (`hit_reaction`); the monster size is the radius stand-in from
 [monsters.md](monsters.md), and the 2/3 stun variants and the post-hit stun
 timer (class 100 → STUN2) aren't wired yet.
+
+## Turbo
+
+The turbo meter is player `+0x828`, 0–100. Each update (`FUN_80080d3c`),
+while the playing action's category is under 11: during the charge
+(SHOVE, action 8) it drains at 20/s (`r2-0x5ba8`), otherwise it refills at
+2/s (`r2-0x5b88`; 15/s in a debug mode) up to 100 (`r2-0x5b68`), with
+announcer cues at 40 and when full. Turbo held with attack (intent `0x15`)
+asks for ATTPWRB (`0x56`) at 40 or more (`+0x910` cost = 40, `r2-0x5b58`)
+or ATTPWRC (`0x57`) with a full meter (cost 100); with the `0x400` power
+it's ATTBREATHE (`0x6E`, not ported). When the turbo blow lands the cost
+comes off the meter and the blow is × 3 (`r2-0x5c88`) with kind `0x20`
+(ported as a finisher strike). Turbo-table experience also adds 0.025 ×
+experience to the meter (`FUN_80076144` with its third argument 1) — not
+ported, as the calls that pass it aren't traced.

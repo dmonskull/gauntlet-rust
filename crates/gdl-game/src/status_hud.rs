@@ -5,6 +5,8 @@
 
 use bevy::prelude::*;
 
+use crate::player::Player;
+
 use crate::hints::Hints;
 use crate::player_state::PlayerState;
 
@@ -53,13 +55,18 @@ fn spawn(mut commands: Commands) {
 fn update(
     state: Res<PlayerState>,
     hints: Res<Hints>,
+    players: Query<&Player>,
+    mut shown_turbo: Local<i32>,
     mut status: Query<&mut Text, (With<StatusText>, Without<HintText>)>,
     mut hint: Query<&mut Text, (With<HintText>, Without<StatusText>)>,
 ) {
+    let turbo = players.iter().next().map_or(0, |p| p.turbo as i32);
     if let Ok(mut text) = status.single_mut()
-        && state.is_changed()
+        && (state.is_changed() || turbo != *shown_turbo)
     {
+        *shown_turbo = turbo;
         text.0 = status_line(&state);
+        text.0 += &format!("   TURBO {turbo}");
     }
     if let Ok(mut text) = hint.single_mut()
         && hints.is_changed()
