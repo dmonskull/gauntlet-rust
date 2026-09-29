@@ -10,7 +10,20 @@ pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera).add_systems(Update, fly);
+        app.init_resource::<FreeLook>()
+            .add_systems(Startup, spawn_camera)
+            .add_systems(Update, fly.run_if(|free: Res<FreeLook>| free.0));
+    }
+}
+
+/// Whether the fly camera has the controls (otherwise something else, like
+/// the player, drives the camera).
+#[derive(Resource)]
+pub struct FreeLook(pub bool);
+
+impl Default for FreeLook {
+    fn default() -> Self {
+        Self(true)
     }
 }
 

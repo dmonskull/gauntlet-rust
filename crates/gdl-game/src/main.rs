@@ -9,7 +9,9 @@ mod character;
 mod hud;
 mod level;
 mod level_material;
+mod locomotion;
 mod model_mesh;
+mod player;
 mod viewer;
 mod world;
 
@@ -86,7 +88,13 @@ fn main() {
         for (name, why) in &game.failures {
             eprintln!("warning: level {name} failed to load: {why}");
         }
-        app.insert_resource(game).add_plugins((world::WorldPlugin, hud::HudPlugin));
+        let choice = player::PlayerChoice {
+            class: args.character.as_deref().unwrap_or("WAR").to_ascii_uppercase(),
+            variant: args.variant.as_deref().unwrap_or("BLU").to_ascii_uppercase(),
+        };
+        app.insert_resource(game)
+            .insert_resource(choice)
+            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin));
     }
     app.run();
 }
