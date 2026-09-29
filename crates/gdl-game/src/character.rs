@@ -19,10 +19,35 @@ impl Plugin for CharacterPlugin {
     }
 }
 
+/// The game's player class order, and the bone each class holds its weapon
+/// in (tables in `main.dol`; `docs/animation-format.md`).
+const CLASS_HAND_BONES: [(&str, &str); 17] = [
+    ("WAR", "R_WRIST"),
+    ("VAL", "R_WRIST"),
+    ("WIZ", "R_WRIST"),
+    ("ARC", "R_WRIST"),
+    ("DWF", "RIGHTHAN"),
+    ("KNI", "RIGHTHAN"),
+    ("SOR", "RIGHTHAN"),
+    ("JES", "RHEND"),
+    ("MIN", "R_WRIST"),
+    ("FAL", "R_WRIST"),
+    ("JAC", "R_WRIST"),
+    ("TIG", "R_WRIST"),
+    ("OGR", "RIGHTHAN"),
+    ("UNI", "RIGHTHAN"),
+    ("MED", "RIGHTHAN"),
+    ("HYE", "RHEND"),
+    ("SUM", "R_WRIST"),
+];
+
 /// Everything needed to spawn one player class in one colour/armour.
 pub struct CharacterData {
     /// e.g. `ARC/BLU`.
     pub name: String,
+    pub class: String,
+    /// Colour folder prefix: `BLU`, `RED`, `YEL` or `GRE`.
+    pub colour: String,
     /// The variant's own skeleton; its name prefixes the part models.
     pub skeleton: Atree,
     /// The class's shared actions and keyframes.
@@ -63,7 +88,15 @@ pub fn load_player(install: &mut GameInstall, class: &str, variant: &str) -> Res
     if clips.clips.is_none() {
         return Err(format!("{clips_path} has no animation clips"));
     }
-    Ok(CharacterData { name: format!("{class}/{variant}"), skeleton, clips: Arc::new(clips), model, textures })
+    Ok(CharacterData {
+        name: format!("{class}/{variant}"),
+        class: class.to_ascii_uppercase(),
+        colour: variant.chars().take(3).collect::<String>().to_ascii_uppercase(),
+        skeleton,
+        clips: Arc::new(clips),
+        model,
+        textures,
+    })
 }
 
 fn first_atree(data: &[u8]) -> Result<Atree, String> {
@@ -127,19 +160,40 @@ pub fn spawn_character(
     let mut bones: Vec<Entity> = Vec::with_capacity(data.skeleton.nodes.len());
     let mut bounds = (Vec3::MAX, Vec3::MIN);
 
+    let mut attach = |name: &str, parent: Entity, commands: &mut Commands| -> bool {
+        let Some(object) = data.model.objects.iter().position(|o| o.name == name) else {
+            return false;
+        };
+        for b in model_mesh::build(&data.model, &mut cache, [(object, Vec3::ZERO)], meshes, materials, images, &mut bounds) {
+            commands.spawn((Mesh3d(b.mesh), MeshMaterial3d(b.material), ChildOf(parent)));
+        }
+        true
+    };
+
     for node in &data.skeleton.nodes {
         let parent = node.parent.map_or(root, |p| bones[p]);
         let bone = commands
             .spawn((Transform::from_translation(Vec3::from(node.offset)), Visibility::default(), ChildOf(parent)))
             .id();
-        let part = format!("{}{}", data.skeleton.name, node.name);
-        if let Some(object) = data.model.objects.iter().position(|o| o.name == part) {
-            for b in model_mesh::build(&data.model, &mut cache, [(object, Vec3::ZERO)], meshes, materials, images, &mut bounds) {
-                commands.spawn((Mesh3d(b.mesh), MeshMaterial3d(b.material), ChildOf(bone)));
-            }
+        // The game hides DUMMY nodes; glow objects (CFGLOW, CFXPGLOW) are
+        // effects it attaches hidden and only shows during spells.
+        if node.name != "DUMMY" && !node.name.ends_with("GLOW") {
+            attach(&format!("{}{}", data.skeleton.name, node.name), bone, commands);
         }
         bones.push(bone);
     }
+
+    // The weapon goes in the class's hand bone: WEAP_<colour>_HD1..3 by
+    // player level, or WEAP_HOLD for classes without per-colour weapons.
+    let hand = CLASS_HAND_BONES.iter().find(|(c, _)| *c == data.class).map_or("R_WRIST", |(_, b)| *b);
+    if let Some(i) = data.skeleton.node_index(hand) {
+        let weapon = format!("WEAP_{}_HD1", data.colour);
+        if !attach(&weapon, bones[i], commands) {
+            attach("WEAP_HOLD", bones[i], commands);
+        }
+    }
+    // Blob shadow under the character.
+    attach("SHADOWL1", root, commands);
 
     let clip_bone = data.skeleton.nodes.iter().map(|n| data.clips.node_index(&n.name)).collect();
     let mut animator = Animator {
