@@ -392,6 +392,60 @@ fn build_model(
     BuiltModel { atree: r.atree, parts }
 }
 
+/// Spawns a built model at `transform` for placement `index`: the root,
+/// then an entity per atree node (at its rest offset under its parent's,
+/// so the atree's actions can pose it) or the plain parts.
+fn spawn_built(model: &BuiltModel, transform: Transform, index: usize, view: PopulationView, commands: &mut Commands) -> Entity {
+    let root = commands
+        .spawn((transform, PopulationPart::Model, PlacementIndex(index), visibility(view, PopulationPart::Model), LevelEntity))
+        .id();
+    let attach = |commands: &mut Commands, parent: Entity, parts: &[model_mesh::BuiltMesh], facing: Option<Billboard>| {
+        for p in parts {
+            let e = commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(parent))).id();
+            if let Some(b) = facing {
+                commands.entity(e).insert((b, Transform::default()));
+            }
+        }
+    };
+    match &model.atree {
+        Some(atree) => {
+            let mut bones: Vec<Entity> = Vec::with_capacity(atree.nodes.len());
+            for node in &atree.nodes {
+                let parent = node.parent.map_or(root, |p| bones[p]);
+                let at = Transform::from_translation(Vec3::from(node.offset));
+                bones.push(commands.spawn((at, Visibility::default(), ChildOf(parent))).id());
+            }
+            for (node, parts, facing) in &model.parts {
+                attach(commands, bones[*node], parts, *facing);
+            }
+            commands.entity(root).insert(ItemRig { atree: atree.clone(), bones });
+        }
+        None => {
+            for (_, parts, facing) in &model.parts {
+                attach(commands, root, parts, *facing);
+            }
+        }
+    }
+    root
+}
+
+/// Models of what the level's containers hold, by item type name, for
+/// contents released at run time.
+#[derive(Resource)]
+pub struct ContentModels {
+    models: HashMap<String, BuiltModel>,
+    view: PopulationView,
+}
+
+impl ContentModels {
+    /// Spawns the model of item type `name` for the released item numbered
+    /// `index`; `None` if it has none.
+    pub fn spawn(&self, name: &str, transform: Transform, index: usize, commands: &mut Commands) -> Option<Entity> {
+        let model = self.models.get(name).filter(|m| !m.parts.is_empty())?;
+        Some(spawn_built(model, transform, index, self.view, commands))
+    }
+}
+
 /// Monster folder code for a generator's type, when it names a monster.
 fn monster_code(ty: &ItemType) -> Option<&'static str> {
     let id = ty.enemy()?;
@@ -521,49 +575,32 @@ pub fn spawn(
         if model.parts.is_empty() {
             continue;
         }
-        let root = commands
-            .spawn((
-                transform,
-                PopulationPart::Model,
-                PlacementIndex(index),
-                visibility(view, PopulationPart::Model),
-                LevelEntity,
-            ))
-            .id();
-        let attach = |commands: &mut Commands, parent: Entity, parts: &[model_mesh::BuiltMesh], facing: Option<Billboard>| {
-            for p in parts {
-                let e = commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(parent))).id();
-                if let Some(b) = facing {
-                    commands.entity(e).insert((b, Transform::default()));
-                }
-            }
-        };
-        match &model.atree {
-            // One entity per node at its rest offset under its parent's, so
-            // the atree's actions can pose it.
-            Some(atree) => {
-                let mut bones: Vec<Entity> = Vec::with_capacity(atree.nodes.len());
-                for node in &atree.nodes {
-                    let parent = node.parent.map_or(root, |p| bones[p]);
-                    let at = Transform::from_translation(Vec3::from(node.offset));
-                    bones.push(commands.spawn((at, Visibility::default(), ChildOf(parent))).id());
-                }
-                for (node, parts, facing) in &model.parts {
-                    attach(commands, bones[*node], parts, *facing);
-                }
-                commands.entity(root).insert(ItemRig { atree: atree.clone(), bones });
-            }
-            None => {
-                for (_, parts, facing) in &model.parts {
-                    attach(commands, root, parts, *facing);
-                }
-                if let Some(looks) = tier_looks {
-                    commands.entity(root).insert(GeneratorLooks(looks));
-                }
-            }
+        let root = spawn_built(model, transform, index, view, commands);
+        if model.atree.is_none()
+            && let Some(looks) = tier_looks
+        {
+            commands.entity(root).insert(GeneratorLooks(looks));
         }
         out.models += 1;
     }
+
+    // What containers hold, built now so a broken barrel's contents can
+    // appear (`ContentModels`).
+    let mut contents = ContentModels { models: HashMap::new(), view };
+    for placement in &pop.placements {
+        let ty = pop.resolved_type(placement);
+        let PlacementParams::Container { contents: Some(c), .. } = placement.params(ty.class) else { continue };
+        if c >= pop.item_types.len() {
+            continue;
+        }
+        let inside = pop.resolve(c);
+        if inside.name.is_empty() || contents.models.contains_key(&inside.name) {
+            continue;
+        }
+        let model = build_model(&sources, &mut caches, &inside.name, None, meshes, level_materials, images);
+        contents.models.insert(inside.name.clone(), model);
+    }
+    commands.insert_resource(contents);
 
     for locator in &pop.locators {
         let category = match locator.kind {
