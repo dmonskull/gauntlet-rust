@@ -449,8 +449,8 @@ monster wake-ups (0x2000), quest triggers (0x40), subtype 1 rotators or
 node flag 0x2000000; only the hero (not monsters) holds a mover by
 standing on it; hit switches (0x1F) wait for blows on items
 (`breakables.rs`). Still to build: `hazards.rs` (damage tiles, damaging
-walls, blasts) — now built, below — and `breakables.rs` (barrels,
-shootable walls, hit switches, container contents).
+walls, blasts) and `breakables.rs` (barrels, shootable walls, hit
+switches, container contents) — both now built, below.
 
 [`hazards.rs`](../crates/gdl-game/src/hazards.rs) runs the damage tiles
 and damaging walls:
@@ -471,3 +471,30 @@ and damaging walls:
 Stand-ins: active phases last their animation (the game's own timer for
 them isn't confirmed); hint 0x15 isn't shown; walls that only hurt while
 animating (0x2000000) never do, as nothing animates them yet.
+
+[`breakables.rs`](../crates/gdl-game/src/breakables.rs): each hittable
+item (armour byte ≠ −1; barrel containers 0x2B–0x2D before they break,
+obstacles but safe rocks, hit switches) gets a `TargetKind::Breakable`
+target at its touch centre. A blow takes damage − armour (at least 1,
+rounded) off its hit points (type `+0x44`), none for kind 0x800 blows. At
+0: containers flagged 0x200 break open (`USED`, the realm's
+`S_BARREL_WOOD<letter>` for barrels) and release their contents as a new
+item where they stood, with its model (`population::ContentModels`, built
+at level load for everything containers hold) and a 30-field pickup delay,
+keys as many as the container's `+0x34`; exploding barrels blast 30 ×
+level `+0xDC` over 6 units and poison barrels 10 × over 6.5 (the missiles'
+falloff, hurting monsters and the hero at once), with
+`S_BARREL_EXPLO<letter>` / `S_BARREL_GAS<letter>`; other obstacles break
+(`S_WEAPONHITWOOD` until then); shootable walls are freed with
+`S_SECRETWALL`; hit switches press down their chain every time.
+
+On levelA1: `GDL_WARP="-5.5,-2.5,-23"` with `GDL_BUTTONS=attack` breaks
+the barrel behind the start (a blue potion falls out);
+`GDL_WARP="-13.5,-2.5,-3.8"` sets off an exploding barrel (17.5 to the
+hero).
+
+Stand-ins: blasts and gas hurt once, at once (no effect or lingering
+cloud); no hit flash or hints 0x14 / 0x1B; monsters inside containers
+(Deaths) aren't released; a shootable wall's in-between hits are silent;
+safe rocks aren't hittable; walls' own collision (item shape 4) isn't
+ported, so shootable walls never blocked the hero in the first place.

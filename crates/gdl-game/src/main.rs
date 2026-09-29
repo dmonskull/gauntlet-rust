@@ -6,6 +6,7 @@ mod actions;
 mod audio;
 mod autoshot;
 mod billboard;
+mod breakables;
 mod bootstrap;
 mod camera;
 mod camera_rig;
@@ -139,6 +140,7 @@ fn main() {
                 items::ItemsPlugin,
                 mechanics::MechanicsPlugin,
                 hazards::HazardsPlugin,
+                breakables::BreakablesPlugin,
                 exits::ExitsPlugin,
                 hints::HintsPlugin,
                 status_hud::StatusHudPlugin,

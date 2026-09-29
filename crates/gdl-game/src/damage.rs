@@ -58,7 +58,7 @@ struct Dying {
 const BODY_TIME: f32 = 4.0;
 
 #[allow(clippy::too_many_arguments)]
-fn apply_hits(
+pub(crate) fn apply_hits(
     mut commands: Commands,
     mut hits: MessageReader<Hit>,
     mut state: Option<ResMut<PlayerState>>,

@@ -362,6 +362,8 @@ pub struct ItemView<'a> {
     pub actions: usize,
     /// Neither picked up, opened for good nor freed.
     pub live: bool,
+    /// What it holds (containers).
+    pub contents: Option<&'a ItemType>,
 }
 
 /// Placement numbers of items released at run time (container contents)
@@ -391,6 +393,7 @@ impl LevelItems {
             done: item.done,
             actions: item.action_count(),
             live: !item.gone && !item.leaving,
+            contents: item.contents.as_ref(),
         }
     }
 
@@ -493,7 +496,7 @@ struct ItemPose {
     tracks: Option<(usize, Vec<Option<Track>>)>,
 }
 
-fn build_items(mut items: ResMut<LevelItems>, population: Res<LevelPopulation>, ground: Option<Res<LevelGround>>) {
+pub(crate) fn build_items(mut items: ResMut<LevelItems>, population: Res<LevelPopulation>, ground: Option<Res<LevelGround>>) {
     let pop = &population.population;
     let realm = population
         .level
