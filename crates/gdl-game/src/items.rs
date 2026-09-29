@@ -336,13 +336,11 @@ pub struct LevelItems {
     transport_cooldown: i32,
     leaving: Option<Leaving>,
     /// Items released so far this level (container contents).
-    #[allow(dead_code)]
     released: usize,
 }
 
 /// What the level's other item code (`mechanics.rs`, `hazards.rs`,
 /// `breakables.rs`) sees of one item.
-#[allow(dead_code)] // For the level mechanics runtime (work in progress).
 pub struct ItemView<'a> {
     /// The placement it came from; released items get numbers from
     /// [`RELEASED_BASE`] on.
@@ -368,10 +366,8 @@ pub struct ItemView<'a> {
 
 /// Placement numbers of items released at run time (container contents)
 /// start here, clear of the level's own.
-#[allow(dead_code)]
 pub const RELEASED_BASE: usize = 1 << 20;
 
-#[allow(dead_code)] // For the level mechanics runtime (work in progress).
 impl LevelItems {
     fn find(&self, placement: usize) -> Option<&Item> {
         self.items.iter().find(|i| i.placement == placement)
