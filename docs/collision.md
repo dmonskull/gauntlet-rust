@@ -197,6 +197,138 @@ Monsters (`FUN_800453f0` → `FUN_80045b98`, 0x394-byte records at
 `LevelCollision::move_actor` implements `FUN_80035320`'s version; the actor
 type values (radius, step) aren't decoded yet, so callers pass them.
 
+### Moving a player
+
+Players don't use `FUN_80035320`. The player update `FUN_80080d3c` (called
+per player from `FUN_8007692c`; players are the 4 × `0x335C`-byte records
+at `0x802754c0`) resolves the tick's displacement with its own chain.
+Implemented as `LevelCollision::move_player` with `PlayerCollision` (shape)
+and `PlayerGround` (the floor state carried between ticks).
+
+**The player's shape** comes from the class's `PDAT` record
+([chunk-files.md](chunk-files.md)), copied when the player joins
+(`FUN_80079ed8`; `DAT_80282310[player]` points at the loaded `PDAT`):
+
+| player field | value | from | use |
+| --- | --- | --- | --- |
+| `+0x850` | 1.5 | `PDAT+0x4C` | collision radius (walls, floors, other actors) |
+| `+0x854` | 2.5 | `PDAT+0x48` × 0.5 (`r2−0x5ea8`) | half-height: floor probe depth, actor-vs-actor vertical reach |
+| `+0x838` | (0, 4.4, 0) | `PDAT+0x50` | offset of the top point `+0x54` |
+| `+0x844` | (0, 2.5, 0) | `PDAT+0x54` | offset of the collision centre `+0x64` |
+
+All 16 classes on the disc have the same four values. `FUN_8005a334`
+(`FUN_8005a658` / `FUN_8005a584`, run for every player by `FUN_8007692c`
+before the update) sets `+0x64` = feet (`+0x44`, the matrix translation at
+`+0x14` + `0x30`) + the rotated `+0x844`, and `+0x54` likewise from
+`+0x838`. So the collision tests start from the **centre, 2.5 above the
+feet**. The radius at `+0x850` is confirmed by player-vs-player
+(`FUN_80087068` adds the other player's `+0x850`) and the half-height by the
+cylinder test `FUN_8002fa24` (`|dy| ≤ h₁ + h₂` with both `+0x854`s).
+
+**Order in `FUN_80080d3c`** (the plain-walking path; `c` is `+0x64`, `d`
+the displacement from [player-movement.md](player-movement.md), whose Y is
+clamped to ≥ 0 first):
+
+1. `FUN_80086e44(r, h, …)` — other entities (the `0xF0`-byte objects at
+   `r13−0x71a8`) — and `FUN_80087068` — other players' cylinders, pushing
+   `d` so it ends touching. Actor collision, **not ported**.
+2. **Walls**, `FUN_80087f4c(r, …)` with `c.y` raised by 1.0 (`r2−0x5be0`)
+   for the call: `FUN_8000d274`, the walls query (`0x13A`, normal Y ±0.866)
+   with disable mask **1**, from `c′` to `c′ + d`, radius `r`.
+   - A hit on a node with flags `0x38` changes nothing (returns 2, or 1
+     in action `0x8F`).
+   - A hit on a moving node (own flag `0x1000`) slides: `d −= n (n·d)`, in
+     3D.
+   - Otherwise `FUN_8000d034` pushes `d` out (see "Moving an actor"; its
+     return value is ignored here).
+   - Then the hit triangle's visited byte is bumped (so the next query
+     skips it) and the walls are tested again from `c′` to `c′ + d` with
+     radius 0.95 r (`r2−0x5a38`). A second wall more than 60° away from
+     the first (normals' dot **below 0.5**, `r2−0x5cb0`) — a corner —
+     zeroes all of `d`.
+   - Returns 0 (no wall), 1, or 2. A hit also runs `FUN_80085b14`
+     (damaging surfaces, node flags `0xF0000`) — not ported.
+3. **Floor**, `FUN_800878a0(r, h, …, wall result)`: probe `FUN_8000d4b8`
+   at `p = c + d`, from `p` (up 0.0) down `3 + h` (`r2−0x5c88`), radius
+   `r`, crossing-preferring (mode `0x10`), disable mask 1; result at
+   `0x80282248`. So floors up to the centre (2.5 above the feet — the
+   highest step) and down to 3 below the feet are found. With `F` the hit
+   height, `F₀` the floor being followed (`+0x8b4`) and `|dxz|` the
+   horizontal length of `d`:
+   - A standing node (`+0x8c4`, flags inherited up the parents by
+     `FUN_800aacac`) with flags `0x0C000000` and `0x20000000` can't be left
+     for another node: `d` = 0, returns −1 (−2 if no floor). Not ported.
+   - **No floor**: if `|dxz|` < 0.001 forget the standing node; unless
+     airborne (`+0x8d4 & 0x8000`) zero `d.xz`; `F₀` = the kill height
+     `r13−0x7278` (level bounds min Y − 4.5, set in `FUN_80057020`);
+     returns −2.
+   - Airborne: while `feet.y − F ≥ 0.2` return 0, else clear the flag.
+   - **Standing still** (`|dxz|` < 0.001 and `+0xEC`, last tick's state,
+     is 1 = playing): `F₀ = F` only if `|F − F₀| > 3` or the node moves;
+     returns 1 if `|F − F₀| > 0.001`, else 0.
+   - `|F − F₀|` above 3 (`r2−0x5bb8`; 4 when the hit is the node already
+     stood on) **refuses the move**: `d.xz` = 0, `F₀` = feet Y, returns 0.
+   - If the wall result was 2 and the floor isn't that wall's node: push
+     `d` out of that wall (`FUN_8000d034`) and re-probe (below).
+   - Otherwise let `o = p − hit` (how far the hit is from straight below
+     `p`), `a = d · o`, `s = |o.xz|`. If `s` < 0.001 and there was no wall,
+     also probe a radius further on, at `p + r·normalize(d)`:
+     nothing there → `o` = that `r·dir`, `a` = 0, `s` = r; a hit on a node
+     with flag `0x8` within 4 (`r2−0x5c08`) of `F` → `s` = 0; any other
+     hit → `o`, `a`, `s` from that probe.
+   - `s` < 0.001 or `a` < 0 (the floor is right below, or the move heads
+     towards it): **accept**, `F₀ = F`, return 1 (2 when `s` ≥ 0.001 and
+     `a` ≥ −0.25, `r2−0x5a40`).
+   - Else **pull back**: `d.xz −= o.xz` and re-probe at `c + d`
+     (not crossing-preferring): a floor → `F₀` = its height, return 2;
+     none → `d.xz` = 0, return 0. This holds a player's centre a radius
+     back from a drop it can't follow, and over a ledge's edge when the
+     probe only grazes it.
+4. **Follow the floor** (back in `FUN_80080d3c`): when the result is > 0,
+   or 0 and the standing node doesn't move (own flag `0x1000`), or −2 and
+   there's no standing node (or airborne):
+   `d.y += max(F₀ − feet.y, −16 × tick)` (`r2−0x5bd8`, `r13−0x7570`). Up
+   is immediate; down is at most 16 units/s.
+5. `FUN_8001bf88` — keeping players on screen together (camera bounds,
+   `FUN_80025ca0` / `FUN_8001c084`) — may clip `d.xz`. Not ported.
+6. **Climbing slows the walk**: if `d.y > 0.1 × step` (`step` = the stick
+   step, factor × tick × speed × magnitude) and `hypot(step, d.y) > 0.01`,
+   `d.xz *= step / hypot(step, d.y)` (`FUN_800bce38` is an approximate
+   hypot).
+7. If the floor result is > 0, `FUN_8008764c`: the same node lock as
+   above, then `FUN_800877c0` records the floor node as the standing node
+   `+0x8c4` and attaches to moving platforms (zeroing `d.xz`), and a slope
+   value `+0x8bc`. Only the standing node is ported.
+8. Actor collision again with 0.9 r (`r2−0x5bc0`): entities
+   (`FUN_80086e44`), then teleporters (`FUN_80086ab8`, which can replace
+   `d`), players (`FUN_80087068`), and monsters/generators
+   (`FUN_80087258`, radius `r`, or 3.0 / `r2−0x5c9c` for actions `0x8F` /
+   `0x89`); each clips `d` per axis with `FUN_800859d4` so it stops
+   heading into the other actor. Actions `0x89` and `0x8F` (charges /
+   being carried) also knock the other actor back. **Not ported.**
+9. `+0x44 += d` (after the attack/shove handling, which can zero `d`).
+
+`FUN_80087ec0` (in one game mode, `r13−0x7380 == 0x4010`) probes the same
+floor from the feet instead of the centre and sets the standing node.
+
+**What `move_player` does differently**: no actors, hazards, lifts,
+platform locks, airborne state or on-screen clipping; the climb
+slow-down's `step` is the horizontal length of the requested move (the
+game's stick step whenever there's no knockback); exact `hypot`.
+
+**Checks** (`collision::tests::players_*`): synthetic walls, corners,
+ledges, steps and drops, plus
+`players_walk_every_real_level_without_falling_through`: from every
+level's entry-0 player start (on the floor under it), running
+(12.5 × 1.3 units/s) 45 ticks in 8 directions: 24,480 moves, 6,118 touching
+walls, 16 held back by the floor. The centre's path never crosses a wall,
+the floor is never lost, and the feet never end more than one tick's drop
+below a floor. They do dip for a tick 21 times, both by the game's rules:
+at seams where a near miss 0.02 away on a lower floor outranks the floor
+right below (10000 × d² < the crossing's distance², levelE1), and where
+sliding along a moving node's downward-facing wall pushes `d` down
+(levelK2).
+
 ## What we do differently
 
 - Cells are gathered from the segment's whole X/Z box rather than walked
@@ -224,7 +356,12 @@ query's reach (the rest are in the air: torches, ceilings, scenery).
 
 ## Not confirmed
 
-- What `step` and radius each character type uses (type data not decoded).
+- What `step` and radius each monster/actor type uses (type data not
+  decoded). Players: see "Moving a player".
+- For players: the airborne flag `+0x8d4 & 0x8000` (who sets it), the
+  node lock flags `0x0C000000`/`0x20000000`, and whether any level's
+  moving nodes actually take the 3D wall slide at rest positions (we test
+  them un-animated).
 - Header words 4 and 6; node `+0x34`.
 - The swept-sphere distance helpers were ported for their result (closest
   points between segments), not instruction by instruction.
