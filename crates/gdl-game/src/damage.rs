@@ -17,9 +17,8 @@
 //!
 //! Stand-ins: the level-versus-player-level damage scale, the monster
 //! resistances, elements and blocking while defending aren't applied; there's no hit
-//! sound, effect or score yet. When the hero dies it plays DEATH
-//! and comes back at the level start at full health (lives and the
-//! game-over flow aren't done).
+//! sound, effect or score yet. What happens when the hero dies is the
+//! front end's (`frontend.rs`).
 
 use bevy::prelude::*;
 use gdl_formats::enemy;
@@ -37,7 +36,7 @@ pub struct DamagePlugin;
 
 impl Plugin for DamagePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (apply_hits.after(PlayerTick), remove_bodies, hurt_hero, revive_hero));
+        app.add_systems(FixedUpdate, (apply_hits.after(PlayerTick), remove_bodies, hurt_hero));
     }
 }
 
@@ -206,34 +205,6 @@ fn hurt_hero(
             p.queue_hit(amount, flags, push);
             damage.write(DamagePlayer { amount });
         }
-    }
-}
-
-/// Seconds the hero lies dead before coming back.
-const REVIVE_AFTER: f32 = 3.0;
-
-fn revive_hero(
-    time: Res<Time>,
-    mut state: ResMut<PlayerState>,
-    mut dead_for: Local<f32>,
-    mut players: Query<(&mut Player, &mut Animator)>,
-) {
-    if state.alive {
-        *dead_for = 0.0;
-        return;
-    }
-    let Ok((mut p, mut animator)) = players.single_mut() else { return };
-    if *dead_for == 0.0 {
-        animator.play_named("DEATH");
-    }
-    *dead_for += time.delta_secs();
-    if *dead_for >= REVIVE_AFTER {
-        let (at, facing) = p.start;
-        p.teleport(at, facing);
-        state.health = state.max_health();
-        state.alive = true;
-        animator.play_named("READY");
-        info!("the hero is back at the start");
     }
 }
 

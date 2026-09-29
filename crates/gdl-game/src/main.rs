@@ -14,6 +14,8 @@ mod collision_debug;
 mod combat;
 mod damage;
 mod exits;
+mod font;
+mod frontend;
 mod generators;
 mod hints;
 mod hud;
@@ -106,7 +108,11 @@ fn main() {
             }
         };
     } else {
-        let game = match LoadedGame::load(install, args.level.as_deref()) {
+        // The front end runs unless the command line picked a level or a
+        // hero; a new game starts in the tower hub.
+        let skip_menus = args.level.is_some() || args.character.is_some();
+        let first_level = args.level.as_deref().or((!skip_menus).then_some(frontend::TOWER));
+        let game = match LoadedGame::load(install, first_level) {
             Ok(game) => game,
             Err(message) => {
                 eprintln!("{message}");
@@ -131,7 +137,8 @@ fn main() {
                 exits::ExitsPlugin,
                 hints::HintsPlugin,
                 status_hud::StatusHudPlugin,
-            ));
+            ))
+            .add_plugins((font::Screen2dPlugin, frontend::FrontendPlugin { skip: skip_menus }));
     }
     app.run();
 }
