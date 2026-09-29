@@ -19,7 +19,8 @@ One file per system, written only once it's confirmed against the actual
 - Locating a user's copy from a disc image, extracted folder or `main.dol`
   (`gdl-install`).
 - Models, textures, lightmaps and world placement for all 67 levels.
-- Skeletons and animation for every character (`--viewer`).
+- Skeletons and animation for every player class and monster, skeletal and
+  flipbook (`--viewer`).
 
 ## Reverse engineering setup
 
@@ -45,8 +46,8 @@ names), which is how most systems here were found.
 
 ## Not reverse engineered yet
 
-- Monsters (`MONSTERS/`, `CRITTER/*.WAD`) in the viewer; weapons and
-  hand effects attached to characters; blending between actions.
+- Monster stats (`CRITTER/*.WAD`), hand/effect glows, blending between
+  actions.
 - Gameplay: the main loop, entity update, combat, items, co-op.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
   `FUN_80058074`: cameras, audio, 14 named realm types).

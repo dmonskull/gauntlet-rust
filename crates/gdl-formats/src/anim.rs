@@ -21,6 +21,7 @@ const ATREE_ENTRY: usize = 0x24;
 const ACTION_STRIDE: usize = 0x30;
 const NODE_STRIDE: usize = 0x3C;
 const TRACK_ENTRY: usize = 8;
+const FLIPBOOK_STRIDE: usize = 0x28;
 const DELTA_TABLE_LEN: usize = 256;
 
 /// Track flag bits: which channels are stored.
@@ -50,12 +51,49 @@ pub enum AnimError {
     BadTrack { bone: usize, action: usize, why: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    /// Not animated.
+    Static,
+    /// Posed by a clip track.
+    Skeletal,
+    /// Swaps meshes per frame, one flipbook entry per action.
+    Flipbook,
+    /// Other animation kinds (kind 3: indexes the action table; kind 4:
+    /// texture animation) — not implemented yet.
+    Other(u16),
+}
+
 #[derive(Debug, Clone)]
 pub struct SkeletonNode {
     pub name: String,
     /// Rest offset from the parent.
     pub offset: [f32; 3],
     pub parent: Option<usize>,
+    pub kind: NodeKind,
+    /// Node `+0x2E`; bit 0 = the node has no model of its own.
+    pub node_flags: u16,
+    /// Node `+0x30`: flags the game sets on the node's instance (bit 0
+    /// hides it).
+    pub render_flags: u32,
+    /// Node `+0x34`: a byte offset, per `kind` — from the clips header to
+    /// this bone's run of track entries, or from the flipbook list header to
+    /// its first entry (negative = none). See [`Atree::clip_bone`] and
+    /// [`Atree::flipbook_entry`].
+    pub index: i32,
+}
+
+/// Instance render flag: hidden.
+pub const RENDER_HIDDEN: u32 = 0x1;
+
+impl SkeletonNode {
+    pub fn has_model(&self) -> bool {
+        self.node_flags & 1 == 0 && !self.name.is_empty()
+    }
+
+    pub fn hidden(&self) -> bool {
+        self.render_flags & RENDER_HIDDEN != 0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -155,7 +193,21 @@ pub struct Clips {
     scale_deltas: Option<Vec<f32>>,
     /// Bone-major: `entries[bone * num_actions + action]`.
     entries: Vec<(u16, u16, u32)>,
+    /// Byte offset of `entries` from the clips header.
+    track_table: u32,
     keys: Vec<u8>,
+}
+
+/// One entry of an atree's object-animation ("flipbook") list: monsters
+/// without skeletal clips animate by swapping whole pre-posed meshes.
+/// There's one entry per (flipbook node, action), node-major; `first` names
+/// the mesh for frame 0 and frame *k* is the *k*-th object after it in the
+/// model file (whose objects are sorted by name).
+#[derive(Debug, Clone)]
+pub struct FlipbookEntry {
+    pub first: String,
+    pub frames: u16,
+    pub param: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -165,11 +217,36 @@ pub struct Atree {
     pub nodes: Vec<SkeletonNode>,
     pub actions: Vec<Action>,
     pub clips: Option<Clips>,
+    pub flipbook: Vec<FlipbookEntry>,
+    /// Byte offset of the first flipbook entry from the list header.
+    flipbook_base: u32,
 }
 
 impl Atree {
     pub fn node_index(&self, name: &str) -> Option<usize> {
         self.nodes.iter().position(|n| n.name == name)
+    }
+
+    /// The flipbook entry flipbook node `node` shows while playing `action`.
+    pub fn flipbook_entry(&self, node: usize, action: usize) -> Option<&FlipbookEntry> {
+        let n = self.nodes.get(node)?;
+        let rel = (n.index as i64).checked_sub(self.flipbook_base as i64)?;
+        if n.kind != NodeKind::Flipbook || rel < 0 || rel % FLIPBOOK_STRIDE as i64 != 0 {
+            return None;
+        }
+        self.flipbook.get(rel as usize / FLIPBOOK_STRIDE + action)
+    }
+
+    /// The clip bone a skeletal node is animated by.
+    pub fn clip_bone(&self, node: usize) -> Option<usize> {
+        let n = self.nodes.get(node)?;
+        let clips = self.clips.as_ref()?;
+        let run = (clips.num_actions * TRACK_ENTRY) as i64;
+        let rel = n.index as i64 - clips.track_table as i64;
+        if n.kind != NodeKind::Skeletal || rel < 0 || run == 0 || rel % run != 0 {
+            return None;
+        }
+        Some((rel / run) as usize).filter(|&b| b < clips.num_bones)
     }
 
     /// Decodes `bone`'s track for `action`. `None` when the bone isn't
@@ -317,6 +394,15 @@ fn parse_atree(file: &[u8], at: usize) -> Result<Atree, AnimError> {
             name: cstr(&e[..0x20]),
             offset: [le_f32(e, 0x20), le_f32(e, 0x24), le_f32(e, 0x28)],
             parent,
+            kind: match le_u16(e, 0x2C) {
+                0 => NodeKind::Static,
+                1 => NodeKind::Skeletal,
+                2 => NodeKind::Flipbook,
+                k => NodeKind::Other(k),
+            },
+            node_flags: le_u16(e, 0x2E),
+            render_flags: le_u32(e, 0x30),
+            index: le_u32(e, 0x34) as i32,
         });
     }
 
@@ -334,7 +420,23 @@ fn parse_atree(file: &[u8], at: usize) -> Result<Atree, AnimError> {
     }
 
     let clips = if clips_off != 0 { parse_clips(file, at + clips_off as usize)? } else { None };
-    Ok(Atree { name, nodes, actions, clips })
+    let flipbook_off = le_u32(h, 8);
+    let (flipbook, flipbook_base) =
+        if flipbook_off != 0 { parse_flipbook(file, at + flipbook_off as usize)? } else { (Vec::new(), 0) };
+    Ok(Atree { name, nodes, actions, clips, flipbook, flipbook_base })
+}
+
+/// `{u32 offset from here, u32 count}`, then `0x28`-byte entries: object
+/// name[0x20], (runtime object slot), frame count, a parameter.
+fn parse_flipbook(file: &[u8], at: usize) -> Result<(Vec<FlipbookEntry>, u32), AnimError> {
+    let h = slice(file, at, 8)?;
+    let rel = le_u32(h, 0);
+    let count = le_u32(h, 4) as usize;
+    let entries = slice(file, at + rel as usize, count * FLIPBOOK_STRIDE)?
+        .chunks(FLIPBOOK_STRIDE)
+        .map(|e| FlipbookEntry { first: cstr(&e[..0x20]), frames: le_u16(e, 0x24), param: le_u16(e, 0x26) })
+        .collect();
+    Ok((entries, rel))
 }
 
 /// `None` for the empty block skeleton-only files carry (no actions, no
@@ -370,6 +472,7 @@ fn parse_clips(file: &[u8], at: usize) -> Result<Option<Clips>, AnimError> {
         translation_deltas: table(off(1))?,
         scale_deltas: table(off(2))?,
         entries,
+        track_table: off(4) as u32,
         keys: file.get(at + off(3)..).unwrap_or_default().to_vec(),
     }))
 }
@@ -489,11 +592,25 @@ mod tests {
     #[test]
     fn every_real_anim_file_decodes() {
         let files = anim_files();
-        let (mut atrees, mut tracks, mut keys) = (0, 0, 0);
+        let (mut atrees, mut tracks, mut keys, mut flipbooks) = (0, 0, 0, 0);
         for (path, data) in &files {
             let anim = AnimFile::parse(data).unwrap_or_else(|e| panic!("{path}: {e}"));
             for tree in &anim.atrees {
                 atrees += 1;
+                for (i, n) in tree.nodes.iter().enumerate() {
+                    match n.kind {
+                        NodeKind::Flipbook if !tree.flipbook.is_empty() => {
+                            flipbooks += 1;
+                            for a in 0..tree.actions.len() {
+                                assert!(tree.flipbook_entry(i, a).is_some(), "{path} {}: {} action {a}", tree.name, n.name);
+                            }
+                        }
+                        NodeKind::Skeletal if tree.clips.is_some() => {
+                            assert!(tree.clip_bone(i).is_some(), "{path} {}: {} index {}", tree.name, n.name, n.index);
+                        }
+                        _ => {}
+                    }
+                }
                 let Some(clips) = &tree.clips else { continue };
                 assert_eq!(clips.num_actions, tree.actions.len(), "{path}");
                 // Effect atrees can carry clips for more bones than nodes.
@@ -513,7 +630,7 @@ mod tests {
             }
         }
         if !files.is_empty() {
-            eprintln!("{} files, {atrees} atrees, {tracks} tracks, {keys} keys", files.len());
+            eprintln!("{} files, {atrees} atrees, {flipbooks} flipbook nodes, {tracks} tracks, {keys} keys", files.len());
         }
     }
 }

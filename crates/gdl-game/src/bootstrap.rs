@@ -9,7 +9,7 @@ use gdl_install::GameInstall;
 
 const USAGE: &str = "\
 usage: gdl-game [GAME] [--level NAME] [--forget]
-       gdl-game [GAME] --viewer [--character CLASS] [--variant V] [--action NAME]
+       gdl-game [GAME] --viewer [--character CLASS | --monster NAME] [--variant V] [--action NAME]
 
   GAME             your Gauntlet: Dark Legacy disc image (.iso/.gcm), extracted
                    disc folder, or its main.dol. Remembered for next time.
@@ -17,6 +17,7 @@ usage: gdl-game [GAME] [--level NAME] [--forget]
   --forget         forget the remembered game path and ask again.
   --viewer         character viewer instead of the levels.
   --character CLS  player class to show (e.g. ARC, KNI, WIZ).
+  --monster NAME   monster to show instead (e.g. GRU, DEM, LICH).
   --variant V      colour/armour folder (default BLU; e.g. RED, YEL40).
   --action NAME    action to start with (e.g. RUN1).
 
@@ -28,6 +29,7 @@ pub struct Args {
     pub forget: bool,
     pub viewer: bool,
     pub character: Option<String>,
+    pub monster: Option<String>,
     pub variant: Option<String>,
     pub action: Option<String>,
 }
@@ -40,6 +42,7 @@ impl Args {
             forget: false,
             viewer: false,
             character: None,
+            monster: None,
             variant: None,
             action: None,
         };
@@ -51,6 +54,7 @@ impl Args {
                 "--level" => args.level = Some(it.next().ok_or("--level needs a level name")?),
                 "--viewer" => args.viewer = true,
                 "--character" => args.character = Some(it.next().ok_or("--character needs a class")?),
+                "--monster" => args.monster = Some(it.next().ok_or("--monster needs a name")?),
                 "--variant" => args.variant = Some(it.next().ok_or("--variant needs a folder name")?),
                 "--action" => args.action = Some(it.next().ok_or("--action needs an action name")?),
                 flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n\n{USAGE}")),

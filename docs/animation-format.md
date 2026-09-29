@@ -35,11 +35,33 @@ Atrees"`). Little-endian.
 | 0x14 | action count |
 | 0x18 | name — the model prefix (`ARC_BLU`), or class name for shared clips |
 
-**Node** (`FUN_80012f9c`, the atree instantiator): name[0x20], rest offset
-from the parent (3 × f32 at `+0x20`), parent index at `+0x38` (−1 = root;
-parents must precede children, and one root only). Each node's model is the
-object named `<atree name><node name>`, found with the same name lookup the
-world uses — so segmented characters are one rigid object per bone.
+**Node** (`FUN_80012f9c` instantiates the atree, `FUN_80013480` each node):
+
+| offset | field |
+| --- | --- |
+| +0x00 | name[0x20] |
+| +0x20 | rest offset from the parent (3 × f32) |
+| +0x2C (u16) | kind: 0 static, **1 skeletal**, **2 flipbook**, 3 (indexes the action table), 4 (texture animation, `FUN_80018304`) |
+| +0x2E (u16) | bit 0: no model of its own |
+| +0x30 (u32) | render flags set on the node's instance (bit 0 = hidden; glows use `0x4c01880`) |
+| +0x34 (i32) | **byte offset**: skeletal → from the clips header to this bone's run of track entries; flipbook → from the list header to its first entry |
+| +0x38 | parent index (−1 = root; parents precede children; one root) |
+
+A node's model is the object named `<atree name><node name>`, found with
+the same name lookup the world uses — so segmented characters are one rigid
+object per bone. `DUMMY` nodes are hidden (the instantiator compares the
+name against `"DUMMY"` at `r2−0x7ec8`).
+
+## Flipbooks (object animation, `FUN_80018f00`)
+
+Regular monsters (grunts, demons, ghosts…) aren't skinned: every frame of
+every action is a separate pre-posed mesh, named e.g. `DEM1WALK2F03` (tier,
+action, part, frame). The atree's list is `{u32 offset from here, u32
+count}` then `0x28`-byte entries: first frame's object name[0x20], (runtime
+object), u16 frame count, u16 parameter. A flipbook node's entries run one
+per action from its `+0x34` offset; frame *k* of an action is the *k*-th
+object after the named one (objects are stored sorted by name). All 687
+flipbook nodes on the disc have an entry for every action.
 
 **Action**: name[0x20], frame count (u16 `+0x20`), playback rate (u16
 `+0x22`, frames per second: 30 almost everywhere, 45/60/15 for some),
@@ -98,4 +120,14 @@ polynomial over [−π, π], cosine is sine shifted by π/2.
 - The action link field and params 2–4; the `0x58`/`0x138` records; the
   object-animation list.
 - Blending between actions (the state machine around `FUN_8000eb70`).
-- Weapon attachment (`WEAP_<colour>_HD<n>` objects) and hand-glow effects.
+- Hand-glow effects (nodes with glow render flags are hidden for now).
+
+## Weapons (`FUN_8007ae84`)
+
+The player setup builds `WEAP_<colour>_HD<n>` (`n` = 1/2/3 from a player
+stat: < 10, < 50, else) — or `WEAP_HOLD` for classes 8+ — and parents it to
+the class's hand bone from the table at `0x8011f90c`/`0x8011f94c`: `R_WRIST`
+(WAR VAL WIZ ARC MIN FAL JAC TIG), `RIGHTHAN` (DWF KNI SOR OGR UNI MED),
+`RHEND` (JES HYE). Class order (table at `0x8011f878`): WAR VAL WIZ ARC DWF
+KNI SOR JES MIN FAL JAC TIG OGR UNI MED HYE SUM. `SHADOWL1` is the blob
+shadow.

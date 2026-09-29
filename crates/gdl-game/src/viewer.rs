@@ -1,6 +1,7 @@
-//! `--viewer`: look at one player class and play through its actions.
-//! `[` / `]` change action, `Tab` / `Shift+Tab` change class.
+//! `--viewer`: look at one player class or monster and play through its
+//! actions. `[` / `]` change action, `Tab` / `Shift+Tab` change character.
 
+use bevy::camera::primitives::Aabb;
 use bevy::prelude::*;
 use gdl_install::GameInstall;
 
@@ -13,30 +14,44 @@ pub struct ViewerPlugin;
 #[derive(Resource)]
 pub struct Viewer {
     pub install: GameInstall,
+    /// Player classes, or monster folders when `monsters` is set.
     pub classes: Vec<String>,
     pub class: usize,
+    pub monsters: bool,
     pub variant: String,
     pub action: Option<String>,
     status: String,
 }
 
 impl Viewer {
-    pub fn new(install: GameInstall, class: Option<&str>, variant: Option<&str>, action: Option<&str>) -> Result<Self, String> {
-        let classes = character::player_classes(&install);
+    pub fn new(
+        install: GameInstall,
+        class: Option<&str>,
+        monster: Option<&str>,
+        variant: Option<&str>,
+        action: Option<&str>,
+    ) -> Result<Self, String> {
+        let monsters = monster.is_some();
+        let (classes, want, what) = if monsters {
+            (character::monster_names(&install), monster, "monster")
+        } else {
+            (character::player_classes(&install), class, "class")
+        };
         if classes.is_empty() {
-            return Err("No player classes found under PLAYERS/.".into());
+            return Err(format!("No {what}s found on the disc."));
         }
-        let class = match class {
+        let class = match want {
             Some(c) => classes
                 .iter()
                 .position(|x| x.eq_ignore_ascii_case(c))
-                .ok_or_else(|| format!("No class '{c}'. Classes: {}", classes.join(", ")))?,
+                .ok_or_else(|| format!("No {what} '{c}'. Choices: {}", classes.join(", ")))?,
             None => 0,
         };
         Ok(Self {
             install,
             classes,
             class,
+            monsters,
             variant: variant.unwrap_or("BLU").to_ascii_uppercase(),
             action: action.map(str::to_string),
             status: String::new(),
@@ -47,13 +62,52 @@ impl Viewer {
 #[derive(Component)]
 struct ViewerCharacter;
 
+/// Frames to wait before framing the camera on the drawn meshes.
+#[derive(Resource)]
+struct FrameAfter(u32);
+
+/// Frames the camera on the world bounds of every visible mesh.
+fn frame_camera(
+    mut commands: Commands,
+    wait: Option<ResMut<FrameAfter>>,
+    parts: Query<(&Aabb, &GlobalTransform, &InheritedVisibility)>,
+    mut camera: Query<(&mut Transform, &mut FlyCamera)>,
+) {
+    let Some(mut wait) = wait else { return };
+    if wait.0 > 0 {
+        wait.0 -= 1;
+        return;
+    }
+    commands.remove_resource::<FrameAfter>();
+    let (mut min, mut max) = (Vec3::MAX, Vec3::MIN);
+    for (aabb, global, visible) in &parts {
+        if !visible.get() {
+            continue;
+        }
+        let (c, h) = (Vec3::from(aabb.center), Vec3::from(aabb.half_extents));
+        for corner in [-1.0f32, 1.0].into_iter().flat_map(|x| [-1.0f32, 1.0].map(move |y| (x, y))) {
+            for z in [-1.0f32, 1.0] {
+                let p = global.transform_point(c + h * Vec3::new(corner.0, corner.1, z));
+                min = min.min(p);
+                max = max.max(p);
+            }
+        }
+    }
+    if min.x > max.x {
+        return;
+    }
+    if let Ok((mut transform, mut fly)) = camera.single_mut() {
+        *fly = FlyCamera::framing(min, max, &mut transform);
+    }
+}
+
 #[derive(Component)]
 struct ViewerText;
 
 impl Plugin for ViewerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (spawn_text, respawn).chain())
-            .add_systems(Update, (keys, show_status));
+            .add_systems(Update, (keys, show_status, frame_camera));
     }
 }
 
@@ -82,9 +136,14 @@ fn respawn(
     }
     let class = viewer.classes[viewer.class].clone();
     let variant = viewer.variant.clone();
-    match character::load_player(&mut viewer.install, &class, &variant) {
+    let loaded = if viewer.monsters {
+        character::load_monster(&mut viewer.install, &class)
+    } else {
+        character::load_player(&mut viewer.install, &class, &variant)
+    };
+    match loaded {
         Ok(data) => {
-            let root = character::spawn_character(
+            let (root, min, max) = character::spawn_character(
                 &data,
                 Transform::default(),
                 &mut commands,
@@ -97,11 +156,14 @@ fn respawn(
                 commands.entity(root).insert(PendingAction(name));
             }
             viewer.status = data.name;
+            // Rough framing now; `frame_camera` refines it once the posed
+            // meshes have world bounds.
+            if let Ok((mut transform, mut fly)) = camera.single_mut() {
+                *fly = FlyCamera::looking_at_bounds(min, max, &mut transform);
+            }
+            commands.insert_resource(FrameAfter(3));
         }
-        Err(e) => viewer.status = format!("{class}/{variant}: {e}"),
-    }
-    if let Ok((mut transform, mut fly)) = camera.single_mut() {
-        *fly = FlyCamera::looking_at_bounds(Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, 6.0, 5.0), &mut transform);
+        Err(e) => viewer.status = format!("{class}: {e}"),
     }
 }
 
@@ -165,7 +227,7 @@ fn show_status(viewer: Res<Viewer>, animators: Query<&Animator>, mut text: Query
         })
         .unwrap_or_default();
     text.0 = format!(
-        "Character viewer: {}\n{action}\n\n[ ] action   Tab / Shift+Tab class   WASD / right-drag camera",
+        "Character viewer: {}\n{action}\n\n[ ] action   Tab / Shift+Tab character   WASD / right-drag camera",
         viewer.status
     );
 }

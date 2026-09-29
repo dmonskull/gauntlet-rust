@@ -63,6 +63,7 @@ fn main() {
         let viewer = viewer::Viewer::new(
             install,
             args.character.as_deref(),
+            args.monster.as_deref(),
             args.variant.as_deref(),
             args.action.as_deref(),
         );
