@@ -33,6 +33,7 @@ impl Plugin for PlayCameraPlugin {
         let free = std::env::var("GDL_FREE_CAMERA").is_ok_and(|v| !v.is_empty() && v != "0");
         app.insert_resource(FreeLook(free))
             .add_message::<StartCut>()
+            .add_message::<Shake>()
             .add_systems(Startup, (load_level_cameras, set_fov, spawn_bars))
             .add_systems(Update, show_bars)
             .add_systems(FixedUpdate, tick.after(PlayerTick))
@@ -62,7 +63,26 @@ pub struct PlayCamera {
     intro: Option<Intro>,
     /// A trigger's camera cut, while it lasts.
     cut: Option<Cut>,
+    /// The shake under way, and this tick's eye and target offsets.
+    shake: Option<Shake>,
+    shake_offset: ([f32; 3], [f32; 3]),
 }
+
+/// Shakes the camera (`docs/camera.md` "Shakes"): `what` 0 moves the
+/// target, 1 the eye, 2 both, round a circle of radius `amplitude` that
+/// turns 0.663 rad a field, after `delay` fields, for `fields`; a shake
+/// with a lower `priority` doesn't replace one still going.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct Shake {
+    pub amplitude: f32,
+    pub what: u8,
+    pub delay: f32,
+    pub fields: f32,
+    pub priority: i32,
+}
+
+/// Radians the shake turns per field.
+const SHAKE_TURN: f32 = 0.663_225_1;
 
 /// Shows a trigger's camera point (`docs/camera.md` "Trigger cuts"): the
 /// locator index into the level's locators, and the node the trigger moved.
@@ -114,10 +134,12 @@ impl PlayCamera {
         if let Some(c) = self.cut.filter(|c| c.delay <= 0.0) {
             return (c.eye, c.target);
         }
-        match self.intro {
+        let (eye, target) = match self.intro {
             Some(i) => (i.eye, i.target),
             None => (self.rig.eye(), self.rig.target),
-        }
+        };
+        let (de, dt) = self.shake_offset;
+        (std::array::from_fn(|i| eye[i] + de[i]), std::array::from_fn(|i| target[i] + dt[i]))
     }
 
     /// Whether a camera cut is showing (the hero can't be hurt then).
@@ -209,7 +231,7 @@ fn start(
     let rig = CameraRig::new(points, bounds, record.near, focus);
     let intro = intro_shot(&population.population, focus);
     let previous = intro.map_or((rig.eye(), rig.target), |i| (i.eye, i.target));
-    commands.insert_resource(PlayCamera { rig, previous, intro, cut: None });
+    commands.insert_resource(PlayCamera { rig, previous, intro, cut: None, shake: None, shake_offset: ([0.0; 3], [0.0; 3]) });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -219,6 +241,7 @@ fn tick(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     mut cuts: MessageReader<StartCut>,
+    mut shakes: MessageReader<Shake>,
     population: Option<Res<LevelPopulation>>,
     mechanics: Option<Res<Mechanics>>,
 ) {
@@ -226,6 +249,28 @@ fn tick(
     let camera = &mut *camera;
     camera.previous = camera.view();
     camera.rig.tick(player.mover.position);
+    for s in shakes.read() {
+        if camera.shake.is_none_or(|old| s.priority >= old.priority) {
+            camera.shake = Some(*s);
+        }
+    }
+    camera.shake_offset = ([0.0; 3], [0.0; 3]);
+    if let Some(s) = camera.shake.as_mut() {
+        s.fields -= FIELDS_PER_TICK;
+        s.delay = (s.delay - FIELDS_PER_TICK).max(0.0);
+        if s.fields < 0.0 {
+            camera.shake = None;
+        } else if s.delay <= 0.0 {
+            let angle = SHAKE_TURN * s.fields;
+            let d = [s.amplitude * angle.sin(), 0.0, s.amplitude * angle.cos()];
+            let none = [0.0; 3];
+            camera.shake_offset = match s.what {
+                0 => (none, d),
+                1 => (d, none),
+                _ => (d, d),
+            };
+        }
+    }
     for cut in cuts.read() {
         let Some(l) = population.as_ref().and_then(|p| p.population.locators.get(cut.locator)) else { continue };
         let (eye, target) = locator_view(l, player.mover.position);

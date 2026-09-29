@@ -114,3 +114,14 @@ meanwhile; the way back glides like the level start (the game's own
 return isn't traced). On levelA1 `GDL_WARP="-33.8,0,26.6"` stands the
 hero on the switch of `A1ELEV666`, which cuts to the elevator rising out
 of the water.
+
+## Shakes
+
+`FUN_800277ec(amplitude, what, delay, fields, priority)` starts a shake
+(`r13-0x7688..-0x7674`) unless one with a higher priority is still going;
+`FUN_800275bc(eye, target)` applies it each frame: after `delay` fields,
+for `fields` fields, the target (`what` 0), the eye (1) or both (2) move
+round a circle of radius `amplitude` in X/Z, at angle 0.6632 (`r2-0x76f8`)
+× the fields left. Triggers with flag 0x1000 shake the target by 0.1 for
+180 fields (priority 100); the other callers use 0x5A/0x1E fields and
+priorities 100/200 (not traced). `play_camera::Shake` does the same.

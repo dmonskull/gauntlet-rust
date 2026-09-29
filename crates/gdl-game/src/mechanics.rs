@@ -9,14 +9,14 @@
 //! height at 4 units a second (bridges show or hide instead). Moved nodes
 //! pose their collision and their drawn group ([`MovingGroup`], split out
 //! of the merged level meshes by `world.rs`), and a hero standing on one
-//! is carried with it.
+//! is carried with it. A trigger coming on can shake the camera (flag
+//! 0x1000), cut to its camera point (`play_camera::StartCut`) and wake a
+//! statue (flag 0x2000, listed in `Mechanics::woken` for `critters.rs`).
 //!
 //! Stand-ins: bridges pop in and out rather than fading; triggers run on
-//! or off screen; mover and bridge sounds, camera shakes and cuts, waking
-//! monsters (flag 0x2000: only listed in `Mechanics::woken` for
-//! `critters.rs`), quest triggers (flag 0x40), subtype 1 rotators
-//! and the node flag 0x2000000 mode aren't done; only players (not
-//! monsters) hold a mover still by standing on it.
+//! or off screen; mover and bridge sounds, quest triggers (flag 0x40),
+//! subtype 1 rotators and the node flag 0x2000000 mode aren't done; only
+//! players (not monsters) hold a mover still by standing on it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -26,7 +26,7 @@ use gdl_formats::population::{LocatorKind, PlacementParams, Population};
 use gdl_formats::WorldNode;
 
 use crate::items::{self, LevelItems};
-use crate::play_camera::StartCut;
+use crate::play_camera::{Shake, StartCut};
 use crate::player::{Player, PlayerTick};
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
@@ -92,6 +92,8 @@ const ALL_PLAYERS: u16 = 0x400;
 const LIFT_DELAY: u16 = 0x800;
 /// Coming on wakes the nearest placed statue monster (`critters.rs`).
 const WAKES: u16 = 0x2000;
+/// Shakes the camera when it comes on.
+const SHAKES: u16 = 0x1000;
 
 // Mover kind flags (the trigger flags' low byte) and state bits.
 const MOVES_CARRYING: u8 = 0x8;
@@ -396,6 +398,7 @@ fn tick(
     mut players: Query<&mut Player>,
     mut models: Query<&mut Transform, Without<Player>>,
     mut cuts: MessageWriter<StartCut>,
+    mut shakes: MessageWriter<Shake>,
 ) {
     let (Some(mut mech), Some(nodes), Some(mut items), Some(mut ground)) = (mechanics, nodes, items, ground) else {
         return;
@@ -540,6 +543,10 @@ fn tick(
         let t = &mut mech.triggers[i];
         if t.action != 0 && before == 0 {
             debug!("trigger {} (subtype {:#x}) on{}", t.placement, t.subtype, if t.cut.is_some() { ", with a camera cut" } else { "" });
+            // A rumble.
+            if flags & SHAKES != 0 {
+                shakes.write(Shake { amplitude: 0.1, what: 0, delay: 0.0, fields: 180.0, priority: 100 });
+            }
             // Show what it did from its camera point.
             if m != 0
                 && let Some(locator) = t.cut
