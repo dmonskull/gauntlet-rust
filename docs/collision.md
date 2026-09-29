@@ -192,7 +192,8 @@ logs `"Bad Item floor pos"` when nothing is found.
 
 Monsters (`FUN_800453f0` → `FUN_80045b98`, 0x394-byte records at
 `0x802515e8`) do the same with a probe radius of half the actor radius,
-`+5` extra depth and their own step value.
+`+5` extra depth and their own step value — radius and step from the
+enemy type tables, details in [monsters.md](monsters.md).
 
 `LevelCollision::move_actor` implements `FUN_80035320`'s version; the actor
 type values (radius, step) aren't decoded yet, so callers pass them.
@@ -224,7 +225,7 @@ query's reach (the rest are in the air: torches, ceilings, scenery).
 
 ## Not confirmed
 
-- What `step` and radius each character type uses (type data not decoded).
+- What `step` and radius players use (the monsters': [monsters.md](monsters.md)).
 - Header words 4 and 6; node `+0x34`.
 - The swept-sphere distance helpers were ported for their result (closest
   points between segments), not instruction by instruction.

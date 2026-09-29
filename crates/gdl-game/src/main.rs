@@ -9,11 +9,13 @@ mod camera;
 mod camera_rig;
 mod character;
 mod collision_debug;
+mod generators;
 mod hud;
 mod level;
 mod level_material;
 mod locomotion;
 mod model_mesh;
+mod monsters;
 mod play_camera;
 mod player;
 mod population;
@@ -99,7 +101,8 @@ fn main() {
         };
         app.insert_resource(game)
             .insert_resource(choice)
-            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin));
+            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
+            .add_plugins(monsters::MonstersPlugin);
     }
     app.run();
 }

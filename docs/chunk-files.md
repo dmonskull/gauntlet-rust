@@ -26,7 +26,7 @@ Tags seen on the disc:
 | --- | --- |
 | `WDATA/<realm>.WAD` | `ENMY`, `BCAM`, `CAMS`, `SNDS`, `AUDS`, `MAPS`, `LEVL`, `WRLD` — per-level tables (6 entries for the 6 castle levels) |
 | `PDATA/<class>.WAD` | `SFXX`, `DAMG`, `PDAT` (player stats; loaded by `FUN_8008a160`) |
-| `CRITTER/<monster>.WAD` | `SFXX`, `DAMG`, `DESC`, `ADDA`, `NODE`, `MOVE`, `PTRN`, `TYPE` |
+| `CRITTER/<boss>.WAD` | `SFXX`, `DAMG`, `DESC`, `ADDA`, `NODE`, `MOVE`, `PTRN`, `TYPE` — bosses' behaviour ([monsters.md](monsters.md)) |
 | `SHPDATA/SHOP.WAD` | `ITEM` |
 | `TEXT/*.ROM` | `FONT`, `TEXT`, `TOFF`, `STRS`, `LOFF`, `LIST`, `DEFS`, `SDEF`, `LDEF` |
 
