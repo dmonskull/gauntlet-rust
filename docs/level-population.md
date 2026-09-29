@@ -69,7 +69,7 @@ type indices. `FUN_800646e4` loops while the class is −1, picking
 | --- | --- |
 | +0x00 | i16 item type index (`"NewItem: bad index"` if negative) |
 | +0x02 | player count gate (`FUN_80065d84`): 0 always; 1–10 at least n players; >10 exactly n−10 |
-| +0x03 | flags: bit 0 → item flag `0x40`; bit 1 → no model; bit 2 → model flag `0x80000` |
+| +0x03 | flags: bit 0 → item flag `0x40` (the item updates off screen too); bit 1 → no model; bit 2 → model flag `0x80000` |
 | +0x04, +0x06 | i16 × 2 → item `+0xC0/+0xC2` |
 | +0x08 | name[16]: overrides the type's model name (walls name a level object; sounds name the sound) |
 | +0x18 | position (vec3) |
@@ -90,8 +90,8 @@ Parameters by class (from `FUN_800646e4` and the debug display
 | --- | --- | --- | --- | --- | --- |
 | POWERUP | i16 count (KEY with >1 becomes KEYRING) | | | | |
 | CONTAINER | i16 contents: item type index | | i16 | | |
-| GENERATOR | i16 strength 1–3 | i16 AI (default per monster, `0x8011b7a0`) | i16 max (0 → 10/5/2 by strength) | i16 "rate" (0 → 5/10/15) | |
-| ENEMYINFO | i16 level | i16 AI | f32 | | i16 |
+| GENERATOR | i16 strength 1–3 | i16 AI (default per monster, `0x8011b7a0`) | i16 max (0 → 10/5/2 by strength) | i16 rate (0 → 5/10/15): waits 6 × rate video fields between monsters ([monsters.md](monsters.md)) | |
+| ENEMYINFO | i16 level (tier) | i16 AI | f32 awareness range | | i16 |
 | TRIGGER | i16 `WORLDS.PS2` node it moves (−1 none) | u16 flags (high byte kept) | u8 time (0xFF = none) | u8 id, u8 next id (chains) | i16, i16 |
 | EXIT | i32: 0 = go to the code at +0x34 | | char[8] level code (`A6`, `g1`) | | |
 | OBSTACLE | i16 subtype override | i16 count | | | |
@@ -122,7 +122,9 @@ Item type names for generators/monsters match (case-insensitively,
 (`FUN_80051f44`): id, name[16] (`sco`, `tro`, `dem`, `rat`, `gru`…), code
 (`SCO`…) used in `GEN_<code><n>`. 44 entries; ids skip 28. Names outside it
 (e.g. `GARGOYLE`, `ICM`, `LOW` in the shared type list) resolve to −1 —
-they're unused in the levels that carry them. The display-name table at
+they're unused in the levels that carry them. Levels only name placeholder
+monsters (`gru`, `kni`, `rat`), which the realm's enemy list replaces
+([monsters.md](monsters.md)). The display-name table at
 `0x8011afd8` (`SCORPION`, `TROLL`…) is indexed by the same id.
 
 ## Locators (`0x1C` bytes)
@@ -164,8 +166,9 @@ animation isn't played yet).
 
 - Item type `+0x08`, `+0x38`, `+0x42`, `+0x48`; the `extent` floats beyond
   "radius from the first two".
-- Placement `+0x04/+0x06`; the ENEMYINFO f32 and `+0x38`; the generator
-  "rate" meaning.
+- Placement `+0x04/+0x06`; ENEMYINFO `+0x38`. (The generator rate, the
+  ENEMYINFO range and what generators and monsters do with them:
+  [monsters.md](monsters.md).)
 - Which model axis is a player's "forward" (the game derives items' yaw
   from where +Z goes: `atan2(m20, m22)`).
 - Transmitter kinds 1–4/9 in detail (camera behaviour), milestones.

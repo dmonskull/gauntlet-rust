@@ -17,6 +17,7 @@ One file per system, written only once it's confirmed against the actual
 | [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning |
 | [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music |
 | [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |
+| [monsters.md](monsters.md) | Monster stats and tiers, the realm's monster slots, generators, placed monsters, the monster AI and mover; `CRITTER` files |
 
 ## Confirmed and implemented
 
@@ -41,6 +42,11 @@ One file per system, written only once it's confirmed against the actual
 - Level collision (triangles, grid) and the game's floor, wall and
   move-with-collision queries, including the player's own wall/floor chain
   and its size from `PDAT`.
+- Monsters: the per-type stat tables, tiers, each realm's monster slots
+  (the level data's `gru`/`rat` placeholders become the realm's own),
+  generators spawning at the game's rate and limits, placed monsters, and
+  the chase/wander AIs walking at the player on the level's collision and
+  attacking (hits are messages; no health yet).
 
 ## Reverse engineering setup
 
@@ -66,12 +72,14 @@ names), which is how most systems here were found.
 
 ## Not reverse engineered yet
 
-- Monster stats (`CRITTER/*.WAD`), hand/effect glows, blending between
-  actions.
-- Gameplay: the main loop, entity update, combat, item behaviour, co-op.
+- The critter system (bosses, golem, gargoyles; `CRITTER/*.WAD` beyond
+  hit points and table spans) and most monster AIs beyond chase/wander;
+  hand/effect glows, blending between actions.
+- Gameplay: the main loop, combat and health, item behaviour, co-op.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
-  `FUN_80058074`: cameras, enemies, maps, 14 named realm types). Only the
-  chunk directory, level names and audio records are parsed so far.
+  `FUN_80058074`: cameras, enemies, maps, 14 named realm types). The chunk
+  directory, level names, camera, audio and enemy records and the monster
+  tuning are parsed so far.
 - The rest of `WORLDS.PS2` (header words 4 and 6).
 - Audio behaviour beyond playback: music track switching, ducking,
   positional sound.

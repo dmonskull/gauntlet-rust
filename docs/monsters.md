@@ -1,0 +1,375 @@
+# Monsters and generators
+
+Implemented in [`crates/gdl-formats/src/enemy.rs`](../crates/gdl-formats/src/enemy.rs)
+(per-type stats, tiers, the realm's monster slots),
+[`crates/gdl-formats/src/critter.rs`](../crates/gdl-formats/src/critter.rs)
+(`CRITTER/*.WAD`, the bosses' data), `LevelTuning`/`RealmEnemy` in
+[`world_data.rs`](../crates/gdl-formats/src/world_data.rs), and at run time
+[`monsters.rs`](../crates/gdl-game/src/monsters.rs) and
+[`generators.rs`](../crates/gdl-game/src/generators.rs).
+
+Verified: every generator and placed monster in every level (6,999 of
+them) resolves, through its realm's enemy list, to an atree for its tier in
+the folders that level loads (`enemy::tests::every_real_level_monster_has_a_model`;
+the 477 others are critter/boss types or Death, which this doesn't run).
+All 18 `CRITTER` files parse and their `TYPE` spans tile the `MOVE`/`PTRN`/
+`NODE` tables exactly. In game, levelA1's grunts walk out of their doors,
+follow the hero around and swing at him; levelB1's generators make trolls.
+
+## Two monster systems
+
+- **Enemies** — grunts, demons, ghosts, rats…: everything generators make
+  and most placed monsters. No data file: their stats are tables compiled
+  into `main.dol`, their models `MONSTERS/<name>/`. The runtime here.
+- **Critters** — the game's scripted-monster system: bosses, and the
+  golem (29), Death (30), gargoyle (32) and general (33). Their behaviour is
+  `CRITTER/<boss>.WAD` (loaded by `FUN_80040008`, spawned by
+  `FUN_8003df60`); generators of those types call into it
+  (`FUN_80060100`: types 0x1D, 0x20, 0x21 → `FUN_8003df60(3|7|8, …)`). Only
+  parsed here, not run.
+
+## Enemy type tables
+
+34 four-byte entries each, indexed by enemy type id (the id in
+`population::ENEMY_CODES`; 28 unused). Read by the enemy setup
+`FUN_8004fd9c` / `FUN_8004ffbc` and the frame update `FUN_8004cfe0`:
+
+| table | what | record field |
+| --- | --- | --- |
+| `0x8011b0b8` f32 | 2 × floor step (3/6/10/12) | `+0x23C` = × 0.5 (`r2-0x6ef0`) |
+| `0x8011b140` f32 | collision radius (0.75–6) | `+0x238` |
+| `0x8011b1c8` f32 | not traced (2/3.8/5) | `+0x224` |
+| `0x8011b250` f32 | centre height (1.5/3/4) | `+0x230` |
+| `0x8011b2d8` f32 | ground per video field (0.1; 0.12 demon, 0.02 acid blob) | speed table `0x80250810` = × fields × level `+0xB0`; `+0xB8` = 1 / it |
+| `0x8011b360` f32 | damage (12/15/18…) | `+0xBC`, × level `+0xBC`, × the tier third |
+| `0x8011b3e8` f32 | 0 except Death | `+0xC0` |
+| `0x8011b470` f32 | hit points (21/30/46, 100 grm, 200 golem, 9999 "it") | `+0x200`, see tiers |
+| `0x8011b7a0` i32 | default AI (7, 2 for sco/rat/mag, 19 golem, 3 Death, 27 it) | `+0x310` when none given |
+| `0x8011b828`, `0x8011b8b0` f32 | 0 | `+0xC4`, `+0xC8` |
+| `0x8011b938` f32 | turn per field: π/64 for every type | used by `FUN_8004cb20` |
+
+`0x8011b4f8`, `0x8011b580`…`0x8011b718` are more per-type values (score?)
+read by `FUN_8002f288`/`FUN_8002f400`; not traced. `0x8011bb04` holds the
+avoidance angles 0, π/8 … 7π/8; `0x8011bb24` AI 0's search angles.
+
+**Time**: the monster code counts video fields. `r13-0x7584` is fields since
+the last frame (`FUN_8002eff4`: 2 at the game's 30 fps), so per-field rates
+act twice per 30 Hz tick and timers count down by 2 a frame.
+
+### Tiers
+
+A monster's tier (1–3 from a generator's strength, the level from a placed
+monster; 4–7 the special variants) scales it (`FUN_8004fd9c`):
+
+- hit points = table × level `+0xAC` × 0.333 (`r2-0x6cf8`, the literal) ×
+  tier, for types below 28; tiers above 3 count as 2 and AI 18 as 1;
+  special types get the full table value.
+- `+0x206` strength (`FUN_8004ffbc`): 3 if hit points > 0.667 × full
+  (`r2-0x6cf0`), 2 if > 0.333 × full, 1 if > 0.
+- damage = table × level `+0xBC`, then × 0.333 or × 0.667 when the hit
+  points are at most the second or first third (not for Death).
+- The model is the atree `"%s%d"` (`FUN_80051d84`): the monster's name and
+  the tier (0 → 1), upper-cased: `GRU2`; tiers 4–7 use `"%s%c"` with the
+  letters at `r13-0x7f0c + 4`: `A B S F` (`GRUA`: throwers, `GRUB`: bombers,
+  `GRUS`: suicide runners). If the atree's missing it draws the object
+  `<name><tier>L1`.
+
+## A level's monsters: the realm's enemy list
+
+The realm WAD's `ENMY` chunk (`0x18`-byte records: i32 type, i32 subtype,
+name[16] that `FUN_8009d940` builds the monster's sound names from, e.g.
+`"S_%s%sCLOSE"`) lists every enemy the
+realm uses; each level record lists up to six of them at `+0x4C` (i16
+indices, −1 none). `FUN_80057738` builds the level's eight enemy slots from
+those (plus Death, type 0x1E, in a free one unless the level has a boss),
+and `0x8025718c[subtype] = type` for subtypes below 6:
+
+| subtype | slot | castle A1 | mountain B4 |
+| --- | --- | --- | --- |
+| 1 | small | rat | scorpion |
+| 2 | main | grunt | — |
+| 3 | elite | — | demon |
+| 4 | special variants (tiers 4+) | — | troll (`TROAUX`) |
+| 5 | critters | golem, general, gargoyle | golem, … |
+| 9 | the boss | | |
+| 11+ | loads `MONSTERS/<name><subtype − 10>` (hell: `WAR3`, `DEM3`…) | | |
+
+`FUN_80057020` loads each with `FUN_80050af4(type, subtype)`: folder
+`monsters/<name>aux` for subtype 4, `monsters/<name>%d` (subtype − 10) for
+11+, else `monsters/<name>` (`FUN_80050d40` builds the same names).
+
+**Level data only names placeholders** — `gru`, `kni`, `rat` (and a few
+`tro`). `FUN_80050f18(type, tier)` swaps in the realm's own when a
+generator or placed monster is built (`FUN_800646e4`):
+
+- `rat` → the small slot;
+- `gru`, `kni` → the special-variant slot for tier ≥ 4, else the main slot,
+  else the elite slot, else unchanged;
+- anything else unchanged; a type the level didn't load is refused (−5,
+  `"Bad EnemyInfo (type %s) subtype %d"`).
+
+Generators pass their `+0xDE` byte as the tier, which is their live count,
+0, at that point — so a generator never makes special variants; placed
+monsters pass their level.
+
+## Level tuning (level record, `0x10C` bytes)
+
+`r13-0x72bc` points at the current level's record (set by `FUN_80058074`):
+
+| offset | used for |
+| --- | --- |
+| `+0x44` | boss enemy type (−1 none) |
+| `+0x4C` | 6 × i16 `ENMY` indices |
+| `+0x8E` i16 | monster slots (`r13-0x73bc`): 13–25 alive at once |
+| `+0xAC` | × monster hit points (critters' too, `FUN_8003e838`) |
+| `+0xB0` | × monster speed |
+| `+0xB4` | × monster awareness (30 units, `r2-0x6cb0`) |
+| `+0xBC` | × monster damage |
+| `+0xC0` | × the throw actions' timing (`FUN_800ab110`) |
+| `+0xCC` | × generator hit points |
+| `+0xD0` | × generator rate |
+| `+0xD4` | × generator max |
+| `+0xD8`, `+0xDC` | read by other item code (`FUN_800606e8`, `FUN_800646e4`); not traced |
+
+The forest realm and some secret/test levels have 0 in all the scales.
+**Stand-in**: we read 0 as 1 (taken literally their monsters would have no
+hit points and notice nobody; what the game does there isn't confirmed).
+
+## Generators
+
+Built by `FUN_800646e4` (class 3) into the `0xF0`-byte item records
+(`r13-0x71a8`):
+
+| item field | from |
+| --- | --- |
+| `+0xD0` i16 hit points | type `+0x44` × strength × level `+0xCC` |
+| `+0xD4` radius | × 4 (`r2-0x6650`) for the on-screen test |
+| `+0xDC` i16 type | the monster name, substituted (above) |
+| `+0xDE` alive count | 0 |
+| `+0xDF` max | placement `+0x34`, 0 → 10/5/2 by strength (`0x8011c328`), × level `+0xD4` |
+| `+0xE0` made | 0 |
+| `+0xE2` strength | placement `+0x30` (< 1 → 1, `"Generator at %.1f %.1f %.1f has strength %d"`) |
+| `+0xE3` AI | placement `+0x32`; negative → the type's default |
+| `+0xE4` i16 wait | fields |
+| `+0xE7` rate | placement `+0x36`, 0 → 5/10/15 (`0x8011c334`), × level `+0xD0` |
+| `+0xE8` ramp | 0 |
+| `+0xEC` yaw | `atan2(m20, m22)` of the placement matrix (its front) |
+
+The item update `FUN_800606e8` runs an item's class code only while it's
+on screen (`FUN_800b4ef4`, the item radius around the item: flag
+`0x4000`) or always (flag `0x40`, from placement flag bit 0 — 1,308 of
+4,721 generators). For a generator (case 3), once the game is running:
+
+1. if alive < max, `FUN_800635a0`: count the wait down by the fields
+   elapsed; when it's run out, spawn if a player is within 1000 units
+   (`r2-0x6628`, i.e. always) and either it's on screen or no monster
+   slot scan has come up full this frame (`r13-0x719c`).
+2. `FUN_8004f41c(reach, position, type, strength, front, AI, item, …)`
+   makes the monster (below); on success: wait = 6 (`r2-0x66f0`) × rate ×
+   (1 + ramp) fields; ramp += 1 / (2 (`r2-0x67f0`) × max), back to 0
+   past 1; alive and made + 1; the monster's facing = the generator's yaw
+   + the spot's angle.
+
+AI 15 generators (`+0xE3 == 0xF`) instead make one monster through
+`FUN_80063430`. The debug display: `"Generators"` (`FUN_8002e650`).
+
+### Making a monster (`FUN_8004f41c`)
+
+1. The AI: `FUN_8004f7e4(type, tier, ai)` — small monsters (sco, rat, sna,
+   spi, mag, wol, dog, aci, han) get 2 or 4 at random unless given 2 or 4;
+   the main types given AI 0 get 7 (tier 4 → 0x17, 5 → 0x11, 6 → 0x12;
+   dem/sor/pla/wrm/war tier 3 → 0x1E); grm → 0x1F, golem → 0x13, Death →
+   3, it → 0x1B. `FUN_8004ffbc` then maps 1 → 0 and 10 → 7.
+2. A slot, `FUN_8004fc68`: a free record, else the worst one — score its
+   target distance (`+0x27C`, 100000 when none), × 0.01 when dying,
+   dormant or placed (`+0x2D8`), + 10000 when not near the screen; take the
+   highest. It's refused if the victim is near the screen and the asker
+   isn't a placed monster (generators on screen pass 0, off screen −1,
+   placed monsters 1). The victim is killed first (`FUN_8004ef4c`) even if
+   no spot is found.
+3. Set up (`FUN_8004fd9c`/`FUN_8004ffbc`): stats above, awareness `+0x300`
+   = 30 × level `+0xB4`, model (`FUN_80050580`), state 1, action START.
+4. For a generator: try the eight spots from a random one
+   (`FUN_800bcf9c(8)`): direction = the generator's front turned by
+   `FUN_8004fb30` (0, π, −π/2, π/2, π/4, −π/4, 3π/4, −3π/4), at item
+   extent[0] + the monster's radius out, from the generator's position
+   raised by the monster's centre height. `FUN_8004f914` rejects a spot for
+   good if a wall (monster radius) lies between, there's no floor (probe
+   radius 0.1, 4 up to 10 down) or it's more than 6 from the start height;
+   for now if a player or another monster (half radius) is in the way.
+   Types 1, 4, 5, 7, 8, 10, 11, 14, 15, 19, 24, 25 only use spots 0, 4 and
+   5 (mask `0xFFCE`). No spot: the slot is freed (−3).
+
+## Placed monsters (ENEMYINFO)
+
+`FUN_800646e4` case 4: `+0xDE` level (placement `+0x30`), `+0xDF` AI
+(`+0x32`), `+0xE0` yaw, `+0xE8` range (f32 `+0x34`), `+0xEC` (`+0x38`).
+`FUN_80060100`: when its spot is on screen (4 × its radius, `r2-0x672c`)
+and within 50 (`r2-0x6728`) of `0x8023f1bc`, it's made once where it
+stands (`FUN_8004f41c` with no generator), and the item removed. Range > 0
+overrides the awareness (× level `+0xB4`). Level 0 (outside types 0x1E,
+0x1F) makes it dormant (state 6), else levels below 4 freeze it 30 fields
+(`+0x20C`). The data: 2,300 placed monsters, nearly all levels 4–6 (the
+special variants) with AIs 16, 17, 18, 23, 26.
+
+**Stand-in**: we measure the 50 from the player; `0x8023f1bc` is a global
+position not traced (likely the camera's focus). No level-0 placements
+exist on the disc.
+
+## The monster record (`0x394` bytes at `0x802515e8`)
+
+| offset | field |
+| --- | --- |
+| `+0x000` | enemy type |
+| `+0x004` | matrix; `+0x034` position (feet) |
+| `+0x054` | position used by the bump tests |
+| `+0x064` | model instance; `+0x06C` animation controller |
+| `+0x0B4` | state: 0 free, 1 active, 6 dormant, 8 dying |
+| `+0x0BC` | damage; `+0x0B8` 1 / speed |
+| `+0x0CC` / `+0x0D0` | current / requested action (indices into the names at `0x80126688`: READY 0, START 1, WALK 3, RUN 4, ATTACK1 0xC … ATTACK3 0x10, HIT1 0x1C, DEATH 0x20) |
+| `+0x200` | hit points; `+0x206` i16 strength |
+| `+0x20C` | freeze, fields |
+| `+0x210` | velocity (per frame) |
+| `+0x21C` | an offset above the floor (the mover subtracts it); not traced |
+| `+0x230` / `+0x238` / `+0x23C` | centre height / radius / step |
+| `+0x244` | facing; `+0x24C` heading; `+0x250` previous heading |
+| `+0x25C` | knockback |
+| `+0x274` i16 | target player; `+0x278` its score, `+0x27C` its distance |
+| `+0x284` / `+0x288` | player / monster bumped this frame |
+| `+0x290` | its generator (item) |
+| `+0x294` | floor height |
+| `+0x2CC` i16 / `+0x2CE` i16 / `+0x2D0` | player being struck / hits landed / hit flags |
+| `+0x2D8` | placed; `+0x2DA` on screen; `+0x2DC` near the screen; `+0x2DE` aware |
+| `+0x300` | awareness range |
+| `+0x310` i16 | AI (`+0x314` the original) |
+| `+0x324`, `+0x328`, `+0x32C`, `+0x334`, `+0x336` | avoid side, avoid timer (fields), wanderer turns, avoid step, stuck count |
+
+## The frame update (`FUN_8004cfe0`)
+
+Once a frame, for every slot: speeds for this frame (table × fields ×
+level `+0xB0`); on screen (`FUN_800b4ef4`, radius 2 × monster radius) and
+near the screen (+ 15). Then for each active monster:
+
+1. **Target** (`FUN_80051660`): on the frame whose number & 7 matches the
+   slot & 7, or when it has none, the nearest player within awareness
+   (distance, plus 2 per monster already on that player when further than
+   5 × radius); being within awareness sets `aware`.
+2. **Hits** (`FUN_8004dec0`): when an attack animation finished since last
+   frame (below), the struck player takes the damage (× 1.5 for ATTACK3;
+   `FUN_80078560`), and hits landed + 1.
+3. **AI** (`FUN_8004d8c0`): only when the target is within awareness or
+   the monster is near the screen — otherwise it's asleep this frame.
+   `FUN_800467bc` clears the velocity and switches on the AI:
+   - **7** (`FUN_80047f04`, the chasers): no target or not aware → AI 5/6
+     (by slot parity). Else, when no avoid timer runs: heading = angle to
+     the player (`FUN_8002c780`: `atan2(dx, dz)`), or when a wall stopped
+     it, that ∓ the avoid angle on the side whose point 30° off the facing
+     is nearer the player (`FUN_8004cda0`), or when a monster did, the
+     current heading ± it. A heading whose next step overlaps a monster or
+     meets a wall (`FUN_8004c834`), or that undoes a turn of over 2°
+     (`r2-0x6e40`), isn't taken; after 10 such frames it goes straight at
+     the player. `FUN_8004cc84(1.0, heading)`: request WALK (RUN from
+     1.25, `r2-0x6d68`) and, only while the current action is WALK, RUN or
+     RUNATTACK, add speed × (sin, cos) of the heading. `FUN_8004cb20`
+     turns the facing toward the heading by at most turn × fields (× 3,
+     `r2-0x6e68`, running).
+   - **2 / 4** (`FUN_8004710c`, `FUN_80047564`, the wanderers): target
+     score ≤ 8 (`r2-0x6e20`) → AI 0. Else walk on along the heading; when
+     the avoid timer (set to 20 by a wall or monster) runs out, turn π/4
+     (`r2-0x6e18`; AI 2 one way, 4 the other), swapping AI after 4 turns;
+     touching a player turns it at them.
+   - **0** (`FUN_80046abc`): like 7, but searches nine offsets
+     (`0x8011bb24`) for a free heading.
+   - Others: 3 Death, 5/6 unaware, 8, 10, 12–31 special movers (thrower,
+     bomber, suicide, ranged, fleeing…) — not traced.
+4. **Move** (`FUN_800445cc`): add knockback; walls and floor
+   (`FUN_800453f0` → `FUN_80045b98`, below); position += velocity; then the
+   bump tests along the move — the nearest player (`FUN_800465e8`: its
+   cylinder, monster radius + 0.5 + the player's radius `+0x850`, height
+   step + the player's `+0x854`) and other monsters (`FUN_800463d4`,
+   radius + radius; `FUN_8002fa24` is the swept cylinder test; already
+   overlapping only counts moving further in). Either one puts the
+   monster back. A player: `FUN_800460a8` requests ATTACK1 (ATTACK3 when
+   hits landed & 7 == 7) at that player. A monster: the chasers pick a
+   side (`FUN_8004cf14`) and step the avoid angle (15 fields; 50 when
+   giving up; flip side after 6 steps); others wait 20 (AI 0: 60).
+5. **Animation** (`FUN_800ab110`): START, attacks and recoveries play out
+   before switching; the switch from ATTACK1/2/4/5 to its `…R` sets hit
+   flag 1, ATTACK3 → ATTACK3R flag 2 — that's when the hit lands. After
+   ATTACK1R comes ATTACK2 if the monster has one. Locomotion switches at
+   once (WALK ↔ READY through WALKTOREADY/READYTOWALK when present).
+   Missing actions fall back: WALK ↔ RUN, ATTACK2/3/4/5 → ATTACK1, else
+   READY's animation.
+
+### Walls and floor
+
+`FUN_800453f0`/`FUN_80045b98` are the actor mover of
+[collision.md](collision.md) with monster values: the tests start 2
+(`r2-0x6eb8`) above the feet (minus `+0x21C`); the wall test uses 1.5 ×
+radius (`r2-0x6ee8`), and a wall push-out that fails zeroes the move; the
+floor probe at the leading edge (+ direction × (radius + move)) has half
+the radius and searches from step above to step + 5 (`r2-0x6eb0`) below;
+a floor within 2 × (0.1 + radius + move) of the current one is taken
+(re-probed under the destination when the rise is over 0.1 × the move),
+otherwise the move is cancelled. Y follows the floor, down at most 16
+per second (`r2-0x6ec0`); more than 5 below the floor it stood on
+(`r2-0x6ea0`) kills it.
+
+## Critter files (`CRITTER/*.WAD`)
+
+A chunk file; `FUN_80040008` looks up eight tags (built from the bytes at
+`r2-0x70cc`…) and byte-swaps each record, fixing their sizes:
+
+| tag | record | notes |
+| --- | --- | --- |
+| `SFXX` | `0x50` | sounds |
+| `DAMG` | `0x50` | |
+| `MOVE` | `0x90` | |
+| `PTRN` | `0x50` | |
+| `NODE` | `0x50` | |
+| `DESC` | `0x30` | one per file |
+| `TYPE` | `0x140` | `"Critter Header has no types"` if none |
+| `ADDA` | `0x30` | linked into its `TYPE` (`+0x134`, `"CRITTER: AddAnim has addto idx"`) |
+
+`TYPE`: `+0xE4` f32 hit points (× level `+0xAC`, `FUN_8003e838`: 200
+general … 6000 chimera, Skorne); `+0x110`, `+0x114`, `+0x118` i16 counts
+each followed by an i16 first index — its `MOVE`, `PTRN` and `NODE`
+records (the instance clears that many per-instance slots); `+0x11C` i16
+the next part's type (the chimera's heads, spawned together by
+`FUN_8003df60`). The first `0x50` bytes are a name buffer with leftover
+tool text. Nothing else named.
+
+## What the runtime does
+
+- Level start: the realm's enemy list and tuning for the level
+  (`WDATA/*.WAD`), generators and placed monsters from the population with
+  the placeholder names swapped, and a model per (type, tier) needed —
+  built once (`CharacterModel`) and instanced per monster.
+- 30 Hz, after the player: generators (on screen by the game's play
+  camera — a 60° × 45° view from its eye to its target, not the window —
+  or always-active), placed monsters, then every monster: target, sleep
+  unless in range or near the screen, AI 7 / 0 chase or 2 / 4 wander, turn,
+  the monster mover, bumps, animation, and a `MonsterHit { monster,
+  player, damage, strong }` message when an attack lands. Drawn
+  interpolated between ticks.
+- Monsters and generators are level entities; a level change clears them.
+
+## Stand-ins and gaps
+
+- **Player cylinder**: radius 1.0, height 5.0 for the bump tests (the
+  player record's `+0x850`/`+0x854` aren't decoded; `player.rs` uses 1.0
+  too).
+- **AIs**: 7 and 2/4 are ported; 0 uses 7's chase (its nine-angle search
+  isn't); every other AI (the special variants' throw/bomb/suicide AIs,
+  3, 5/6, 14…) uses the chase too, and variants without a WALK or RUN
+  animation (throwers, bombers) stand still instead of gliding. The crowd
+  penalty in target choice isn't applied (one player).
+- **Unaware** monsters (AI 5/6) stand still.
+- Zero level scales are read as 1 (above).
+- Spot tests skip items (`FUN_8005ef98`); the placed-monster distance is
+  from the player.
+- Knockback, getting hit, dying, `+0x21C`, the leader monster
+  (`r13-0x73b8`), `WALKTOREADY`/`READYTOWALK` transitions and the critter
+  system aren't done.
+- Animations advance on the frame clock at the action's rate, as for
+  players.
