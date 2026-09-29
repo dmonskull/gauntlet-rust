@@ -37,3 +37,23 @@ there is no single stored file size; it's the max of every section's
 | 0xE0 | entry point |
 
 Image base for the whole disc is `0x80000000`, standard for GameCube.
+
+## FST — the disc filesystem (at `fst_offset`)
+
+Implemented in [`crates/gdl-formats/src/fst.rs`](../crates/gdl-formats/src/fst.rs).
+Verified by reading all 2,481 game files off the disc and matching an
+extracted copy byte-for-byte.
+
+12-byte big-endian entries, then a NUL-terminated string table. Entry 0 is
+the root directory; its third word is the total entry count.
+
+| offset | file entry | directory entry |
+| --- | --- | --- |
+| 0x0 (u8) | 0 | 1 |
+| 0x1 (u24) | name offset in string table | name offset |
+| 0x4 (u32) | data offset on disc | parent entry index |
+| 0x8 (u32) | data length | index one past the last child |
+
+This disc's top level holds `Gauntlet/` (all game data), `carddemo/`,
+`opening.bnr` and `check.txt`. The game builds paths relative to
+`Gauntlet/` (`"levels/level%s"`, lowercase; lookups are case-insensitive).

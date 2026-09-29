@@ -1,12 +1,10 @@
 //! `WORLDS.PS2` — a level's scene graph: named nodes placing models.
 //!
-//! Confirmed against `main.dol`: loaded by `FUN_800a8bf4` (file name
-//! `"worlds"`), byte-swapped and wired up by `FUN_800a964c`, walked by
-//! `FUN_800aacd0` (next sibling at node `+0x2C`, first child at `+0x2E`),
-//! with each node's instance built by `FUN_800aafb0` — which positions it
-//! by its translation *relative to its parent* — and its model found by
-//! `FUN_800b8684`, which binary-searches every loaded model file's name
-//! table for the node's name. Little-endian like the model files.
+//! Confirmed against `main.dol` (see `docs/worlds-format.md` for where):
+//! the game walks the tree (next sibling at node `+0x2C`, first child at
+//! `+0x2E`), builds each node's instance at its translation *relative to its
+//! parent*, and finds its model by binary-searching every loaded model
+//! file's name table for the node's name. Little-endian like the models.
 
 use thiserror::Error;
 
@@ -110,7 +108,7 @@ impl WorldFile {
     }
 
     /// Each reachable node's world position, walking the tree from node 0
-    /// exactly as `FUN_800aacd0` does (siblings of node 0 are roots).
+    /// in the game's order (node 0 and its siblings are the roots).
     /// Unreachable nodes get `None`.
     pub fn world_positions(&self) -> Result<Vec<Option<[f32; 3]>>, WorldError> {
         let mut out = vec![None; self.nodes.len()];

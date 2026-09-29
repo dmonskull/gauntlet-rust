@@ -1,11 +1,11 @@
 //! `textures.ngc` — texture pixel data, addressed by [`MaterialBinding`]s.
 //!
 //! There is no file header: each binding carries an offset, size and a
-//! format selector byte. The selector is decoded exactly as `FUN_800c70c4`
-//! does when it builds GX texture objects at load time. It names **PS2
-//! pixel-storage modes** (`PSMT4 = 0x14`, `PSMT8 = 0x13`, `PSMCT16 = 0x02`)
-//! via lookup tables at `0x80127bb0`/`0x80127bc4`/`0x80127bd8`, which the
-//! game maps to GameCube formats: 4-bit → GX `CI4`, 8-bit → GX `CI8`,
+//! format selector byte. The selector is decoded exactly as the game does
+//! when it builds GX texture objects at load time (`docs/textures-ngc-format.md`).
+//! It names **PS2 pixel-storage modes** (`PSMT4 = 0x14`, `PSMT8 = 0x13`,
+//! `PSMCT16 = 0x02`) through three small lookup tables, which the game maps
+//! to GameCube formats: 4-bit → GX `CI4`, 8-bit → GX `CI8`,
 //! 16-bit → GX `RGB5A3`. Palettes are big-endian RGB5A3 and sit in front of
 //! the pixels; pixel data is in GX's tiled layout.
 
@@ -30,7 +30,7 @@ pub enum TextureFormat {
     /// GX CI8 with a 256-entry palette; pixels start `palette_skip` bytes in.
     Ci8 { palette_skip: usize },
     /// GX CI4/CI8 using the game's global palettes instead of their own.
-    /// `FUN_800c76dc` generates those at runtime as RGB5A3 `(i × 0x800) |
+    /// The game generates those at runtime as RGB5A3 `(i × 0x800) |
     /// 0xFFF` (16 entries) and `(i × 0x80) | 0xFFF` (256): white with a
     /// 3-bit alpha ramp. Lightmaps use this, carrying intensity in alpha.
     SharedPaletteCi4,
@@ -40,14 +40,14 @@ pub enum TextureFormat {
 }
 
 impl TextureFormat {
-    /// Decodes a binding's format selector byte like `FUN_800c70c4`.
+    /// Decodes a binding's format selector byte the way the game does.
     pub fn from_selector(selector: u8) -> Result<Self, TextureError> {
         let hi = selector >> 4;
         if hi & 8 != 0 {
             return Ok(if hi == 8 { Self::SharedPaletteCi8 } else { Self::SharedPaletteCi4 });
         }
         match hi {
-            // Direct formats via the table at 0x80127bd8; only its PSMCT16
+            // Direct formats via the game's third table; only its PSMCT16
             // entries (selectors 0 and 1) produce a defined texel size.
             0 if selector & 7 <= 1 => Ok(Self::Rgb5a3),
             1 => Ok(Self::Ci4 { palette_skip: 32 }),
@@ -116,7 +116,7 @@ fn palette(data: &[u8], entries: usize) -> Result<Vec<[u8; 4]>, TextureError> {
     Ok(raw.as_chunks::<2>().0.iter().map(|&c| rgb5a3(u16::from_be_bytes(c))).collect())
 }
 
-/// The global palettes `FUN_800c76dc` builds at runtime.
+/// The global palettes the game builds at runtime.
 fn shared_palette(entries: u16, step: u16) -> Vec<[u8; 4]> {
     (0..entries).map(|i| rgb5a3((i * step) | 0xFFF)).collect()
 }

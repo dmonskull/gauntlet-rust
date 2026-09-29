@@ -44,18 +44,22 @@ with `GDL_ARTIFACTS`).
 
 ## Status
 
-Boots from the disc, validates every level's model and texture data (67/67
-levels), and shows the loaded game. Level geometry isn't reverse engineered
-yet, so nothing is drawn in 3D — see [`docs/INDEX.md`](docs/INDEX.md) for
-what's confirmed and what's next.
+Boots straight from your disc, validates all 67 levels, and renders any of
+them in 3D with the game's own geometry, textures and baked lightmaps. Fly
+around with WASD (Space/Ctrl up/down, Shift fast, right-drag to look, mouse
+wheel for speed) and switch levels with `[` / `]`.
+
+Not playable yet: characters, animation and gameplay haven't been reverse
+engineered. See [`docs/INDEX.md`](docs/INDEX.md) for what's confirmed and
+what's next.
 
 ## Crates
 
 | crate | about |
 | --- | --- |
-| `gdl-formats` | Parsers for the game's on-disc formats (disc header, FST, models) |
+| `gdl-formats` | Parsers for the game's on-disc formats (disc, FST, models, textures, worlds) |
 | `gdl-install` | Finds and validates a user's copy of the game, read-only file access |
-| `gdl-game` | The runtime: launcher, boot, rendering |
+| `gdl-game` | The runtime: launcher, boot, level rendering, camera |
 
 ## Development
 
