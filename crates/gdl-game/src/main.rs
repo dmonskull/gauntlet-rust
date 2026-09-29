@@ -22,6 +22,7 @@ mod level;
 mod level_material;
 mod locomotion;
 mod model_mesh;
+mod options;
 mod monsters;
 mod play_camera;
 mod player;
@@ -76,6 +77,7 @@ fn main() {
         camera::CameraPlugin,
         character::CharacterPlugin,
         billboard::BillboardPlugin,
+        options::OptionsPlugin,
         texanim::TexAnimPlugin,
         autoshot::AutoShotPlugin,
     ));

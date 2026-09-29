@@ -31,7 +31,7 @@ use crate::monsters::{Monster, MonsterHit, MonsterLevel};
 use crate::player::Player;
 use crate::player_state::{DamagePlayer, PlayerState};
 use crate::player::PlayerTick;
-use crate::population::PlacementIndex;
+use crate::population::{GeneratorLooks, PlacementIndex};
 
 pub struct DamagePlugin;
 
@@ -59,7 +59,7 @@ fn apply_hits(
     level: Option<Res<MonsterLevel>>,
     mut monsters: Query<(&mut Monster, &mut Animator)>,
     mut generators: Query<&mut Generator>,
-    models: Query<(Entity, &PlacementIndex)>,
+    models: Query<(Entity, &PlacementIndex, Option<&GeneratorLooks>, Option<&Children>)>,
 ) {
     for hit in hits.read() {
         match hit.target_kind {
@@ -111,7 +111,7 @@ fn apply_hits(
                 }
                 g.hit_points -= hit.damage;
                 if g.hit_points <= 0.0 {
-                    for (e, model) in &models {
+                    for (e, model, _, _) in &models {
                         if model.0 == g.placement {
                             commands.entity(e).try_despawn();
                         }
@@ -119,7 +119,22 @@ fn apply_hits(
                     commands.entity(hit.target).try_despawn();
                     debug!("generator {} destroyed", g.placement);
                 } else if g.hit_points_per_tier > 0.0 {
-                    g.tier = (g.hit_points / g.hit_points_per_tier).ceil().clamp(1.0, 3.0) as i32;
+                    let tier = (g.hit_points / g.hit_points_per_tier).ceil().clamp(1.0, 3.0) as i32;
+                    if tier != g.tier {
+                        g.tier = tier;
+                        // Its model steps down with it.
+                        for (e, model, looks, children) in &models {
+                            let (true, Some(looks)) = (model.0 == g.placement, looks) else { continue };
+                            let Some(parts) = looks.0.get(tier as usize - 1) else { continue };
+                            for c in children.into_iter().flatten() {
+                                commands.entity(*c).try_despawn();
+                            }
+                            for (mesh, material) in parts {
+                                commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), ChildOf(e)));
+                            }
+                        }
+                        debug!("generator {} drops to strength {tier}", g.placement);
+                    }
                 }
             }
             _ => {}

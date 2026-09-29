@@ -19,6 +19,7 @@ use gdl_formats::audio::{AdsSamples, AdsStream, AudioCatalog, SoundBank};
 use gdl_formats::{LevelAudio, WorldData};
 
 use crate::level::LoadedGame;
+use crate::options::{GameOptions, SoundKind};
 use crate::world::CurrentLevelStats;
 
 pub struct GameAudioPlugin;
@@ -96,6 +97,7 @@ fn load_audio_tables(mut commands: Commands, mut game: ResMut<LoadedGame>) {
 }
 
 /// Starts the new level's music whenever the level changes.
+#[allow(clippy::too_many_arguments)]
 fn level_music(
     mut commands: Commands,
     stats: Option<Res<CurrentLevelStats>>,
@@ -104,6 +106,7 @@ fn level_music(
     mut status: ResMut<AudioStatus>,
     mut tracks: ResMut<Assets<MusicTrack>>,
     playing: Query<Entity, With<LevelMusic>>,
+    options: Res<GameOptions>,
 ) {
     let Some(stats) = stats else { return };
     if !stats.is_changed() {
@@ -119,8 +122,13 @@ fn level_music(
             Ok((track, name)) => {
                 commands.spawn((
                     LevelMusic,
+                    SoundKind::Music,
                     AudioPlayer(tracks.add(track)),
-                    PlaybackSettings { muted: status.muted, ..PlaybackSettings::DESPAWN },
+                    PlaybackSettings {
+                        muted: status.muted,
+                        volume: options.category(SoundKind::Music),
+                        ..PlaybackSettings::DESPAWN
+                    },
                 ));
                 name
             }
@@ -186,11 +194,16 @@ fn play_sounds(
     mut tables: ResMut<AudioTables>,
     mut status: ResMut<AudioStatus>,
     mut effects: ResMut<Assets<SoundEffect>>,
+    options: Res<GameOptions>,
 ) {
     for PlaySound(name) in requests.read() {
         match build_sound(&mut game, &mut tables, name) {
             Ok(effect) => {
-                commands.spawn((AudioPlayer(effects.add(effect)), PlaybackSettings::DESPAWN));
+                commands.spawn((
+                    SoundKind::Effect,
+                    AudioPlayer(effects.add(effect)),
+                    PlaybackSettings { volume: options.category(SoundKind::Effect), ..PlaybackSettings::DESPAWN },
+                ));
                 status.last_sound = name.clone();
             }
             Err(e) => {
