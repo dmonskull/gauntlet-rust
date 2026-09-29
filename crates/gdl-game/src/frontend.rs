@@ -342,7 +342,7 @@ static GAME_OPTIONS: MenuDef =
 /// only) gives way to a Master Volume slider, which the game doesn't have,
 /// and the gaps close up so three bars fit above the button hints.
 static AUDIO_MENU: MenuDef = MenuDef {
-    y: 96.0,
+    y: 108.0,
     item_scale: 0.8,
     gar: false,
     ..game_menu(
@@ -355,7 +355,7 @@ static AUDIO_MENU: MenuDef = MenuDef {
         ],
     )
 };
-const SLIDER_GAP: f32 = 44.0;
+const SLIDER_GAP: f32 = 40.0;
 static COMPASS_MENU: MenuDef = game_menu("Compass", true, &[e("Hide", Item::Setting), e("Show", Item::Setting)]);
 static CONTROLS_MENU: MenuDef = game_menu(
     "Controls",
@@ -556,8 +556,11 @@ impl Frontend {
 
     /// Whether a full-screen 2D screen is up (title, loading, select, game
     /// over): nothing of the level shows around it.
+    /// The title and loading screens cover everything; the select screen's
+    /// art ends at y 320 and the tower loaded behind it shows below, and
+    /// GAME OVER is drawn over the level.
     fn full_screen(&self) -> bool {
-        !matches!(self.screen, Screen::Playing)
+        matches!(self.screen, Screen::Title | Screen::LoadingSelect | Screen::LoadingGame)
     }
 
     /// Whether gameplay should be frozen (anything but plain play).
@@ -1071,7 +1074,8 @@ fn draw(
             d.draw.text(d.fonts, &style, left, 120.0, &part);
         }
     }
-    for m in &fe.menus {
+    // Only the innermost menu is up: opening a sub-menu closes its parent.
+    if let Some(m) = fe.menus.last() {
         draw_menu(&mut d, m, &options);
     }
 }
@@ -1200,7 +1204,6 @@ fn slider(d: &mut Painter, x: f32, y: f32, value: f32, alpha: f32) {
 /// `S2_PLYRn`, framed by `S1_BORDER` / `S2_BORDER`); player 1's column
 /// shows its menu, name entry or class card.
 fn select_screen(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassStats) {
-    d.draw.fill(0.0, 0.0, 512.0, 384.0, Color::BLACK);
     for (p, &col) in COLUMN.iter().enumerate() {
         d.image(&format!("S1_PLYR{}", p + 1), col, 0.0, Color::WHITE);
         d.image(&format!("S2_PLYR{}", p + 1), col, 256.0, Color::WHITE);
