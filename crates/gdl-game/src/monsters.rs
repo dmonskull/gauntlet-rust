@@ -7,8 +7,9 @@
 //! (`gdl_formats::enemy`) scaled by the level's tuning record.
 //!
 //! Runs on the 30 Hz fixed tick after the player, interpolated for drawing.
-//! Attacks don't hurt anyone yet: each landed hit is a [`MonsterHit`]
-//! message for the health code to read.
+//! Each landed hit is a [`MonsterHit`] message for the health code to read.
+//! The throwing AIs stand (or back off) and throw; each missile they release
+//! is a [`MonsterShot`] for `projectiles.rs` (`docs/projectiles.md`).
 
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_6, PI};
@@ -31,6 +32,7 @@ use crate::locomotion;
 use crate::play_camera::PlayCamera;
 use crate::player::{Player, PlayerTick};
 use crate::population::LevelPopulation;
+use crate::projectiles::{self, MonsterShot};
 use crate::world::{LevelEntity, LevelGround};
 
 /// Stand-ins for the player's collision cylinder (radius and height), which
@@ -56,7 +58,10 @@ impl Plugin for MonstersPlugin {
             .add_systems(Startup, load_level_tunings)
             .add_systems(
                 FixedUpdate,
-                (generators::tick_generators, generators::tick_placed, tick_monsters).chain().after(PlayerTick),
+                (generators::tick_generators, generators::tick_placed, tick_monsters)
+                    .chain()
+                    .after(PlayerTick)
+                    .in_set(MonsterTick),
             )
             .add_systems(
                 Update,
@@ -65,7 +70,11 @@ impl Plugin for MonstersPlugin {
     }
 }
 
-/// A monster's attack landed on a player. Nothing applies the damage yet.
+/// The monsters' 30 Hz tick (generators, placed monsters, the monsters).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MonsterTick;
+
+/// A monster's attack landed on a player.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct MonsterHit {
     pub monster: Entity,
@@ -127,6 +136,10 @@ impl MonsterModel {
 #[derive(Resource)]
 pub struct MonsterLevel {
     pub scales: EnemyScales,
+    /// The level's tuning record (zero scales read as 1).
+    pub tuning: LevelTuning,
+    /// The enemy types the level loads, and from which folders.
+    pub enemies: LevelEnemies,
     /// Most monsters alive at once.
     pub slots: usize,
     /// Per (enemy type, tier): the model, if one could be found.
@@ -214,6 +227,17 @@ pub struct Monster {
     /// Turns a wanderer has made since it last swapped direction.
     wander_turns: u8,
     number: u32,
+    /// The throwing AIs: video fields before the first throw, a random
+    /// 0–9 when the AI starts.
+    throw_timer: f32,
+    /// Seconds during which attacks and throws are refused, and the
+    /// fraction carried between throws (`docs/projectiles.md`).
+    throw_pause: f32,
+    throw_carry: f32,
+    /// What each throw adds to the pause (1; placed monsters can set it).
+    throw_rate: f32,
+    /// A kiting thrower backing away from a player that came too close.
+    retreat: bool,
 }
 
 /// Stand-in height of a generator for the hit search.
@@ -228,6 +252,10 @@ const ATTACK2: u8 = 0xE;
 const ATTACK3: u8 = 0x10;
 const RUNATTACK1: u8 = 0x16;
 const RUNATTACK2: u8 = 0x17;
+const THROW1: u8 = 0x18;
+const THROW2: u8 = 0x19;
+const THROWF: u8 = 0x1A;
+const ATTTOREADY: u8 = 0x1B;
 
 /// Everything needed to create a monster.
 pub struct NewMonster {
@@ -242,6 +270,9 @@ pub struct NewMonster {
     pub awareness: Option<f32>,
     /// Video fields to stand still first.
     pub freeze: f32,
+    /// What each throw adds to the throwing AIs' pause (1 unless placed
+    /// with a rate).
+    pub throw_rate: f32,
 }
 
 /// Creates a monster: its stats, its model (playing START) and its entity.
@@ -287,6 +318,11 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         wander_turns: 0,
         number: level.created,
         model: model.clone(),
+        throw_timer: level.random(10) as f32,
+        throw_pause: 0.0,
+        throw_carry: 0.0,
+        throw_rate: new.throw_rate,
+        retreat: false,
     };
     // Hittable: its radius, and (a stand-in for the game's height test)
     // twice its centre height.
@@ -348,6 +384,9 @@ fn setup_level(
         enemies.loaded,
         tuning
     );
+    for p in &placed {
+        debug!("placed enemy {} tier {} AI {:#x} at {:.1?}", p.enemy, p.tier, p.ai, p.position);
+    }
     for g in gens {
         // Hittable where it stands. Its height is a stand-in (generator
         // models are about this tall; at most 3.5 counts as low).
@@ -358,6 +397,8 @@ fn setup_level(
     commands.insert_resource(MonsterLevel {
         slots: tuning.monster_slots.max(1) as usize,
         scales,
+        tuning,
+        enemies,
         models,
         tick: 0,
         rng: 0x1234_5678,
@@ -376,6 +417,9 @@ fn level_tuning(raw: Option<LevelTuning>) -> LevelTuning {
         monster_speed: 1.0,
         monster_awareness: 1.0,
         monster_damage: 1.0,
+        throw_timing: 1.0,
+        missile_speed: 1.0,
+        missile_spread: 1.0,
         generator_hit_points: 1.0,
         generator_rate: 1.0,
         generator_max: 1.0,
@@ -385,6 +429,9 @@ fn level_tuning(raw: Option<LevelTuning>) -> LevelTuning {
         &mut t.monster_speed,
         &mut t.monster_awareness,
         &mut t.monster_damage,
+        &mut t.throw_timing,
+        &mut t.missile_speed,
+        &mut t.missile_spread,
         &mut t.generator_hit_points,
         &mut t.generator_rate,
         &mut t.generator_max,
@@ -526,6 +573,7 @@ fn tick_monsters(
     mut monsters: Query<(Entity, &mut Monster, &mut Animator)>,
     mut generators: Query<&mut Generator>,
     mut hits: MessageWriter<MonsterHit>,
+    mut shots: MessageWriter<MonsterShot>,
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     level.tick = level.tick.wrapping_add(1);
@@ -558,24 +606,38 @@ fn tick_monsters(
         m.request = READY;
         let mut velocity = [0.0f32; 3];
         let direct = target.map(|t| heading_to(m.position, t.feet));
-        let turn_to = match (m.ai, direct) {
-            // The wanderers go their own way until a player comes close.
-            (2 | 4, _) => Some(wander(m, direct)),
-            (_, Some(direct)) if m.aware => {
-                let player = target.map_or(m.position, |t| t.feet);
-                Some(steer(m, direct, player, collision, &bodies, entity))
-            }
-            _ => None,
-        };
-        if let Some(h) = turn_to {
-            // Walk at the heading; only a walking or running body moves.
-            m.request = WALK;
-            let moving = matches!(m.action, WALK | RUN | RUNATTACK1 | RUNATTACK2) && m.model.has(m.action);
-            if moving {
-                let s = m.stats.speed_per_tick;
+        let moving = |m: &Monster| matches!(m.action, WALK | RUN | RUNATTACK1 | RUNATTACK2) && m.model.has(m.action);
+        let turn_to = if projectiles::throws(m.ai) {
+            // The throwers face the player and throw; the kiting ones back
+            // off while they throw.
+            let (face, away) = throw_ai(m, target);
+            if let Some(h) = away
+                && moving(m)
+            {
+                let s = RETREAT_SPEED * m.stats.speed_per_tick;
                 velocity = [h.sin() * s, 0.0, h.cos() * s];
             }
-        }
+            Some(face)
+        } else {
+            let turn_to = match (m.ai, direct) {
+                // The wanderers go their own way until a player comes close.
+                (2 | 4, _) => Some(wander(m, direct)),
+                (_, Some(direct)) if m.aware => {
+                    let player = target.map_or(m.position, |t| t.feet);
+                    Some(steer(m, direct, player, collision, &bodies, entity))
+                }
+                _ => None,
+            };
+            if let Some(h) = turn_to {
+                // Walk at the heading; only a walking or running body moves.
+                m.request = WALK;
+                if moving(m) {
+                    let s = m.stats.speed_per_tick;
+                    velocity = [h.sin() * s, 0.0, h.cos() * s];
+                }
+            }
+            turn_to
+        };
         if m.freeze > 0.0 {
             m.freeze -= FIELDS_PER_TICK;
             velocity = [0.0; 3];
@@ -623,18 +685,91 @@ fn tick_monsters(
             continue;
         }
 
-        if let Some(hit) = animate(m, &mut animator) {
-            if let Some(player) = m.strike {
-                hits.write(MonsterHit {
-                    monster: entity,
-                    player,
-                    damage: m.stats.damage * if hit { 1.5 } else { 1.0 },
-                    strong: hit,
-                });
+        // A throw pause refuses attacks and throws.
+        if m.throw_pause > 0.0 {
+            m.throw_pause -= dt;
+            if matches!(m.request, ATTACK1..=0x15 | THROW1..=THROWF) {
+                m.request = READY;
             }
-            m.attacks = m.attacks.wrapping_add(1);
+        }
+        let was = m.action;
+        let event = animate(m, &mut animator, level.tuning.throw_timing);
+        if projectiles::throws(m.ai) && was != m.action {
+            debug!(
+                "thrower {entity:?}: {} -> {} (asked {}, pause {:.2}, distance {:.1})",
+                ACTION_NAMES[was as usize],
+                ACTION_NAMES[m.action as usize],
+                ACTION_NAMES[m.request as usize],
+                m.throw_pause,
+                m.target_distance
+            );
+        }
+        match event {
+            Some(Event::Blow(hit)) => {
+                if let Some(player) = m.strike {
+                    hits.write(MonsterHit {
+                        monster: entity,
+                        player,
+                        damage: m.stats.damage * if hit { 1.5 } else { 1.0 },
+                        strong: hit,
+                    });
+                }
+                m.attacks = m.attacks.wrapping_add(1);
+            }
+            Some(Event::Throw) => {
+                // At the target player's centre, or 20 units ahead.
+                let centre = enemy::enemy_stats(m.enemy).map_or(0.0, |s| s.center_height);
+                let from = Vec3::from(m.position) + Vec3::Y * centre;
+                let at = match target {
+                    Some(t) => Vec3::from(t.feet) + Vec3::Y * projectiles::PLAYER_CENTRE,
+                    None => from + 20.0 * Vec3::new(m.facing.sin(), 0.0, m.facing.cos()),
+                };
+                let random = level.random(1000) as f32 / 1000.0;
+                shots.write(MonsterShot { monster: entity, enemy: m.enemy, ai: m.ai, from, at, facing: m.facing, random });
+            }
+            None => {}
         }
     }
+}
+
+/// Backing away, a kiting thrower moves at this fraction of its speed.
+const RETREAT_SPEED: f32 = 0.8;
+
+/// The throwing AIs (`docs/projectiles.md`): 0x11 and 0x17 turn to face
+/// their player and throw whenever it's near the screen, within their
+/// awareness and within 10 units up or down; 0x10 and 0x1A do the same but
+/// back away (running, still facing it, still throwing) once it comes
+/// within 0.6 of their awareness, until it's beyond 0.8. The first throw
+/// waits a random 0–9 fields. Returns the heading to turn to and, when
+/// backing away, the heading to move along.
+fn throw_ai(m: &mut Monster, target: Option<Target>) -> (f32, Option<f32>) {
+    let Some(t) = target else { return (m.heading, None) };
+    m.heading = heading_to(m.position, t.feet);
+    let kites = matches!(m.ai, 0x10 | 0x1A);
+    let in_band = (-10.0..=10.0).contains(&(m.position[1] - t.feet[1]));
+    let in_range = kites || m.target_distance <= m.stats.awareness;
+    let mut away = None;
+    if m.near_screen && in_band && in_range {
+        if kites {
+            let aware = m.stats.awareness;
+            if !m.retreat {
+                m.retreat = m.target_distance <= 0.6 * aware;
+            } else if m.target_distance > 0.8 * aware {
+                m.retreat = false;
+            }
+        }
+        if m.throw_timer < 1.0 {
+            if m.retreat {
+                m.request = RUNATTACK1;
+                away = Some(locomotion::wrap(m.heading + PI));
+            } else {
+                m.request = THROW1;
+            }
+        } else {
+            m.throw_timer -= FIELDS_PER_TICK;
+        }
+    }
+    (m.heading, away)
 }
 
 /// Removes a monster and frees its generator's slot.
@@ -834,13 +969,27 @@ fn side_of(me: [f32; 3], other: [f32; 3]) -> i32 {
     }
 }
 
+/// What an action handing over to the next one does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Event {
+    /// An attack lands (`true`: the stronger third one).
+    Blow(bool),
+    /// A throw lets go of its missile.
+    Throw,
+}
+
 /// Plays the actions the monster asks for, the way the game's action
-/// chooser does for regular monsters: START and attacks play out before
-/// anything else; an attack finishing is when it lands, and its recovery
-/// (`…R`) follows; walking and standing switch at once. Missing actions
-/// fall back as the game's do (RUN ↔ WALK, any attack → ATTACK1, else
-/// READY). Returns `Some(strong)` on the tick an attack lands.
-fn animate(m: &mut Monster, animator: &mut Animator) -> Option<bool> {
+/// chooser does for regular monsters: START, attacks and throws play out
+/// before anything else; an attack finishing is when it lands, and its
+/// recovery (`…R`) follows; walking and standing switch at once. A throw
+/// goes THROW1 → THROWF (again: THROWF → THROW2 → THROWF) and lets go as
+/// THROWF starts; the running throw RUNATTACK1 → RUNATTACK2 lets go as its
+/// second half starts; after the last THROWF comes ATTTOREADY. Missing
+/// actions fall back as the game's do (RUN ↔ WALK, any attack → ATTACK1,
+/// THROW2 → THROW1, ATTTOREADY → READY, else READY's animation). Each
+/// throw action started adds to the throw pause (`timing`: the level's
+/// scale).
+fn animate(m: &mut Monster, animator: &mut Animator, timing: f32) -> Option<Event> {
     let model = m.model.clone();
     let finished = |m: &Monster, animator: &Animator| -> bool {
         let Some(a) = model.actions[m.action as usize] else { return true };
@@ -850,36 +999,75 @@ fn animate(m: &mut Monster, animator: &mut Animator) -> Option<bool> {
         let frames = animator.clips.actions.get(a).map_or(1, |x| x.frames) as f32;
         animator.frame >= frames - 1.0
     };
-    let mut landed = None;
+    // A body without the throw asked for doesn't throw (stand-in: the game
+    // would play READY's animation in its place).
+    let request = match m.request {
+        THROW1 if !model.has(THROW1) && !model.has(THROW2) => READY,
+        RUNATTACK1 if !model.has(RUNATTACK1) && !model.has(RUNATTACK2) => READY,
+        r => r,
+    };
+    let mut event = None;
     let next = match m.action {
-        START => finished(m, animator).then_some(m.request),
+        START => finished(m, animator).then_some(request),
         ATTACK1 | ATTACK2 | 0x12 | 0x14 => finished(m, animator).then(|| {
-            landed = Some(false);
+            event = Some(Event::Blow(false));
             m.action + 1
         }),
         ATTACK3 => finished(m, animator).then(|| {
-            landed = Some(true);
+            event = Some(Event::Blow(true));
             m.action + 1
         }),
-        0xD => finished(m, animator).then(|| if model.has(ATTACK2) { ATTACK2 } else { m.request }),
-        0xF | 0x11 | 0x13 | 0x15 => finished(m, animator).then_some(m.request),
-        _ => Some(m.request),
+        0xD => finished(m, animator).then(|| if model.has(ATTACK2) { ATTACK2 } else { request }),
+        0xF | 0x11 | 0x13 | 0x15 => finished(m, animator).then_some(request),
+        THROW1 | THROW2 => finished(m, animator).then(|| {
+            event = Some(Event::Throw);
+            THROWF
+        }),
+        THROWF => finished(m, animator).then(|| match request {
+            THROW1 => THROW2,
+            READY => ATTTOREADY,
+            r => r,
+        }),
+        RUNATTACK1 => finished(m, animator).then(|| {
+            if request == RUNATTACK1 {
+                event = Some(Event::Throw);
+                RUNATTACK2
+            } else {
+                request
+            }
+        }),
+        RUNATTACK2 => finished(m, animator).then_some(request),
+        ATTTOREADY => finished(m, animator).then_some(READY),
+        _ => Some(request),
     };
     if let Some(mut next) = next {
         next = match next {
             WALK if !model.has(WALK) => RUN,
             RUN if !model.has(RUN) => WALK,
             ATTACK2 | ATTACK3 | 0x12 | 0x14 if !model.has(next) => ATTACK1,
+            THROW2 if !model.has(THROW2) => THROW1,
+            THROW1 if !model.has(THROW1) => THROW2,
+            RUNATTACK1 if !model.has(RUNATTACK1) => RUNATTACK2,
+            RUNATTACK2 if !model.has(RUNATTACK2) => RUNATTACK1,
+            ATTTOREADY if !model.has(ATTTOREADY) => READY,
             n => n,
         };
         let restart = next != m.action;
+        if restart && (THROW1..=THROWF).contains(&next) {
+            let frames = model.actions[next as usize].and_then(|a| animator.clips.actions.get(a)).map_or(0, |a| a.frames);
+            let (pause, carry) = projectiles::throw_pause(m.throw_rate * timing + m.throw_carry, frames.into());
+            m.throw_carry = carry;
+            if let Some(pause) = pause {
+                m.throw_pause = pause;
+            }
+        }
         m.action = next;
         match model.actions[next as usize].or(model.actions[READY as usize]) {
             Some(a) if restart || animator.action != a => animator.play(a),
             _ => {}
         }
     }
-    landed
+    event
 }
 
 struct MonsterMove {
