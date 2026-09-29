@@ -31,6 +31,8 @@ pub const SCREEN_H: f32 = 384.0;
 /// Glow text (the game's draw flag `0x4000`) grows each glyph quad by this
 /// much on every side (the game's 2.0 in screen pixels, about 2 here).
 const GLOW_MARGIN: f32 = 2.0;
+/// Texels each glyph rectangle is shrunk by on every side.
+const GLYPH_INSET: f32 = 0.35;
 
 pub struct Screen2dPlugin;
 
@@ -38,7 +40,10 @@ impl Plugin for Screen2dPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Draw2d>()
             .add_systems(Startup, (load_ui, spawn_root).chain())
-            .add_systems(First, |mut d: ResMut<Draw2d>| d.quads.clear())
+            .add_systems(First, |mut d: ResMut<Draw2d>| {
+                d.quads.clear();
+                d.texts.clear();
+            })
             .add_systems(PostUpdate, flush.before(UiSystems::Prepare));
     }
 }
@@ -256,10 +261,12 @@ pub enum Quad {
     Text { text: String, pos: Vec2, size: f32, color: Color },
 }
 
-/// This frame's 2D draw list, cleared every frame.
+/// This frame's 2D draw list, cleared every frame. Like the game's, text
+/// goes on top of every image drawn in the same frame.
 #[derive(Resource, Default)]
 pub struct Draw2d {
     pub quads: Vec<Quad>,
+    pub texts: Vec<Quad>,
 }
 
 impl Draw2d {
@@ -286,7 +293,7 @@ impl Draw2d {
         let left = if x < 0.0 { -x - (width / 2.0).trunc() } else { x };
         let Some(font) = fonts.slots.get(style.slot).and_then(Option::as_ref) else {
             let size = fonts.line_height(style.slot, style.scale);
-            self.quads.push(Quad::Text { text: text.to_string(), pos: Vec2::new(left, y), size, color: style.color });
+            self.texts.push(Quad::Text { text: text.to_string(), pos: Vec2::new(left, y), size, color: style.color });
             return width;
         };
         let image = fonts.texture(font, style.texture);
@@ -297,9 +304,11 @@ impl Draw2d {
         let margin = if style.glow { GLOW_MARGIN } else { 0.0 };
         for placed in font.file.layout(&latin1(text), font.space_width) {
             let Placed::Glyph { glyph, x: pen } = placed else { continue };
-            let min = Vec2::new(glyph.x as f32, glyph.y as f32) * uv;
-            let max = Vec2::new((glyph.x + glyph.width) as f32, glyph.y as f32 + height) * uv;
-            self.quads.push(Quad::Image {
+            // Pulled in a little so bilinear filtering doesn't pick up the
+            // neighbouring glyph's edge.
+            let min = (Vec2::new(glyph.x as f32, glyph.y as f32) + GLYPH_INSET) * uv;
+            let max = (Vec2::new((glyph.x + glyph.width) as f32, glyph.y as f32 + height) - GLYPH_INSET) * uv;
+            self.texts.push(Quad::Image {
                 image: image.handle.clone(),
                 rect: Some(Rect::from_corners(min, max)),
                 pos: Vec2::new(left + pen as f32 * style.scale - margin, y - margin),
@@ -391,7 +400,7 @@ fn flush(
     // child list — its stacking — follows the draw order only while the
     // pool is used in order; re-sort children when the pool grows.
     let mut grew = false;
-    for quad in &draw.quads {
+    for quad in draw.quads.iter().chain(&draw.texts) {
         match quad {
             Quad::Image { image, rect, pos, size, color } => match image_pool.next() {
                 Some((_, mut node, mut img, mut vis)) => {
