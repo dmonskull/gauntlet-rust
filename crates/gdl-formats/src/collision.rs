@@ -20,6 +20,9 @@
 //! - Queries are swept spheres: a segment plus a radius, filtered by node
 //!   flag bits and by the triangle normal's Y (floors vs walls), keeping the
 //!   nearest hit. Only a triangle's front face collides.
+//! - Actors and players resolve a move with different chains built on those
+//!   queries: [`LevelCollision::move_actor`] and
+//!   [`LevelCollision::move_player`].
 
 use std::ops::Range;
 
@@ -531,6 +534,80 @@ pub struct Moved {
     pub floor: Option<Hit>,
 }
 
+/// A player's collision shape for [`LevelCollision::move_player`], from the
+/// class's `PDAT` body measurements (the same for every class on the disc).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerCollision {
+    /// Wall and floor test radius (`PDAT +0x4C`): 1.5.
+    pub radius: f32,
+    /// Half the class height (`PDAT +0x48` × 0.5): 2.5. The floor probe
+    /// reaches this plus 3 below the collision centre.
+    pub half_height: f32,
+    /// Collision centre above the feet (`PDAT +0x54`): 2.5. The wall and
+    /// floor tests start here, so this is also the highest step a player
+    /// can walk up.
+    pub centre_height: f32,
+    /// The furthest the player drops towards the floor per move: the game's
+    /// 16 units/s × the tick (1/30 s).
+    pub max_drop: f32,
+}
+
+impl PlayerCollision {
+    /// The player tick, seconds.
+    pub const TICK: f32 = 1.0 / 30.0;
+    /// Drop speed towards the floor, units per second.
+    pub const DROP_SPEED: f32 = 16.0;
+
+    pub fn from_body(body: &crate::pdata::PlayerBody, tick: f32) -> Self {
+        Self {
+            radius: body.radius,
+            half_height: 0.5 * body.height,
+            centre_height: body.centre_height,
+            max_drop: Self::DROP_SPEED * tick,
+        }
+    }
+}
+
+impl Default for PlayerCollision {
+    /// What every class uses, at the game's 30 Hz tick.
+    fn default() -> Self {
+        let body = crate::pdata::PlayerBody { height: 5.0, radius: 1.5, head_height: 4.4, centre_height: 2.5 };
+        Self::from_body(&body, Self::TICK)
+    }
+}
+
+/// What the player's floor follow remembers between moves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerGround {
+    /// The floor height the player's feet are moving towards. With no floor
+    /// below it's the level's [`kill_height`](LevelCollision::kill_height),
+    /// so the player falls.
+    pub floor: f32,
+    /// The node the player last stood on.
+    pub node: Option<usize>,
+}
+
+impl PlayerGround {
+    /// Standing on a floor at height `floor` (usually the feet's height).
+    pub fn new(floor: f32) -> Self {
+        Self { floor, node: None }
+    }
+}
+
+/// How the player's floor check ended (the game's return codes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FloorCheck {
+    /// No floor under the destination: horizontal move cancelled (−2).
+    Lost,
+    /// Horizontal move cancelled, or standing still on the same floor (0).
+    Held { cancelled: bool },
+    /// Floor accepted where the probe landed (1).
+    Level,
+    /// Floor accepted after being pulled back to a ledge or along a wall,
+    /// or moving along a ledge (2).
+    Adjusted,
+}
+
 impl LevelCollision {
     pub fn new(world: &WorldFile) -> Result<Self, WorldError> {
         let positions = world.world_positions()?;
@@ -582,6 +659,13 @@ impl LevelCollision {
     /// to `to`: the game's segment query. Grid cells are gathered from the
     /// segment's X/Z box (a superset of the cells the game walks).
     pub fn cast(&self, from: [f32; 3], to: [f32; 3], q: &Query) -> Option<Hit> {
+        self.cast_skipping(from, to, q, None)
+    }
+
+    /// [`cast`](Self::cast), ignoring one triangle. The game gets the same
+    /// effect by bumping the triangle's "visited" byte so the next query's
+    /// stamp already matches it.
+    fn cast_skipping(&self, from: [f32; 3], to: [f32; 3], q: &Query, skip: Option<usize>) -> Option<Hit> {
         let r = q.radius;
         let delta = sub(to, from);
         let len = dot(delta, delta).sqrt();
@@ -643,6 +727,9 @@ impl LevelCollision {
             };
             let mut node_best: Option<Hit> = None;
             for ti in all {
+                if skip == Some(ti) {
+                    continue;
+                }
                 let Some(tri) = self.triangles.get(ti) else { continue };
                 if filtered
                     && !(q.normal_y[0] <= tri.normal[1]
@@ -762,6 +849,208 @@ impl LevelCollision {
         }
         out.delta = delta;
         out
+    }
+
+    /// The height below which a player dies: the level's lowest point minus
+    /// 4.5. It's also the floor a player with nothing underneath falls
+    /// towards.
+    pub fn kill_height(&self) -> f32 {
+        self.bounds[0][1] - 4.5
+    }
+
+    /// Moves a player standing at `feet` by `delta` against the level, the
+    /// way the game's player update does for plain walking
+    /// (`docs/collision.md`, "Moving a player"):
+    ///
+    /// 1. Walls, tested 1 above the collision centre: push out along the
+    ///    wall (or slide along a moving one), then test again with 0.95 of
+    ///    the radius; a second wall facing more than 60° away from the first
+    ///    (a corner) stops the move.
+    /// 2. The floor under the destination, probed from the collision centre
+    ///    down to 3 below the feet. Too big a change of floor height, or no
+    ///    floor, cancels the horizontal move; a probe that only grazes a
+    ///    ledge, or finds nothing a radius further on, pulls the move back
+    ///    to the ledge.
+    /// 3. The feet follow the floor: up at once, down at most `max_drop`.
+    ///    Climbing slows the horizontal move so the whole step stays about
+    ///    as long as the requested one.
+    ///
+    /// `ground` carries the floor being followed from move to move. Other
+    /// actors, hazards, lifts and teleports are not handled here.
+    pub fn move_player(&self, feet: [f32; 3], delta: [f32; 3], p: &PlayerCollision, ground: &mut PlayerGround) -> Moved {
+        let mut d = delta;
+        let mut out = Moved { delta, blocked_by_wall: false, no_floor: false, wall: None, floor: None };
+        let centre = add(feet, [0.0, p.centre_height, 0.0]);
+        // The game uses the stick's step length here; with no knockback in
+        // the move that's its horizontal length.
+        let step = delta[0].hypot(delta[2]);
+
+        // Walls.
+        let raised = add(centre, [0.0, 1.0, 0.0]);
+        let walls = Query { disable_mask: 1, ..Query::walls(p.radius) };
+        let mut wall_ignored = None;
+        if let Some(w) = self.cast(raised, add(raised, d), &walls) {
+            out.wall = Some(w);
+            let flags = self.nodes[w.node].flags;
+            if flags & node_flags::NO_PUSH != 0 {
+                wall_ignored = Some(w);
+            } else {
+                if flags & node_flags::MOVES != 0 {
+                    d = add(d, scale(w.normal, -dot(d, w.normal)));
+                } else {
+                    out.blocked_by_wall = push_out(p.radius, raised, &mut d, w.point, w.normal);
+                }
+                let again = Query { radius: 0.95 * p.radius, ..walls };
+                if let Some(w2) = self.cast_skipping(raised, add(raised, d), &again, Some(w.triangle))
+                    && dot(w.normal, w2.normal) < 0.5
+                {
+                    d = [0.0; 3];
+                    out.blocked_by_wall = true;
+                }
+            }
+        }
+        let wall_hit = out.wall.is_some();
+
+        // Floor.
+        let (check, floor) = self.player_floor(feet[1], centre, &mut d, p, ground, wall_hit, wall_ignored);
+        out.floor = floor;
+        out.no_floor = matches!(check, FloorCheck::Lost | FloorCheck::Held { cancelled: true });
+
+        // Follow the floor.
+        let node_moves = |n: Option<usize>| n.is_some_and(|n| self.nodes[n].flags & node_flags::MOVES != 0);
+        let follow = match check {
+            FloorCheck::Level | FloorCheck::Adjusted => true,
+            FloorCheck::Held { .. } => !node_moves(ground.node),
+            FloorCheck::Lost => ground.node.is_none(),
+        };
+        if follow {
+            d[1] += (ground.floor - feet[1]).max(-p.max_drop);
+        }
+        if d[1] > 0.1 * step {
+            let h = step.hypot(d[1]);
+            if h > 0.01 {
+                d[0] *= step / h;
+                d[2] *= step / h;
+            }
+        }
+        if matches!(check, FloorCheck::Level | FloorCheck::Adjusted) {
+            ground.node = floor.map(|h| h.node);
+        }
+        out.delta = d;
+        out
+    }
+
+    /// The player's floor probe: a sphere of `radius` from `at` straight
+    /// down by `depth`, disable mask 1.
+    fn player_floor_probe(&self, at: [f32; 3], radius: f32, depth: f32, prefer_crossing: bool) -> Option<Hit> {
+        let q = Query { disable_mask: 1, prefer_crossing, ..Query::floors(radius) };
+        self.cast(at, add(at, [0.0, -depth, 0.0]), &q)
+    }
+
+    /// The player's floor check on the move `d` from `centre`, adjusting its
+    /// X/Z. `wall_ignored` is a wall hit on a node that doesn't push.
+    #[allow(clippy::too_many_arguments)]
+    fn player_floor(
+        &self,
+        feet_y: f32,
+        centre: [f32; 3],
+        d: &mut [f32; 3],
+        p: &PlayerCollision,
+        ground: &mut PlayerGround,
+        wall_hit: bool,
+        wall_ignored: Option<Hit>,
+    ) -> (FloorCheck, Option<Hit>) {
+        let depth = 3.0 + p.half_height;
+        let probe = |at: [f32; 3], prefer: bool| self.player_floor_probe(at, p.radius, depth, prefer);
+        let stop = |d: &mut [f32; 3]| {
+            d[0] = 0.0;
+            d[2] = 0.0;
+        };
+        // After pulling the move back: a floor there is taken, none cancels.
+        let retry = |d: &mut [f32; 3], ground: &mut PlayerGround| match probe(add(centre, *d), false) {
+            Some(h) => {
+                ground.floor = h.point[1];
+                (FloorCheck::Adjusted, Some(h))
+            }
+            None => {
+                stop(d);
+                (FloorCheck::Held { cancelled: true }, None)
+            }
+        };
+
+        let at = add(centre, *d);
+        let horizontal = d[0].hypot(d[2]);
+        let Some(hit) = probe(at, true) else {
+            if horizontal < 0.001 {
+                ground.node = None;
+            }
+            stop(d);
+            ground.floor = self.kill_height();
+            return (FloorCheck::Lost, None);
+        };
+        let floor_y = hit.point[1];
+        let change = (floor_y - ground.floor).abs();
+
+        if horizontal < 0.001 {
+            // Standing still: only a big change (or a moving floor) moves
+            // the floor being followed.
+            if change > 3.0 || self.nodes[hit.node].flags & node_flags::MOVES != 0 {
+                ground.floor = floor_y;
+            }
+            let check = if change > 0.001 { FloorCheck::Level } else { FloorCheck::Held { cancelled: false } };
+            return (check, Some(hit));
+        }
+
+        let limit = if ground.node == Some(hit.node) { 4.0 } else { 3.0 };
+        if change > limit {
+            ground.floor = feet_y;
+            stop(d);
+            return (FloorCheck::Held { cancelled: true }, Some(hit));
+        }
+
+        if let Some(w) = wall_ignored
+            && w.node != hit.node
+        {
+            push_out(p.radius, centre, d, w.point, w.normal);
+            return retry(d, ground);
+        }
+
+        // How far the floor was found from straight below the probe, and
+        // whether the move heads away from it.
+        let mut off = sub(at, hit.point);
+        let mut away = dot(*d, off);
+        let mut dist = off[0].hypot(off[2]);
+        if dist < 0.001 && !wall_hit {
+            // Right below: look a radius further on too.
+            let len = dot(*d, *d).sqrt();
+            let lead = scale(*d, p.radius / len);
+            let edge = add(at, lead);
+            match probe(edge, true) {
+                None => {
+                    off = lead;
+                    away = 0.0;
+                    dist = p.radius;
+                }
+                Some(e) => {
+                    let solid = self.nodes[e.node].flags & 0x8 != 0;
+                    if !solid || (e.point[1] - floor_y).abs() >= 4.0 {
+                        off = sub(edge, e.point);
+                        away = dot(*d, off);
+                        dist = off[0].hypot(off[2]);
+                    } else {
+                        dist = 0.0;
+                    }
+                }
+            }
+        }
+        if dist < 0.001 || away < 0.0 {
+            ground.floor = floor_y;
+            let check = if dist < 0.001 || away < -0.25 { FloorCheck::Level } else { FloorCheck::Adjusted };
+            return (check, Some(hit));
+        }
+        d[0] -= off[0];
+        d[2] -= off[2];
+        retry(d, ground)
     }
 }
 
@@ -951,13 +1240,44 @@ mod tests {
             triangle([[5.0, 5.0, 10.0], [5.0, 5.0, 0.0], [5.0, 0.0, 10.0]]),
         ];
         assert!(close(tris[2].normal, [-1.0, 0.0, 0.0], 1e-6));
+        let level = one_node_level(&tris, 6);
+        assert_eq!(level.nodes[0].triangles, 0..4);
+        level
+    }
+
+    /// Two counter-clockwise (seen from the front) triangles covering the
+    /// quad `a b c d`.
+    fn quad(a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]) -> [CollisionTriangle; 2] {
+        [triangle([a, b, c]), triangle([a, c, d])]
+    }
+
+    /// An X-aligned floor strip at height `y` from `x0` to `x1`, z 0..10.
+    fn floor(x0: f32, x1: f32, y: f32) -> [CollisionTriangle; 2] {
+        quad([x0, y, 0.0], [x0, y, 10.0], [x1, y, 10.0], [x1, y, 0.0])
+    }
+
+    /// A wall across z 0..10 at `x`, from `y0` to `y1`, facing -x.
+    fn wall_facing_neg_x(x: f32, y0: f32, y1: f32) -> [CollisionTriangle; 2] {
+        quad([x, y0, 0.0], [x, y0, 10.0], [x, y1, 10.0], [x, y1, 0.0])
+    }
+
+    /// A level of one node holding `tris` (world space) and one grid cell
+    /// covering everything.
+    fn one_node_level(tris: &[CollisionTriangle], flags: u32) -> LevelCollision {
+        let corners: Vec<[f32; 3]> = tris.iter().flat_map(|t| t.vertices()).collect();
+        let lo = corners.iter().fold([f32::MAX; 3], |m, v| [m[0].min(v[0]), m[1].min(v[1]), m[2].min(v[2])]);
+        let hi = corners.iter().fold([f32::MIN; 3], |m, v| [m[0].max(v[0]), m[1].max(v[1]), m[2].max(v[2])]);
+        let centre = scale(add(lo, hi), 0.5);
+        let radius = corners.iter().map(|v| dot(sub(*v, centre), sub(*v, centre)).sqrt()).fold(0.0, f32::max) + 0.1;
+        let size = (hi[0] - lo[0]).max(hi[2] - lo[2]).max(1.0);
+
         let nodes_at = 30 * 4;
         let tris_at = nodes_at + 0x3C;
         let lists_at = tris_at + tris.len() * TRIANGLE_STRIDE;
-        let cells_at = lists_at + 6 * 2;
+        let cells_at = lists_at + (2 + tris.len()) * 2;
         let rows_at = cells_at + 2 * 4;
         let mut f = vec![0u8; rows_at + 8];
-        let words: [(usize, u32); 14] = [
+        let words: [(usize, u32); 17] = [
             (0, 1),
             (1, nodes_at as u32),
             (2, tris.len() as u32),
@@ -965,10 +1285,13 @@ mod tests {
             (5, cells_at as u32),
             (7, lists_at as u32),
             (8, rows_at as u32),
-            (12, 10f32.to_bits()),
-            (13, 5f32.to_bits()),
-            (14, 10f32.to_bits()),
-            (15, 10f32.to_bits()),
+            (9, lo[0].to_bits()),
+            (10, lo[1].to_bits()),
+            (11, lo[2].to_bits()),
+            (12, hi[0].to_bits()),
+            (13, hi[1].to_bits()),
+            (14, hi[2].to_bits()),
+            (15, size.to_bits()),
             (16, 1),
             (17, 1),
             (24, 0xF00B_AB02),
@@ -976,17 +1299,17 @@ mod tests {
         for (i, v) in words {
             put_u32(&mut f, i * 4, v);
         }
-        // Node: flags 6 (walls and floors), no links, a bounding sphere
-        // around the triangles, which are in world space.
+        // Node: the given flags, no links, a bounding sphere around the
+        // triangles, which are in world space.
         let n = nodes_at;
         f[n..n + 5].copy_from_slice(b"LEVEL");
-        put_u32(&mut f, n + 0x10, 6);
-        for (k, v) in [5.0f32, 2.5, 5.0].iter().enumerate() {
+        put_u32(&mut f, n + 0x10, flags);
+        for (k, v) in centre.iter().enumerate() {
             put_u32(&mut f, n + 0x1C + k * 4, v.to_bits());
         }
         f[n + 0x2C..n + 0x30].copy_from_slice(&[0xFF; 4]);
-        put_u32(&mut f, n + 0x30, 7.6f32.to_bits());
-        f[n + 0x36..n + 0x38].copy_from_slice(&4u16.to_le_bytes());
+        put_u32(&mut f, n + 0x30, radius.to_bits());
+        f[n + 0x36..n + 0x38].copy_from_slice(&(tris.len() as u16).to_le_bytes());
         for (k, t) in tris.iter().enumerate() {
             let r = tris_at + k * TRIANGLE_STRIDE;
             f[r..r + 2].copy_from_slice(&t.height_range[0].to_le_bytes());
@@ -999,14 +1322,15 @@ mod tests {
                 f[r + 0x20 + j * 2..r + 0x22 + j * 2].copy_from_slice(&v.to_le_bytes());
             }
         }
-        for (j, v) in [0u16, 4, 0, 1, 2, 3].iter().enumerate() {
+        // The one cell lists every triangle of node 0.
+        let list = [0u16, tris.len() as u16].into_iter().chain(0..tris.len() as u16);
+        for (j, v) in list.enumerate() {
             f[lists_at + j * 2..lists_at + j * 2 + 2].copy_from_slice(&v.to_le_bytes());
         }
         put_u32(&mut f, cells_at, 0); // cell 0: nothing moves
         put_u32(&mut f, cells_at + 4, 1 << 22); // cell 1: one entry at byte 0
         put_u32(&mut f, rows_at + 4, 1); // row 0: column 0 only, cell 1
         let world = WorldFile::parse(&f).unwrap();
-        assert_eq!(world.nodes[0].collision, 0..4);
         LevelCollision::new(&world).unwrap()
     }
 
@@ -1187,5 +1511,199 @@ mod tests {
         // Standing above the floor: drops at most max_drop.
         let m = level.move_actor([2.0, 1.5, 2.0], [0.1, 0.0, 0.0], &p);
         assert!((m.delta[1] + 0.5).abs() < 1e-5, "{:?}", m.delta);
+    }
+
+    /// Walks a player `ticks` moves of `step` from `feet`, returning where
+    /// it ended and the last move.
+    fn walk(level: &LevelCollision, feet: [f32; 3], step: [f32; 3], ticks: usize) -> ([f32; 3], Moved, PlayerGround) {
+        let p = PlayerCollision::default();
+        let mut ground = PlayerGround::new(feet[1]);
+        let mut feet = feet;
+        let mut last = None;
+        for _ in 0..ticks {
+            let m = level.move_player(feet, step, &p, &mut ground);
+            feet = add(feet, m.delta);
+            last = Some(m);
+        }
+        (feet, last.unwrap(), ground)
+    }
+
+    #[test]
+    fn player_defaults_are_the_class_body() {
+        let p = PlayerCollision::default();
+        assert_eq!((p.radius, p.half_height, p.centre_height), (1.5, 2.5, 2.5));
+        assert!((p.max_drop - 16.0 / 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn players_walk_and_stop_at_walls() {
+        let level = test_level();
+        let p = PlayerCollision::default();
+        // Open floor: the move goes through untouched.
+        let mut g = PlayerGround::new(0.0);
+        let m = level.move_player([1.0, 0.0, 2.0], [0.3, 0.0, 0.2], &p, &mut g);
+        assert!(close(m.delta, [0.3, 0.0, 0.2], 1e-6) && m.wall.is_none() && !m.no_floor, "{m:?}");
+        assert_eq!((g.floor, g.node), (0.0, Some(0)));
+        // Into the wall at x = 5: stops with the centre a radius away.
+        let m = level.move_player([3.2, 0.0, 5.0], [0.5, 0.0, 0.0], &p, &mut g);
+        assert!(m.wall.is_some() && close(m.delta, [0.3, 0.0, 0.0], 1e-5), "{m:?}");
+        // Diagonally into it: slides along it.
+        let m = level.move_player([3.5, 0.0, 5.0], [0.3, 0.0, 0.3], &p, &mut g);
+        assert!(close(m.delta, [0.0, 0.0, 0.3], 1e-5), "{m:?}");
+        // Held there however long it pushes.
+        let (feet, _, _) = walk(&level, [1.0, 0.0, 5.0], [0.5, 0.0, 0.0], 20);
+        assert!((feet[0] - 3.5).abs() < 1e-4 && feet[1] == 0.0, "{feet:?}");
+    }
+
+    #[test]
+    fn players_stop_in_corners() {
+        let mut tris = floor(0.0, 10.0, 0.0).to_vec();
+        tris.extend(wall_facing_neg_x(5.0, 0.0, 6.0));
+        // A wall at z = 5 facing -z.
+        tris.extend(quad([0.0, 0.0, 5.0], [0.0, 6.0, 5.0], [10.0, 6.0, 5.0], [10.0, 0.0, 5.0]));
+        let level = one_node_level(&tris, 6);
+        let mut g = PlayerGround::new(0.0);
+        let m = level.move_player([3.4, 0.0, 3.4], [0.2, 0.0, 0.2], &PlayerCollision::default(), &mut g);
+        assert!(m.blocked_by_wall && m.delta == [0.0; 3], "{m:?}");
+    }
+
+    #[test]
+    fn players_are_held_back_from_ledges() {
+        // The floor ends at x = 10 with nothing below.
+        let level = test_level();
+        let (feet, m, g) = walk(&level, [7.0, 0.0, 2.0], [0.4, 0.0, 0.0], 30);
+        // The centre stays a radius from the edge.
+        assert!((feet[0] - 8.5).abs() < 1e-3 && feet[1] == 0.0, "{feet:?} {m:?}");
+        assert_eq!(g.floor, 0.0);
+    }
+
+    #[test]
+    fn players_step_up_and_drop_down() {
+        // A 1-high step up at x = 10, then a 2-deep drop at x = 20.
+        let mut tris = floor(0.0, 10.0, 0.0).to_vec();
+        tris.extend(wall_facing_neg_x(10.0, 0.0, 1.0));
+        tris.extend(floor(10.0, 20.0, 1.0));
+        tris.extend(floor(20.0, 30.0, -1.0));
+        let level = one_node_level(&tris, 6);
+        let p = PlayerCollision::default();
+        let mut g = PlayerGround::new(0.0);
+        let mut feet = [8.0, 0.0, 5.0];
+        let mut heights = Vec::new();
+        for _ in 0..60 {
+            let m = level.move_player(feet, [0.5, 0.0, 0.0], &p, &mut g);
+            assert!(!m.no_floor, "{feet:?} {m:?}");
+            // Climbing slows the horizontal part by step / |(step, rise)|.
+            if m.delta[1] > 0.05 {
+                let slowed = 0.5 * 0.5 / 0.5f32.hypot(m.delta[1]);
+                assert!((m.delta[0] - slowed).abs() < 1e-5, "{m:?}");
+            }
+            // Down no faster than 16 units/s.
+            assert!(m.delta[1] >= -p.max_drop - 1e-6, "{m:?}");
+            feet = add(feet, m.delta);
+            heights.push(feet[1]);
+        }
+        assert!(heights.contains(&1.0), "stepped up: {heights:?}");
+        assert!(feet[0] > 25.0 && feet[1] == -1.0, "dropped down: {feet:?}");
+        // Dropping takes several ticks.
+        let falling = heights.iter().filter(|&&h| h > -1.0 && h < 1.0).count();
+        assert!(falling >= 3, "{heights:?}");
+    }
+
+    #[test]
+    fn players_cannot_climb_above_their_centre() {
+        // A 3-high block at x = 10: above the 2.5 collision centre.
+        let mut tris = floor(0.0, 10.0, 0.0).to_vec();
+        tris.extend(floor(10.0, 20.0, 3.0));
+        let level = one_node_level(&tris, 6);
+        let (feet, _, _) = walk(&level, [7.0, 0.0, 5.0], [0.4, 0.0, 0.0], 30);
+        assert!(feet[0] < 10.0 && feet[1] == 0.0, "{feet:?}");
+    }
+
+    #[test]
+    fn players_with_no_floor_fall() {
+        let level = test_level();
+        let p = PlayerCollision::default();
+        // Nothing below: the move is cancelled and, not standing on
+        // anything, the player falls towards the kill height.
+        let mut g = PlayerGround::new(0.0);
+        let m = level.move_player([20.0, 0.0, 20.0], [0.3, 0.0, 0.0], &p, &mut g);
+        assert!(m.no_floor && m.delta[0] == 0.0 && (m.delta[1] + p.max_drop).abs() < 1e-6, "{m:?}");
+        assert_eq!(g.floor, level.kill_height());
+    }
+
+    /// From every level's entry-0 player start, a player walking in eight
+    /// directions never loses the floor, never sinks below it, and never
+    /// passes through a wall.
+    #[test]
+    fn players_walk_every_real_level_without_falling_through() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT")
+            .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let dir = std::path::Path::new(&root).join("LEVELS");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            eprintln!("skipping: {dir:?} not present");
+            return;
+        };
+        let p = PlayerCollision::default();
+        // Running flat out: 12.5 units/s × 1.3, per 30 Hz tick.
+        let speed = 12.5 * 1.3 / 30.0;
+        let (mut levels, mut no_start, mut moves, mut walls, mut held, mut dips) = (0, 0, 0, 0, 0, 0);
+        let mut travelled = 0.0f32;
+        for level in entries.flatten().map(|e| e.path()) {
+            let Ok(bytes) = std::fs::read(level.join("WORLDS.PS2")) else { continue };
+            let world = WorldFile::parse(&bytes).unwrap();
+            let c = LevelCollision::new(&world).unwrap();
+            let pop = crate::population::Population::parse(&bytes).unwrap();
+            let Some(start) = pop.player_start(0) else {
+                no_start += 1;
+                continue;
+            };
+            let Some(y) = c.floor_height(start.position) else {
+                no_start += 1;
+                continue;
+            };
+            levels += 1;
+            for k in 0..8 {
+                let a = k as f32 * std::f32::consts::FRAC_PI_4 + 0.1;
+                let step = [speed * a.sin(), 0.0, speed * a.cos()];
+                let mut feet = [start.position[0], y, start.position[2]];
+                let mut ground = PlayerGround::new(y);
+                for t in 0..45 {
+                    let at = format!("{level:?} direction {k} tick {t} feet {feet:?}");
+                    let m = c.move_player(feet, step, &p, &mut ground);
+                    assert!(m.floor.is_some() || m.no_floor, "{at}");
+                    let next = add(feet, m.delta);
+                    moves += 1;
+                    walls += m.wall.is_some() as usize;
+                    held += m.no_floor as usize;
+                    travelled += m.delta[0].hypot(m.delta[2]);
+                    // Never through a wall: the centre's path crosses none.
+                    let lift = [0.0, p.centre_height + 1.0, 0.0];
+                    let crossed = c.cast(add(feet, lift), add(next, lift), &Query { disable_mask: 1, ..Query::walls(0.0) });
+                    assert!(crossed.is_none(), "{at}: walked through {crossed:?}");
+                    // Never loses the floor, and never sinks into it by more
+                    // than one tick's worth: the game's own rules do dip the
+                    // feet for a tick where a near miss outranks the floor
+                    // right below (a seam), or where sliding along a moving
+                    // node's overhang pushes the move down.
+                    assert!(ground.floor > c.kill_height(), "{at}: lost the floor");
+                    let dip = p.max_drop + 1e-3;
+                    assert!(next[1] >= ground.floor - dip, "{at}: below the floor {ground:?} {m:?}");
+                    let line = Query { prefer_crossing: true, ..Query::floors(0.0) };
+                    if let Some(s) = c.cast(add(next, [0.0, 2.4, 0.0]), add(next, [0.0, 0.02, 0.0]), &line) {
+                        dips += 1;
+                        assert!(s.point[1] - next[1] <= dip, "{at}: feet {next:?} sunk under {s:?}; {m:?}");
+                    }
+                    feet = next;
+                }
+            }
+        }
+        eprintln!(
+            "{levels} levels walked ({no_start} without a start on a floor): {moves} moves, {walls} touching \
+             walls, {held} held back by the floor, {dips} with the feet dipped into a floor, {travelled:.0} \
+             units travelled"
+        );
+        assert!(no_start <= 2, "{no_start} levels have no player start on a floor");
+        assert!(dips * 100 <= moves, "feet dipped into floors too often");
+        assert!(travelled >= 0.25 * speed * moves as f32, "players hardly moved");
     }
 }

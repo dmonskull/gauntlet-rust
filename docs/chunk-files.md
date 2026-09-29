@@ -51,6 +51,18 @@ pairs — strength `+0x28`, speed `+0x30`, armour `+0x38`, magic `+0x40`.
 The order is fixed by the class archetypes among the eight original
 classes (Dwarf strongest and slowest, Wizard/Sorceress most magic,
 Knight/Valkyrie most armour); values run 100–650 at start, up to 999.
-`+0x58` (1.0–1.3) and `+0x5C..+0x7C` are further per-class tuning, not
-named yet. The player movement code multiplies stick magnitude by a speed
+
+The body measurements follow, copied into the player record when a player
+joins (`FUN_80079ed8`, reading through the `PDAT` pointer at
+`DAT_80282310[player]`); every class has the same values:
+
+| offset | value | player field | meaning |
+| --- | --- | --- | --- |
+| `+0x48` | 5.0 | `+0x854` = × 0.5 | height (half is the collision half-height) |
+| `+0x4C` | 1.5 | `+0x850` | collision radius |
+| `+0x50` | 4.4 | `+0x83C` (Y of offset `+0x838`) | top point above the feet (`+0x54`) |
+| `+0x54` | 2.5 | `+0x848` (Y of offset `+0x844`) | collision centre above the feet (`+0x64`) |
+
+See [collision.md](collision.md) "Moving a player". `+0x58` (1.0–1.3) and
+`+0x5C..+0x7C` are further per-class tuning, not named yet. The player movement code multiplies stick magnitude by a speed
 value derived from this stat; the derivation isn't traced yet.
