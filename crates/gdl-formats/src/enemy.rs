@@ -173,6 +173,27 @@ pub struct EnemyInstance {
 /// Awareness range before the level's scale.
 pub const AWARENESS: f32 = 30.0;
 
+/// Experience a hero earns for a blow that lands on a monster of each type
+/// (by enemy id), and for the blow that kills it.
+pub const HIT_EXPERIENCE: [u32; 34] =
+    [1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 2, 1, 2, 3, 1, 2, 3, 1, 1, 2, 3, 3, 3, 1, 0, 2, 1, 1, 2, 2];
+pub const KILL_EXPERIENCE: [u32; 34] =
+    [1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 2, 1, 2, 3, 1, 2, 3, 1, 1, 2, 3, 3, 3, 15, 0, 30, 1, 2, 300, 30];
+
+/// Experience for a blow on monster type `enemy` (killing or not), on a
+/// level with the given experience level and scale, for a hero of
+/// `hero_level`: the table value × the scale, divided down by 1 + 0.1 ×
+/// the levels the hero is above the level's.
+pub fn experience(enemy: i32, killed: bool, hero_level: u32, level: f32, scale: f32) -> u32 {
+    let table = if killed { &KILL_EXPERIENCE } else { &HIT_EXPERIENCE };
+    let base = table.get(enemy.max(0) as usize).copied().unwrap_or(0) as f32;
+    let mut scale = scale;
+    if level > 0.0 && hero_level as f32 > level {
+        scale *= 1.0 / (0.1 * (hero_level as f32 - level) + 1.0);
+    }
+    (base * scale) as u32
+}
+
 impl EnemyStats {
     /// Floor step: how far up the floor probe starts and (+ 5) how far
     /// down it searches.

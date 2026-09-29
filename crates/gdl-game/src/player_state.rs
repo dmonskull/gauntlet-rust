@@ -27,6 +27,8 @@ pub const MAX_KEYS: u32 = 9;
 pub const MAX_POTIONS: usize = 9;
 /// The player record has this many powerup slots.
 pub const POWER_SLOTS: usize = 11;
+/// Highest hero level.
+pub const MAX_LEVEL: u32 = 99;
 /// Below this much health the hero dies.
 const DEATH_BELOW: f32 = 1.0;
 
@@ -146,6 +148,24 @@ impl PlayerState {
     }
 
     /// Takes health away; returns `true` if this killed the hero.
+    /// Experience needed to go from `level` to the next one.
+    pub fn experience_to_leave(level: u32) -> u32 {
+        let l = level;
+        if l + 1 < 61 { l * ((l + 1) * 30 + 1000) } else { (l - 59) * 4600 + 165_200 }
+    }
+
+    /// Adds experience and raises the level while it's enough (at most 99),
+    /// as the game does; returns the levels gained.
+    pub fn add_experience(&mut self, amount: u32) -> u32 {
+        self.experience = self.experience.saturating_add(amount);
+        let mut gained = 0;
+        while self.level < MAX_LEVEL && Self::experience_to_leave(self.level) <= self.experience {
+            self.level += 1;
+            gained += 1;
+        }
+        gained
+    }
+
     pub fn damage(&mut self, amount: f32) -> bool {
         if !self.alive || amount <= 0.0 {
             return false;
@@ -311,6 +331,21 @@ mod tests {
         assert!(!s.damage(449.0) && s.alive, "1 health left is still alive");
         assert!(s.damage(0.5) && !s.alive && s.health == 0.0);
         assert!(!s.damage(10.0), "dead heroes don't die again");
+    }
+
+    #[test]
+    fn experience_raises_the_level_like_the_game() {
+        let mut s = PlayerState::default();
+        assert_eq!(PlayerState::experience_to_leave(1), 1060);
+        assert_eq!(PlayerState::experience_to_leave(2), 2180);
+        assert_eq!(s.add_experience(1059), 0);
+        assert_eq!(s.add_experience(1), 1);
+        assert_eq!(s.level, 2);
+        // Thresholds are totals: 2180, 3360, 4600, 5900, 7260, 8680, 10160
+        // reach levels 3–9 with 11060; level 10 needs 11700.
+        assert_eq!(s.add_experience(10_000), 7);
+        assert_eq!(s.level, 9);
+        assert_eq!(PlayerState::experience_to_leave(60), 4600 + 165_200);
     }
 
     #[test]

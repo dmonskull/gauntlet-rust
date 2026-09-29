@@ -129,6 +129,8 @@ pub struct MonsterLevel {
     pub scales: EnemyScales,
     /// Most monsters alive at once.
     pub slots: usize,
+    /// The level's experience level and scale (`LevelTuning`).
+    pub experience: (f32, f32),
     /// Per (enemy type, tier): the model, if one could be found.
     models: HashMap<(i32, i32), Option<Arc<MonsterModel>>>,
     /// 30 Hz ticks since the level started.
@@ -444,6 +446,7 @@ fn setup_level(
     commands.insert_resource(generators::PlacedMonsters(placed));
     commands.insert_resource(MonsterLevel {
         slots: tuning.monster_slots.max(1) as usize,
+        experience: (tuning.experience_level, tuning.experience_scale),
         scales,
         models,
         tick: 0,
@@ -466,6 +469,8 @@ fn level_tuning(raw: Option<LevelTuning>) -> LevelTuning {
         generator_hit_points: 1.0,
         generator_rate: 1.0,
         generator_max: 1.0,
+        experience_level: 0.0,
+        experience_scale: 1.0,
     });
     for v in [
         &mut t.monster_hit_points,
@@ -475,6 +480,7 @@ fn level_tuning(raw: Option<LevelTuning>) -> LevelTuning {
         &mut t.generator_hit_points,
         &mut t.generator_rate,
         &mut t.generator_max,
+        &mut t.experience_scale,
     ] {
         if *v <= 0.0 {
             *v = 1.0;
@@ -748,7 +754,7 @@ pub fn despawn_monster(commands: &mut Commands, entity: Entity, m: &Monster, gen
     if let Some(mut g) = m.generator.and_then(|g| generators.get_mut(g).ok()) {
         g.alive = g.alive.saturating_sub(1);
     }
-    commands.entity(entity).despawn();
+    commands.entity(entity).try_despawn();
 }
 
 /// The game re-picks a monster's target on one tick in eight (staggered

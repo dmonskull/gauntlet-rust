@@ -66,6 +66,8 @@ pub struct PlayerChoice {
 /// The loaded hero, spawned again on every level.
 #[derive(Resource)]
 struct Hero {
+    /// The class's stats, for re-deriving them when the level rises.
+    stats: Option<PlayerStats>,
     armor: f32,
     data: CharacterData,
     speed: f32,
@@ -103,6 +105,39 @@ pub struct Player {
     class: Option<usize>,
 }
 
+/// The hero's working stats at a character level: strength (5–20),
+/// armour (0–5) and speed (units/s), each from the class stat plus 5 per
+/// level up to its maximum.
+fn derived_stats(stats: Option<&PlayerStats>, level: u32) -> (f32, f32, f32) {
+    let at = |s: gdl_formats::pdata::Stat| locomotion::stat_at_level(s.start, s.max, level, 0.0);
+    let strength = combat::strength(stats.map_or(400.0, |s| at(s.strength)));
+    let armor = (0.005 * stats.map_or(0.0, |s| at(s.armor))).clamp(0.0, 5.0);
+    let speed = locomotion::move_speed(stats.map_or(400.0, |s| at(s.speed)), 0.0);
+    (strength, armor, speed)
+}
+
+/// Re-derives the hero's stats when its level changes.
+fn level_stats(
+    hero: Option<Res<Hero>>,
+    state: Option<Res<PlayerState>>,
+    mut applied: Local<u32>,
+    mut players: Query<&mut Player>,
+) {
+    let (Some(hero), Some(state)) = (hero, state) else { return };
+    let fresh = players.iter_mut().any(|p| p.is_added());
+    if state.level == *applied && !fresh {
+        return;
+    }
+    *applied = state.level;
+    let (strength, armor, speed) = derived_stats(hero.stats.as_ref(), state.level);
+    for mut p in &mut players {
+        p.strength = strength;
+        p.armor = armor;
+        p.mover.speed = speed;
+    }
+    info!("level {}: strength {strength:.1}, armour {armor:.2}, speed {speed:.2}", state.level);
+}
+
 impl Player {
     /// Moves the hero instantly (no interpolation smear), standing on a
     /// fresh floor.
@@ -137,6 +172,7 @@ impl Plugin for PlayerPlugin {
             .insert_resource(Controls { script: button_script(), ..default() })
             .add_systems(Startup, load_hero)
             .add_systems(FixedUpdate, tick.in_set(PlayerTick))
+            .add_systems(Update, level_stats)
             .add_systems(
                 Update,
                 (spawn_player.run_if(resource_exists_and_changed::<LevelPopulation>).in_set(PlayerSpawn), interpolate)
@@ -170,7 +206,7 @@ fn load_hero(mut commands: Commands, mut game: ResMut<LoadedGame>, choice: Res<P
         data.name
     );
     let class = character::class_index(&data.class);
-    commands.insert_resource(Hero { data, speed, strength, armor, radius, class });
+    commands.insert_resource(Hero { stats, data, speed, strength, armor, radius, class });
 }
 
 #[allow(clippy::too_many_arguments)]

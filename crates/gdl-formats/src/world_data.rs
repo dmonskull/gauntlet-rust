@@ -15,7 +15,8 @@
 //!       +0x4C 6 × i16 ENMY indices, +0x58 i16 camera record,
 //!       +0x5A i16 audio record,
 //!       +0x8E i16 monster slots, +0xAC..+0xD4 f32 monster and generator
-//!       scales (see [`LevelTuning`] and docs/monsters.md), +0xEC ambient,
+//!       scales (see [`LevelTuning`] and docs/monsters.md), +0x9C/+0xA0
+//!       experience level and scale, +0xEC ambient,
 //!       +0xF0 light direction, +0xFC light colour, +0x108 intensity
 //! CAMS  0x6C bytes per record: +0x00 i16 mode, +0x08 f32 pitch limit,
 //!       +0x0C/+0x18 target bounds min/max (used when +0x24 byte is set,
@@ -113,6 +114,10 @@ pub struct LevelTuning {
     pub generator_rate: f32,
     /// `+0xD4`: scales how many monsters a generator keeps alive.
     pub generator_max: f32,
+    /// `+0x9C`: heroes above this level earn less experience here.
+    pub experience_level: f32,
+    /// `+0xA0`: scales the experience monsters give.
+    pub experience_scale: f32,
 }
 
 impl LevelTuning {
@@ -126,6 +131,8 @@ impl LevelTuning {
             generator_hit_points: le_f32(l, 0xCC),
             generator_rate: le_f32(l, 0xD0),
             generator_max: le_f32(l, 0xD4),
+            experience_level: le_f32(l, 0x9C),
+            experience_scale: le_f32(l, 0xA0),
         }
     }
 }
