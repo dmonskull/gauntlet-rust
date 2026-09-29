@@ -13,7 +13,8 @@
 //!
 //! Stand-ins: bridges pop in and out rather than fading; triggers run on
 //! or off screen; mover and bridge sounds, camera shakes and cuts, waking
-//! monsters (flag 0x2000), quest triggers (flag 0x40), subtype 1 rotators
+//! monsters (flag 0x2000: only listed in `Mechanics::woken` for
+//! `critters.rs`), quest triggers (flag 0x40), subtype 1 rotators
 //! and the node flag 0x2000000 mode aren't done; only players (not
 //! monsters) hold a mover still by standing on it.
 
@@ -88,6 +89,8 @@ const STAND_ON_TARGET: u16 = 0x100;
 const CHAINED_TO: u16 = 0x200;
 const ALL_PLAYERS: u16 = 0x400;
 const LIFT_DELAY: u16 = 0x800;
+/// Coming on wakes the nearest placed statue monster (`critters.rs`).
+const WAKES: u16 = 0x2000;
 
 // Mover kind flags (the trigger flags' low byte) and state bits.
 const MOVES_CARRYING: u8 = 0x8;
@@ -259,6 +262,9 @@ pub struct Mechanics {
     members: HashMap<usize, Vec<usize>>,
     /// Bridges hidden now.
     hidden: HashSet<usize>,
+    /// Placements of wake triggers (flag 0x2000) that came on since the
+    /// critter update last took them.
+    pub woken: Vec<usize>,
 }
 
 fn setup(mut commands: Commands, population: Res<LevelPopulation>, nodes: Option<Res<LevelNodes>>) {
@@ -526,6 +532,10 @@ fn tick(
         let t = &mut mech.triggers[i];
         if t.action != 0 && before == 0 {
             debug!("trigger {} (subtype {:#x}) on", t.placement, t.subtype);
+            if flags & WAKES != 0 {
+                let placement = t.placement;
+                mech.woken.push(placement);
+            }
         }
         if flags & KEEP_TOUCHES == 0 {
             t.touches = if t.touches & 0xF == 0 { 0 } else { t.touches & 0xF0 };
