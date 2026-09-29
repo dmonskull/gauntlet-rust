@@ -58,8 +58,8 @@ fn update_hud(
         Some(e) => s += &format!("failed to load: {e}"),
         None => {
             s += &format!(
-                "{} objects, {} triangles in {} meshes",
-                game.levels[game.current].objects, stats.triangles, stats.meshes
+                "{} objects, {} triangles in {} meshes, {} collision triangles",
+                game.levels[game.current].objects, stats.triangles, stats.meshes, stats.collision_triangles
             )
         }
     }
@@ -70,6 +70,6 @@ fn update_hud(
     for (name, why) in &game.failures {
         s += &format!("\nlevel {name} failed: {why}");
     }
-    s += "\n\nWASD move  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed  [ ] level";
+    s += "\n\nWASD move  Space/Ctrl up/down  Shift fast  right-drag look  wheel speed  [ ] level  C collision";
     text.0 = s;
 }
