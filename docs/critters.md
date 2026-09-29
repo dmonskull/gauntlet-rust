@@ -1032,3 +1032,32 @@ the gargoyle and the general aren't run yet.
 - Kinds 5, 6, 7 and 9, the look nodes, and breakable nodes.
 - Checking the golem against hit spheres: blows on its BALL/HANDR spheres
   run out at 0.25 × its hit points.
+
+## The boss intro and victory (partly decoded)
+
+`r13-0x725c` is the boss sequence, run from `FUN_80056748` (level
+update):
+
+- 1 → 2: the boss's START ends (`0x8003c614`).
+- 2: the first time, a timer: now + a per-boss wait (`r2-0x6b00` for 0x23
+  chimera and 0x29–0x2A, `r2-0x6ae0` otherwise); when it runs out → 3.
+- 3: the boss plays ROAR; its end moves 3 → 4.
+- 4 → 5: start time noted (`r13-0x7260`).
+- 5: per boss, once `r2-0x6a98` seconds have passed: 0x26 (P-boss)
+  swaps its eye texture (`PBOSSEYEBALL`) → 6; 0x24 (djinn), 0x2A
+  (skorne2), and anything below 0x29 → 6 (0x2A and below also zero the
+  boss's effect timer `+0xAC8`); an intro effect `r13-0x7264` is stopped
+  and sounds `FUN_8009c214(3/4)` play.
+- 6: the fight.
+- 99: set once the boss is dead (`r13-0x7784`).
+- States 2–5 keep calling `FUN_80067acc` (camera; the "BCAM" boss
+  camera around `0x8001bbcc` is not read).
+
+Victory (`FUN_8001b854`, when the boss dies): `r13-0x7784` = 1; every
+player gets the realm's bit in `+0x1EC8` (`FUN_800a1d30`); an effect
+with the `BOSSKEY` model (plus `BOSSKEY2`, scale 30) appears at the boss's
+position + `TYPE +0xD0` (bosses below 0x2A only), with a sound
+(`FUN_8009eb78`). The players then request action `0x1C` (VICTORY) and
+leave through their exit state (`FUN_8007692c` case 4 → `FUN_80077ccc`,
+which starts the fade `r13-0x7344`). The runtime has the realm bit and a
+5-second return to the tower (stand-in).
