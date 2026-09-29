@@ -676,6 +676,8 @@ impl ActionState {
             0x47..=0x4E | 0x5F | 0x60 | 0x65 | 0x66 => strike.0 |= Strike::SHOT,
             0x52 => strike.0 |= Strike::KICK,
             0x54 => strike.0 |= Strike::FINISHER,
+            // Turbo attacks land like finishers (× 3, heavy).
+            0x56 | 0x57 => strike.0 |= Strike::FINISHER,
             0x63 if class != Some(class::SOR) => strike.0 |= Strike::POWER_THROW,
             _ => {}
         }

@@ -47,9 +47,14 @@ const DEFAULT_RADIUS: f32 = 1.5;
 /// into a monster attacks it.
 const ATTACK_AIM: bool = true;
 const WALK_INTO_ATTACK: bool = true;
-/// Stand-in: the turbo meter isn't modelled, so it stays empty (no turbo
-/// attacks, charge or co-op combos).
-const TURBO_METER: f32 = 0.0;
+/// The turbo meter (player `+0x828`): fills at 2 a second up to 100 while
+/// the hero isn't in a turbo-class action, drains at 20 a second while
+/// charging; a turbo attack needs 40 (ATTPWRB) or a full meter (ATTPWRC)
+/// and pays for it when the blow lands.
+const TURBO_MAX: f32 = 100.0;
+const TURBO_REGEN: f32 = 2.0;
+const TURBO_CHARGE_DRAIN: f32 = 20.0;
+const TURBO_ATTACK: f32 = 40.0;
 /// Lunges and strafe attacks drift forward at this stick magnitude when the
 /// stick is released.
 const DRIFT: f32 = 0.5;
@@ -102,6 +107,10 @@ pub struct Player {
     /// Blows taken since the last tick: damage, kind flags, summed push
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
+    /// Turbo meter, 0–100.
+    pub turbo: f32,
+    /// What the turbo attack under way will cost when it lands.
+    turbo_cost: f32,
     /// Collision radius: reach and range bands are measured from it.
     pub radius: f32,
     /// The game's class index.
@@ -310,6 +319,8 @@ fn spawn_player(
         strength: hero.strength,
         armor: hero.armor,
         pending_hit: (0.0, 0, Vec3::ZERO),
+        turbo: 0.0,
+        turbo_cost: 0.0,
         radius: hero.radius,
         class: hero.class,
     };
@@ -481,7 +492,7 @@ fn tick(
         // What the controls ask for. The action playing may hold the stick
         // back (magic, defending); lunges drift on without it.
         let magnitude = stick.magnitude * actions::stick_scale(current);
-        let mut intent = combat::classify(buttons, stick.magnitude, wrap(stick.heading - facing), TURBO_METER);
+        let mut intent = combat::classify(buttons, stick.magnitude, wrap(stick.heading - facing), p.turbo);
         p.actions.observe_buttons(buttons.held);
         let keeps_facing = intent.keeps_facing();
         let drive = if magnitude == 0.0 && !keeps_facing && actions::drifts_forward(current) { DRIFT } else { magnitude };
@@ -522,6 +533,16 @@ fn tick(
                 *v += add;
             }
         }
+        // Turbo attacks: a full meter swings ATTPWRC, 40 or more ATTPWRB.
+        if intent == Intent::Turbo {
+            if p.turbo >= TURBO_MAX {
+                requested = Action(0x57);
+                p.turbo_cost = TURBO_MAX;
+            } else if p.turbo >= TURBO_ATTACK {
+                requested = Action(0x56);
+                p.turbo_cost = TURBO_ATTACK;
+            }
+        }
         if let Some(a) = reaction_action(reaction) {
             requested = a;
         } else if reaction == 1 && matches!(intent, Intent::Idle | Intent::Walk | Intent::Run) {
@@ -553,6 +574,11 @@ fn tick(
                 animator.play(clip);
             }
             let strike = p.actions.switched(next.action, p.class);
+            // A turbo attack pays for itself as it lands.
+            if matches!(current.0, 0x56 | 0x57) {
+                p.turbo = (p.turbo - p.turbo_cost).max(0.0);
+                p.turbo_cost = 0.0;
+            }
             debug!(
                 "action {} -> {} (asked {}, clip {})",
                 current.name(),
@@ -578,6 +604,16 @@ fn tick(
             }
         }
         p.last_clip = (animator.action, animator.frame);
+
+        // The turbo meter: drains while charging, otherwise refills
+        // (not during the turbo-class actions themselves).
+        if p.actions.action.category().0 < 11 {
+            if p.actions.action == Action::SHOVE {
+                p.turbo = (p.turbo - TURBO_CHARGE_DRAIN * dt).max(0.0);
+            } else {
+                p.turbo = (p.turbo + TURBO_REGEN * dt).min(TURBO_MAX);
+            }
+        }
 
         // Facing: toward the stick, or held while strafing and defending;
         // attacking in place turns toward the target.
