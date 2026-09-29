@@ -331,3 +331,37 @@ generator (item class 3) earns 5 × the hit value for its monster type
 kill value, through the same `FUN_80076144` scaling (ported). A blow on a
 potion (class 1 subtype 4) sets it off (`FUN_80076618`, the potion's magic;
 not ported).
+
+## Quest items and the tower's gates (partly decoded)
+
+Pickups 13–16 (`FUN_8005de3c`) feed per-player progress kept in the
+character record (the `0xF0`-byte save slot at player `+0xCC`, from
+`+0xD18`; addresses below are that record's):
+
+- **13 legendary item** (`QUEST_*`, one per realm): `+0xDD8 |= 1 << amount`
+  (`FUN_800a1c34`), hint `0x71 + amount`.
+- **14 scroll**: shows message `amount − 1` (`FUN_8006d7f4`).
+- **15 gem**: `+0xDEE[amount] += 1` up to `0x80124438[amount]`
+  (`FUN_800a1af4`; also `+0x223A[amount]` in the tower). The amount is
+  the colour: BLUE 0, RED 1, YELLOW 2, GREEN 3, ORANGE 4, WHITE 5,
+  BLACK 6, PURPLE 7; the requirements are 0, 15, 100, 125, 150, 175, 200,
+  225 (and 250 for 8).
+- **16 gargoyle piece**: `+0xDE8[amount] += 1` up to `0x8012455c[amount]`
+  = 12, 20, 28 (`FUN_800a1850`; GARGSERP 0, GARGEAGL 1, GARGLION 2).
+
+Every piece also queues a pickup notice (`FUN_8007fa7c`, 24 slots at
+`0x80274f14`).
+
+`FUN_800a20c4` (the tower update) watches the counts: when the players'
+highest count for a gem colour reaches its requirement it shows
+`"UnlockLevel"` (`FUN_8009be58(colour)` names what opened) and sets the
+count to −1 (open); gargoyle sections the same with `"UnlockSection"`.
+Quest triggers (flag 0x40) are the gates: id < 100 asks `FUN_800a1928(id)`
+— open when a player's count for colour `id` is −1 or at its requirement —
+and otherwise shows `"NeedCrystals"` (`FUN_800a200c`, at most once every
+few seconds, `"DemoClosed"` in the demo); ids 101–103 ask the gargoyle
+section `id − 101` (`FUN_800a1728`, `"NeedGargItems"`). A closed gate
+clears its touches, so what it would move stays put.
+
+Not settled: how the gem totals on the disc (e.g. purple 144 in all) meet
+the requirements, and which tower exits each gate guards. Not ported.
