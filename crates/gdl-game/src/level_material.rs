@@ -110,7 +110,9 @@ impl LevelMaterial {
             params: Vec4::new(lit, cutoff, STAGE0_SCALE, 0.0),
             light_dir: light.dir,
             light_color: light.color,
-            uv_offset: Vec4::ZERO,
+            // z: additive (the shader premultiplies and leaves the
+            // destination's alpha alone, which Bevy's `Add` expects).
+            uv_offset: Vec4::new(0.0, 0.0, if alpha_mode == AlphaMode::Add { 1.0 } else { 0.0 }, 0.0),
             alpha_mode,
             depth_test: true,
             depth_write: true,

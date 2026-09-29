@@ -16,7 +16,7 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> light_dir: vec4<f32>;
 // rgb: light colour x intensity, a: object colour (0x80/0xFF)
 @group(#{MATERIAL_BIND_GROUP}) @binding(6) var<uniform> light_color: vec4<f32>;
-// xy: diffuse texture scroll (texture modifiers)
+// xy: diffuse texture scroll (texture modifiers); z: additive
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var<uniform> uv_offset: vec4<f32>;
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
@@ -56,5 +56,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if (color.a < params.y) {
         discard;
     }
-    return vec4(srgb_to_linear(clamp(color.rgb, vec3(0.0), vec3(1.0))), color.a);
+    let rgb = srgb_to_linear(clamp(color.rgb, vec3(0.0), vec3(1.0)));
+    if (uv_offset.z > 0.5) {
+        // The game's additive blend: source x source alpha + destination.
+        // Bevy draws `Add` as premultiplied alpha, so alpha 0 keeps all of
+        // the destination.
+        return vec4(rgb * color.a, 0.0);
+    }
+    return vec4(rgb, color.a);
 }

@@ -62,7 +62,7 @@ GS settings the data was authored for):
 | `0x40` | depth compare always (`GXSetZMode` func 7 instead of 6) |
 | `0x80` | no depth writes |
 | `0x4000` | skip the lightmap stage |
-| `0x800000` | additive: `GXSetBlendMode(BLEND, SRCALPHA, ONE)` (PS2 ALPHA `0x48`; normal is `0x44` = `SRCALPHA, INVSRCALPHA`) |
+| `0x800000` | additive: `GXSetBlendMode(BLEND, SRCALPHA, ONE)` (PS2 ALPHA `0x48`; normal is `0x44` = `SRCALPHA, INVSRCALPHA`). Bevy draws `AlphaMode::Add` as premultiplied alpha, so `level.wgsl` outputs colour × alpha with alpha 0 for these (without that, glows drew as dark discs) |
 | `0x100`, `0x200`/`0x400`/`0x100000` | tint colour from the instance / fade alpha from instance `+0x53` (not implemented) |
 | `0x8000` (→ `0x20000`), `0x10000000` | extra texture stages (not implemented) |
 
@@ -136,3 +136,17 @@ applies as a texture-matrix offset for bindings flagged `0x40`
 modifiers) and point at real bindings. Torches (`TORCHA`…) take their
 frames from `TORCH00`, which isn't in the level's own texture names — not
 resolved yet. We evaluate scrolls between ticks so they glide.
+
+## Particle-system nodes
+
+World nodes with node flag `0x800` (named `…PSYSE_FLAME…`, `…PSYSF_SPARK…`)
+are particle emitters: their model is only a placeholder shape (a white
+pyramid with `AAAWHITE`), which the game doesn't draw; triggers switch
+some on and off (`docs/mechanics.md`). `world.rs` leaves them out; the
+flames and sparks they emit aren't ported yet.
+
+## Item models
+
+Items built from an atree draw each node with that node's render flags
+(blending, depth, camera facing), like characters; hidden nodes and
+`…GLOW` nodes (textured by the effects system at run time) are left out.

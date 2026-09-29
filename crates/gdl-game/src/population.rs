@@ -18,6 +18,7 @@ use gdl_install::GameInstall;
 
 use crate::level::LevelData;
 use crate::level_material::LevelMaterial;
+use crate::billboard::Billboard;
 use crate::model_mesh::{self, TextureCache};
 use crate::world::LevelEntity;
 
@@ -339,10 +340,11 @@ struct Resolved {
 }
 
 /// A model's meshes, built once per name and shared by its placements:
-/// per atree node (or one entry for a plain object).
+/// per atree node (or one entry for a plain object), with how it faces the
+/// camera.
 struct BuiltModel {
     atree: Option<Arc<Atree>>,
-    parts: Vec<(usize, Vec<model_mesh::BuiltMesh>)>,
+    parts: Vec<(usize, Vec<model_mesh::BuiltMesh>, Option<Billboard>)>,
 }
 
 /// A generator model's meshes for each strength level (index = level − 1),
@@ -367,11 +369,25 @@ fn build_model(
     let parts = r
         .parts
         .iter()
-        .map(|&(node, object)| {
-            let at = [(object, Vec3::ZERO)];
-            (node, model_mesh::build(file, &mut caches[r.source], at, meshes, level_materials, images, &mut bounds))
+        .filter_map(|&(node, object)| {
+            // Each atree node draws with its render flags (blending, facing),
+            // like a character's; hidden nodes and glows (whose texture the
+            // effects system sets at run time) don't draw.
+            let flags = match &r.atree {
+                Some(atree) => {
+                    let n = &atree.nodes[node];
+                    if n.hidden() || n.name.ends_with("GLOW") {
+                        return None;
+                    }
+                    n.render_flags
+                }
+                None => 0,
+            };
+            let at = [(object, Vec3::ZERO, flags)];
+            let built = model_mesh::build_flagged(file, &mut caches[r.source], at, meshes, level_materials, images, &mut bounds);
+            Some((node, built, Billboard::from_flags(flags)))
         })
-        .filter(|(_, m)| !m.is_empty())
+        .filter(|(_, m, _)| !m.is_empty())
         .collect();
     BuiltModel { atree: r.atree, parts }
 }
@@ -492,7 +508,7 @@ pub fn spawn(
                             let m = built.entry(k).or_insert_with(|| {
                                 build_model(&sources, &mut caches, &n, monster, meshes, level_materials, images)
                             });
-                            m.parts.iter().flat_map(|(_, p)| p.iter().map(|b| (b.mesh.clone(), b.material.clone()))).collect()
+                            m.parts.iter().flat_map(|(_, p, _)| p.iter().map(|b| (b.mesh.clone(), b.material.clone()))).collect()
                         })
                         .collect::<Vec<_>>()
                 })
@@ -514,9 +530,12 @@ pub fn spawn(
                 LevelEntity,
             ))
             .id();
-        let attach = |commands: &mut Commands, parent: Entity, parts: &[model_mesh::BuiltMesh]| {
+        let attach = |commands: &mut Commands, parent: Entity, parts: &[model_mesh::BuiltMesh], facing: Option<Billboard>| {
             for p in parts {
-                commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(parent)));
+                let e = commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(parent))).id();
+                if let Some(b) = facing {
+                    commands.entity(e).insert((b, Transform::default()));
+                }
             }
         };
         match &model.atree {
@@ -529,14 +548,14 @@ pub fn spawn(
                     let at = Transform::from_translation(Vec3::from(node.offset));
                     bones.push(commands.spawn((at, Visibility::default(), ChildOf(parent))).id());
                 }
-                for (node, parts) in &model.parts {
-                    attach(commands, bones[*node], parts);
+                for (node, parts, facing) in &model.parts {
+                    attach(commands, bones[*node], parts, *facing);
                 }
                 commands.entity(root).insert(ItemRig { atree: atree.clone(), bones });
             }
             None => {
-                for (_, parts) in &model.parts {
-                    attach(commands, root, parts);
+                for (_, parts, facing) in &model.parts {
+                    attach(commands, root, parts, *facing);
                 }
                 if let Some(looks) = tier_looks {
                     commands.entity(root).insert(GeneratorLooks(looks));
