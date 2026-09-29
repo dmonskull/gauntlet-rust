@@ -1057,7 +1057,7 @@ Victory (`FUN_8001b854`, when the boss dies): `r13-0x7784` = 1; every
 player gets the realm's bit in `+0x1EC8` (`FUN_800a1d30`); an effect
 with the `BOSSKEY` model (plus `BOSSKEY2`, scale 30) appears at the boss's
 position + `TYPE +0xD0` (bosses below 0x2A only), with a sound
-(`FUN_8009eb78`). The players then request action `0x1C` (VICTORY) and
+(`FUN_8009eb78`). The players then request action `0x1C` (PICK: they pick up the key) and
 leave through their exit state (`FUN_8007692c` case 4 → `FUN_80077ccc`,
 which starts the fade `r13-0x7344`). The runtime has the realm bit and a
 5-second return to the tower (stand-in).
