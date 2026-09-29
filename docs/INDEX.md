@@ -13,6 +13,7 @@ One file per system, written only once it's confirmed against the actual
 | [chunk-files.md](chunk-files.md) | The `.WAD`/`.ROM` tagged-chunk container, and game text |
 | [rendering.md](rendering.md) | How a level is drawn: diffuse × colour × lightmap |
 | [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning |
+| [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music |
 
 ## Confirmed and implemented
 
@@ -26,6 +27,8 @@ One file per system, written only once it's confirmed against the actual
 - The `.WAD`/`.ROM` container every data file uses, and all game text.
 - Player class stats, and walking/running a hero around a level at the
   game's 30 Hz tick with its speeds and turn rate.
+- Audio: all 65 sound banks, the sound catalog and all 111 music streams
+  decode; each level plays its own music, sound effects play by name.
 
 ## Reverse engineering setup
 
@@ -55,5 +58,8 @@ names), which is how most systems here were found.
   actions.
 - Gameplay: the main loop, entity update, combat, items, co-op.
 - `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
-  `FUN_80058074`: cameras, audio, 14 named realm types).
-- The rest of `WORLDS.PS2` (collision/grid tables) and audio.
+  `FUN_80058074`: cameras, enemies, maps, 14 named realm types). Only the
+  chunk directory, level names and audio records are parsed so far.
+- The rest of `WORLDS.PS2` (collision/grid tables).
+- Audio behaviour beyond playback: music track switching, ducking,
+  positional sound.
