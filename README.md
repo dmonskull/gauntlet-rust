@@ -92,7 +92,7 @@ powerups; pickups, keyed doors, exits and transporters work. See
 
 Environment switches for testing: `GDL_SCREENSHOT=out.png` (with
 `GDL_SHOT_AT=<frame>`) saves a screenshot and exits, `GDL_STICK=x,y` holds
-the stick, `GDL_FREE_CAMERA=1` starts in the free camera, `GDL_FPS=1` logs
+the stick, `GDL_FREE_CAMERA=1` starts in the free camera, `GDL_WARP="x,y,z"` (start the hero there), `GDL_LIST_NEAR="x,y,z"` (log level objects near a point), `GDL_FPS=1` logs
 the frame rate, `GDL_BUTTONS=attack@20-21,power` holds buttons,
 `GDL_DUMMY=4` places a practice target, `GDL_DEBUG_HUD=1` shows the
 developer overlay.

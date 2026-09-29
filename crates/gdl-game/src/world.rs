@@ -172,15 +172,35 @@ fn spawn_level(
     let mut cache = TextureCache::new(&level.model, &level.textures);
     // Static instances merge into shared meshes; ones that turn toward the
     // camera stay separate entities (their meshes shared per object).
+    // `GDL_LIST_NEAR="x,y,z"` logs the model placements within 12 units.
+    if let Some(v) = std::env::var("GDL_LIST_NEAR").ok().and_then(|s| {
+        let v: Vec<f32> = s.split(',').filter_map(|x| x.parse().ok()).collect();
+        (v.len() == 3).then(|| Vec3::new(v[0], v[1], v[2]))
+    }) {
+        for (i, &(object, at, flags)) in level.placements.iter().enumerate() {
+            let o = &level.model.objects[object];
+            let d = Vec3::from(at).distance(v);
+            if d < 12.0 {
+                let tex: Vec<String> = o.submeshes.iter().map(|m| level.model.texture_names.iter().find(|t| t.binding == m.descriptor.texture).map_or(String::from("?"), |t| t.name.clone())).collect();
+                let node = level.placement_nodes.get(i).map(|&n| level.nodes[n].flags);
+                info!("near {d:.1}: {} flags {flags:#x} node flags {node:x?} at {at:?} textures {tex:?}", o.name);
+            }
+        }
+    }
     // What triggers and rotators move (`mechanics.rs`) is drawn apart,
     // one entity per moving group, so it can be posed.
     let nodes = mechanics::LevelNodes::new(level.nodes.clone());
     let roots = mechanics::moving_roots(&level.population);
     let group_of = |i: usize| level.placement_nodes.get(i).and_then(|&n| nodes.group_of(n, &roots));
+    // Particle-system nodes only mark where effects come from.
+    let emitter = |i: usize| {
+        level.placement_nodes.get(i).is_some_and(|&n| level.nodes[n].flags & gdl_formats::collision::node_flags::PARTICLES != 0)
+    };
     let (facing, fixed): (Vec<_>, Vec<_>) = level
         .placements
         .iter()
         .enumerate()
+        .filter(|&(i, _)| !emitter(i))
         .partition(|&(i, &(_, _, flags))| group_of(i).is_none() && Billboard::from_flags(flags).is_some());
     let (moving, fixed): (Vec<_>, Vec<_>) = fixed.into_iter().partition(|&(i, _)| group_of(i).is_some());
     let instances = fixed.iter().map(|&(_, &(object, at, flags))| (object, Vec3::from(at), flags));

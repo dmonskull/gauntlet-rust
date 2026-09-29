@@ -30,8 +30,17 @@ impl<'a> TextureCache<'a> {
         self.decoded
             .entry(binding)
             .or_insert_with(|| {
-                let b = model.bindings.get(binding as usize)?;
-                let image = texture::decode(textures, b).ok()?;
+                let Some(b) = model.bindings.get(binding as usize) else {
+                    debug!("texture binding {binding} missing ({} bindings)", model.bindings.len());
+                    return None;
+                };
+                let image = match texture::decode(textures, b) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        debug!("texture binding {binding} ({}) doesn't decode: {e}", model.texture_names.iter().find(|t| t.binding == binding).map_or("?", |t| t.name.as_str()));
+                        return None;
+                    }
+                };
                 // The game alpha-blends everything (discarding alpha <= 2).
                 // Blending is only needed where alpha is actually partial;
                 // cut-outs keep a mask so they sort and depth-write like
@@ -90,24 +99,9 @@ pub struct BuiltMesh {
     pub triangles: usize,
 }
 
-/// Merges the given objects (each moved by its offset) into one mesh per
-/// (diffuse, lightmap) pair, drawn the default way.
-pub fn build(
-    model: &ModelFile,
-    cache: &mut TextureCache,
-    instances: impl IntoIterator<Item = (usize, Vec3)>,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<LevelMaterial>,
-    images: &mut Assets<Image>,
-    bounds: &mut (Vec3, Vec3),
-) -> Vec<BuiltMesh> {
-    let instances = instances.into_iter().map(|(object, offset)| (object, offset, 0));
-    build_flagged(model, cache, instances, meshes, materials, images, bounds)
-}
-
-/// Like [`build`], with each instance's render flags (`WorldNode::render_flags`)
-/// choosing its blending and depth handling; one mesh per (diffuse,
-/// lightmap, draw state).
+/// Merges the given objects (each moved by its offset), each instance's
+/// render flags (`WorldNode::render_flags`) choosing its blending and depth
+/// handling, into one mesh per (diffuse, lightmap, draw state).
 pub fn build_flagged(
     model: &ModelFile,
     cache: &mut TextureCache,

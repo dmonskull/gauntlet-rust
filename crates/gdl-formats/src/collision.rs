@@ -61,6 +61,9 @@ pub mod node_flags {
     pub const NO_PUSH: u32 = 0x38;
     /// Excluded from the moving-node pass.
     pub const DYNAMIC_OFF: u32 = 0x1000_0000;
+    /// A particle system (`PSYS…` nodes): its model is only the emitter's
+    /// placeholder shape, which the game doesn't draw.
+    pub const PARTICLES: u32 = 0x800;
 }
 
 /// One collision triangle, as stored (`0x28` bytes).
