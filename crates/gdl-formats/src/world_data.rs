@@ -1,21 +1,28 @@
 //! `WDATA/*.WAD` — per-realm world data. Parsed so far: each level's name,
-//! camera record and audio record; the camera records; the audio records
-//! (sound bank + music stream). The container is `chunk.rs`.
+//! camera record, audio record, enemy list and monster tuning; the camera
+//! records; the audio records (sound bank + music stream); the realm's
+//! enemy records. The container is `chunk.rs`.
 //!
-//! Confirmed against the world-data loader and the level-music code in
-//! `main.dol` (see `docs/audio-format.md`). Little-endian.
+//! Confirmed against the world-data loader, the level-music code and the
+//! monster code in `main.dol` (see `docs/audio-format.md`,
+//! `docs/monsters.md`). Little-endian.
 //!
 //! ```text
 //! 0x00  u32 directory offset, u32 chunk count
 //! dir   16 bytes per chunk: u32 tag ('WRLD', 'LEVL', 'AUDS', …),
 //!       u32 offset, u32 record count, u32
 //! LEVL  0x10C bytes per level: +0x08 name ("A1" → LEVELS/levelA1),
-//!       +0x58 i16 camera record, +0x5A i16 audio record, +0xEC ambient,
+//!       +0x4C 6 × i16 ENMY indices, +0x58 i16 camera record,
+//!       +0x5A i16 audio record,
+//!       +0x8E i16 monster slots, +0xAC..+0xD4 f32 monster and generator
+//!       scales (see [`LevelTuning`] and docs/monsters.md), +0xEC ambient,
 //!       +0xF0 light direction, +0xFC light colour, +0x108 intensity
 //! CAMS  0x6C bytes per record: +0x00 i16 mode, +0x08 f32 pitch limit,
 //!       +0x0C/+0x18 target bounds min/max (used when +0x24 byte is set,
 //!       else the level's own bounds inset by 8, raised by 4),
 //!       +0x2C/+0x30 f32 near/far distance
+//! ENMY  0x18 bytes per record: +0x00 i32 enemy type, +0x04 i32 subtype,
+//!       +0x08 name[16]
 //! AUDS  0x3C bytes per record: +0x00 bank name[16], +0x18 stream name[16],
 //!       +0x28 i16 track count, +0x2C 8 × i16 parts per track
 //! ```
@@ -27,6 +34,7 @@ use crate::chunk::{ChunkError, ChunkFile};
 const LEVEL_LEN: usize = 0x10C;
 const AUDIO_LEN: usize = 0x3C;
 const CAMERA_LEN: usize = 0x6C;
+const ENEMY_LEN: usize = 0x18;
 const MAX_TRACKS: usize = 8;
 
 #[derive(Debug, Error)]
@@ -54,6 +62,10 @@ pub struct WorldLevel {
     /// Index into [`WorldData::cameras`].
     pub camera: usize,
     pub light: LevelLight,
+    pub tuning: LevelTuning,
+    /// `+0x4C`: up to six indices into [`WorldData::enemies`] — the enemy
+    /// types this level loads.
+    pub enemies: Vec<usize>,
 }
 
 /// The level's light for anything not prelit: a grey ambient level and one
@@ -66,6 +78,56 @@ pub struct LevelLight {
     pub direction: [f32; 3],
     pub color: [f32; 3],
     pub intensity: f32,
+}
+
+/// One `ENMY` record (`0x18` bytes): an enemy type the realm uses, and the
+/// slot it fills in a level that lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RealmEnemy {
+    /// `+0x00`: enemy type id (`population::ENEMY_CODES`).
+    pub enemy: i32,
+    /// `+0x04`: 1 small, 2 main, 3 elite, 4 special variants, 5 critter,
+    /// 9 boss; 11+ loads the numbered folder (`<name><subtype − 10>`).
+    pub subtype: i32,
+    /// `+0x08`: name[16] handed to the sound setup (`GRUNT`, `RAT`).
+    pub name: String,
+}
+
+/// A level's monster tuning, from its level record: the enemy setup, the
+/// per-frame monster update and the generator constructor read these.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LevelTuning {
+    /// `+0x8E`: how many monsters can be alive at once (13–25).
+    pub monster_slots: i16,
+    /// `+0xAC`: scales every monster's hit points.
+    pub monster_hit_points: f32,
+    /// `+0xB0`: scales monster walking speed.
+    pub monster_speed: f32,
+    /// `+0xB4`: scales how far monsters notice players (× 30 units).
+    pub monster_awareness: f32,
+    /// `+0xBC`: scales the damage monsters deal.
+    pub monster_damage: f32,
+    /// `+0xCC`: scales generator hit points.
+    pub generator_hit_points: f32,
+    /// `+0xD0`: scales generator spawn rates (the wait between monsters).
+    pub generator_rate: f32,
+    /// `+0xD4`: scales how many monsters a generator keeps alive.
+    pub generator_max: f32,
+}
+
+impl LevelTuning {
+    fn parse(l: &[u8]) -> Self {
+        Self {
+            monster_slots: le_u16(l, 0x8E) as i16,
+            monster_hit_points: le_f32(l, 0xAC),
+            monster_speed: le_f32(l, 0xB0),
+            monster_awareness: le_f32(l, 0xB4),
+            monster_damage: le_f32(l, 0xBC),
+            generator_hit_points: le_f32(l, 0xCC),
+            generator_rate: le_f32(l, 0xD0),
+            generator_max: le_f32(l, 0xD4),
+        }
+    }
 }
 
 impl WorldLevel {
@@ -140,9 +202,16 @@ pub struct WorldData {
     pub levels: Vec<WorldLevel>,
     pub audio: Vec<LevelAudio>,
     pub cameras: Vec<LevelCamera>,
+    /// The realm's `ENMY` records.
+    pub enemies: Vec<RealmEnemy>,
 }
 
 impl WorldData {
+    /// The enemy records a level lists.
+    pub fn level_enemies(&self, level: &WorldLevel) -> Vec<RealmEnemy> {
+        level.enemies.iter().filter_map(|&i| self.enemies.get(i).cloned()).collect()
+    }
+
     pub fn parse(file: &[u8]) -> Result<Self, WorldDataError> {
         let chunks = ChunkFile::parse(file)?;
         let records = |tag: &'static str, size: usize| {
@@ -179,6 +248,18 @@ impl WorldData {
             })
             .collect();
 
+        // Not every test file has enemies; every realm WAD has the chunk.
+        let enemies: Vec<RealmEnemy> = match chunks.get("ENMY") {
+            Some(_) => records("ENMY", ENEMY_LEN)?
+                .map(|e| RealmEnemy {
+                    enemy: le_u32(e, 0) as i32,
+                    subtype: le_u32(e, 4) as i32,
+                    name: cstr(&e[0x08..0x18]),
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
         let levels = records("LEVL", LEVEL_LEN)?
             .map(|l| {
                 let name = cstr(&l[0x08..0x18]);
@@ -200,17 +281,23 @@ impl WorldData {
                     color: vec3(l, 0xFC),
                     intensity: le_f32(l, 0x108),
                 };
-                Ok(WorldLevel { name, audio: audio_index, camera, light })
+                let listed = (0..6).map(|i| le_u16(l, 0x4C + i * 2) as i16);
+                let enemies = listed.filter_map(|i| usize::try_from(i).ok()).filter(|&i| i < enemies.len()).collect();
+                Ok(WorldLevel { name, audio: audio_index, camera, light, tuning: LevelTuning::parse(l), enemies })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(Self { levels, audio, cameras })
+        Ok(Self { levels, audio, cameras, enemies })
     }
 
     /// The level with folder name `levelA1` (case-insensitive).
     pub fn level(&self, folder: &str) -> Option<&WorldLevel> {
         self.levels.iter().find(|l| l.folder().eq_ignore_ascii_case(folder))
     }
+}
+
+fn le_u32(b: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
 
 fn le_u16(b: &[u8], at: usize) -> u16 {
@@ -312,6 +399,20 @@ mod tests {
                 assert!((0.0..=std::f32::consts::FRAC_PI_2).contains(&c.pitch_limit), "{p:?} {c:?}");
                 if let Some((lo, hi)) = c.bounds {
                     assert!((0..3).all(|i| lo[i] < hi[i]), "{p:?} {c:?}");
+                }
+            }
+            for e in &w.enemies {
+                // Regular types and critters by name, bosses by id.
+                assert!((0..=44).contains(&e.enemy) && e.enemy != 28, "{p:?} {e:?}");
+                assert!([1, 2, 3, 4, 5, 9, 12, 13].contains(&e.subtype), "{p:?} {e:?}");
+            }
+            for l in &w.levels {
+                let t = &l.tuning;
+                assert!((13..=25).contains(&t.monster_slots), "{p:?} {} {t:?}", l.name);
+                // The forest realm and some secret/test levels leave the
+                // scales at 0; everywhere else they're 0.4–3.
+                for v in [t.monster_hit_points, t.monster_speed, t.monster_awareness, t.monster_damage] {
+                    assert!(v == 0.0 || (0.4..=3.0).contains(&v), "{p:?} {} {t:?}", l.name);
                 }
             }
             levels += w.levels.len();

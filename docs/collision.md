@@ -192,7 +192,8 @@ logs `"Bad Item floor pos"` when nothing is found.
 
 Monsters (`FUN_800453f0` → `FUN_80045b98`, 0x394-byte records at
 `0x802515e8`) do the same with a probe radius of half the actor radius,
-`+5` extra depth and their own step value.
+`+5` extra depth and their own step value — radius and step from the
+enemy type tables, details in [monsters.md](monsters.md).
 
 `LevelCollision::move_actor` implements `FUN_80035320`'s version; the actor
 type values (radius, step) aren't decoded yet, so callers pass them.
@@ -356,8 +357,8 @@ query's reach (the rest are in the air: torches, ceilings, scenery).
 
 ## Not confirmed
 
-- What `step` and radius each monster/actor type uses (type data not
-  decoded). Players: see "Moving a player".
+- What `step` and radius each monster/actor type uses (monsters': [monsters.md](monsters.md)).
+  Players: see "Moving a player".
 - For players: the airborne flag `+0x8d4 & 0x8000` (who sets it), the
   node lock flags `0x0C000000`/`0x20000000`, and whether any level's
   moving nodes actually take the 3D wall slide at rest positions (we test

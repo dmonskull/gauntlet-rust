@@ -168,8 +168,9 @@ type PartMeshes = Vec<(Handle<Mesh>, Handle<LevelMaterial>)>;
 struct Flipbook {
     /// The node's child entities that show the current frame's meshes.
     slots: Vec<Entity>,
-    /// `frames[action][frame]` = the meshes of that frame's object.
-    frames: Vec<Vec<PartMeshes>>,
+    /// `frames[action][frame]` = the meshes of that frame's object; shared
+    /// by every instance of the character.
+    frames: Arc<Vec<Vec<PartMeshes>>>,
     shown: Option<(usize, usize)>,
 }
 
@@ -243,6 +244,183 @@ impl Animator {
     }
 }
 
+/// A character's meshes, built once and shared by every copy spawned with
+/// [`CharacterModel::spawn`] (monsters come and go by the dozen).
+pub struct CharacterModel {
+    /// Per skeleton node: rest offset and parent.
+    nodes: Vec<(Vec3, Option<usize>)>,
+    /// Per skeleton node: the meshes of its own model object, if drawn, and
+    /// the camera-facing mode its render flags ask for.
+    parts: Vec<(PartMeshes, Option<Billboard>)>,
+    /// Flipbook nodes and their frames.
+    flipbooks: Vec<(usize, Arc<Vec<Vec<PartMeshes>>>)>,
+    /// A player's weapon, in its hand bone.
+    weapon: Option<(usize, PartMeshes)>,
+    shadow: PartMeshes,
+    clips: Arc<Atree>,
+    clip_bone: Vec<Option<usize>>,
+    /// Rough rest-pose bounds in the root's space.
+    pub bounds: (Vec3, Vec3),
+}
+
+impl CharacterModel {
+    /// Builds every mesh `data` can show: each node's part, every flipbook
+    /// frame, the weapon and the blob shadow.
+    pub fn build(
+        data: &CharacterData,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<LevelMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Self {
+        let mut cache = TextureCache::new(&data.model, &data.textures);
+        let mut bounds = (Vec3::MAX, Vec3::MIN);
+        let object_index = |name: &str| data.model.objects.iter().position(|o| o.name == name);
+        let mut build = |object: Option<usize>, flags: u32| -> PartMeshes {
+            let Some(object) = object else { return Vec::new() };
+            let instance = [(object, Vec3::ZERO, flags)];
+            model_mesh::build_flagged(&data.model, &mut cache, instance, meshes, materials, images, &mut bounds)
+                .into_iter()
+                .map(|b| (b.mesh, b.material))
+                .collect()
+        };
+
+        let mut parts = Vec::with_capacity(data.skeleton.nodes.len());
+        let mut flipbooks = Vec::new();
+        for (i, node) in data.skeleton.nodes.iter().enumerate() {
+            // The game hides DUMMY nodes and nodes with the hidden render flag.
+            // The rest draw with their render flags. Glows (CFXPGLOW: additive,
+            // camera-facing) get their texture from the effects system at run
+            // time (the instance's texture override), so they wait for effects.
+            let visible = node.has_model() && !node.hidden() && node.name != "DUMMY" && !node.name.ends_with("GLOW");
+            let own = if visible { object_index(&format!("{}{}", data.skeleton.name, node.name)) } else { None };
+            parts.push((build(own, node.render_flags), Billboard::from_flags(node.render_flags)));
+            if node.kind == NodeKind::Flipbook {
+                let frames: Vec<Vec<PartMeshes>> = (0..data.clips.actions.len())
+                    .map(|a| {
+                        let Some(entry) = data.skeleton.flipbook_entry(i, a) else { return Vec::new() };
+                        let Some(first) = object_index(&entry.first) else { return Vec::new() };
+                        (0..entry.frames.max(1) as usize)
+                            .filter(|k| first + k < data.model.objects.len())
+                            .map(|k| build(Some(first + k), 0))
+                            .collect()
+                    })
+                    .collect();
+                flipbooks.push((i, Arc::new(frames)));
+            }
+        }
+
+        // The weapon goes in the class's hand bone: WEAP_<colour>_HD1..3 by
+        // player level, or WEAP_HOLD for classes without per-colour weapons.
+        let weapon = if data.class.is_empty() {
+            None
+        } else {
+            let hand = CLASS_HAND_BONES.iter().find(|(c, _)| *c == data.class).map_or("R_WRIST", |(_, b)| *b);
+            data.skeleton.node_index(hand).map(|bone| {
+                let weapon = object_index(&format!("WEAP_{}_HD1", data.colour)).or_else(|| object_index("WEAP_HOLD"));
+                (bone, build(weapon, 0))
+            })
+        };
+        // Blob shadow under the character.
+        let shadow = build(object_index("SHADOWL1"), 0);
+
+        // Skeletal nodes find their clip bone through the clips' own node of the
+        // same name (players: the variant skeleton vs the class's shared clips;
+        // monsters: the same atree).
+        let clip_bone = data
+            .skeleton
+            .nodes
+            .iter()
+            .map(|n| data.clips.node_index(&n.name).and_then(|j| data.clips.clip_bone(j)))
+            .collect();
+
+        // Rest-pose joint positions widen the part-mesh bounds, which are in
+        // each part's own (bone) space.
+        let mut joints: Vec<Vec3> = Vec::with_capacity(data.skeleton.nodes.len());
+        for n in &data.skeleton.nodes {
+            let p = n.parent.map_or(Vec3::ZERO, |p| joints[p]) + Vec3::from(n.offset);
+            bounds.0 = bounds.0.min(p);
+            bounds.1 = bounds.1.max(p);
+            joints.push(p);
+        }
+
+        Self {
+            nodes: data.skeleton.nodes.iter().map(|n| (Vec3::from(n.offset), n.parent)).collect(),
+            parts,
+            flipbooks,
+            weapon,
+            shadow,
+            clips: data.clips.clone(),
+            clip_bone,
+            bounds,
+        }
+    }
+
+    /// Spawns a copy posed at `transform`, with an [`Animator`] on its root
+    /// entity, which is returned.
+    pub fn spawn(&self, transform: Transform, commands: &mut Commands) -> Entity {
+        let root = commands.spawn((transform, Visibility::default())).id();
+        let attach = |parts: &PartMeshes, parent: Entity, commands: &mut Commands| {
+            for (mesh, material) in parts {
+                commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), ChildOf(parent)));
+            }
+        };
+        let mut bones: Vec<Entity> = Vec::with_capacity(self.nodes.len());
+        for (i, &(offset, parent)) in self.nodes.iter().enumerate() {
+            let parent = parent.map_or(root, |p| bones[p]);
+            let bone = commands.spawn((Transform::from_translation(offset), Visibility::default(), ChildOf(parent))).id();
+            let (parts, facing) = &self.parts[i];
+            let target = match facing {
+                Some(mode) if !parts.is_empty() => {
+                    commands.spawn((Transform::default(), Visibility::default(), *mode, ChildOf(bone))).id()
+                }
+                _ => bone,
+            };
+            attach(parts, target, commands);
+            bones.push(bone);
+        }
+        let flipbooks = self
+            .flipbooks
+            .iter()
+            .map(|(i, frames)| {
+                // Slots start with any frame's meshes so they carry the mesh and
+                // material components the animator swaps each frame.
+                let slots_needed = frames.iter().flatten().map(Vec::len).max().unwrap_or(0);
+                let sample: Vec<_> = frames.iter().flatten().flatten().cloned().collect();
+                let slots = (0..slots_needed)
+                    .map(|s| {
+                        let (mesh, material) = sample[s.min(sample.len() - 1)].clone();
+                        let slot = (Mesh3d(mesh), MeshMaterial3d(material), Visibility::Hidden, ChildOf(bones[*i]));
+                        commands.spawn(slot).id()
+                    })
+                    .collect();
+                (*i, Flipbook { slots, frames: frames.clone(), shown: None })
+            })
+            .collect();
+        if let Some((bone, parts)) = &self.weapon {
+            attach(parts, bones[*bone], commands);
+        }
+        // Lifted off the floor it lies on (the collision floor can sit a
+        // little below the drawn one).
+        let lift = commands.spawn((Transform::from_xyz(0.0, SHADOW_LIFT, 0.0), Visibility::default(), ChildOf(root))).id();
+        attach(&self.shadow, lift, commands);
+
+        let mut animator = Animator {
+            clips: self.clips.clone(),
+            rest: self.nodes.iter().map(|n| n.0).collect(),
+            bones,
+            clip_bone: self.clip_bone.clone(),
+            flipbooks,
+            action: 0,
+            frame: 0.0,
+            tracks: Vec::new(),
+            blend: Blend::None,
+        };
+        animator.play(0);
+        commands.entity(root).insert(animator);
+        root
+    }
+}
+
 /// Spawns `data` posed at `transform`. Returns the root entity and rough
 /// rest-pose bounds in the root's space (skeleton joints plus part meshes),
 /// for framing a camera.
@@ -254,120 +432,9 @@ pub fn spawn_character(
     materials: &mut Assets<LevelMaterial>,
     images: &mut Assets<Image>,
 ) -> (Entity, Vec3, Vec3) {
-    let root = commands.spawn((transform, Visibility::default())).id();
-    let mut cache = TextureCache::new(&data.model, &data.textures);
-    let mut bones: Vec<Entity> = Vec::with_capacity(data.skeleton.nodes.len());
-    let mut bounds = (Vec3::MAX, Vec3::MIN);
-    let object_index = |name: &str| data.model.objects.iter().position(|o| o.name == name);
-
-    let mut build = |object: usize, flags: u32| {
-        model_mesh::build_flagged(&data.model, &mut cache, [(object, Vec3::ZERO, flags)], meshes, materials, images, &mut bounds)
-    };
-    let attach = |object: Option<usize>, parent: Entity, commands: &mut Commands, build: &mut dyn FnMut(usize, u32) -> Vec<model_mesh::BuiltMesh>| -> bool {
-        let Some(object) = object else { return false };
-        for b in build(object, 0) {
-            commands.spawn((Mesh3d(b.mesh), MeshMaterial3d(b.material), ChildOf(parent)));
-        }
-        true
-    };
-
-    let mut flipbooks = Vec::new();
-    for (i, node) in data.skeleton.nodes.iter().enumerate() {
-        let parent = node.parent.map_or(root, |p| bones[p]);
-        let bone = commands
-            .spawn((Transform::from_translation(Vec3::from(node.offset)), Visibility::default(), ChildOf(parent)))
-            .id();
-        // The game hides DUMMY nodes and nodes with the hidden render flag.
-        // The rest draw with their render flags. Glows (CFXPGLOW: additive,
-        // camera-facing) get their texture from the effects system at run
-        // time (the instance's texture override), so they wait for effects.
-        let visible = node.has_model() && !node.hidden() && node.name != "DUMMY" && !node.name.ends_with("GLOW");
-        if let Some(object) = object_index(&format!("{}{}", data.skeleton.name, node.name)).filter(|_| visible) {
-            let target = match Billboard::from_flags(node.render_flags) {
-                Some(mode) => commands.spawn((Transform::default(), Visibility::default(), mode, ChildOf(bone))).id(),
-                None => bone,
-            };
-            for b in build(object, node.render_flags) {
-                commands.spawn((Mesh3d(b.mesh), MeshMaterial3d(b.material), ChildOf(target)));
-            }
-        }
-        if node.kind == NodeKind::Flipbook {
-            let frames: Vec<Vec<PartMeshes>> = (0..data.clips.actions.len())
-                .map(|a| {
-                    let Some(entry) = data.skeleton.flipbook_entry(i, a) else { return Vec::new() };
-                    let Some(first) = object_index(&entry.first) else { return Vec::new() };
-                    (0..entry.frames.max(1) as usize)
-                        .filter(|k| first + k < data.model.objects.len())
-                        .map(|k| build(first + k, 0).into_iter().map(|b| (b.mesh, b.material)).collect())
-                        .collect()
-                })
-                .collect();
-            // Slots start with any frame's meshes so they carry the mesh and
-            // material components the animator swaps each frame.
-            let slots_needed = frames.iter().flatten().map(Vec::len).max().unwrap_or(0);
-            let sample: Vec<_> = frames.iter().flatten().flatten().cloned().collect();
-            let slots = (0..slots_needed)
-                .map(|s| {
-                    let (mesh, material) = sample[s.min(sample.len() - 1)].clone();
-                    commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), Visibility::Hidden, ChildOf(bone))).id()
-                })
-                .collect();
-            flipbooks.push((i, Flipbook { slots, frames, shown: None }));
-        }
-        bones.push(bone);
-    }
-
-    // The weapon goes in the class's hand bone: WEAP_<colour>_HD1..3 by
-    // player level, or WEAP_HOLD for classes without per-colour weapons.
-    if !data.class.is_empty() {
-        let hand = CLASS_HAND_BONES.iter().find(|(c, _)| *c == data.class).map_or("R_WRIST", |(_, b)| *b);
-        if let Some(i) = data.skeleton.node_index(hand) {
-            let weapon = object_index(&format!("WEAP_{}_HD1", data.colour)).or_else(|| object_index("WEAP_HOLD"));
-            attach(weapon, bones[i], commands, &mut build);
-        }
-    }
-    // Blob shadow under the character, lifted off the floor it lies on (the
-    // collision floor can sit a little below the drawn one).
-    if let Some(shadow) = object_index("SHADOWL1") {
-        let lift = commands.spawn((Transform::from_xyz(0.0, SHADOW_LIFT, 0.0), Visibility::default(), ChildOf(root))).id();
-        for b in build(shadow, 0) {
-            commands.spawn((Mesh3d(b.mesh), MeshMaterial3d(b.material), ChildOf(lift)));
-        }
-    }
-
-    // Skeletal nodes find their clip bone through the clips' own node of the
-    // same name (players: the variant skeleton vs the class's shared clips;
-    // monsters: the same atree).
-    let clip_bone = data
-        .skeleton
-        .nodes
-        .iter()
-        .map(|n| data.clips.node_index(&n.name).and_then(|j| data.clips.clip_bone(j)))
-        .collect();
-    let mut animator = Animator {
-        clips: data.clips.clone(),
-        rest: data.skeleton.nodes.iter().map(|n| Vec3::from(n.offset)).collect(),
-        bones,
-        clip_bone,
-        flipbooks,
-        action: 0,
-        frame: 0.0,
-        tracks: Vec::new(),
-        blend: Blend::None,
-    };
-    animator.play(0);
-    commands.entity(root).insert(animator);
-
-    // Rest-pose joint positions widen the part-mesh bounds, which are in
-    // each part's own (bone) space.
-    let mut joints: Vec<Vec3> = Vec::with_capacity(data.skeleton.nodes.len());
-    for n in &data.skeleton.nodes {
-        let p = n.parent.map_or(Vec3::ZERO, |p| joints[p]) + Vec3::from(n.offset);
-        bounds.0 = bounds.0.min(p);
-        bounds.1 = bounds.1.max(p);
-        joints.push(p);
-    }
-    (root, bounds.0, bounds.1)
+    let model = CharacterModel::build(data, meshes, materials, images);
+    let root = model.spawn(transform, commands);
+    (root, model.bounds.0, model.bounds.1)
 }
 
 fn animate(
