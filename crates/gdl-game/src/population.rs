@@ -345,6 +345,37 @@ struct BuiltModel {
     parts: Vec<(usize, Vec<model_mesh::BuiltMesh>)>,
 }
 
+/// A generator model's meshes for each strength level (index = level − 1),
+/// for stepping it down as it's damaged.
+#[derive(Component)]
+pub struct GeneratorLooks(pub Vec<Vec<(Handle<Mesh>, Handle<LevelMaterial>)>>);
+
+/// Builds the model the game would draw for `name` (see `Sources::resolve`).
+#[allow(clippy::too_many_arguments)]
+fn build_model(
+    sources: &Sources,
+    caches: &mut [TextureCache],
+    name: &str,
+    monster: Option<usize>,
+    meshes: &mut Assets<Mesh>,
+    level_materials: &mut Assets<LevelMaterial>,
+    images: &mut Assets<Image>,
+) -> BuiltModel {
+    let Some(r) = sources.resolve(name, monster) else { return BuiltModel { atree: None, parts: Vec::new() } };
+    let mut bounds = (Vec3::MAX, Vec3::MIN);
+    let (file, _, _) = sources.list[r.source];
+    let parts = r
+        .parts
+        .iter()
+        .map(|&(node, object)| {
+            let at = [(object, Vec3::ZERO)];
+            (node, model_mesh::build(file, &mut caches[r.source], at, meshes, level_materials, images, &mut bounds))
+        })
+        .filter(|(_, m)| !m.is_empty())
+        .collect();
+    BuiltModel { atree: r.atree, parts }
+}
+
 /// Monster folder code for a generator's type, when it names a monster.
 fn monster_code(ty: &ItemType) -> Option<&'static str> {
     let id = ty.enemy()?;
@@ -449,21 +480,28 @@ pub fn spawn(
         let Some(name) = model_name(ty, placement) else { continue };
         let monster = monster_code(ty).and_then(|c| sources.monsters.get(c).copied());
         let key = format!("{name}/{}", monster.unwrap_or(usize::MAX));
-        let model = built.entry(key).or_insert_with(|| {
-            let Some(r) = sources.resolve(&name, monster) else { return BuiltModel { atree: None, parts: Vec::new() } };
-            let mut bounds = (Vec3::MAX, Vec3::MIN);
-            let (file, _, _) = sources.list[r.source];
-            let parts = r
-                .parts
-                .iter()
-                .map(|&(node, object)| {
-                    let at = [(object, Vec3::ZERO)];
-                    (node, model_mesh::build(file, &mut caches[r.source], at, meshes, level_materials, images, &mut bounds))
+        // Generators draw one model per strength level (`GEN_<code><n>`)
+        // and step down as they're damaged: keep the lower levels' meshes.
+        let tier_looks = match placement.params(ty.class) {
+            PlacementParams::Generator { strength, .. } if ty.class == ItemClass::Generator => {
+                monster_code(ty).map(|code| {
+                    (1..=strength.max(1))
+                        .map(|t| {
+                            let n = format!("GEN_{code}{t}");
+                            let k = format!("{n}/{}", monster.unwrap_or(usize::MAX));
+                            let m = built.entry(k).or_insert_with(|| {
+                                build_model(&sources, &mut caches, &n, monster, meshes, level_materials, images)
+                            });
+                            m.parts.iter().flat_map(|(_, p)| p.iter().map(|b| (b.mesh.clone(), b.material.clone()))).collect()
+                        })
+                        .collect::<Vec<_>>()
                 })
-                .filter(|(_, m)| !m.is_empty())
-                .collect();
-            BuiltModel { atree: r.atree, parts }
-        });
+            }
+            _ => None,
+        };
+        let model = built
+            .entry(key)
+            .or_insert_with(|| build_model(&sources, &mut caches, &name, monster, meshes, level_materials, images));
         if model.parts.is_empty() {
             continue;
         }
@@ -499,6 +537,9 @@ pub fn spawn(
             None => {
                 for (_, parts) in &model.parts {
                     attach(commands, root, parts);
+                }
+                if let Some(looks) = tier_looks {
+                    commands.entity(root).insert(GeneratorLooks(looks));
                 }
             }
         }

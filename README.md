@@ -50,7 +50,8 @@ made with bzip2/LZMA instead of the default Zstandard) aren't supported —
 convert to RVZ or ISO in Dolphin (right-click → *Convert File…*).
 
 Your game files are only ever read. The remembered path lives in
-`gdl-artifacts/settings.txt` next to the executable (override the folder
+`gdl-artifacts/settings.txt` and the options (master, music and effects
+volume) in `gdl-artifacts/options.txt`, next to the executable (override the folder
 with `GDL_ARTIFACTS`).
 
 ## Status
@@ -73,6 +74,7 @@ follows the level's own camera points and distances.
 | `L` / Y | power attack (finishes a combo) |
 | `H` / B | defend (turbo when held with attack) |
 | `U` / X, `P` / L, `O` / R, `G` / Z | magic, charge, strafe, combo move |
+| `-` / `=` | master volume down / up (5% steps; starts at 25%) |
 | F1 | developer overlay |
 | `C` | free camera (WASD fly, Space/Ctrl up/down, Shift fast, right-drag look, wheel speed) |
 | `[` / `]` | previous / next level |
