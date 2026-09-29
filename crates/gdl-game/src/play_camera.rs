@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+
+use crate::mechanics::Mechanics;
 use gdl_formats::population::LocatorKind;
 use gdl_formats::{LevelCamera, LevelLight, WorldData};
 
@@ -30,7 +32,9 @@ impl Plugin for PlayCameraPlugin {
         // GDL_FREE_CAMERA=1 starts in the free camera (level overviews).
         let free = std::env::var("GDL_FREE_CAMERA").is_ok_and(|v| !v.is_empty() && v != "0");
         app.insert_resource(FreeLook(free))
-            .add_systems(Startup, (load_level_cameras, set_fov))
+            .add_message::<StartCut>()
+            .add_systems(Startup, (load_level_cameras, set_fov, spawn_bars))
+            .add_systems(Update, show_bars)
             .add_systems(FixedUpdate, tick.after(PlayerTick))
             .add_systems(
                 Update,
@@ -56,7 +60,36 @@ pub struct PlayCamera {
     previous: ([f32; 3], [f32; 3]),
     /// The level-start shot, while it lasts.
     intro: Option<Intro>,
+    /// A trigger's camera cut, while it lasts.
+    cut: Option<Cut>,
 }
+
+/// Shows a trigger's camera point (`docs/camera.md` "Trigger cuts"): the
+/// locator index into the level's locators, and the node the trigger moved.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct StartCut {
+    pub locator: usize,
+    pub node: Option<usize>,
+}
+
+/// A camera cut: after 30 fields the view jumps to the camera point for its
+/// time (40 fields, or 6 × the point's byte), held while the moved node
+/// still moves, with black bars top and bottom; then play resumes, gliding
+/// back like the level start. The hero can't be hurt meanwhile.
+#[derive(Clone, Copy, Debug)]
+struct Cut {
+    delay: f32,
+    eye: [f32; 3],
+    target: [f32; 3],
+    fields_left: f32,
+    node: Option<usize>,
+}
+
+const CUT_DELAY: f32 = 30.0;
+const CUT_FIELDS: f32 = 40.0;
+const CUT_FIELDS_PER_STEP: f32 = 6.0;
+/// The bars' height, of the 384-line screen.
+const CUT_BAR: f32 = 80.0 / 384.0;
 
 /// The level-start shot (`docs/camera.md` "Level start"): the entry's
 /// starting camera holds for 91 video fields (any button skips it once
@@ -78,10 +111,18 @@ const FIELDS_PER_TICK: f32 = 2.0;
 impl PlayCamera {
     /// Eye and target to draw from this tick.
     fn view(&self) -> ([f32; 3], [f32; 3]) {
+        if let Some(c) = self.cut.filter(|c| c.delay <= 0.0) {
+            return (c.eye, c.target);
+        }
         match self.intro {
             Some(i) => (i.eye, i.target),
             None => (self.rig.eye(), self.rig.target),
         }
+    }
+
+    /// Whether a camera cut is showing (the hero can't be hurt then).
+    pub fn in_cut(&self) -> bool {
+        self.cut.is_some()
     }
 
 }
@@ -90,11 +131,18 @@ impl PlayCamera {
 /// and pitch at the players' distance.
 fn intro_shot(population: &gdl_formats::Population, focus: [f32; 3]) -> Option<Intro> {
     let l = population.locators.iter().find(|l| l.kind == LocatorKind::Transmitter(1) && l.index == 0)?;
+    let (eye, target) = locator_view(l, focus);
+    Some(Intro { eye, target, fields_left: INTRO_FIELDS })
+}
+
+/// Eye and target of a camera point: looking along its yaw and pitch, at
+/// `focus`'s distance.
+fn locator_view(l: &gdl_formats::population::Locator, focus: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     let (yaw, pitch) = (l.rotation[1], -l.rotation[0]);
     let dir = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos());
     let eye = Vec3::from(l.position);
     let target = eye + dir * eye.distance(Vec3::from(focus)).max(1.0);
-    Some(Intro { eye: eye.to_array(), target: target.to_array(), fields_left: INTRO_FIELDS })
+    (eye.to_array(), target.to_array())
 }
 
 fn load_level_cameras(mut commands: Commands, mut game: ResMut<LoadedGame>) {
@@ -161,19 +209,44 @@ fn start(
     let rig = CameraRig::new(points, bounds, record.near, focus);
     let intro = intro_shot(&population.population, focus);
     let previous = intro.map_or((rig.eye(), rig.target), |i| (i.eye, i.target));
-    commands.insert_resource(PlayCamera { rig, previous, intro });
+    commands.insert_resource(PlayCamera { rig, previous, intro, cut: None });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick(
     camera: Option<ResMut<PlayCamera>>,
     players: Query<&Player>,
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
+    mut cuts: MessageReader<StartCut>,
+    population: Option<Res<LevelPopulation>>,
+    mechanics: Option<Res<Mechanics>>,
 ) {
     let (Some(mut camera), Ok(player)) = (camera, players.single()) else { return };
     let camera = &mut *camera;
     camera.previous = camera.view();
     camera.rig.tick(player.mover.position);
+    for cut in cuts.read() {
+        let Some(l) = population.as_ref().and_then(|p| p.population.locators.get(cut.locator)) else { continue };
+        let (eye, target) = locator_view(l, player.mover.position);
+        let fields = if l.param == 0 { CUT_FIELDS } else { CUT_FIELDS_PER_STEP * f32::from(l.param) };
+        camera.cut = Some(Cut { delay: CUT_DELAY, eye, target, fields_left: fields, node: cut.node });
+    }
+    if let Some(cut) = camera.cut.as_mut() {
+        if cut.delay > 0.0 {
+            cut.delay -= FIELDS_PER_TICK;
+            return;
+        }
+        cut.fields_left -= FIELDS_PER_TICK;
+        let moving = cut.node.is_some_and(|n| mechanics.as_ref().is_some_and(|m| m.node_moving(n)));
+        if cut.fields_left > 0.0 || moving {
+            return;
+        }
+        // Back to play, gliding from the cut's view.
+        let (eye, target) = (cut.eye, cut.target);
+        camera.cut = None;
+        camera.intro = Some(Intro { eye, target, fields_left: 1.0 });
+    }
     let Some(intro) = camera.intro.as_mut() else { return };
     if intro.fields_left >= 2.0 {
         intro.fields_left -= FIELDS_PER_TICK;
@@ -224,4 +297,28 @@ fn place(
     let eye = Vec3::from(play.previous.0).lerp(Vec3::from(now_eye), t);
     let target = Vec3::from(play.previous.1).lerp(Vec3::from(now_target), t);
     *transform = Transform::from_translation(eye).looking_at(target, Vec3::Y);
+}
+
+/// The cut's black bars.
+#[derive(Component)]
+struct CutBar;
+
+fn spawn_bars(mut commands: Commands) {
+    for top in [true, false] {
+        let mut node = Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0 * CUT_BAR), ..default() };
+        if top {
+            node.top = Val::Px(0.0);
+        } else {
+            node.bottom = Val::Px(0.0);
+        }
+        commands.spawn((CutBar, node, BackgroundColor(Color::BLACK), GlobalZIndex(50), Visibility::Hidden));
+    }
+}
+
+fn show_bars(camera: Option<Res<PlayCamera>>, mut bars: Query<&mut Visibility, With<CutBar>>) {
+    let on = camera.is_some_and(|c| c.cut.is_some_and(|cut| cut.delay <= 0.0));
+    let want = if on { Visibility::Inherited } else { Visibility::Hidden };
+    for mut v in &mut bars {
+        v.set_if_neq(want);
+    }
 }
