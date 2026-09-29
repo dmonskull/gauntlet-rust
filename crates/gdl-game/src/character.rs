@@ -8,6 +8,7 @@ use gdl_formats::ModelFile;
 use gdl_formats::anim::{AnimFile, Atree, NodeKind, Track, rotation_matrix};
 use gdl_install::GameInstall;
 
+use crate::billboard::Billboard;
 use crate::level_material::LevelMaterial;
 use crate::model_mesh::{self, TextureCache};
 
@@ -259,12 +260,12 @@ pub fn spawn_character(
     let mut bounds = (Vec3::MAX, Vec3::MIN);
     let object_index = |name: &str| data.model.objects.iter().position(|o| o.name == name);
 
-    let mut build = |object: usize| {
-        model_mesh::build(&data.model, &mut cache, [(object, Vec3::ZERO)], meshes, materials, images, &mut bounds)
+    let mut build = |object: usize, flags: u32| {
+        model_mesh::build_flagged(&data.model, &mut cache, [(object, Vec3::ZERO, flags)], meshes, materials, images, &mut bounds)
     };
-    let attach = |object: Option<usize>, parent: Entity, commands: &mut Commands, build: &mut dyn FnMut(usize) -> Vec<model_mesh::BuiltMesh>| -> bool {
+    let attach = |object: Option<usize>, parent: Entity, commands: &mut Commands, build: &mut dyn FnMut(usize, u32) -> Vec<model_mesh::BuiltMesh>| -> bool {
         let Some(object) = object else { return false };
-        for b in build(object) {
+        for b in build(object, 0) {
             commands.spawn((Mesh3d(b.mesh), MeshMaterial3d(b.material), ChildOf(parent)));
         }
         true
@@ -276,11 +277,19 @@ pub fn spawn_character(
         let bone = commands
             .spawn((Transform::from_translation(Vec3::from(node.offset)), Visibility::default(), ChildOf(parent)))
             .id();
-        // The game hides DUMMY nodes and nodes with the hidden render flag;
-        // glow objects (CFGLOW, CFXPGLOW) are drawn by effects, not yet here.
+        // The game hides DUMMY nodes and nodes with the hidden render flag.
+        // The rest draw with their render flags. Glows (CFXPGLOW: additive,
+        // camera-facing) get their texture from the effects system at run
+        // time (the instance's texture override), so they wait for effects.
         let visible = node.has_model() && !node.hidden() && node.name != "DUMMY" && !node.name.ends_with("GLOW");
-        if visible {
-            attach(object_index(&format!("{}{}", data.skeleton.name, node.name)), bone, commands, &mut build);
+        if let Some(object) = object_index(&format!("{}{}", data.skeleton.name, node.name)).filter(|_| visible) {
+            let target = match Billboard::from_flags(node.render_flags) {
+                Some(mode) => commands.spawn((Transform::default(), Visibility::default(), mode, ChildOf(bone))).id(),
+                None => bone,
+            };
+            for b in build(object, node.render_flags) {
+                commands.spawn((Mesh3d(b.mesh), MeshMaterial3d(b.material), ChildOf(target)));
+            }
         }
         if node.kind == NodeKind::Flipbook {
             let frames: Vec<Vec<PartMeshes>> = (0..data.clips.actions.len())
@@ -289,7 +298,7 @@ pub fn spawn_character(
                     let Some(first) = object_index(&entry.first) else { return Vec::new() };
                     (0..entry.frames.max(1) as usize)
                         .filter(|k| first + k < data.model.objects.len())
-                        .map(|k| build(first + k).into_iter().map(|b| (b.mesh, b.material)).collect())
+                        .map(|k| build(first + k, 0).into_iter().map(|b| (b.mesh, b.material)).collect())
                         .collect()
                 })
                 .collect();
@@ -321,7 +330,7 @@ pub fn spawn_character(
     // collision floor can sit a little below the drawn one).
     if let Some(shadow) = object_index("SHADOWL1") {
         let lift = commands.spawn((Transform::from_xyz(0.0, SHADOW_LIFT, 0.0), Visibility::default(), ChildOf(root))).id();
-        for b in build(shadow) {
+        for b in build(shadow, 0) {
             commands.spawn((Mesh3d(b.mesh), MeshMaterial3d(b.material), ChildOf(lift)));
         }
     }
