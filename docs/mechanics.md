@@ -442,7 +442,10 @@ after the hero moves:
   0x20 turning round, kind flag 8 or no player on it to move, the disable
   byte 1 while moving (0xFF for hidden bridges), state kept by kinds 0x47
   (bridges while someone stands on them).
-- **Rotators** subtypes 0 (always) and 2 (once touched, to the limit).
+- **Rotators** subtypes 0 (always) and 2 (once touched, to the limit,
+  grinding with `S_ROCKROTATE` in realm A or `S_METLROTATE` in realm I
+  and stopping with `S_ROCKSTOP` / `S_METLROTATESTO`, `FUN_8009d01c`'s
+  tables `0x801232e4` / `0x8012331c`).
 - **Poses**: each moving root's world pose is its own move, then its
   moving parent's. Every node in its subtree gets it in the collision
   (`LevelCollision::set_pose`), and `world.rs` draws the subtree's model
