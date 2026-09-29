@@ -374,3 +374,28 @@ resistances by kind (`& 0xF`) and flags — not ported. Blows above 1 are
 also scaled by the level record's `+0xA4`, which is 1.0 in every retail
 level. Defending (`+0x964 & 0x600`) cuts or blocks blows from the front
 (`r2-0x5ea8`, angle limits `r2-0x5e18`/`r2-0x5e10`) — not ported yet.
+
+### The hero's reaction
+
+A monster's blow (`FUN_8004dec0`) carries its current damage (× 1.5 on the
+strong third attack, `r2-0x6ee8`) and kind flags: `0x10` when a big
+monster's (`+0x23C` > 2) strong attack lands, `0x20` for monster type
+`0x1D`, `0x40000000` for small monsters; knocking kinds (`& 0x130`) push
+along monster → hero. `FUN_80078560` accumulates damage `+0x8D0`, flags
+`+0x8D4` and push `+0x8DC`; the next player update (`FUN_80085ca8`) picks a
+reaction:
+
+| flags (damage > 1) | class | knockback | action |
+| --- | --- | --- | --- |
+| `0x10000` | 30 | push × 100 (`r2-0x5b60`) | FLYUP (`0x87`) |
+| `0x40` | 20 | push × 100 | FALLFRNT |
+| `0x120` | 20 | push × 32 (80 with power `0x400`) | FALLFRNT (`0x85`) |
+| `0x10` | 10 | push × 16 (`r2-0x5a68`) | HITREACT (`0x82`) |
+| `0x2000` / `0x80` | 3 / 2 | — | STUN/HITREACT variants |
+| other | 1 | — | HITREACT (`0x1B`) while standing or moving |
+
+Knockback classes gain 1 when the push comes from more than 90° off the
+facing (FALLFRNT → FALLDOWN) and turn the hero to face the blow. Ported in
+`player.rs` (`hit_reaction`); the monster size is the radius stand-in from
+[monsters.md](monsters.md), and the 2/3 stun variants and the post-hit stun
+timer (class 100 → STUN2) aren't wired yet.
