@@ -310,7 +310,8 @@ throw every two seconds.
   bits, `0x800`/`0x6000` shots), reflect shield or the time-slow damage
   halving; no push on missile hits.
 - The kiting thrower's wall-bump angles and the leader logic aren't done;
-  AIs `0x1C`/`0x1D`/`0x1F` (fireball casters) still use the chase.
+  AIs `0x1C`/`0x1D`/`0x1F` (fireball casters) move like the chasers (their own
+  movement isn't traced) and fire a fireball on each attack blow.
 - A monster without the throw clips asked for doesn't throw (the game
   would play READY's animation in their place).
 - The throw pause's added clip length (`+0x80`) is taken to be the new
