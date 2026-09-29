@@ -45,6 +45,15 @@ use bevy::prelude::*;
 use bootstrap::Args;
 use level::LoadedGame;
 
+/// With `GDL_FPS`, names every frame over 20 ms (hitches).
+fn log_slow_frames(time: Res<Time<Real>>, mut frame: Local<u64>) {
+    *frame += 1;
+    let dt = time.delta_secs() * 1000.0;
+    if *frame > 60 && dt > 20.0 {
+        info!("slow frame {}: {dt:.1} ms", *frame);
+    }
+}
+
 fn main() {
     let args = match Args::parse() {
         Ok(args) => args,
@@ -94,7 +103,8 @@ fn main() {
         app.add_plugins((
             bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
             bevy::diagnostic::LogDiagnosticsPlugin::default(),
-        ));
+        ))
+        .add_systems(Last, log_slow_frames);
     }
 
     if args.viewer {
