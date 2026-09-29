@@ -1,7 +1,9 @@
 pub mod anim;
+pub mod chunk;
 pub mod disc;
 pub mod fst;
 pub mod model;
+pub mod text;
 pub mod texture;
 pub mod world;
 
