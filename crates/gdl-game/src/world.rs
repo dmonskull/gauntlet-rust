@@ -25,7 +25,8 @@ impl Plugin for WorldPlugin {
             .add_systems(Startup, |mut w: MessageWriter<ChangeLevel>| {
                 w.write(ChangeLevel(0));
             })
-            .add_systems(Update, (level_keys, change_level).chain());
+            .add_systems(Update, (level_keys, change_level).chain())
+            .add_systems(Update, prewarm);
     }
 }
 
@@ -36,6 +37,27 @@ pub struct ChangeLevel(pub isize);
 /// The current level's collision, for anything that moves.
 #[derive(Resource, Clone)]
 pub struct LevelGround(pub std::sync::Arc<gdl_formats::LevelCollision>);
+
+/// Drawn regardless of the view for its first few frames, so every
+/// material's pipeline is built while the level-start shot shows rather
+/// than with a hitch the first time the camera turns to it.
+#[derive(Component)]
+struct Prewarm(u8);
+
+const PREWARM_FRAMES: u8 = 3;
+
+fn prewarm(mut commands: Commands, mut meshes: Query<(Entity, &mut Prewarm)>) {
+    for (e, mut p) in &mut meshes {
+        if p.0 == PREWARM_FRAMES {
+            commands.entity(e).insert(bevy::camera::visibility::NoFrustumCulling);
+        }
+        if p.0 == 0 {
+            commands.entity(e).remove::<(Prewarm, bevy::camera::visibility::NoFrustumCulling)>();
+        } else {
+            p.0 -= 1;
+        }
+    }
+}
 
 /// Tags everything belonging to the level currently shown.
 #[derive(Component)]
@@ -208,7 +230,7 @@ fn spawn_level(
     let mut triangles: usize = built.iter().map(|b| b.triangles).sum();
     let mut count = built.len();
     for b in &built {
-        commands.spawn((Mesh3d(b.mesh.clone()), MeshMaterial3d(b.material.clone()), LevelEntity));
+        commands.spawn((Mesh3d(b.mesh.clone()), MeshMaterial3d(b.material.clone()), LevelEntity, Prewarm(PREWARM_FRAMES)));
     }
     let mut groups: HashMap<usize, Vec<(usize, Vec3, u32)>> = HashMap::new();
     for &(i, &(object, at, flags)) in &moving {
