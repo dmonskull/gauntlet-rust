@@ -12,6 +12,7 @@ mod camera_rig;
 mod character;
 mod collision_debug;
 mod combat;
+mod damage;
 mod generators;
 mod hud;
 mod level;
@@ -115,7 +116,7 @@ fn main() {
         };
         app.insert_resource(game)
             .insert_resource(choice)
-            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
+            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
             .add_plugins(monsters::MonstersPlugin);
     }
     app.run();

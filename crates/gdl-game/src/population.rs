@@ -74,6 +74,11 @@ impl PopulationView {
     }
 }
 
+/// The drawn model of placement `.0` in the level's population (so what
+/// happens to the item — a generator broken, a pickup taken — can find it).
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PlacementModel(pub usize);
+
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub enum PopulationPart {
     Marker,
@@ -399,7 +404,7 @@ pub fn spawn(
     };
 
     let mut counts: HashMap<Category, usize> = HashMap::new();
-    for placement in &pop.placements {
+    for (index, placement) in pop.placements.iter().enumerate() {
         let ty = pop.resolved_type(placement);
         let category = Category::of(ty);
         *counts.entry(category).or_default() += 1;
@@ -437,7 +442,13 @@ pub fn spawn(
             continue;
         }
         let root = commands
-            .spawn((transform, PopulationPart::Model, visibility(view, PopulationPart::Model), LevelEntity))
+            .spawn((
+                transform,
+                PopulationPart::Model,
+                PlacementModel(index),
+                visibility(view, PopulationPart::Model),
+                LevelEntity,
+            ))
             .id();
         for p in parts {
             commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(root)));
