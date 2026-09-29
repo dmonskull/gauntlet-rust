@@ -22,6 +22,7 @@ One file per system, written only once it's confirmed against the actual
 | [critters.md](critters.md) | The scripted monsters (bosses, golem, gargoyles, general): `CRITTER` file records, loading, spawning, move choice and switching, blows, damage, death — decoded, not yet run |
 | [projectiles.md](projectiles.md) | Thrown weapons and monster missiles: release, aim, lob, flight, collision, blasts, the throwing AIs |
 | [items.md](items.md) | The hero's state (health, gold, keys, potions, powerups), item touch, pickups, doors, chests, exits, transporters, hints |
+| [mechanics.md](mechanics.md) | Triggers and what they move (lifts, bridges, doors), rotators, carrying the hero, damage tiles, damaging walls, breakables — decoded; moving collision built, the rest not yet run |
 
 ## Confirmed and implemented
 
