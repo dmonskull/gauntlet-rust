@@ -153,8 +153,8 @@ fn spawn_level(
 ) -> Built {
     let mut bounds = (Vec3::MAX, Vec3::MIN);
     let mut cache = TextureCache::new(&level.model, &level.textures);
-    let instances = level.placements.iter().map(|&(object, at)| (object, Vec3::from(at)));
-    let built = model_mesh::build(&level.model, &mut cache, instances, meshes, materials, images, &mut bounds);
+    let instances = level.placements.iter().map(|&(object, at, flags)| (object, Vec3::from(at), flags));
+    let built = model_mesh::build_flagged(&level.model, &mut cache, instances, meshes, materials, images, &mut bounds);
     let triangles = built.iter().map(|b| b.triangles).sum();
     for b in &built {
         commands.spawn((Mesh3d(b.mesh.clone()), MeshMaterial3d(b.material.clone()), LevelEntity));
