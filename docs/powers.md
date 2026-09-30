@@ -455,6 +455,12 @@ Confirmed:
 charge, the shields — × 2 (`r2-0x5B88`), and its push with it; when it
 ends below level 99, `S_UNGROW` (`FUN_8009cd98`).
 
+Here: the blows (`player.rs::strike_blow`, `shield_blow`) and the model
+scale on the hero's root (with the ogre's 1.6 and level 99's 1.2; the
+blob shadow scales with it, and the head's × 1.5 above level 98 isn't
+done); `S_UNGROW`, `S_LEVITATEDOWN` and `S_UNSHRINK` from the bits
+(`player_state.rs::powers_and_warning`). The charge's blow isn't ported.
+
 ### `0x200` shrink (enemies)
 
 `SHRINKPOT` (hint SHRINKMSG "%s %s HAS SHRUNK ENEMIES", `S_SHRINKVOX`;
@@ -475,6 +481,13 @@ playing hero with the bit. While it's below 1:
 - the hero's range flags treat targets as low (`FUN_80080d3c`).
 
 When it grows back in play, `S_UNSHRINK` (`FUN_8009cd68`).
+
+Here: `player_state::EnemyScale`; monsters and critters drawn at it,
+monsters taking × 2 (`damage.rs`, after the resistance routine) and
+dealing × 0.5 with kind `0x40000000` (`hurt_hero`), their missiles × 0.5
+(`projectiles.rs`), non-boss critters taking × 2 and dealing × 0.5
+(their missiles not). Their collision sizes stay; the low-target range
+flags aren't done.
 
 ### `0x400` Pojo
 

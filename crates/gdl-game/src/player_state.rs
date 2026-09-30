@@ -142,9 +142,37 @@ pub mod power {
     /// power running.
     pub const LEVITATE: u32 = 0x1;
     pub const INVISIBLE: u32 = 0x4;
+    pub const GROW: u32 = 0x100;
+    /// Shrinks the enemies, not the hero ([`super::EnemyScale`]).
+    pub const SHRINK: u32 = 0x200;
     pub const TURBO: u32 = 0x8_0000;
     pub const SPEEDING: u32 = 0x1_0000;
 }
+
+/// The enemies' scale (the game's `r13-0x7320`, set every frame): 1,
+/// × 0.667 for each playing hero with the shrink power, outside boss
+/// levels. Below 1 monsters and critters are drawn at it, take twice the
+/// damage and deal half (`docs/powers.md`, "`0x200` shrink").
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct EnemyScale(pub f32);
+
+impl Default for EnemyScale {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+impl EnemyScale {
+    pub fn shrunk(self) -> bool {
+        self.0 < 1.0
+    }
+}
+
+/// Each shrinking hero takes the enemies down to this much.
+const SHRINK_SCALE: f32 = 0.667;
+/// The grow power's end has no sound from this level on (the hero is big
+/// anyway).
+const BIG_LEVEL: u32 = 99;
 
 /// The tower's realm id: powerups don't run down there.
 const TOWER_REALM: u32 = 13;
@@ -362,6 +390,7 @@ impl Plugin for PlayerStatePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<DamagePlayer>()
             .init_resource::<PlayerState>()
+            .init_resource::<EnemyScale>()
             // A new hero whenever the class choice changes.
             .add_systems(Update, new_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
             .add_systems(FixedUpdate, (take_damage, powers_and_warning.in_set(PowersTick)).chain().after(PlayerTick))
@@ -470,10 +499,12 @@ pub fn power_clock(in_tower: bool, cut: bool, boss_level: bool, boss_awake: bool
 /// Powerups run down this much faster in a boss fight.
 const BOSS_POWER_CLOCK: f32 = 3.0;
 
-/// Counts powerups down ([`power_clock`]) and adds them up, and sounds
-/// the low-health warning: at 200 health or less the game plays `S_WARN`
-/// every 120 fields (60 below 100, 30 below 25) — not in the tower, or
-/// while invulnerable.
+/// Counts powerups down ([`power_clock`]) and adds them up, sets the
+/// enemies' scale, plays the sounds of the levitation, growth and shrink
+/// running out, and sounds the low-health warning: at 200 health or less
+/// the game plays `S_WARN` every 120 fields (60 below 100, 30 below 25) —
+/// not in the tower, or while invulnerable.
+#[allow(clippy::too_many_arguments)]
 fn powers_and_warning(
     time: Res<Time>,
     mut state: ResMut<PlayerState>,
@@ -481,13 +512,29 @@ fn powers_and_warning(
     camera: Option<Res<crate::play_camera::PlayCamera>>,
     level: Option<Res<crate::monsters::MonsterLevel>>,
     boss: Option<Res<crate::critters::BossWatch>>,
+    mut enemies: ResMut<EnemyScale>,
     mut sound: MessageWriter<PlaySound>,
 ) {
     let in_tower = population.as_ref().and_then(|p| crate::quest::level_of(&p.level)).is_some_and(|(realm, _)| realm == TOWER_REALM);
     let cut = camera.is_some_and(|c| c.in_cut());
     let boss_level = level.is_some_and(|l| l.boss >= 0);
     let (awake, dead) = boss.map_or((false, false), |b| (b.awake, b.dead));
-    state.tick_powers(time.delta_secs() * power_clock(in_tower, cut, boss_level, awake, dead));
+    let before = state.bits.special;
+    let now = state.tick_powers(time.delta_secs() * power_clock(in_tower, cut, boss_level, awake, dead)).special;
+    let ended = before & !now;
+    if ended & power::LEVITATE != 0 {
+        sound.write(PlaySound("S_LEVITATEDOWN".into()));
+    }
+    if ended & power::GROW != 0 && state.level < BIG_LEVEL {
+        sound.write(PlaySound("S_UNGROW".into()));
+    }
+    let scale = EnemyScale(if !boss_level && now & power::SHRINK != 0 { SHRINK_SCALE } else { 1.0 });
+    if scale.0 > enemies.0 {
+        sound.write(PlaySound("S_UNSHRINK".into()));
+    }
+    if *enemies != scale {
+        *enemies = scale;
+    }
     if !state.alive || state.health > 200.0 {
         return;
     }

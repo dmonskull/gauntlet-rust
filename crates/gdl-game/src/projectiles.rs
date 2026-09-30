@@ -38,7 +38,7 @@ use crate::level_material::LevelMaterial;
 use crate::locomotion;
 use crate::monsters::{Monster, MonsterLevel, MonsterTick};
 use crate::player::{Player, PlayerChoice};
-use crate::player_state::{DamagePlayer, PlayerState};
+use crate::player_state::{DamagePlayer, EnemyScale, PlayerState};
 use crate::population::LevelPopulation;
 use crate::world::{LevelEntity, LevelGround};
 
@@ -377,6 +377,9 @@ impl Owner {
 /// Armour bits that turn monster missiles back (the reflect shield;
 /// `0x1000000`, which no power-up sets, does too).
 const REFLECTS: u32 = 0x102_0000;
+/// Shrunk (the shrink power), monsters' missiles do this much of their
+/// damage.
+const SHRUNK_MISSILE: f32 = 0.5;
 /// A reflected missile does at most this.
 const REFLECTED_MOST: f32 = 15.0;
 /// The ricochet sound, at most this often (seconds).
@@ -974,6 +977,7 @@ fn launch_monster(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    enemies: Res<EnemyScale>,
 ) {
     for shot in shots.read() {
         let Some(level) = level.as_deref() else { continue };
@@ -982,11 +986,15 @@ fn launch_monster(
             debug!("enemy {} has no {:?}", shot.enemy, kind);
             continue;
         };
-        let Some((launch, damage)) =
+        let Some((launch, mut damage)) =
             monster_launch(shot, kind, &t, level.tuning.missile_speed, level.tuning.missile_spread)
         else {
             continue;
         };
+        // Shrunk monsters' missiles do half.
+        if enemies.shrunk() {
+            damage *= SHRUNK_MISSILE;
+        }
         if let Some(g) = ground.as_deref()
             && wall(&g.0, launch.check, launch.start, t.radius).is_some()
         {
