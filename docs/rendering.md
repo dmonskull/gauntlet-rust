@@ -329,7 +329,7 @@ over a body it draws the lit silhouette in a pale green-white.
   same one that picks a reaction — starts the same effect on `+0x7DC`,
   stepped by `FUN_80077ccc`. The slot is shared with the heroes' other
   texture effects (the chrome power-ups: `CHROMESILVER`/`CHROMEGOLD`, mode
-  −3: here `flash.rs::Retexture`, copies of the body's materials drawn in
+  −3: here `fade.rs::BodyLook`, copies of the body's materials drawn in
   `level.wgsl`'s mode 3, coordinates from the normals —
   [powers.md](powers.md), "`0x10000` invulnerability").
 - **Critters** (`0x800382c0`, the damage routine, a blow the critter lives

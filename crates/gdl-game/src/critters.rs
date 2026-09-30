@@ -1577,6 +1577,8 @@ struct Hero {
     radius: f32,
     half: f32,
     attacking: bool,
+    /// Invisible: only bosses track it.
+    hidden: bool,
 }
 
 /// A blow for a player: damage, kind bits, push.
@@ -1624,7 +1626,14 @@ fn tick_critters(
             .iter()
             .map(|(e, p)| {
                 let c = p.actions.action.category().0;
-                Hero { entity: e, feet: p.mover.position, radius, half, attacking: (1..=12).contains(&c) }
+                Hero {
+                    entity: e,
+                    feet: p.mover.position,
+                    radius,
+                    half,
+                    attacking: (1..=12).contains(&c),
+                    hidden: p.special_bits & crate::player_state::power::INVISIBLE != 0,
+                }
             })
             .collect()
     } else {
@@ -2370,10 +2379,11 @@ fn score(c: &Critter, cond: &Condition, centre: [f32; 3], point: [f32; 3]) -> (f
 /// golem keeps the best whatever it scores; a boss up to four that pass
 /// (weighted 1: the game weighs damage dealt against taken, which only
 /// matters with several players). Players a critter hit in the last
-/// quarter second count a thousand times worse.
+/// quarter second count a thousand times worse. Only bosses track an
+/// invisible hero.
 fn track(c: &mut Critter, ty: &TypeInfo, centre: [f32; 3], heroes: &[Hero], level: &CritterLevel) {
     let mut found: Vec<Tracked> = Vec::new();
-    for h in heroes {
+    for h in heroes.iter().filter(|h| !h.hidden || ty.class == class::BOSS) {
         let (mut s, distance, direction) = score(c, &ty.target, centre, h.feet);
         if level.guard.get(&h.entity).is_some_and(|&until| level.now < until) {
             s *= RECENTLY_HIT;
