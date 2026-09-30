@@ -324,8 +324,17 @@ pub struct BreathAt {
     pub kind: u32,
     pub damage: f32,
     pub radius: f32,
-    pub sound: &'static str,
+    pub sound: Option<&'static str>,
+    /// The Pojo's: from its model's head node, with `S_POJOTURBO`.
+    pub pojo: bool,
 }
+
+/// The Pojo's model and the node its breath leaves from (the game finds
+/// the model object `POJOBODY1_HE_1`: the atree's node `BODY1_HE#1`, the
+/// head's tip).
+const POJO: &str = "POJO";
+const POJO_MOUTH: &str = "BODY1_HE#1";
+const POJO_TURBO_SOUND: &str = "S_POJOTURBO";
 
 /// A hero's hammer comes down (ATTCHOPR starts, `player.rs`): EXPRING on
 /// the hero, a blast from its feet out to 35 doing 100 heavy damage to
@@ -1110,9 +1119,25 @@ fn spawn_breaths(
     players: Query<&Player>,
     (mut meshes, mut materials, mut images): Assets3d,
     mut seed: Local<u32>,
+    (worn, animators): (Query<&crate::power_looks::Worn>, Query<&crate::character::Animator>),
 ) {
     for b in requests.read() {
         let Ok(p) = players.get(b.hero) else { continue };
+        let mut b = *b;
+        if b.pojo {
+            let mouth = worn
+                .get(b.hero)
+                .ok()
+                .and_then(|w| w.body_model(POJO))
+                .and_then(|m| animators.get(m).ok())
+                .and_then(|a| a.node(POJO_MOUTH).and_then(|n| a.bone(n)));
+            if mouth.is_some() {
+                b.head = mouth;
+            } else {
+                warn!("the Pojo has no {POJO_MOUTH} node to breathe from");
+            }
+            sounds.write(PlaySound(POJO_TURBO_SOUND.into()));
+        }
         let effect = models.effect(b.fx, &mut game, &mut meshes, &mut materials, &mut images);
         let life = effect.as_ref().map_or(1.0, |e| e.life);
         let centre = b.head.and_then(|h| bones.get(h).ok()).map_or(Vec3::from(p.mover.position), |g| g.translation());
@@ -1140,7 +1165,9 @@ fn spawn_breaths(
                 }
             }
         }
-        sounds.write(PlaySound(b.sound.into()));
+        if let Some(sound) = b.sound {
+            sounds.write(PlaySound(sound.into()));
+        }
         info!("{} from the hero: {:.1} damage out to {:.1} over {life:.2} s", b.fx, b.damage, b.radius);
         let blast = Blast {
             owner: b.hero,

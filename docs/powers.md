@@ -611,7 +611,9 @@ monsters taking × 2 (`damage.rs`, after the resistance routine) and
 dealing × 0.5 with kind `0x40000000` (`hurt_hero`), their missiles × 0.5
 (`projectiles.rs`), non-boss critters taking × 2 and dealing × 0.5
 (their missiles not). Their collision sizes stay; the low-target range
-flags aren't done.
+flags aren't done. A shrunk monster's blow (`FUN_8004dec0`) is its damage
+× 0.5 with only kind `0x40000000` — never the strong attack's × 1.5,
+`0x10` or the knockdown type's `0x20`.
 
 ### `0x400` Pojo
 
@@ -633,6 +635,15 @@ flags aren't done.
   items.md)); a FALLFRNT knockback is × 80 instead of 32
   ([combat.md](combat.md)); the magic button is turned into button `0x200`
   (`FUN_80088170`; not traced).
+
+Here: the looks (`power_looks.rs`), the chicken (`items.rs`), the
+knockdown's × 80 (`player.rs::hit_reaction`), `S_UNPOJO` (sound `0x63`)
+when it ends, the turbo breath (the turbo intent asks for ATTBREATHE at
+40, `FUN_80080d3c` case `0x15`; the breath is FIREBREATHE from the Pojo
+model's `POJOBODY1_HE_1` node, pays the 40 as it goes out and plays
+`S_POJOTURBO`, `0x5F` through `FUN_8009ed88` — `S_BREATHFIRE` only with a
+fire breath power too). Not yet: its throws, its voice lines, the magic
+button.
 
 ### `0x1000`, `0x2000`, `0x4000`, `0x8000` Skorne's items
 
@@ -667,7 +678,15 @@ the hero holds one (`FUN_8005de3c`). Confirmed:
   (`FUN_8004dec0`) then goes to the monster instead (`FUN_8004e660(damage,
   monster, −1, kind, …)`; the hero takes 0); with Health Vampire the kind
   is `0x200` and the hero heals by the blow (`FUN_80078474`). Critters'
-  blows and missiles aren't affected.
+  blows and missiles aren't affected. Confirmed in detail: the stats
+  routine sets `+0xA1E` while `0x200000` is on, else `+0xA20` while
+  `0x400000` is, and clears both only when neither is; the blow checks
+  `+0xA20` first. The turned blow is the monster's own (× 0.5 shrunk),
+  on the monster with no player (no experience), kind 0 or `0x200`; the
+  heal is the capped heal routine (refused at full health); the hero's
+  blow becomes 0 with kind `0x40000000`, and the sparkle
+  (`FUN_8009176c`) plays. Here: `damage.rs::hurt_hero`,
+  `Player::turns_blows`, `HealPlayer`; the sparkle isn't played.
 
 ## Pickup hints
 

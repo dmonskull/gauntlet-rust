@@ -140,6 +140,11 @@ impl Plugin for MonstersPlugin {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MonsterTick;
 
+/// A monster's third attack hits half as hard again; shrunk, every blow
+/// does half.
+const STRONG_BLOW: f32 = 1.5;
+const SHRUNK_BLOW: f32 = 0.5;
+
 /// A monster's attack landed on a player.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct MonsterHit {
@@ -973,7 +978,7 @@ fn tick_monsters(
     death_textures: Option<Res<DeathTextures>>,
     mut effects: MessageWriter<EffectAt>,
     (mut explosions, mut sounds): (MessageWriter<ExplosionAt>, MessageWriter<PlaySound>),
-    (colours, mut tags, stop): (Res<FlashColours>, Query<&mut MeshTag>, Res<TimeStop>),
+    (colours, mut tags, stop, enemies): (Res<FlashColours>, Query<&mut MeshTag>, Res<TimeStop>, Res<EnemyScale>),
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     level.tick = level.tick.wrapping_add(1);
@@ -1286,12 +1291,14 @@ fn tick_monsters(
             }
             Some(Event::Blow(hit)) => {
                 if let Some(player) = m.strike {
-                    hits.write(MonsterHit {
-                        monster: entity,
-                        player,
-                        damage: m.stats.damage * if hit { 1.5 } else { 1.0 },
-                        strong: hit,
-                    });
+                    // Shrunk, half its damage (and never the strong
+                    // third's half again).
+                    let damage = if enemies.shrunk() {
+                        m.stats.damage * SHRUNK_BLOW
+                    } else {
+                        m.stats.damage * if hit { STRONG_BLOW } else { 1.0 }
+                    };
+                    hits.write(MonsterHit { monster: entity, player, damage, strong: hit });
                 }
                 m.attacks = m.attacks.wrapping_add(1);
             }

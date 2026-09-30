@@ -189,7 +189,13 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on `0b8a828` (hit flashes, hints, critters
+The all-levels smoke test on `5a1b996` (the armour and special power-ups:
+the resistance routine everywhere, chrome, shields, invisibility, shrink,
+grow, time stop, breaths, the hammer; the helper's blasts on items,
+CHESTEXP, the power-up looks, x-ray, the lift and the hourglass) passed
+all 67 real levels.
+
+Before that, the all-levels smoke test on `0b8a828` (hit flashes, hints, critters
 found and hit once, floor potions set off, power-ups stages A–B, and the
 helper's HUD key row, "IN TOWER" and voice queues) passed all 67 real
 levels.
@@ -257,24 +263,35 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 ## Work in progress
 
 - **Helper** (worktree branch `worktree-agent-aba24fd14c15b99a9`, one at a
-  time): decoding the armour and special power-ups into a new
-  `docs/powers.md` (docs only). Merged from it today: the HUD's key row
-  and icons (`187c269`), the out hero's "IN TOWER" (`f5bd27a`), the voice
-  queues (`1cc6fd2`: hints, unlocks, the wizards' speeches and the hero's
-  eating lines wait their turn; a level change waits for them).
-- **Power-ups** (mine), in stages: A done (`4d2f23c`: the adding-up each
-  tick, weapon bits on blows and missiles — elements burn, shock, light,
-  dissolve — speed, magic, turbo fill); B done (`b4d7b75`: multi-shot
-  spreads, the crossbow's piercing bolts, reflect's bounces). Next: C the
-  armour powers (invulnerability and its chrome, the shields, halo, gas
-  mask), D the specials (invisibility, x-ray, time, breaths, grow,
-  shrink, phoenix, pojo), from `docs/powers.md`; the crossbow and hammer
-  shots' strikes (`0x800`, `0x6000`) and rapid fire. `GDL_POWERS` grants
-  powers for tests ([items.md](items.md) "Timed powerups").
-- Done today besides: hit flashes (`39082f5`), hints 0x14/0x15/0x1B and
-  0xE, critters found and hit once (spheres, then the body; a potion blast
-  used to hit a boss once per sphere), potions on the floor set off by
-  missiles and blasts.
+  time): research only while the smoke test runs — Death's AI (for the
+  halo), the Skorne gauntlets' and the crossbow's shots and SSHOT
+  chaining, the phoenix's and familiars' shots, into monsters.md,
+  items.md, projectiles.md and powers.md. Merged from it this session:
+  blasts on chests and floor items with CHESTEXP (`6fa4fc1`); the six
+  blast models, poisoned food as a poison blow, the power-ups' looks on
+  the hero (`power_looks.rs`, `eb14650`); the x-ray, levitation's lift
+  (1.5 — a double, powers.md had 1.9375), the time stop's hourglass,
+  `Animator::hold` and `left_wrist` (merge after `d9098fd`).
+- **Power-ups** (mine; `GDL_POWERS` grants them, e.g. `6:0x10000`,
+  `9:0x10:5:-1` for five fire breaths — [items.md](items.md) "Timed
+  powerups"):
+  - Stage C done: every blow goes through the resistance routine
+    (`damage::resist`; heroes via `Player::take_blow`, monsters, critters;
+    elemental blows × 1.5 on monsters) — invulnerability with its chrome
+    (`fade::BodyLook`, `level.wgsl` mode 3), gold's heal, the gas mask;
+    power clocks held in cuts and × 3 in a boss fight; the reflect, fire
+    wall and lightning shields with SHIELD_READY/RUN; blasts and monster
+    missiles hit heroes with their kind and push.
+  - Stage D done: invisibility, levitation's dodge (and the helper's
+    lift), shrink (`EnemyScale`), grow, time stop (`TimeStop`), the
+    breaths (ATTBREATHE, a cone blast riding the head, uses spent via
+    `SpendPower`), the hammer's chop (ATTCHOP).
+  - Not done: the halo (needs Death's AI), the Skorne gauntlets' and the
+    crossbow's attacks (SSHOT), phoenix and familiars, the Pojo, rapid
+    fire's animation rate; footsteps (none are played at all).
+- Also fixed on the way: effects whose clip has no frames lasted 0 s
+  (particle effects: the breaths, blood sprays, `L_SHLD_ACTIVE`) — they
+  last 30 frames, as the game's spawner has it.
 - **Older notes** kept for reference:
   - The boss fights: B6 dragon verified; the chimera's heads animate
     their own subtrees; the boss camera and intro are in. Not done: the
@@ -289,9 +306,12 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
-0. The tower's scenes, what's left: the rank flash riding the hero — [items.md](items.md) "The tower wizard's
-   scenes" (the exits' reveals are done, `ee73380`). The
-   power-ups' stages C and D (above). The heroes' step cut under the boss
+0. Power-ups, what's left: the pickup hints by bit ([powers.md](powers.md)
+   "Pickup hints"; `items.rs` + `hints.rs`), Death's AI then the halo, the
+   Skorne gauntlets' and crossbow's attacks (SSHOT), phoenix and
+   familiars, the Pojo's turbo breath and throws, the head-2 sparkle, rapid
+   fire's rate. The tower's scenes: the rank flash riding the hero — [items.md](items.md) "The tower wizard's
+   scenes" (the exits' reveals are done, `ee73380`). The heroes' step cut under the boss
    camera; the hand glows (and their banks' running modifiers); the
    node spheres' flashes (which model node a `NODE` names, `+0x500`).
    (The smoke test, `smoke.sh`: every level folder plus DEMO1,

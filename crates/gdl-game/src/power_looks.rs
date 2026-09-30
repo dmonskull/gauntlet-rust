@@ -324,13 +324,21 @@ fn load(
     Some(LookModel::Atree(Arc::new(built)))
 }
 
+impl Worn {
+    /// The body look's model root, when it's `name`'s (the Pojo's breath
+    /// leaves from its node).
+    pub(crate) fn body_model(&self, name: &str) -> Option<Entity> {
+        self.body.filter(|(look, _)| look.name == name).map(|(_, e)| e)
+    }
+}
+
 /// Slots of [`Worn::objects`] (left wrist, right wrist, head, head 2).
 const RIGHT: usize = 1;
 const HEAD_2_SLOT: usize = 3;
 
 /// What the hero has on.
 #[derive(Component, Default)]
-struct Worn {
+pub(crate) struct Worn {
     /// Left wrist, right wrist, head, head 2: the look and the entity
     /// holding its meshes.
     objects: [Option<(Look, Entity)>; 4],

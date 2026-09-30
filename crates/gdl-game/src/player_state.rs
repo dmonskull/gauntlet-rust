@@ -49,6 +49,13 @@ pub struct DamagePlayer {
     pub amount: f32,
 }
 
+/// Heals the hero the way the game's heal routine does (refused at full
+/// health, capped at the maximum): the Health Vampire's drink.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct HealPlayer {
+    pub amount: f32,
+}
+
 /// Spends one use of a counted power: the first slot of `subtype` with
 /// any of `bits` (a breath, the crossbow, the hammer).
 #[derive(Message, Clone, Copy, Debug)]
@@ -155,6 +162,8 @@ pub mod power {
     pub const GROW: u32 = 0x100;
     /// Shrinks the enemies, not the hero ([`super::EnemyScale`]).
     pub const SHRINK: u32 = 0x200;
+    /// The hero becomes Pojo.
+    pub const POJO: u32 = 0x400;
     pub const TURBO: u32 = 0x8_0000;
     pub const SPEEDING: u32 = 0x1_0000;
 }
@@ -421,6 +430,7 @@ impl Plugin for PlayerStatePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<DamagePlayer>()
             .add_message::<SpendPower>()
+            .add_message::<HealPlayer>()
             .init_resource::<PlayerState>()
             .init_resource::<EnemyScale>()
             .init_resource::<TimeStop>()
@@ -464,9 +474,15 @@ fn new_hero(
 
 fn take_damage(
     mut hits: MessageReader<DamagePlayer>,
+    mut heals: MessageReader<HealPlayer>,
     mut state: ResMut<PlayerState>,
     camera: Option<Res<crate::play_camera::PlayCamera>>,
 ) {
+    for h in heals.read() {
+        if state.alive {
+            state.heal(h.amount);
+        }
+    }
     // No harm comes to the hero during a camera cut.
     let cut = camera.is_some_and(|c| c.in_cut());
     for hit in hits.read() {
@@ -550,8 +566,8 @@ pub fn power_clock(in_tower: bool, cut: bool, boss_level: bool, boss_awake: bool
 const BOSS_POWER_CLOCK: f32 = 3.0;
 
 /// Counts powerups down ([`power_clock`]) and adds them up, sets the
-/// enemies' scale and the time stop, plays the sounds of the levitation, growth and shrink
-/// running out, and sounds the low-health warning: at 200 health or less
+/// enemies' scale and the time stop, plays the sounds of the levitation,
+/// growth, shrink and Pojo running out, and sounds the low-health warning: at 200 health or less
 /// the game plays `S_WARN` every 120 fields (60 below 100, 30 below 25) —
 /// not in the tower, or while invulnerable.
 #[allow(clippy::too_many_arguments)]
@@ -577,6 +593,9 @@ fn powers_and_warning(
     }
     if ended & power::GROW != 0 && state.level < BIG_LEVEL {
         sound.write(PlaySound("S_UNGROW".into()));
+    }
+    if ended & power::POJO != 0 {
+        sound.write(PlaySound("S_UNPOJO".into()));
     }
     let scale = EnemyScale(if !boss_level && now & power::SHRINK != 0 { SHRINK_SCALE } else { 1.0 });
     if scale.0 > enemies.0 {

@@ -39,7 +39,7 @@ use crate::effects::EffectAt;
 use crate::generators::Generator;
 use crate::monsters::{self, Monster, MonsterHit, MonsterLevel};
 use crate::player::Player;
-use crate::player_state::{DamagePlayer, EnemyScale, PlayerState};
+use crate::player_state::{DamagePlayer, EnemyScale, HealPlayer, PlayerState};
 use crate::player::PlayerTick;
 use crate::population::{GeneratorLooks, PlacementIndex};
 
@@ -326,9 +326,9 @@ const DEATH: i32 = 0x1E;
 const DEATH_ARMOUR: f32 = 1.0;
 /// A hero's blow on a monster takes at least this.
 const HERO_BLOW_LEAST: f32 = 1.0;
-/// Shrunk (`EnemyScale`), monsters take twice the damage and deal half.
+/// Shrunk (`EnemyScale`), monsters take twice the damage (and deal half:
+/// `monsters.rs`).
 const SHRUNK_TAKE: f32 = 2.0;
-const SHRUNK_DEAL: f32 = 0.5;
 
 /// The monster type whose blows knock heroes down.
 const KNOCKDOWN_MONSTER: i32 = 0x1D;
@@ -339,32 +339,55 @@ fn hurt_hero(
     mut players: Query<&mut Player>,
     mut damage: MessageWriter<DamagePlayer>,
     enemies: Res<EnemyScale>,
+    (mut turned, mut heal): (MessageWriter<Hit>, MessageWriter<HealPlayer>),
 ) {
     for hit in hits.read() {
         let Ok(mut p) = players.get_mut(hit.player) else { continue };
         // The blow's kind, as the monster's attack sets it: a big monster's
         // strong attack knocks back, one type knocks down, small monsters'
-        // blows only make the hero flinch.
-        let (mut flags, mut push) = (0u32, Vec3::ZERO);
+        // blows only make the hero flinch — and shrunk, every one is a
+        // small monster's.
+        let (mut flags, mut push, mut blow) = (0u32, Vec3::ZERO, hit.damage);
         if let Ok(m) = monsters.get(hit.monster) {
             let big = m.stats.step > monsters::BIG_STEP;
-            if hit.strong && big {
-                flags |= 0x10;
+            if enemies.shrunk() {
+                flags = hit_kind::SMALL_MONSTER;
+            } else {
+                if hit.strong && big {
+                    flags |= 0x10;
+                }
+                if m.enemy == KNOCKDOWN_MONSTER {
+                    flags |= 0x20;
+                }
+                if !big {
+                    flags |= hit_kind::SMALL_MONSTER;
+                }
             }
-            if m.enemy == KNOCKDOWN_MONSTER {
-                flags |= 0x20;
-            }
-            // Small monsters' blows — and every one while they're shrunk
-            // — are the kind levitation dodges.
-            if !big || enemies.shrunk() {
-                flags |= hit_kind::SMALL_MONSTER;
+            // The Hand of Death turns the blow back on the monster; the
+            // Health Vampire too, as magic, healing the hero by it. The
+            // hero takes nothing.
+            if let Some(vampire) = p.turns_blows() {
+                turned.write(Hit {
+                    target: hit.monster,
+                    attacker: Entity::PLACEHOLDER,
+                    damage: blow,
+                    kind: if vampire { hit_kind::MAGIC } else { 0 },
+                    push: Vec3::ZERO,
+                    at: m.centre(),
+                    target_kind: TargetKind::Monster,
+                    ranged: false,
+                });
+                if vampire {
+                    heal.write(HealPlayer { amount: blow });
+                }
+                debug!("the hero's hand turns a blow of {blow:.1} back on the monster");
+                (blow, flags) = (0.0, hit_kind::SMALL_MONSTER);
             }
             if flags & 0x130 != 0 {
                 let d = Vec3::from(p.mover.position) - Vec3::from(m.position);
                 push = Vec3::new(d.x, 0.0, d.z).normalize_or_zero();
             }
         }
-        let blow = if enemies.shrunk() { hit.damage * SHRUNK_DEAL } else { hit.damage };
         let amount = p.take_blow(blow, flags, push);
         if amount != 0.0 {
             damage.write(DamagePlayer { amount });
