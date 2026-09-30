@@ -887,9 +887,9 @@ pub fn spawn(
         }
         for stage in 0..=3 {
             let name = format!("{}{stage}", ty.name);
-            if !contents.models.contains_key(&name) {
-                let model = build_model(&sources, &mut caches, &name, None, meshes, level_materials, images);
-                contents.models.insert(name, model);
+            if let std::collections::hash_map::Entry::Vacant(e) = contents.models.entry(name) {
+                let model = build_model(&sources, &mut caches, e.key(), None, meshes, level_materials, images);
+                e.insert(model);
             }
         }
     }

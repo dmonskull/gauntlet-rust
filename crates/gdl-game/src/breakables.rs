@@ -737,6 +737,8 @@ mod tests {
             done: false,
             actions: 0,
             live,
+            armor: ty.armor,
+            rock: false,
             contents: None,
             model: None,
         };
