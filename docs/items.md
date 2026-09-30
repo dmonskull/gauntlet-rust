@@ -350,6 +350,15 @@ scenes where the `WIZARD` model appears at a lookout to announce new
 shards and runestones are below ("The tower wizard's scenes"). The
 runtime: `tower.rs`, `tower_scenes.rs`.
 
+**Pickup sparkles** (`FUN_8009176c(item position, kind)`): a gem sprays
+effect `0x45` + its crystal counter (`GETGEMORANGE` … `GETGEMBLACK`,
+`0x46`–`0x4D`, whether or not it counts), a gargoyle piece `GETGARG`
+(`0x4E`, kind `0x100`), a new runestone `GETRUNE` (`0x4F`, kind `0x400`) —
+`POWERUPS` atrees, depth bias −512, at the item (flags `0x80880`). Here:
+`items.rs`, through `EffectAt` with its bank. (A runestone also restarts
+the HUD's key/rune row timer `r13-0x6fdc` = 300 and plays a count voice,
+`FUN_8009f40c`; not done.)
+
 ## The tower's welcome
 
 In the tower, once play is running after the arrival's opening shot
@@ -637,7 +646,8 @@ node — its glowing trail — is hidden (instance flag `0x2`). Loading a level
 
 **In this rewrite**: all of the above for one player; the messages show
 in the game's message box (`docs/frontend.md`, "Message box"). Stand-ins
-and gaps: the pickup notices and sparkles aren't shown; the level-record
+and gaps: the pickup notices (`FUN_8007fa7c`: a queue of 24 for the
+HUD, subtypes 1–10, 13, 15, 16) aren't shown; the level-record
 seen bits
 (`+0xDDC…`) aren't kept. The gem/gargoyle count shows above the panel
 (`game_hud.rs`: `SM_CRYSTAL_<colour>` or `SM_FANGS`/`SM_FEATHERS`/

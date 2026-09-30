@@ -439,9 +439,8 @@ const SEE_THROUGH: [&str; 12] = [
 ];
 
 /// The effect table's depth bias for an effect: none for the breaths, the
-/// bags and the bare FX nodes; −512 for SUICIDEEXP (and the sparkles round
-/// a hero, not spawned yet: their names also have −128 entries); −128 for
-/// the rest.
+/// bags and the bare FX nodes; −512 for SUICIDEEXP and the pickup
+/// sparkles (`GETGEM<colour>`, `GETGARG`, `GETRUNE`); −128 for the rest.
 fn effect_bias(name: &str) -> i16 {
     const NONE: [&str; 9] = [
         "NULLFX", "MAGICFX", "FIREBREATHE", "ACIDBREATHE", "ELECBREATHE", "L_SHLD_ACTIVE", "BOSS_BREATHE", "BAG_THROW",
@@ -449,7 +448,7 @@ fn effect_bias(name: &str) -> i16 {
     ];
     if NONE.contains(&name) {
         0
-    } else if name == SUICIDE_FX {
+    } else if name == SUICIDE_FX || name.starts_with("GETGEM") || name == "GETGARG" || name == "GETRUNE" {
         -512
     } else {
         -128

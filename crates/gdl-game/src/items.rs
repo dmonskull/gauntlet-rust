@@ -23,6 +23,7 @@ use gdl_formats::{LevelCollision, MoveParams};
 
 use crate::audio::PlaySound;
 use crate::character;
+use crate::effects::EffectAt;
 use crate::exits::ChangeLevelTo;
 use crate::hints::{Hint, Hints, ShowHint};
 use crate::message_box::ShowMessage;
@@ -836,6 +837,10 @@ struct Out<'a> {
     sounds: Vec<String>,
     hints: Vec<Hint>,
     messages: Vec<ShowMessage>,
+    /// The sparkle a pickup gives off (placed at the item by its caller),
+    /// and those placed.
+    sparkle: Option<&'static str>,
+    effects: Vec<(&'static str, [f32; 3])>,
     seen: &'a Hints,
     /// The level's scroll texts.
     scrolls: String,
@@ -852,6 +857,18 @@ impl Out<'_> {
 
     fn hint(&mut self, hint: Hint) {
         self.hints.push(hint);
+    }
+
+    /// The pickup sparkle (`POWERUPS`) for the item just taken.
+    fn sparkle(&mut self, name: &'static str) {
+        self.sparkle = Some(name);
+    }
+
+    /// Places the pending sparkle at `at`.
+    fn sparkle_at(&mut self, at: [f32; 3]) {
+        if let Some(name) = self.sparkle.take() {
+            self.effects.push((name, at));
+        }
     }
 
     fn message(&mut self, group: &str, index: usize, voice: Option<&'static str>) {
@@ -873,18 +890,53 @@ fn tick(
     mut messages: MessageWriter<ShowMessage>,
     seen: Res<Hints>,
     mut change: MessageWriter<ChangeLevelTo>,
+    mut effects: MessageWriter<EffectAt>,
 ) {
     let dt = time.delta_secs();
     let items = &mut *items;
     let scrolls = items.scrolls.clone();
     let now = time.elapsed_secs();
-    let mut out = Out { sounds: Vec::new(), hints: Vec::new(), messages: Vec::new(), seen: &seen, scrolls, now };
+    let mut out = Out {
+        sounds: Vec::new(),
+        hints: Vec::new(),
+        messages: Vec::new(),
+        sparkle: None,
+        effects: Vec::new(),
+        seen: &seen,
+        scrolls,
+        now,
+    };
     update_items(items, dt, &mut commands);
     run(items, dt, &mut state, ground.as_deref(), &mut players, &cameras, &mut out, &mut change);
     sounds.write_batch(out.sounds.into_iter().map(PlaySound));
     hints.write_batch(out.hints.into_iter().map(ShowHint));
     messages.write_batch(out.messages);
+    effects.write_batch(out.effects.into_iter().map(|(name, at)| EffectAt {
+        name,
+        bank: Some(SPARKLE_BANK),
+        at: Vec3::from(at),
+        facing: 0.0,
+        scale: 1.0,
+    }));
 }
+
+/// Where the pickup sparkles are.
+const SPARKLE_BANK: &str = "POWERUPS";
+/// A gem's sparkle by its crystal counter (1 orange … 8 black; effects
+/// `0x46`–`0x4D`), a gargoyle piece's and a runestone's.
+const GEM_SPARKLES: [&str; 9] = [
+    "",
+    "GETGEMORANGE",
+    "GETGEMRED",
+    "GETGEMPURPLE",
+    "GETGEMBLUE",
+    "GETGEMGREEN",
+    "GETGEMYELLOW",
+    "GETGEMWHITE",
+    "GETGEMBLACK",
+];
+const GARGOYLE_SPARKLE: &str = "GETGARG";
+const RUNE_SPARKLE: &str = "GETRUNE";
 
 /// One tick of the hero against the items.
 #[allow(clippy::too_many_arguments)]
@@ -1037,6 +1089,7 @@ fn touch(
                 let (sub, value, name) = (item.ty.subtype, item.ty.value, item.ty.name.clone());
                 let dur = item.ty.duration as f32;
                 let taken = pick_up(state, sub, value, &name, &mut item.amount, dur, doors, out);
+                out.sparkle_at(item.shape.centre);
                 if taken {
                     item.leaving = true;
                     item.timer = PICKUP_LINGER;
@@ -1125,6 +1178,7 @@ fn open_chest(items: &mut LevelItems, i: usize, state: &mut PlayerState, out: &m
     if ty.class == ItemClass::Powerup {
         let mut amount = ty.amount as i32;
         pick_up(state, ty.subtype, ty.value, &ty.name, &mut amount, ty.duration as f32, doors, out);
+        out.sparkle_at(chest.shape.centre);
     }
 }
 
@@ -1209,6 +1263,7 @@ fn pick_up(
             }
             state.runestones.push(*amount);
             out.sound("S_PICKUPRUNE");
+            out.sparkle(RUNE_SPARKLE);
             true
         }
         // A realm's legendary item (numbered by the realm whose boss it's
@@ -1237,6 +1292,7 @@ fn pick_up(
             if let Some(c) = state.quest.add_gem(*amount) {
                 info!("{} crystals: {}/{}", quest::CRYSTAL_COLOURS[c], state.quest.crystals[c], quest::CRYSTALS_NEEDED[c]);
                 state.popup = Some((c as u16, out.now));
+                out.sparkle(GEM_SPARKLES[c.min(8)]);
             }
             out.sound("S_PICKUPMAGIC");
             true
@@ -1246,6 +1302,7 @@ fn pick_up(
                 info!("gargoyle pieces {p}: {}/{}", state.quest.gargoyle[p], quest::GARGOYLE_NEEDED[p]);
                 state.popup = Some((0x100 + p as u16, out.now));
             }
+            out.sparkle(GARGOYLE_SPARKLE);
             out.sound("S_PICKUPMAGIC");
             true
         }
