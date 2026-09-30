@@ -289,9 +289,8 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
-0. The tower's scenes, what's left: the exits' reveals (made clear, then
-   faded in — needs per-instance alpha on item models), the pieces'
-   sparkles — [items.md](items.md) "The tower wizard's scenes". The
+0. The tower's scenes, what's left: the rank flash riding the hero — [items.md](items.md) "The tower wizard's
+   scenes" (the exits' reveals are done, `ee73380`). The
    power-ups' stages C and D (above). The heroes' step cut under the boss
    camera; the hand glows (and their banks' running modifiers); the
    node spheres' flashes (which model node a `NODE` names, `+0x500`).

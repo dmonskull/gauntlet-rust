@@ -196,7 +196,7 @@ fn place_trophies(
     names.extend(piece.as_deref());
     let mut built = build_models(&mut game, &names, &mut meshes, &mut materials, &mut images);
     for (name, place) in wanted {
-        let (Some(at), Some(model)) = (node_at(&nodes, place), built.get(&name)) else {
+        let (Some(at), Some((model, _))) = (node_at(&nodes, place), built.get(&name)) else {
             warn!("{}: no {place} or {name} to set out", population.level);
             continue;
         };
@@ -204,12 +204,12 @@ fn place_trophies(
         commands.entity(root).insert((WindOn, LevelEntity));
         info!("{name} set out at {place} {at:?}");
     }
-    let Some(wizard) = built.remove(SCENE_WIZARD) else {
+    let Some((wizard, _)) = built.remove(SCENE_WIZARD) else {
         warn!("{WIZARD_BANK} has no {SCENE_WIZARD}: no scenes");
         return;
     };
     let wizard = tower_scenes::apparition(wizard, &mut materials);
-    let piece = piece.and_then(|p| built.remove(&p)).map(Arc::new);
+    let piece = piece.and_then(|p| built.remove(&p)).map(|(m, particles)| (Arc::new(m), particles));
     if rank.is_some() || announce.is_some() {
         info!("the wizard will announce {rank:?} {announce:?}");
     }
@@ -220,14 +220,14 @@ fn place_trophies(
 const SCENE_WIZARD: &str = "WIZARD";
 
 /// Builds these atrees of the tower's items bank (reading it once), each
-/// running its texture modifiers.
+/// running its texture modifiers, with their particle systems.
 pub fn build_models(
     game: &mut LoadedGame,
     names: &[&str],
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<LevelMaterial>,
     images: &mut Assets<Image>,
-) -> HashMap<String, CharacterModel> {
+) -> HashMap<String, (CharacterModel, crate::effects::ParticleSystems)> {
     let mut out = HashMap::new();
     let Some((anim, texmods, model, textures)) = read_bank(game, WIZARD_BANK) else {
         warn!("{WIZARD_BANK} didn't load");
@@ -255,7 +255,8 @@ pub fn build_models(
         data.skeleton = tree.clone();
         let mut model = CharacterModel::build_with(&data, &mut cache, meshes, materials, images);
         model.run_texmods(&data, &texmods, &mut cache, images);
-        out.insert(name.to_string(), model);
+        let particles = crate::effects::particle_systems(&data, &mut cache, images, materials);
+        out.insert(name.to_string(), (model, particles));
     }
     out
 }
