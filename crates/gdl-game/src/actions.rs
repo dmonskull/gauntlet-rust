@@ -137,6 +137,14 @@ impl Action {
     pub const DEFEND1: Self = Self(0x77);
     pub const DEFEND2: Self = Self(0x78);
     pub const DEFENDR: Self = Self(0x79);
+    /// Standing while a blow's stun lasts (a looping clip).
+    pub const STUN2: Self = Self(0x7A);
+    /// A stunning blow (kind `0x80`: the damage tiles).
+    pub const STUN1: Self = Self(0x7F);
+    pub const WEBREACT: Self = Self(0x80);
+    /// A blow of kind `0x2000` (its clip is HITREACT, as 0x1B's and
+    /// 0x82's are).
+    pub const STUNREACT: Self = Self(0x81);
 }
 
 impl Action {
@@ -343,7 +351,13 @@ pub struct Env {
     /// Magic was let go during MAGICS (the player's control flag 4): it
     /// becomes a blast rather than the potion throw.
     pub magic_released: bool,
+    /// The playing clip has ended or come round since it started (the
+    /// game's animation status).
+    pub came_round: bool,
 }
+
+/// STUN2 can't be cut short in the first frames of its first pass.
+const STUN_HOLD_FRAMES: f32 = 10.0;
 
 /// The action to go to next and how.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -678,6 +692,30 @@ impl ActionState {
                     _ => Action::ATTCHOPR,
                 };
             }
+            // STUN2 (a looping clip): asked to stand, it ends with its
+            // clip; anything else cuts it, but not in the first frames of
+            // its first pass.
+            0x7A => {
+                switch = if req == Action::READY || (env.frame < STUN_HOLD_FRAMES && !env.came_round) {
+                    Switch::AtEnd
+                } else {
+                    Switch::Now
+                };
+            }
+            // STUN1 and the hit reactions end in READY (asked for again,
+            // they don't start over); a knock-down takes over at once.
+            0x7F | 0x81 | 0x82 => {
+                switch = if req.0 > 0x82 { Switch::Always } else { Switch::AtEnd };
+                if req == cur {
+                    next = Action::READY;
+                }
+            }
+            // WEBREACT (looping) holds until something else is asked for.
+            0x80 => {
+                if req != Action::READY {
+                    switch = Switch::Now;
+                }
+            }
             // The crossbow: SSHOT2, over and over, while its shot is asked
             // for; standing or moving, SSHOTR; anything else once the clip
             // is done (a hit reaction too).
@@ -861,7 +899,7 @@ mod tests {
     use super::*;
 
     fn env() -> Env {
-        Env { frame: 0.0, class: Some(0), has_low2: true, magic_released: false }
+        Env { frame: 0.0, class: Some(0), has_low2: true, magic_released: false, came_round: false }
     }
 
     fn state(action: Action, range: u32) -> ActionState {
@@ -1076,6 +1114,27 @@ mod tests {
         let n = s.next(Action::ATTQUICK1, &env());
         assert_eq!((n.action, n.switch), (Action::ATTQUICK1, Switch::AtEndAlways));
         assert_eq!(s.switched(n.action, Some(0)).0 & Strike::CROSSBOW, 0);
+    }
+
+    #[test]
+    fn stuns_end_as_the_game_has_them() {
+        // STUN2: standing waits for the clip; moving cuts it, but not
+        // early in its first pass.
+        let mut s = state(Action::STUN2, 0);
+        assert_eq!(s.next(Action::READY, &Env { frame: 15.0, ..env() }).switch, Switch::AtEnd);
+        assert_eq!(s.next(Action::WALK1, &Env { frame: 5.0, ..env() }).switch, Switch::AtEnd);
+        assert_eq!(s.next(Action::WALK1, &Env { frame: 12.0, ..env() }).switch, Switch::Now);
+        assert_eq!(s.next(Action::WALK1, &Env { frame: 5.0, came_round: true, ..env() }).switch, Switch::Now);
+        // STUN1 asked for again goes to READY at its end; a knock-down
+        // takes over at once.
+        let mut s = state(Action::STUN1, 0);
+        let n = s.next(Action::STUN1, &env());
+        assert_eq!((n.action, n.switch), (Action::READY, Switch::AtEnd));
+        assert_eq!(s.next(Action(0x85), &env()).switch, Switch::Always);
+        // WEBREACT holds while standing.
+        let mut s = state(Action::WEBREACT, 0);
+        assert_eq!(s.next(Action::READY, &env()).switch, Switch::AtEnd);
+        assert_eq!(s.next(Action::RUN1, &env()).switch, Switch::Now);
     }
 
     #[test]

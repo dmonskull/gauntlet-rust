@@ -349,9 +349,8 @@ const DEATH_HEAL_BASE: f32 = 0.2;
 const DEATH_HEAL_PER_LEVEL: f32 = 0.032;
 /// The halo's armour bit.
 const HALO: u32 = 0x8_0000;
-/// The sound of Death dying, and the kind of its drain on a hero.
+/// The sound of Death dying.
 const DEATH_DIES: &str = "S_DEATHDIE";
-const DEATH_DRAIN_KIND: u32 = 0x1000;
 
 /// A blow on Death (the game's blow routine, Death's branch; no reaction
 /// or experience): magic kills it outright — healing a hero above level 75
@@ -417,7 +416,7 @@ fn death_drains(
             }
             hints.write(ShowHint(Hint::DeathDrainsExperience));
         } else {
-            let amount = p.take_blow(-d.amount, DEATH_DRAIN_KIND, Vec3::ZERO);
+            let amount = p.take_blow(-d.amount, hit_kind::DRAIN, Vec3::ZERO);
             if amount != 0.0 {
                 damage.write(DamagePlayer { amount });
             }
