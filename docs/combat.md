@@ -324,10 +324,10 @@ When `+0x900 & 0xFE` is set:
 
 ### Stand-ins and differences
 
-- The turbo meter isn't modelled (stays 0): no turbo attacks, charge or
-  co-op combos; turbo + attack leaves the request unchanged, as the game
-  does below 40 turbo. Magic without potions just walks, as the game does
-  for a hero with none (without the cue).
+- The turbo meter fills and drains and the turbo attacks swing (below);
+  the charge's own moves and co-op combos aren't done. Magic without
+  potions just walks, as the game does for a hero with none (without the
+  cue).
 - Projectiles (throws, strafe attacks, power throw) are released as the
   game does ([projectiles.md](projectiles.md)); the weapon power-up shots
   (`0x800`, `0x6000`) aren't.
