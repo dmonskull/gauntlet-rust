@@ -129,7 +129,14 @@ state machine (`FUN_800ab898`) then raises, as those actions hand over,
 `0x2000` (0x67 → 0x69), `0x4000` (0x68 → 0x6A) and `0x800` (0x6B/0x6C →
 0x6C/0x6D), which release the shots in [projectiles.md](projectiles.md),
 "Hero release" (the crossbow's `0x800` spends a shot through
-`FUN_8007ed38`). Special `0x4000`/`0x8000` also pick the missile records
+`FUN_8007ed38`). The chooser (`FUN_800ab898`) runs them: ATTFIREL (0x67) → 0x69 and
+0x68 → 0x6A, ATTBREATHE (0x6E) → 0x6F, ATTCHOP (0x70) → 0x71 — each at
+its clip's end unless knocked down (switch mode 0); SSHOT1/2 (0x6B/0x6C)
+→ SSHOT2 while the crossbow shot is still asked for (with the player's
+`+0xB4` = 1, which idle loops also set — its effect on the clip isn't
+pinned down), else SSHOTR (0x6D) when a category-0 action is asked for,
+else switch mode 1. Not ported: our chaining has no cases for 0x67–0x72
+yet. Special `0x4000`/`0x8000` also pick the missile records
 `0x80119b88`/`0x80119b58` (no power-up on the disc has them; not traced).
 Rapid fire (weapon `0x20000000`) isn't among these: the action state
 machine sets the player's `+0xA8` to 0.75 (`r2-0x4da4`) instead of 1
