@@ -365,6 +365,61 @@ fields one more letter every 8 (the centring uses the whole string). The
 level keeps drawing behind. After 240 fields (`r13-0x7384` = `0xF0`) the
 attract loop resumes (movies, then the title).
 
+## Message box (`FUN_8006d7f4`)
+
+`FUN_8006d7f4(players, group, page, voice)` shows pages of a text group of
+bank 0 (`TEXT/SCROLL_E.ROM`; `FUN_8001fc00` finds a group by name, any
+case) — page −1 means every page in turn — and returns when the last is
+put away. Its callers: a scroll's pickup (`FUN_8005de3c` class 14: page
+amount − 1 of the level's `SCROLLS<level>`, only the picking player's B
+counts), the tower's gates (`NEEDCRYSTALS`/`NEEDGARGITEMS`,
+`FUN_800a200c`/`FUN_800a1f88`), its unlocks (`UNLOCKLEVEL`/
+`UNLOCKSECTION` with their voice lines, `FUN_800a20c4`), the tower's
+`WELCOMEMESSAGE`/`GARMMESSAGE` (below), the demo's notices and `ALLCOINS`.
+
+- It runs its own frame loop, so play stops: the pads are cleared
+  (`FUN_80032788`), `r13-0x7598` = 1 (the players' update is skipped),
+  and only the frozen scene, the HUD and the box are drawn.
+- Per page: text width = the widest line of the group's font at its scale
+  (`FUN_8001ef74`), height = lines × (font height × scale + 4)
+  (`FUN_8001ed24`, lines split at `\n`); the prompt `r13-0x7e7c` "Press
+  Button when done." is measured in `font32` at 0.5. The `Scroll_A` panel
+  (`r13-0x7e78`) is max(prompt + 32, text + 96) wide (text + 96 capped at
+  512) and text + 96 high, centred at x 256 with its middle at y 160; the
+  lines are centred on 256 from 32 below its top, 4 apart, in `0x160C03`
+  (dark brown on the parchment); the prompt shimmers (`FUN_8001eb80`,
+  scale 0.5) 8 below the last line, the B button's picture (`BUTTON_TRI`,
+  `r13-0x6cb4`, 20 × 20) at x 190 in its gap.
+- After 15 fields a page is put away by B (`0x8000000`) of any of the
+  given players (all, for −1); that stops the voice line
+  (`FUN_80016558`). After the last page the pads are ignored for 4 frames
+  (`FUN_80032a90(4)`).
+
+Here (`message_box.rs`, `ShowMessage`): the same panel, sizes, colours,
+prompt and timing; virtual time is paused while it's up, the hero's
+input is ignored until 4 frames after it closes, and the front end's
+Start does nothing meanwhile. Stand-in: any player's B puts a page away
+(one player). Before, messages were plain text for 5 s over live play.
+
+## Captions (`FUN_80019e64`)
+
+The wizards' words during their scenes aren't in the box: a page of a
+group (bank 0 for the tower's, the default `ENGLISH.ROM` bank for the
+bosses' speeches) is typed out centred at a line of the screen — 16, in a
+cut's top bar, for a boss's speech; 312, in the bottom bar, for the
+tower's announcements — white, in the group's font at 0.667 of its scale,
+lines 32 × that apart (`FUN_80019f5c`). The caller passes the ticks
+(fields ÷ 2) since the page began as a budget: each letter costs 1.75
+ticks (5.5 in one mode), a comma or full stop 2 more, a tab 5; a carriage
+return costs 30 and, with time left after it, empties the line it ends
+(what follows takes that line's place). A line being typed stands where
+the whole line is centred. Paging through a group (page −1), a finished
+page is held 60 fields before the next; the bosses' speeches step their
+pages themselves the same way, the last page held too.
+
+Here: `ShowCaption` (`message_box.rs`), `critters.rs` for the bosses'
+speeches (which had typed a letter a tick, twice the game's speed).
+
 ## Runtime flow
 
 Title → (Start) title menu → Start → "Loading..." → select (tower loaded

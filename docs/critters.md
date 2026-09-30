@@ -691,9 +691,10 @@ is:
      its transparency `r13-0x77a8` starts at 255;
   4. the transparency drops 4 a frame to 0; then the wizard speaks
      (`0x8009bf48(boss, 0)`; the first skorne `0x8009bf48(boss,
-     r13-0x77b0)`) and his message shows page by page (`0x80019e64`, a
-     character typed every 2 fields since the page began, a finished page
-     held 60 fields): message 0x94 for the dragon, 0x93 chimera, 0x95
+     r13-0x77b0)`) and his message shows page by page (`0x80019e64`, typed
+     at 1.75 ticks a letter in the top bar, y 16, a finished page held 60
+     fields — `docs/frontend.md`, "Captions"): message 0x94 for the dragon,
+     0x93 chimera, 0x95
      djinn, 0x96 drider, 0x98 P-boss, 0x97 yeti, 0x9A wraith, 0x99 lich,
      0x9F first skorne, 0xA2 second skorne, 0xA3 garm;
   5. half a second (`r2-0x7d00`) after the last page, speech n + 1
@@ -1381,8 +1382,7 @@ dragon.
   `hints::ShowMessage`, each for as long as the game types and holds it
   (a character every 2 fields, then 60 fields); the 2 s countdown then
   sends the hero to `levelL1`.
-  - Stand-ins: the message box is the hints' plain text; the wizard
-    doesn't fade in; the teleport-out effect,
+  - Stand-ins: the wizard doesn't fade in; the teleport-out effect,
     the HUD sprites and the next level's choice (`levelL1` for world
     13's first) aren't the game's; the shard doesn't drop to the floor
     (flag 0x40 only acts on moving effects, and it has no velocity).

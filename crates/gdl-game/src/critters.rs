@@ -86,7 +86,7 @@ use crate::combat::{TargetKind, Targetable};
 use crate::damage::after_armor;
 use crate::effects::effect_life;
 use crate::exits::ChangeLevelTo;
-use crate::hints::ShowMessage;
+use crate::message_box::{self, ShowCaption, TextFile};
 use crate::items::LevelItems;
 use crate::texanim::LevelTexAnims;
 use crate::level::LoadedGame;
@@ -170,7 +170,7 @@ fn run_victory(
     players: Query<&Player>,
     mut animators: Query<&mut Animator>,
     mut sounds: MessageWriter<PlaySound>,
-    mut messages: MessageWriter<ShowMessage>,
+    mut messages: MessageWriter<ShowCaption>,
     mut change: MessageWriter<ChangeLevelTo>,
 ) {
     let Some(mut level) = level else { return };
@@ -311,21 +311,14 @@ fn speak(level: &CritterLevel, v: &mut Victory, n: usize, now: f32, sounds: &mut
     v.voice_until = at + length;
 }
 
-/// Shows one of the wizard's messages, a page at a time, each for as long
-/// as the game takes to type it and hold it: their total, 0 without one.
-fn show_message(level: &CritterLevel, group: Option<&'static str>, messages: &mut MessageWriter<ShowMessage>) -> f32 {
+/// Types one of the wizard's messages in the top bar, a page at a time,
+/// each held a second once typed (`message_box.rs`): how long that takes,
+/// 0 without one.
+fn show_message(level: &CritterLevel, group: Option<&'static str>, messages: &mut MessageWriter<ShowCaption>) -> f32 {
     let Some((group, pages)) = group.and_then(|g| Some((g, level.end.texts.get(g)?))) else { return 0.0 };
     info!("the wizard's message {group}: {:?}", pages.join(" "));
-    for (i, page) in pages.iter().enumerate() {
-        messages.write(ShowMessage::new(group, i).seconds(page_time(page)));
-    }
-    pages.iter().map(|p| page_time(p)).sum()
-}
-
-/// How long a page shows: it types out a character every 2 fields and
-/// stays 60 fields once typed.
-fn page_time(page: &str) -> f32 {
-    page.chars().count() as f32 / TYPE_RATE + PAGE_HOLD
+    messages.write(ShowCaption { file: TextFile::English, group: group.into(), index: None, y: SPEECH_Y });
+    message_box::caption_seconds(pages)
 }
 
 /// The wizard's first message for the boss (a `TEXT/ENGLISH.ROM` group).
@@ -451,10 +444,8 @@ const AFTER_FIRST_SPEECH: f32 = 0.5;
 const AFTER_SECOND_SPEECH: f32 = 1.0;
 const COUNTDOWN: f32 = 2.0;
 const COUNTDOWN_LONG: f32 = 10.0;
-/// The wizard's pages type out a character every 2 fields (30 a second)
-/// and stay 60 fields once typed.
-const TYPE_RATE: f32 = 30.0;
-const PAGE_HOLD: f32 = 1.0;
+/// The line his words are typed on: the top bar.
+const SPEECH_Y: f32 = 16.0;
 /// Runestones 0–11 (the first skorne wants them all).
 const ALL_RUNESTONES: u32 = 0xFFF;
 const TELEPORT_LEFT: f32 = 35.0 / 60.0;
@@ -3214,8 +3205,10 @@ mod tests {
         assert_eq!(at, [5.0, 30.0, -10.0]);
         // Without heroes, at the boss's spot.
         assert_eq!(wizard_spot([1.0, 2.0, 3.0], &[]), [1.0, 2.0, 3.0]);
-        // A page of 60 characters takes 2 s to type and stays 1 s.
-        assert!((page_time(&"x".repeat(60)) - 3.0).abs() < 1e-5);
+        // A page of 60 letters types in 105 ticks (and a little, for its
+        // end) and stays a second.
+        let t = message_box::caption_seconds(&["x".repeat(60)]);
+        assert!((t - (106.0 / 30.0 + 1.0)).abs() < 1e-4, "{t}");
     }
 
     /// The chimera's body and heads share their wounds (real data).

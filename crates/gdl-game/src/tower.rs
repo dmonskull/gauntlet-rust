@@ -19,6 +19,9 @@ use gdl_formats::anim::AnimFile;
 use gdl_formats::population::LocatorKind;
 use gdl_formats::texmod::TexMod;
 
+use crate::message_box::{MessageBox, ShowMessage};
+use crate::play_camera::{PlayCamera, StartCut};
+
 use crate::character::{self, Animate, Animator, CharacterData, CharacterModel};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
@@ -39,10 +42,13 @@ impl Plugin for TowerPlugin {
             (
                 place_wizard.run_if(resource_exists_and_changed::<LevelPopulation>),
                 place_trophies.run_if(resource_exists_and_changed::<LevelPopulation>).after(quest::enter_level),
+                arm_speeches.run_if(resource_exists_and_changed::<LevelPopulation>).after(quest::enter_level),
+                speeches,
                 wind_on.before(Animate),
                 idle_wizard,
             ),
-        );
+        )
+        .init_resource::<TowerSpeeches>();
     }
 }
 
@@ -191,6 +197,89 @@ fn wind_on(mut commands: Commands, mut animators: Query<(Entity, &mut Animator),
     }
 }
 
+/// The tower's speeches in the message box (`docs/items.md`): a new hero's
+/// welcome (`WELCOMEMESSAGE`, five pages) and, back from Skorne's first
+/// lair (`levelF2`), `GARMMESSAGE`. They show once the arrival's opening
+/// shot is over; after the welcome the wizard points the way (GESTRIGHT)
+/// under a cut to the tower's camera point 0xC6 held 50 × 6 fields, no
+/// delay.
+#[derive(Resource, Default)]
+struct TowerSpeeches {
+    pending: Vec<&'static str>,
+    /// After the welcome's box: the wizard's gesture and its cut.
+    gesture: bool,
+    /// Tower loads this session, and the level before this one.
+    tower_loads: u32,
+    previous: Option<String>,
+}
+
+const WELCOME: &str = "WELCOMEMESSAGE";
+const GARM: &str = "GARMMESSAGE";
+/// Where the Garm speech follows from.
+const SKORNE_LAIR: &str = "levelF2";
+/// The welcome's camera point (a kind-9 locator's index) and its hold.
+const WELCOME_CAMERA: i16 = 0xC6;
+const WELCOME_HOLD: f32 = 50.0 * 6.0;
+/// His gesture after the welcome.
+const GESTURE: usize = 6;
+
+/// On each level's arrival: in the tower, the speeches it owes. The game
+/// welcomes a hero on the session's first tower load when no hero in the
+/// game has any of its 16 records at player `+0xA90` above 0
+/// — here, when the hero hasn't entered a realm's level.
+fn arm_speeches(population: Res<LevelPopulation>, state: Option<Res<PlayerState>>, mut speeches: ResMut<TowerSpeeches>) {
+    let previous = speeches.previous.replace(population.level.clone());
+    if quest::level_of(&population.level).is_none_or(|(realm, _)| realm != TOWER_REALM) {
+        return;
+    }
+    let first = speeches.tower_loads == 0;
+    speeches.tower_loads += 1;
+    let fresh = state.as_ref().is_some_and(|s| {
+        s.quest.entered.iter().enumerate().all(|(realm, &levels)| realm == TOWER_REALM as usize || levels == 0)
+    });
+    if first && fresh {
+        speeches.pending.push(WELCOME);
+    }
+    if previous.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(SKORNE_LAIR)) {
+        speeches.pending.push(GARM);
+    }
+}
+
+fn speeches(
+    mut speeches: ResMut<TowerSpeeches>,
+    camera: Option<Res<PlayCamera>>,
+    boxes: Res<MessageBox>,
+    population: Option<Res<LevelPopulation>>,
+    mut messages: MessageWriter<ShowMessage>,
+    mut cuts: MessageWriter<StartCut>,
+    mut wizards: Query<(&mut TowerWizard, &mut Animator)>,
+) {
+    if speeches.gesture && !boxes.is_open() {
+        speeches.gesture = false;
+        for (mut w, mut animator) in &mut wizards {
+            animator.play(GESTURE);
+            w.next = 0;
+            w.last_frame = 0.0;
+        }
+        let point = population.as_ref().and_then(|p| {
+            p.population.locators.iter().position(|l| l.kind == LocatorKind::Transmitter(9) && l.index == WELCOME_CAMERA)
+        });
+        match point {
+            Some(locator) => {
+                cuts.write(StartCut { locator, node: None, hold: Some(WELCOME_HOLD), delay: 0.0 });
+            }
+            None => warn!("the tower has no camera point {WELCOME_CAMERA:#x}"),
+        }
+    }
+    if speeches.pending.is_empty() || boxes.is_open() || !camera.is_some_and(|c| c.settled()) {
+        return;
+    }
+    for group in std::mem::take(&mut speeches.pending) {
+        messages.write(ShowMessage::all(group));
+        speeches.gesture |= group == WELCOME;
+    }
+}
+
 /// Each of his actions plays out, then the next (0, 1, 2, 0…).
 fn idle_wizard(mut wizards: Query<(&mut TowerWizard, &mut Animator)>) {
     for (mut w, mut animator) in &mut wizards {
@@ -198,7 +287,8 @@ fn idle_wizard(mut wizards: Query<(&mut TowerWizard, &mut Animator)>) {
         w.last_frame = animator.frame;
         if animator.finished() || looped {
             let count = animator.clips.actions.len().clamp(1, IDLE_ACTIONS);
-            let next = w.next % count;
+            // Past his third he goes back to the first (after a gesture).
+            let next = if w.next >= count { 0 } else { w.next };
             animator.play(next);
             w.next = next + 1;
             w.last_frame = 0.0;

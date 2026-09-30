@@ -24,7 +24,8 @@ use gdl_formats::{LevelCollision, MoveParams};
 use crate::audio::PlaySound;
 use crate::character;
 use crate::exits::ChangeLevelTo;
-use crate::hints::{Hint, Hints, ShowHint, ShowMessage};
+use crate::hints::{Hint, Hints, ShowHint};
+use crate::message_box::ShowMessage;
 use crate::level_material::LevelMaterial;
 use crate::player::{Player, PlayerTick};
 use crate::player_state::{FIELDS_PER_TICK, Heal, PlayerState};
@@ -608,6 +609,9 @@ pub(crate) fn build_items(
             (ItemClass::Powerup, PlacementParams::Powerup { count }) if ty.subtype == 2 => {
                 amount = (*count as i32).max(1)
             }
+            // A scroll's is the page of the level's scroll texts it shows,
+            // numbered from 1.
+            (ItemClass::Powerup, PlacementParams::Powerup { count }) if ty.subtype == SCROLL => amount = *count as i32,
             _ => {}
         }
         out.push(Item {
@@ -851,7 +855,7 @@ impl Out<'_> {
     }
 
     fn message(&mut self, group: &str, index: usize, voice: Option<&'static str>) {
-        self.messages.push(ShowMessage { group: group.into(), index, voice, seconds: None });
+        self.messages.push(ShowMessage { group: group.into(), index: Some(index), voice });
     }
 }
 

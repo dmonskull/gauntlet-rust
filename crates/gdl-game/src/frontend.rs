@@ -27,6 +27,7 @@ use crate::character::Animator;
 use crate::exits::ChangeLevelTo;
 use crate::font::{Draw2d, FontTexture, GameFonts, TextStyle, UiTextures};
 use crate::level::LoadedGame;
+use crate::message_box::MessageBox;
 use crate::options::GameOptions;
 use crate::player::{Player, PlayerChoice};
 use crate::player_state::PlayerState;
@@ -100,7 +101,12 @@ fn menu_script() -> Vec<(String, u64)> {
         .collect()
 }
 
-fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut fe: ResMut<Frontend>, mut sticks: Local<[bool; 4]>) {
+pub(crate) fn read_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
+    mut fe: ResMut<Frontend>,
+    mut sticks: Local<[bool; 4]>,
+) {
     let key = |ks: &[KeyCode]| ks.iter().any(|k| keys.just_pressed(*k));
     let pad = |bs: &[GamepadButton]| pads.iter().any(|p| bs.iter().any(|b| p.just_pressed(*b)));
     // The stick counts as a press when it crosses half way.
@@ -637,6 +643,11 @@ impl Frontend {
         !self.menus.is_empty()
     }
 
+    /// B (back) was pressed this frame.
+    pub fn back_pressed(&self) -> bool {
+        self.input.back
+    }
+
     /// Whether gameplay should be frozen (anything but plain play).
     fn frozen(&self) -> bool {
         !(self.screen == Screen::Playing && self.menus.is_empty())
@@ -711,7 +722,7 @@ fn load_text(mut commands: Commands, mut game: ResMut<LoadedGame>) {
 // Flow
 
 #[allow(clippy::too_many_arguments)]
-fn run(
+pub(crate) fn run(
     mut fe: ResMut<Frontend>,
     real: Res<Time<Real>>,
     mut virt: ResMut<Time<Virtual>>,
@@ -721,6 +732,7 @@ fn run(
     mut options: ResMut<GameOptions>,
     state: Option<Res<PlayerState>>,
     mut saves: ResMut<Saves>,
+    boxes: Res<MessageBox>,
 ) {
     let has_saves = !saves.file.characters.is_empty();
     let fields = real.delta_secs() * 60.0;
@@ -778,6 +790,8 @@ fn run(
                 fe.go(Screen::Playing);
             }
         }
+        // The message box has the pads while it's up.
+        Screen::Playing if boxes.is_open() => {}
         Screen::Playing => {
             if fe.menus.is_empty() {
                 if p.start {
@@ -825,7 +839,7 @@ fn run(
         }
     }
 
-    let frozen = fe.frozen();
+    let frozen = fe.frozen() || boxes.is_open();
     if frozen != virt.is_paused() {
         if frozen { virt.pause() } else { virt.unpause() }
     }
@@ -1169,9 +1183,14 @@ fn rgb(c: [u8; 3]) -> Color {
     Color::srgb_u8(c[0], c[1], c[2])
 }
 
+/// The glow shimmering text gets (`0x8200EA`).
+pub(crate) fn glow_colour() -> Color {
+    rgb(PURPLE)
+}
+
 /// The game's pulse for glowing text: a triangle over 40 fields up and 40
 /// down, then 5 at rest, from half to full opacity.
-fn pulse(t: f32) -> f32 {
+pub(crate) fn pulse(t: f32) -> f32 {
     let phase = t.rem_euclid(85.0);
     let tri = if phase > 80.0 { 0.0 } else if phase > 40.0 { 80.0 - phase } else { phase };
     0.5 + 0.5 * (tri / 40.0)

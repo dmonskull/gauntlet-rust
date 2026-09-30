@@ -483,7 +483,7 @@ fn tick(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
-    free_look: Res<FreeLook>,
+    (free_look, boxes): (Res<FreeLook>, Res<crate::message_box::MessageBox>),
     play_camera: Option<Res<PlayCamera>>,
     ground: Option<Res<LevelGround>>,
     mut controls: ResMut<Controls>,
@@ -516,8 +516,11 @@ fn tick(
     // refuses them).
     let cut = play_camera.as_ref().is_some_and(|c| c.in_cut());
     controls.ticks += 1;
-    let raw = if free_look.0 { Vec2::ZERO } else { read_stick(&keys, &pads) };
-    let held = if free_look.0 { 0 } else { read_buttons(&keys, &pads, &controls) };
+    // The pads aren't read during a camera cut (the game blocks them from
+    // its start to its end) or while the message box has them.
+    let deaf = free_look.0 || cut || boxes.holds_input();
+    let raw = if deaf { Vec2::ZERO } else { read_stick(&keys, &pads) };
+    let held = if deaf { 0 } else { read_buttons(&keys, &pads, &controls) };
     let buttons = Buttons::from_held(held, controls.held);
     controls.held = held;
     // Stick up moves the way the camera faces (the boss camera's on a boss
