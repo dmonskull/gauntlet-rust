@@ -20,13 +20,17 @@
 //! until the level ends: its panel is the plain one in its colour, with
 //! "IN TOWER", gold and health.
 //!
+//! While the hero's time stop runs, the level timer's hourglass at the
+//! top left shows the time it has left, and `S_HOURGLASS` loops.
+//!
 //! Stand-in: the secret realm's coin count isn't drawn.
 
 use bevy::prelude::*;
 use gdl_formats::font::{FONT_8HI, INITIALS};
 
+use crate::audio::LoopSound;
 use crate::critters::CritterLevel;
-use crate::font::{Draw2d, GameFonts, TextStyle, UiTextures};
+use crate::font::{Draw2d, GameFonts, Quad, TextStyle, UiTextures};
 use crate::frontend::Frontend;
 use crate::level::LoadedGame;
 use crate::player::{Player, PlayerChoice};
@@ -38,7 +42,108 @@ pub struct GameHudPlugin;
 
 impl Plugin for GameHudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, draw);
+        app.add_systems(Update, (draw, draw_hourglass));
+    }
+}
+
+/// The time stop's hourglass (`docs/powers.md`, "`0x8` time stop"): the
+/// level timer's sprites from `POWERUPS` — the frame, the sand left above
+/// and fallen below (two windows on `TIMER_SAND`) and the falling stream
+/// (`SAND_ANIM`, five frames a tick apart) — with the time the first slot
+/// holding bit `0x8` has left, out of what that slot had when last
+/// granted.
+const TIME_STOP: u32 = 0x8;
+const HOURGLASS_BANK: &str = "POWERUPS";
+const HOURGLASS_SOUND: &str = "S_HOURGLASS";
+const HOURGLASS_CHANNEL: &str = "hourglass";
+/// The sand above: texture rows from 23 + 41 × the part gone to 64, drawn
+/// from y 24 + 39 × it; the sand below: rows from 105 − 38 × it to 128,
+/// from y 106 − 38 × it (each 1 texel a pixel, 128 wide at x 1).
+const SAND_TOP: (f32, f32, f32, f32) = (23.0, 41.0, 64.0, 39.0);
+const SAND_BOTTOM: (f32, f32, f32) = (105.0, 38.0, 128.0);
+/// The stream's place and its frames.
+const SAND_STREAM: Vec2 = Vec2::new(63.0, 58.0);
+const SAND_FRAMES: u16 = 5;
+
+/// What the hourglass keeps between frames: the bank's textures, the
+/// time-stop slots' times last seen (a rise is a new grant), the time
+/// out of which the part gone is measured, and whether it's showing.
+#[derive(Default)]
+struct Hourglass {
+    textures: Option<UiTextures>,
+    seen: Vec<((i32, u32), f32)>,
+    total: f32,
+    on: bool,
+}
+
+/// The level timer's hourglass while the hero's time is stopped, and its
+/// looping sound. Its layers go back to front as their sort keys say
+/// (frame 63913, stream 63912, sand 63911: read as depths, the smaller
+/// nearer — unconfirmed).
+#[allow(clippy::too_many_arguments)]
+fn draw_hourglass(
+    frontend: Option<Res<Frontend>>,
+    state: Res<PlayerState>,
+    mut game: Option<ResMut<LoadedGame>>,
+    mut images: ResMut<Assets<Image>>,
+    mut draw: ResMut<Draw2d>,
+    mut loops: MessageWriter<LoopSound>,
+    mut glass: Local<Hourglass>,
+    time: Res<Time<Virtual>>,
+) {
+    let g = &mut *glass;
+    // A grant (or top-up) of a power with bit 8 sets the time it's
+    // measured out of, as the game's grant does.
+    let slots: Vec<((i32, u32), f32)> =
+        state.powers.iter().filter(|p| p.value & TIME_STOP != 0).map(|p| ((p.subtype, p.value), p.time)).collect();
+    for (key, t) in &slots {
+        if g.seen.iter().find(|(k, _)| k == key).is_none_or(|(_, before)| t > before) {
+            g.total = *t;
+        }
+    }
+    g.seen = slots;
+    let on = state.bits.special & TIME_STOP != 0;
+    if on != g.on {
+        g.on = on;
+        let name = on.then(|| HOURGLASS_SOUND.to_string());
+        loops.write(LoopSound { key: HOURGLASS_CHANNEL, name });
+    }
+    let Some(&(_, left)) = g.seen.first() else { return };
+    if !on || frontend.as_deref().is_some_and(|f| !f.playing() || f.menu_open()) {
+        return;
+    }
+    if g.textures.is_none()
+        && let Some(game) = game.as_deref_mut()
+    {
+        g.textures = Some(UiTextures::load(&mut game.install, &[HOURGLASS_BANK]));
+    }
+    let Some(tex) = g.textures.as_mut() else { return };
+    let gone = if g.total > 0.0 { ((g.total - left) / g.total).clamp(0.0, 1.0) } else { 0.0 };
+
+    if let Some(frame) = tex.get("TIMER", &mut images) {
+        draw.image(&frame, 1.0, 1.0, frame.size.x, frame.size.y, Color::WHITE);
+    }
+    let ticks = (time.elapsed_secs_f64() * 30.0) as u64;
+    if let Some(stream) = tex.frame("SAND_ANIM", 1 + (ticks % u64::from(SAND_FRAMES)) as u16, &mut images) {
+        draw.image(&stream, SAND_STREAM.x, SAND_STREAM.y, stream.size.x, stream.size.y, Color::WHITE);
+    }
+    if let Some(sand) = tex.get("TIMER_SAND", &mut images) {
+        let (top_from, top_span, top_to, top_shift) = SAND_TOP;
+        let shift = (top_shift * gone).round();
+        let from = top_from + top_span * gone;
+        let top = Rect::new(0.0, from, sand.size.x, top_to);
+        let top_at = Vec2::new(1.0, top_from + 1.0 + shift);
+        let top_size = Vec2::new(sand.size.x, top_span - shift);
+        let (bottom_from, bottom_span, bottom_to) = SAND_BOTTOM;
+        let shift = (bottom_span * gone).round();
+        let bottom = Rect::new(0.0, bottom_from - bottom_span * gone, sand.size.x, bottom_to);
+        let bottom_at = Vec2::new(1.0, bottom_from + 1.0 - shift);
+        let bottom_size = Vec2::new(sand.size.x, bottom_to - bottom_from + shift);
+        for (rect, pos, size) in [(top, top_at, top_size), (bottom, bottom_at, bottom_size)] {
+            if size.y > 0.0 {
+                draw.quads.push(Quad::Image { image: sand.handle.clone(), rect: Some(rect), pos, size, color: Color::WHITE });
+            }
+        }
     }
 }
 
