@@ -41,11 +41,21 @@ Atrees"`). Little-endian.
 | --- | --- |
 | +0x00 | name[0x20] |
 | +0x20 | rest offset from the parent (3 × f32) |
-| +0x2C (u16) | kind: 0 static, **1 skeletal**, **2 flipbook**, 3 (indexes the action table), 4 (texture animation, `FUN_80018304`) |
+| +0x2C (u16) | kind: 0 static, **1 skeletal**, **2 flipbook**, 3 (indexes the action table), **4 particle system** (below) |
 | +0x2E (u16) | bit 0: no model of its own |
 | +0x30 (u32) | render flags set on the node's instance (bit 0 = hidden; glows use `0x4c01880`) |
 | +0x34 (i32) | **byte offset**: skeletal → from the clips header to this bone's run of track entries; flipbook → from the list header to its first entry |
 | +0x38 | parent index (−1 = root; parents precede children; one root) |
+
+**Particle-system nodes** (kind 4, `FUN_80013480` → `FUN_80018304` →
+`FUN_800cede8`): the node's `+0x34` is a byte offset from the atree's
+action table (`+0x00`) to a `0x138`-byte particle record — the same format
+as the levels' (`docs/rendering.md`); `WEAPONS/ANIM.PS2` keeps its records
+(letters M, N, O… for BLOODFX1, P, Q, R… for BLOODFX2) between atrees. The
+node has no name: its name field's words `+0x14..+0x1F` are three floats
+handed to the record's set-up (`FUN_800ceeb8`; (0, 0.5, 0.866) on the blood
+sprays — taken as the spray's direction), and the node's own object is
+hidden (instance flag 1). `anim::Atree::particles`.
 
 A node's model is the object named `<atree name><node name>`, found with
 the same name lookup the world uses — so segmented characters are one rigid

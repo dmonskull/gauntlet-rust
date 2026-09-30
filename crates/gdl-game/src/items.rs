@@ -21,10 +21,11 @@ use gdl_formats::{LevelCollision, MoveParams};
 use crate::audio::PlaySound;
 use crate::character;
 use crate::exits::ChangeLevelTo;
-use crate::hints::{Hint, Hints, ShowHint};
+use crate::hints::{Hint, Hints, ShowHint, ShowMessage};
 use crate::player::{Player, PlayerTick};
 use crate::player_state::{FIELDS_PER_TICK, Heal, PlayerState};
-use crate::population::{ItemRig, LevelPopulation, PlacementIndex};
+use crate::quest;
+use crate::population::{ContentModels, ItemRig, LevelPopulation, PlacementIndex};
 use crate::world::LevelGround;
 
 pub struct ItemsPlugin;
@@ -53,6 +54,14 @@ pub const USED: u16 = 0x1;
 const ALWAYS_ACTIVE: u16 = 0x40;
 /// A locked container: a key opens it on touch.
 const LOCKED: u16 = 0x10;
+/// An exit the quest hasn't opened: it shows `EXIT_OFF` and goes nowhere.
+pub const CLOSED: u16 = 0x8000;
+
+/// Powerup subtypes of the quest's pieces.
+const LEGENDARY: i32 = 13;
+const SCROLL: i32 = 14;
+const GEM: i32 = 15;
+const GARGOYLE_PIECE: i32 = 16;
 
 /// Fields a picked-up item lingers before it's freed: 8, or 15 when a
 /// player dropped it.
@@ -331,6 +340,8 @@ pub struct LevelItems {
     leaving: Option<Leaving>,
     /// Items released so far this level (container contents).
     released: usize,
+    /// The level's scroll texts (`SCROLLSA1`).
+    scrolls: String,
 }
 
 /// What the level's other item code (`mechanics.rs`, `hazards.rs`,
@@ -486,7 +497,12 @@ struct ItemPose {
     tracks: Option<(usize, Vec<Option<Track>>)>,
 }
 
-pub(crate) fn build_items(mut items: ResMut<LevelItems>, population: Res<LevelPopulation>, ground: Option<Res<LevelGround>>) {
+pub(crate) fn build_items(
+    mut items: ResMut<LevelItems>,
+    population: Res<LevelPopulation>,
+    ground: Option<Res<LevelGround>>,
+    state: Option<Res<PlayerState>>,
+) {
     let pop = &population.population;
     let realm = population
         .level
@@ -501,6 +517,14 @@ pub(crate) fn build_items(mut items: ResMut<LevelItems>, population: Res<LevelPo
             continue;
         }
         let ty = pop.resolved_type(placement).clone();
+        // The tower's gems aren't placed once the town has opened.
+        if ty.class == ItemClass::Powerup
+            && ty.subtype == GEM
+            && realm == quest::TOWER as usize
+            && state.as_ref().is_some_and(|s| s.quest.crystals_open(1))
+        {
+            continue;
+        }
         let rotation = rotation_matrix(placement.rotation);
         let mut position = placement.position;
         // Items with a model are dropped to the floor (+0.1) unless their
@@ -524,7 +548,16 @@ pub(crate) fn build_items(mut items: ResMut<LevelItems>, population: Res<LevelPo
         };
         let mut amount = ty.amount as i32;
         match (ty.class, &params) {
-            (ItemClass::Exit, _) => flags = (flags & !USED) | ALWAYS_ACTIVE,
+            (ItemClass::Exit, _) => {
+                flags = (flags & !USED) | ALWAYS_ACTIVE;
+                // An exit the quest hasn't opened is shut (`quest.rs`).
+                if let (PlacementParams::Exit { destination: Some(code) }, Some(state)) = (&params, &state)
+                    && let Some((to_realm, to_level)) = exit_destination(code)
+                    && !state.exit_open(to_realm, to_level)
+                {
+                    flags |= CLOSED;
+                }
+            }
             // Keys come as many as the placement says (at least one; the
             // game shows several as the key ring).
             (ItemClass::Powerup, PlacementParams::Powerup { count }) if ty.subtype == 2 => {
@@ -553,19 +586,45 @@ pub(crate) fn build_items(mut items: ResMut<LevelItems>, population: Res<LevelPo
         });
     }
     let doors = out.iter().filter(|i| i.class() == ItemClass::Door).count();
-    info!("{}: {} items in play ({doors} doors)", population.level, out.len());
-    *items = LevelItems { items: out, realm, doors, ..default() };
+    let shut = out.iter().filter(|i| i.flags & CLOSED != 0).count();
+    info!("{}: {} items in play ({doors} doors, {shut} exits shut)", population.level, out.len());
+    let scrolls = format!("SCROLLS{}", population.level.strip_prefix("level").unwrap_or_default().to_ascii_uppercase());
+    *items = LevelItems { items: out, realm, doors, scrolls, ..default() };
 }
+
+/// An exit's destination code (`g1`) as a realm id and level (0 the
+/// first).
+pub fn exit_destination(code: &str) -> Option<(u32, u32)> {
+    let mut chars = code.chars();
+    let letter = chars.next()?.to_ascii_uppercase();
+    let digit = chars.next()?.to_digit(10)?;
+    let realm = REALM_LETTERS.iter().find(|(l, _)| *l == letter)?.1;
+    Some((realm, digit.checked_sub(1)?))
+}
+
+/// A model just spawned for an item: its placement, rig, where it stands,
+/// and whether it's a shut exit's `EXIT_OFF`.
+type NewModel<'a> = (Entity, &'a PlacementIndex, Option<&'a ItemRig>, &'a Transform, Has<ShutExitModel>);
 
 /// Links newly spawned models to their items (and removes the models of
 /// items not in a one-player game).
 fn attach_models(
     mut commands: Commands,
     mut items: ResMut<LevelItems>,
-    models: Query<(Entity, &PlacementIndex, Option<&ItemRig>), Added<PlacementIndex>>,
+    contents: Option<Res<ContentModels>>,
+    models: Query<NewModel, Added<PlacementIndex>>,
 ) {
-    for (entity, &PlacementIndex(placement), rig) in &models {
+    for (entity, &PlacementIndex(placement), rig, transform, shut_model) in &models {
         match items.items.iter_mut().find(|i| i.placement == placement) {
+            // A shut exit shows `EXIT_OFF` in its place, as the game swaps
+            // the model.
+            Some(item) if item.flags & CLOSED != 0 && !shut_model => {
+                commands.entity(entity).despawn();
+                item.model = None;
+                if let Some(off) = contents.as_ref().and_then(|c| c.spawn(EXIT_OFF, *transform, placement, &mut commands)) {
+                    commands.entity(off).insert(ShutExitModel);
+                }
+            }
             Some(item) => {
                 item.model = Some(entity);
                 item.atree = rig.map(|r| r.atree.clone());
@@ -575,6 +634,13 @@ fn attach_models(
         }
     }
 }
+
+/// The model of a shut exit.
+pub const EXIT_OFF: &str = "EXIT_OFF";
+
+/// Marks the `EXIT_OFF` model standing in for a shut exit's own.
+#[derive(Component)]
+struct ShutExitModel;
 
 /// Poses every animated item model at its item's action and frame.
 fn pose_items(
@@ -620,7 +686,10 @@ enum Touch {
 struct Out<'a> {
     sounds: Vec<String>,
     hints: Vec<Hint>,
+    messages: Vec<ShowMessage>,
     seen: &'a Hints,
+    /// The level's scroll texts.
+    scrolls: String,
 }
 
 impl Out<'_> {
@@ -632,6 +701,10 @@ impl Out<'_> {
 
     fn hint(&mut self, hint: Hint) {
         self.hints.push(hint);
+    }
+
+    fn message(&mut self, group: &str, index: usize, voice: Option<&'static str>) {
+        self.messages.push(ShowMessage { group: group.into(), index, voice });
     }
 }
 
@@ -646,16 +719,19 @@ fn tick(
     mut commands: Commands,
     mut sounds: MessageWriter<PlaySound>,
     mut hints: MessageWriter<ShowHint>,
+    mut messages: MessageWriter<ShowMessage>,
     seen: Res<Hints>,
     mut change: MessageWriter<ChangeLevelTo>,
 ) {
     let dt = time.delta_secs();
     let items = &mut *items;
-    let mut out = Out { sounds: Vec::new(), hints: Vec::new(), seen: &seen };
+    let scrolls = items.scrolls.clone();
+    let mut out = Out { sounds: Vec::new(), hints: Vec::new(), messages: Vec::new(), seen: &seen, scrolls };
     update_items(items, dt, &mut commands);
     run(items, dt, &mut state, ground.as_deref(), &mut players, &cameras, &mut out, &mut change);
     sounds.write_batch(out.sounds.into_iter().map(PlaySound));
     hints.write_batch(out.hints.into_iter().map(ShowHint));
+    messages.write_batch(out.messages);
 }
 
 /// One tick of the hero against the items.
@@ -982,15 +1058,40 @@ fn pick_up(
             out.sound("S_PICKUPRUNE");
             true
         }
-        // Legendary items, gems and quest pieces: kept by kind; what they
-        // do belongs to the quest and shop systems, not built yet.
-        13 | 15 | 16 => {
+        // A realm's legendary item: its bit (the boss intro looks for it).
+        // Stand-in: its hint (0x71 + the item) isn't shown.
+        LEGENDARY => {
+            if (0..16).contains(amount) {
+                state.quest.legendary |= 1 << *amount;
+            }
             state.treasures.push((subtype, *amount));
             out.sound("S_PICKUPMAGIC");
             true
         }
-        // Scrolls show their text (not built yet).
-        14 => true,
+        // A scroll shows its text: this level's, numbered from 1.
+        SCROLL => {
+            if let Ok(n) = usize::try_from(*amount - 1) {
+                let group = out.scrolls.clone();
+                out.message(&group, n, None);
+            }
+            true
+        }
+        // Gems count toward their colour's realm, gargoyle pieces toward
+        // their tower section (`quest.rs`).
+        GEM => {
+            if let Some(c) = state.quest.add_gem(*amount) {
+                info!("{} crystals: {}/{}", quest::CRYSTAL_COLOURS[c], state.quest.crystals[c], quest::CRYSTALS_NEEDED[c]);
+            }
+            out.sound("S_PICKUPMAGIC");
+            true
+        }
+        GARGOYLE_PIECE => {
+            if let Some(p) = state.quest.add_gargoyle(*amount) {
+                info!("gargoyle pieces {p}: {}/{}", state.quest.gargoyle[p], quest::GARGOYLE_NEEDED[p]);
+            }
+            out.sound("S_PICKUPMAGIC");
+            true
+        }
         _ => false,
     }
 }
@@ -1104,7 +1205,7 @@ fn open_step(item: &mut Item) {
 fn exits(items: &mut LevelItems, on_exit: &[usize]) {
     let mut go = None;
     for (i, item) in items.items.iter_mut().enumerate() {
-        if item.class() != ItemClass::Exit || item.gone {
+        if item.class() != ItemClass::Exit || item.gone || item.flags & CLOSED != 0 {
             continue;
         }
         let here = on_exit.contains(&i);

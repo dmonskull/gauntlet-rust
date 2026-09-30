@@ -15,10 +15,13 @@
 //! Movers rumble while they move and clunk when they stop (one loop at a
 //! time, as in the game); bridges sound as they open and close.
 //!
+//! Quest triggers (flag 0x40) are the tower's gates: shut until the
+//! hero's crystals or gargoyle pieces open them (`quest.rs`).
+//!
 //! Stand-ins: triggers run on
-//! or off screen; quest triggers (flag 0x40),
-//! subtype 1 rotators and the node flag 0x2000000 mode aren't done; only
-//! players (not monsters) hold a mover still by standing on it.
+//! or off screen; subtype 1 rotators and the node flag 0x2000000 mode
+//! aren't done; only players (not monsters) hold a mover still by standing
+//! on it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,8 +36,10 @@ use crate::level_material::LevelMaterial;
 use crate::monsters::MonsterLevel;
 use crate::play_camera::{Shake, StartCut};
 use crate::player::{Player, PlayerTick};
+use crate::hints::ShowMessage;
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
+use crate::quest;
 use crate::world::LevelGround;
 
 pub struct MechanicsPlugin;
@@ -312,6 +317,49 @@ pub struct Mechanics {
     /// Placements of wake triggers (flag 0x2000) that came on since the
     /// critter update last took them.
     pub woken: Vec<usize>,
+    /// Seconds of play (ticks), and when each shut quest gate (by id) may
+    /// say what it needs again.
+    clock: f32,
+    need_again: HashMap<u8, f32>,
+}
+
+/// A quest gate (trigger flag 0x40): touched while its crystals (ids
+/// below 100: the crystal counter of that number) or its gargoyle section
+/// (101 on: fangs, feathers, claws; 104 and up count as claws) haven't
+/// opened it, it says what it needs — at most every
+/// [`quest::NEED_AGAIN_SECONDS`] — and forgets the touch. Its touches
+/// then go down its chain.
+fn quest_gate(mech: &mut Mechanics, i: usize, state: Option<&PlayerState>, messages: &mut MessageWriter<ShowMessage>) {
+    let t = &mech.triggers[i];
+    if t.touches != 0 {
+        let q = state.map(|s| &s.quest);
+        let id = i32::from(t.id);
+        let (open, need) = if id < 100 {
+            (q.is_some_and(|q| q.crystals_open(id as usize)), Some(("NEEDCRYSTALS", id as usize)))
+        } else {
+            let section = id - 101;
+            let open = q.is_some_and(|q| q.gargoyle_open(section.clamp(0, 2) as usize));
+            (open, (0..3).contains(&section).then_some(("NEEDGARGITEMS", section as usize)))
+        };
+        if !open {
+            if let Some((group, index)) = need
+                && mech.need_again.get(&t.id).is_none_or(|&at| mech.clock >= at)
+            {
+                messages.write(ShowMessage { group: group.into(), index, voice: None });
+                mech.need_again.insert(t.id, mech.clock + quest::NEED_AGAIN_SECONDS);
+            }
+            mech.triggers[i].touches = 0;
+        }
+    }
+    let touches = mech.triggers[i].touches;
+    let mut k = mech.triggers[i].chain;
+    while let Some(j) = k {
+        if j == i {
+            break;
+        }
+        mech.triggers[j].touches = touches;
+        k = mech.triggers[j].chain;
+    }
 }
 
 fn setup(mut commands: Commands, population: Res<LevelPopulation>, nodes: Option<Res<LevelNodes>>) {
@@ -454,6 +502,7 @@ fn tick(
     mut sounds: MessageWriter<PlaySound>,
     mut loops: MessageWriter<LoopSound>,
     level: Option<Res<MonsterLevel>>,
+    mut messages: MessageWriter<ShowMessage>,
 ) {
     let (Some(mut mech), Some(nodes), Some(mut items), Some(mut ground)) = (mechanics, nodes, items, ground) else {
         return;
@@ -511,9 +560,13 @@ fn tick(
     }
 
     // Triggers.
+    mech.clock += DT;
     let on_target = |target: usize| standing.is_some_and(|n| n == target || nodes.parent.get(n).copied().flatten() == Some(target));
     for i in 0..mech.triggers.len() {
         let (flags, target) = (mech.triggers[i].flags, mech.triggers[i].target);
+        if flags & QUEST != 0 {
+            quest_gate(mech, i, state.as_deref(), &mut messages);
+        }
         let t = &mut mech.triggers[i];
         if t.timer > 0.0 {
             t.timer -= FIELDS;

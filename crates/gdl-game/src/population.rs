@@ -600,6 +600,11 @@ pub fn spawn(
         let model = build_model(&sources, &mut caches, &inside.name, None, meshes, level_materials, images);
         contents.models.insert(inside.name.clone(), model);
     }
+    // A shut exit shows the items bank's `EXIT_OFF` (`items.rs`).
+    if pop.placements.iter().any(|p| pop.resolved_type(p).class == ItemClass::Exit) {
+        let model = build_model(&sources, &mut caches, crate::items::EXIT_OFF, None, meshes, level_materials, images);
+        contents.models.insert(crate::items::EXIT_OFF.to_string(), model);
+    }
     commands.insert_resource(contents);
 
     for locator in &pop.locators {

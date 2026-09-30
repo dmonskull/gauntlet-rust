@@ -332,36 +332,111 @@ kill value, through the same `FUN_80076144` scaling (ported). A blow on a
 potion (class 1 subtype 4) sets it off (`FUN_80076618`, the potion's magic;
 not ported).
 
-## Quest items and the tower's gates (partly decoded)
+## Quest items and the tower's gates
 
-Pickups 13–16 (`FUN_8005de3c`) feed per-player progress kept in the
-character record (the `0xF0`-byte save slot at player `+0xCC`, from
-`+0xD18`; addresses below are that record's):
+Implemented in [`quest.rs`](../crates/gdl-game/src/quest.rs) (the rules and
+the tower's announcements), `items.rs` (pickups, shut exits),
+`mechanics.rs` (the gates) and `hints.rs` (the messages).
 
-- **13 legendary item** (`QUEST_*`, one per realm): `+0xDD8 |= 1 << amount`
-  (`FUN_800a1c34`), hint `0x71 + amount`.
-- **14 scroll**: shows message `amount − 1` (`FUN_8006d7f4`).
-- **15 gem**: `+0xDEE[amount] += 1` up to `0x80124438[amount]`
-  (`FUN_800a1af4`; also `+0x223A[amount]` in the tower). The amount is
-  the colour: BLUE 0, RED 1, YELLOW 2, GREEN 3, ORANGE 4, WHITE 5,
-  BLACK 6, PURPLE 7; the requirements are 0, 15, 100, 125, 150, 175, 200,
-  225 (and 250 for 8).
-- **16 gargoyle piece**: `+0xDE8[amount] += 1` up to `0x8012455c[amount]`
-  = 12, 20, 28 (`FUN_800a1850`; GARGSERP 0, GARGEAGL 1, GARGLION 2).
+**The record.** Progress lives in the character record (the `0xF0`-byte
+save slot at player `+0xCC`, from `+0xD18`; offsets below are the slot's,
+the session copies are the player's `+0x1EC8…`):
 
-Every piece also queues a pickup notice (`FUN_8007fa7c`, 24 slots at
-`0x80274f14`).
+| offset | what |
+| --- | --- |
+| `+0xDD4` (session `+0x1EC8`) | realms beaten, a bit per realm's place in the quest order (`FUN_8001b854` → `FUN_800a3360` → `FUN_800a1d30`) |
+| `+0xDD6` (session `+0x1ECA`) | runestones, a bit per stone (`FUN_800a1e58`; the stone's item type `+0x40`) |
+| `+0xDD8` | legendary items, a bit each (`FUN_800a1c34`) |
+| `+0xDDC`/`+0xDDE`, `+0xDE0`/`+0xDE2` | per level record `+0x90`/`+0x92`: seen once / again (not used here) |
+| `+0xDE8` i16 ×3 | gargoyle pieces (session `+0x2234`) |
+| `+0xDEE` i16 ×9 | crystals by counter (session `+0x223A` in the tower) |
+| player `+0x1CD0` + slot × `0xE` | per realm id, a byte of levels entered |
 
-`FUN_800a20c4` (the tower update) watches the counts: when the players'
-highest count for a gem colour reaches its requirement it shows
-`"UnlockLevel"` (`FUN_8009be58(colour)` names what opened) and sets the
-count to −1 (open); gargoyle sections the same with `"UnlockSection"`.
-Quest triggers (flag 0x40) are the gates: id < 100 asks `FUN_800a1928(id)`
-— open when a player's count for colour `id` is −1 or at its requirement —
-and otherwise shows `"NeedCrystals"` (`FUN_800a200c`, at most once every
-few seconds, `"DemoClosed"` in the demo); ids 101–103 ask the gargoyle
-section `id − 101` (`FUN_800a1728`, `"NeedGargItems"`). A closed gate
-clears its touches, so what it would move stays put.
+**Pickups** (`FUN_8005de3c`, class 1):
 
-Not settled: how the gem totals on the disc (e.g. purple 144 in all) meet
-the requirements, and which tower exits each gate guards. Not ported.
+- **15 gem**: the item's amount is its colour code, turned into a crystal
+  counter when the item is built (`FUN_800646e4`: `0x8011c308` = 4, 2, 6,
+  5, 1, 7, 8, 3, 10, 5); the counter goes up (`FUN_800a1af4`) while it's
+  at least 0 and below its need; the HUD shows `SM_CRYSTAL_<colour>` and
+  "n/need" for 3 s (`+0x928`/`+0x92C`, `FUN_80074b08`). Sound `S_PICKUPMAGIC`
+  (`FUN_8009c870`, id `0x26`), a pickup notice (`FUN_8007fa7c`), a sparkle
+  (`FUN_8009176c`).
+- **16 gargoyle piece**: amount 0 fang, 1 feather, 2 claw; counts up to
+  12, 20, 28 (`FUN_800a1850`, `0x8012455c`).
+- **13 legendary item**: sets its bit; hint `0x71 + amount`.
+- **14 scroll**: the item's amount is the placement's `+0x30`; shows
+  message amount − 1 of the level's `SCROLLS<level>` group
+  (`FUN_8006d7f4`).
+
+In the tower, gems aren't placed at all once the orange counter is open
+(`FUN_800646e4`).
+
+**Counters** (`0x8012445c`, needs `0x80124438`, texts in
+`TEXT/SCROLL_E.ROM`):
+
+| counter | colour | needs | opens (realm) | voice |
+| --- | --- | --- | --- | --- |
+| 0 | tower | 0 | — | |
+| 1 | orange | 15 | Forsaken Province (G, town) | `S_CRYS4TWN` |
+| 2 | red | 100 | Mountain Kingdom (B) | `S_CRYS4MNT` |
+| 3 | purple | 125 | Castle Stronghold (A) | `S_CRYS4CST` |
+| 4 | blue | 150 | Sky Dominion (K) | `S_CRYS4SKY` |
+| 5 | green | 175 | Forest Realm (D) | `S_CRYS4FOR` |
+| 6 | yellow | 200 | Desert Lands (C) | `S_CRYS4DES` |
+| 7 | white | 225 | Ice Domain (I) | `S_CRYS4ICE` |
+| 8 | black | 250 | Dream World (J) | `S_CRYS4DRM` |
+
+The tower levels hold 30 orange gems and 4 of each other colour across all
+their placements (15 gem items are live in a one-player levelL1); the
+welcome text says the tower has "enough Crystals to unlock … the Forsaken
+Province". Gargoyle
+sections: 0 west wing (12 Golden Snake Fangs), 1 east wing (20 Golden Eagle
+Feathers), 2 lower tower / battle grounds (28 Golden Lion Claws); voices
+`S_FNGS4WST`, `S_FTHS4WST`, `S_CLWS4BTL`.
+
+**Unlocking** (`FUN_800a20c4`, the tower's update, realm 13 only): at
+least 3 s (`r2-0x5200`) after the last one, each gargoyle section and then
+each crystal counter whose best player has exactly what it needs is
+announced — `UNLOCKSECTION`/`UNLOCKLEVEL` message n with its voice
+(`FUN_8009bdf0`/`FUN_8009be58`, `0x80123aec`/`0x80123ac8`) — and set to −1
+(open for good).
+
+**Gates** (the trigger update in `FUN_800606e8`'s class code): a trigger
+with flag `0x40` is a quest gate with its id byte (`+0xE2`). Touched while
+shut — id below 100: crystal counter id not open (`FUN_800a1928`: −1, or a
+player at its need); 101 and up: gargoyle section id − 101, 104+ counting as
+2 (`FUN_800a1728`) — it shows `NEEDCRYSTALS`/`NEEDGARGITEMS` message id
+(`FUN_800a200c`/`FUN_800a1f88`, at most every 10 s per gate,
+`r2-0x5218`; `DEMOCLOSED` in the demo) and clears its touches. Its touches
+(what's left) are copied to every trigger chained after it. In the tower
+the gates are ids 1–8 on the realms' shield walls `L1XPTRAPW<letter>`
+(bridge-kind movers that vanish while on), 101–103 on `L1TRAPWEASYA`,
+`L1TRAPWMEDA`, `L1TRAPWHARD`, and 104 on the lift `L1LIFT01`.
+
+**Realms open** (`FUN_800a12cc`, by realm id): the tower always; E once
+realms 1–8 of the quest order are beaten (`FUN_800a1d98` mask `0x1FE`); F
+once 1–9 are and all twelve runestones are held (`FUN_800a1ec8` `0xFFF`); H
+once 1–10 are (`0x7FE`); the others once their counter (`0x80124514`: A 3,
+B 2, C 6, D 5, G 1, I 7, J 8, K 4) is open or at its need. The quest order
+(`0x801244dc`): tower, G, B, A, K, D, C, I, J, E, F, H.
+
+**Exits** (`FUN_8005b5a4`, on each level's load): an exit's `+0xDC` is its
+destination (realm << 8 | level, 0 the first). For E and F it's shut unless
+the realm is open; for H unless the realm is open and, for its fourth level,
+all thirteen runestones are held (`0x1FFF`); everywhere else level n ≥ 1
+needs bit n − 1 in the players' levels-entered byte for that realm (so the
+first level is always open, behind its gate). A shut exit's model becomes
+`EXIT_OFF` (from the realm's `ITEMS/level<X>` bank), its flags `+0xC4` =
+`0x8000` (it goes nowhere), and the tower's `L1NSNC<letter><n>_ACTIVE`
+node — its glowing trail — is hidden (instance flag `0x2`). Loading a level
+(`FUN_800a1560`) sets that level's bit for each player.
+
+**In this rewrite**: all of the above for one player. Stand-ins and gaps:
+the messages draw as plain centred text for 5 s (the game's message box
+isn't built); the gem HUD pop-up, the pickup notices and sparkles, and the
+legendary items' hints aren't shown; progress isn't saved between runs
+(there's no save yet); the level-record seen bits (`+0xDDC…`) aren't kept.
+Test aids: `GDL_CRYSTALS="<counter>:<n>,…"` sets counts at the start; the
+town gate is at `GDL_WARP="21.9,-1.9,-79.4"` in levelL1 (frame it with
+`GDL_LOOK_AT="22,-1,-84,18,180"`, the exit circle with
+`"37,-6.5,-121,26,160"`).
