@@ -9,15 +9,16 @@
 //! water (a water surface above the floor being followed), else metal
 //! while invulnerable (the chrome clanks), else stairs (a floor node with
 //! flag `0x8`), else rock. The table's wood column is never picked. A
-//! levitating hero makes no sound. The game plays a step at the hero's
-//! position at the call's full volume (the hero is the nearest hero to
-//! itself); positional panning isn't done here.
+//! levitating hero makes no sound. A step plays at the hero's feet at the
+//! call's own volume, panned by where the feet are from the camera's focus
+//! and faded by the distance to the nearest hero — none, for the hero's
+//! own (`audio::PlaySoundAt`).
 
 use bevy::prelude::*;
 use gdl_formats::PlayerCollision;
 
 use crate::actions::Action;
-use crate::audio::PlaySound;
+use crate::audio::{CALL_VOLUME, PlaySoundAt};
 use crate::character::Animator;
 use crate::damage::resists::INVULNERABLE;
 use crate::player::{Player, PlayerTick};
@@ -112,7 +113,7 @@ fn step(
     ground: Option<Res<LevelGround>>,
     heroes: Query<(Entity, &Player, &Animator)>,
     mut seen: Local<Vec<(Entity, Stride)>>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
 ) {
     seen.retain(|(e, _)| heroes.contains(*e));
     for (hero, p, animator) in &heroes {
@@ -138,7 +139,7 @@ fn step(
         });
         let name = sound(foot, floor(water, p.armour_bits & INVULNERABLE != 0, stairs));
         debug!("{} ends: {name}", action.name());
-        sounds.write(PlaySound(name.into()));
+        sounds.write(PlaySoundAt::faded(name, Vec3::from(p.mover.position), CALL_VOLUME));
     }
 }
 

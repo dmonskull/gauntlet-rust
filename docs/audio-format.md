@@ -248,27 +248,157 @@ names missing ones (its record describes an older `dream1`).
 
 ## Positional sounds
 
-The game's sound calls go through a few wrappers of `FUN_80015cac(−1, id,
-volume, pos, pan, priority)`: `FUN_800157ec(id, volume, priority)` plays
-centred; the rest don't play while `r13-0x7380 & 0x8000` is set (unless
-`r13-0x7854`): `FUN_80015a30(id, pan, volume, priority)` with a given
-pan; `FUN_80015a94` and `FUN_80015694(id, pos, volume, priority)` pan by
-`pos`; and `FUN_80015828(id, pos, volume, priority)` also fades with
-distance: the
-volume × `clamp(1.4 − d / 50, 0, 1)` (`r2-0x7db0`, `-0x7da8`), `d` being
-the distance from `pos` to the nearest hero in play (`FUN_80063658`), and
-nothing plays at 0. The pan: 127.5 + 127.5 × (the unit offset of `pos`
-from the camera's focus `0x8023F1BC`, flat, · the camera's right
-`0x8023F094`) × `min(|offset| / 20, 1)`, negated when `right.x · off.z <
-right.z · off.x`, clamped to −256…255; 127 (centre) with no position or
-while `r13-0x77f8` is set. The heroes' footsteps use `FUN_80015828`
-([player-movement.md](player-movement.md), "Footsteps").
+**The calls.** Every sound effect goes through `FUN_80015cac(jukebox, id,
+volume, pos, pan, priority)` by way of a few wrappers (argument order
+theirs):
+
+| wrapper | args | placed | notes |
+| --- | --- | --- | --- |
+| `FUN_800157ec` | id, volume, priority | centred | |
+| `FUN_80015a30` | id, pan, volume, priority | the pan given | every caller passes 0x7F or a player's pan `0x80122A90[p]`, which is 0x7F for all four: centred |
+| `FUN_80015a94` | id, pos, volume, priority | panned by `pos` | nothing for id < 0 |
+| `FUN_80015694` | id, pos, volume, priority | panned by `pos` | the same without the id check; the loops' |
+| `FUN_80015828` | id, pos, volume, priority | panned and faded by `pos` | nothing for id < 0 or at a fade of 0 |
+
+The last four don't play while `r13-0x7380 & 0x8000` is set (unless
+`r13-0x7854`). `FUN_80015cac` scales the volume by the options' effects
+volume (`r13-0x7FB8` / 256), forces the pan to 0x7F in mono
+(`r13-0x77F8`, set by `FUN_80017ebc(0)`: "Mono"), and whenever it's
+given a position recomputes the pan from it with the same law
+(`FUN_800167a4`); the priority is the driver's voice-stealing key (above,
+"Calls"), nothing to do with placing.
+
+**The pan** (`FUN_800167a4`, and inline in the wrappers). The ear is
+camera 0's focus `0x8023F1BC` (its target: `FUN_8001c42c` copies the
+camera's `+0xA4`; one special camera, `FUN_8001bc3c`, puts its eye there),
+the axis camera 0's view matrix row 0 `0x8023F094` — built by
+`FUN_800227d8` as up × forward, `(fz, 0, −fx)`: the screen's right. With
+`o` the level offset of `pos` from the focus (Y dropped) and `u = o /
+|o|` (0 at the focus):
+
+```text
+pan = trunc(127.5 + 127.5 × (u · right) × min(|o| / 20, 1))
+pan = −pan   if right.x · u.z < right.z · u.x   (u · forward < 0: behind the focus)
+pan clamped to −256 … 255;  0x7F without a position (or in mono)
+```
+
+So 0 is full left, 127 dead ahead, 255 full right, and anything nearer
+the camera than its focus goes negative; within 20 of the focus the pan
+narrows toward the centre. (`r2-0x7DB8` 127.5, `r2-0x7DC0` 20.)
+
+**The fade** (`FUN_80015828` only): `d` is the distance in 3D from `pos` to
+the feet (`+0x44`) of the nearest player in play (state `+0xE8` = 1;
+`FUN_80063658`, 1000 with none; the attract loop's demo, mode `0x8008`,
+measures from the camera instead), and the requested volume is multiplied
+by `clamp(1.4 − d / 50, 0, 1)` and truncated (`r2-0x7DB0` 1.4,
+`r2-0x7DA8` 50): full within 20, silent from 70 — and at 0 it isn't
+played at all.
+
+**Once, as it starts.** The pan and the fade are worked out when the call
+is made, from the camera and the heroes then. The started-voice table
+(`0x8023D4E8`) keeps the position pointer, but nothing reads it back: a
+one-shot isn't re-panned as it plays. A **loop** that follows something is
+re-panned by its owner every frame: it finds its voices by their priority
+— each such loop has its own (`FUN_8001630c`) — and sets their pan
+(`FUN_800160a8`, driver command `0x55AC`); the level items' ambient loops
+(`FUN_800a00ec`) also set their volume that way every frame
+(`FUN_800161fc`, `0x55AB`) from their own distance factor. The driver moves
+a playing voice's pan and volume toward the new value at most 8 a step
+(`FUN_800d22f4`, `FUN_800d24ac`). Such loops: the exit's flame
+(`S_EXITFLAME`, `FUN_8009ce48`, at a hero standing in an exit, `+0x54`),
+the movers' (`FUN_8009cecc`: the level's table `0x8028AFF0` by mover, and
+its stop sound; `FUN_8009d01c`: the realm's `0x801232E4`, stop sound
+`0x8012331C`, at a node), the hourglass (`S_HOURGLASS`, `FUN_8009fee8`, at
+the hero's `+0x54`), Death's drain (`S_DEATHSUCK`, `FUN_800a045c`), the
+items' ambient sounds (`FUN_800a00ec`).
+
+**The volume.** The driver sets a voice's volume to requested × the call's
+own (the bank's `vol`, 0–127) / 127, less the ducking (`FUN_800d2698`),
+and its AX volume to that × 0x3FFF / 255 (`FUN_800d3d48`): linear. So 0x7F
+plays a call at its own volume, 0xB4 at 1.4 ×, 0xE0 at 1.76 ×, 0xFF at 2 ×.
+
+**The mixer** (`FUN_800d3d48` as the voice starts, `FUN_800d22f4` on
+changes). The pan is an angle, 512 to the turn: the side pan `|0x100 −
+((pan + 0x100) & 0x1FF)| / 2` (= |pan| / 2) goes to `MIXSetPan`
+(`FUN_80102504`: 0 left … 127 right) and the surround pan `|0x100 −
+((pan + 0x180) & 0x1FF)| / 2` to `MIXSetSPan` (`FUN_801025a0`: 127 in
+front … 0 behind). So 0 is left, ±128 ahead or behind, 255 right: 127 →
+side 63, surround 127; −127 → 63, 0. The mixer's table (`0x8023AEBC`,
+tenths of a dB) is 10·log10((127 − k) / 127), −90.4 dB at 127 — a
+constant-power law, −3 dB each at the centre (checked against all 128
+entries); `0x8023B0BC` is the same backwards. A channel gets l =
+T[side], r = T[127 − side], f = T[127 − surround], b = T[surround], and
+in the mixer's mode 1 (what `MIXInit` sets; the game never changes it)
+`L = fader + l + f`, `R = fader + r + f`, `S = fader + b`, turned into AX
+volumes by `0x8023AE40` (0x8000 at 0 dB).
+
+**Who plays what** (players' `+0x44` are the feet, `+0x54` the top point
+4.4 above; monsters' `+0x34` the feet, `+0x44`, `+0x54` the bump point;
+items' `+0x34` the place, `+0x54` the centre, the blows on items taking it
+2 higher; "fade" is `FUN_80015828`, "pan" `FUN_80015a94`/`FUN_80015694`):
+
+| sounds | function | call | where | volume |
+| --- | --- | --- | --- | --- |
+| footsteps | `FUN_8009e804` | fade | the hero's feet | 0x7F |
+| the hero's throw, amulet or super-shot sounds | `FUN_8009ee70` | fade | the hero's feet | 0x7F |
+| turbo attacks, `S_POJOTURBO` | `FUN_8009ed88` | pan | the hero's feet | 0xE0 |
+| `S_PLAYERDIES` and the class's death cry | `FUN_8009ea88` | pan | the hero's feet | 0x7F / 0xE0 |
+| a blow on the hero: `S_PLYRDMG`, `S_PLYRDMG2`, `S_PLYRDMG3` by its kind | `FUN_8009eb14` | pan | the hero's feet | 0x7F |
+| the class's death line `S_<CLS>DIE1` | `FUN_8009f198` | pan | the hero's feet | 0xE0 |
+| potions `S_POTION1`–`4`, shields `S_SHIELD1`–`4` | `FUN_8009e860` | pan | the hero's feet | 0x7F |
+| damage tiles (`0x80122FF4` by realm and tile) | `FUN_8009e8a4` | pan | the hero's feet | 0x7F (two of them 0xB4) |
+| `S_TUNNEL` (going out through an exit) | `FUN_8009ca90` | pan | the hero's feet | 0x7F |
+| `S_HALO`, `S_THUNDERHAMMER`, `S_MASK`, `S_HORNS`, `S_GAUNTLET1`/`2`, the breaths (`FUN_8009ed08`) | `FUN_8009e990`, `FUN_8009cce8`, `FUN_8009ec88`, `FUN_8009ecc8`, `FUN_8009ec48`, `FUN_8009ec08` | pan | the hero's top | 0xE0 |
+| `S_XRAY`, `S_DEATHDIE` (the halo's drain) | `FUN_8009e950`, `FUN_800a035c` | pan | the hero's top | 0x7F |
+| `S_LEVITATEDOWN`, `S_UNGROW`, `S_UNPOJO` | `FUN_8009cd28`, `FUN_8009cd98`, `FUN_8009cdd8` | pan | the hero's top | 0xE0 |
+| `S_UNSHRINK` | `FUN_8009cd68` | centred | — | 0xE0 |
+| `S_WARN` | `FUN_8009e9d0` | centred | — | 0x7F, 0x98, 0xB1, 0xCA by health |
+| `S_TURBODEFENSE` | `FUN_8009ebc8` | pan | the hero's `+0x64` | 0x7F |
+| pickups | `FUN_8009c630`, `FUN_8009c670`, `FUN_8009c718`, `FUN_8009c7e0`, `FUN_8009c870` | centred | — | 0x7F (powers by value) |
+| `S_CHEST`, the doors' sounds | `FUN_8009c8b0`, `FUN_8009c8e0` | fade | the item's centre | 0x7F |
+| `S_TRANSPORT<realm>` | `FUN_8009c1c4` | fade | the transporter gone to | 0x7F |
+| `S_TICKY` (a timed chest) | `FUN_8009d330` | centred | — | 0xE0 |
+| a generator hurt / destroyed | `FUN_8009bfac` / `FUN_8009c010` | fade | its centre, 2 up | 0xB4 / 0x7F |
+| barrels: wood, explosive, gas (`S_BARREL_…<realm>`) | `FUN_8009d2b0`, `FUN_8009d210`, `FUN_8009d260` | fade | its centre, 2 up | 0xE0 |
+| `S_SECRETWALL`, an obstacle's own hit sound | `FUN_8009c128` | fade | its centre, 2 up | 0x7F / its record's |
+| `S_WEAPONHITWOOD` (blows on wood) | `FUN_8009e784` | fade | its centre, 2 up | 0x7F |
+| a crumbling floor starting to fall (`0x801232AC` by realm, and `FUN_8009d154`'s) | `FUN_8009d104`, `FUN_8009d154` | fade | the item | 0xE0 |
+| bridges `S_BRIDCL<r>`/`S_BRIDOP<r>`; movers by kind (`0x80123354`) | `FUN_8009c938`, `FUN_8009c9a4`; `FUN_8009ca10` | pan | the mover | 0xE0 |
+| a monster's hit and death sounds | `FUN_8009d6c0`, `FUN_8009d7b4` | fade | its feet | 0xE0 |
+| `S_SUICIDE_YELL`, `S_SUICIDE_BOMB` | `FUN_8009d5a4`, `FUN_8009d300` | fade | the runner's `+0x44` / `+0x54` | 0xE0 |
+| `S_ENEMYARROW`, `S_ENEMYFIREBALL`, a thrown weapon's (`FUN_8009d51c`) | `FUN_8009d664`, `FUN_8009d634` | fade | where the monster's missile starts | 0x7F |
+| `S_DEATHLAUGH`, `S_DEATHSHATTER`; `S_DEATHDIE` (Death killed) | `FUN_800a03d8`, `FUN_800a0408`; `FUN_800a03a8` | pan | Death's feet | 0xE0; 0x7F |
+| critters' `SFXX` sounds | `FUN_8009bb64` from `FUN_8003d6f8` | fade (pan alone during its DEATH move, kind `0x11`) | the critter's root `+0x3C` | 0xE0 |
+| `S_BOSSKEY<realm>` | `FUN_8009eb78` | pan | where the key appears (the boss's spawn point) | 0xE0 |
+| `S_RICOCHET` | `FUN_8009e7b4` | fade, at most once a second (`r2-0x5310`) | the missile | 0x7F |
+| `S_SPLASH`, effects' own sounds (`FUN_8009d35c`) | `FUN_8009ce18`, `FUN_8009d35c` | fade | the effect | 0xB4; the record's |
+| the tower's chimes and knocks (`S_STNDGLASS`, `S_RUNEHIT`, `S_RUNEFALL`, `S_SHRD8`, `S_SHRDS127`) | `FUN_8009bc98` | centred (`pos` 0) | — | 0xFF |
+
+The voice queues' lines carry a pan too: the heroes' (queue 0) are panned
+from the hero's position as they're queued (`FUN_800167a4`); the
+announcer's are centred.
+
+Here (`audio.rs`): `PlaySoundAt { name, at, volume, fade }` —
+`panned`, `faded`, `centred` — does the pan and the fade above as the
+sound starts: the ear is the play camera's current view (its target, and
+its right from eye to target), the heroes in play are the living hero not
+out of the level (its feet), and the call's gain is the call's volume ×
+volume / 127 (samples are floats, so a call asked for louder isn't
+clipped by the decoder). The pan becomes left and right gains from the
+side pan through the mixer's table, relative to the centre's (a centred
+sound plays exactly as a `PlaySound`): stereo here, so the surround pan —
+in front of the focus or behind it — isn't applied, and a sound behind
+pans by its side pan like one in front. There's no mono option. Used by
+the footsteps, the x-ray and the tower's chimes. Not done: re-panning the
+loops that follow something (`LoopSound` plays centred), the voice
+queues' pans.
 
 ## Not done / unconfirmed
 
-- Track switching during gameplay, ducking, priorities, and the
-  positional pan and fade above: the runtime plays a level's track 0 and
-  effects at their call volume, nothing more.
+- Track switching during gameplay, ducking and priorities: the runtime
+  plays a level's track 0; effects at their call volume, or as a
+  positional call asks ("Positional sounds": the loops that follow
+  something aren't re-panned).
 - Bank version 0x100 and the byte-swapped variants (`VBNK`, `pGAV`,
   `SShd`) exist in the loader but not on the disc, so aren't implemented.
 - PCM16 streams (codec ≠ 0x20): same.
