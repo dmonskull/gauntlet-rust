@@ -272,6 +272,89 @@ Not done: `WEAPONS`' and the heroes' banks' running modifiers (the hand
 glows, which aren't drawn yet), and the heroes' own actions' modifiers
 (their clips and skeletons come from different files).
 
+## Texture overrides
+
+An object's texture override (`FUN_800ba85c`: object `+0x5C` mode, `+0x58`
+texture, set on the object and its subtree like the modifiers above) is
+read by the draw's texture choice (`FUN_800c3d60`, `FUN_800c3df8`):
+
+| mode | draw |
+| --- | --- |
+| −1 | none: each submesh's own texture |
+| −2 | the override's texture in place of every submesh's |
+| −3 | the override's texture, flag `0x80000` |
+| −4 | each submesh's own texture, flag `0x8000000`: the override becomes a texture **over** the object |
+| ≥ 0 | a flipbook: the override replaces that one binding |
+
+**The texture over the object.** Flag `0x8000000` binds the override as a
+second texture (`FUN_800c5894` → `FUN_800c6040`), and the draw
+(`FUN_800c48c0`) picks the TEV setup `FUN_800c46f8(2)` for an object with
+no lightmap (a lightmapped one keeps mode 1, the lightmap stage, and shows
+no override). Mode 2 runs three stages (GX constants as in the SDK):
+
+- stage 0, as always: colour `RASC × TEXC` × 2 clamped, alpha `TEXA ×
+  RASA` (`GXSetTevOp(0, GX_MODULATE)`, then the colour inputs and scale of
+  "What we do");
+- stage 1 (`GXSetTevOrder(1, texcoord 0, map 1, COLOR0A0)`: the override
+  sampled with the object's own coordinates): colour `RASC × TEXC(override)`
+  × 2 clamped — the object's own texture colour is dropped — and alpha by
+  the comparison `GX_TEV_COMP_A8_GT`: the override's alpha where stage 0's
+  is above the konst alpha, else 0. Stage 1's konst alpha is `K0_A`
+  (`GXSetTevKAlphaSel(1, 0x1C)` at start-up, `FUN_80067b20`), and `KColor0`
+  is `r2-0x6490` = (0, 0, 0, 2): above 2/255;
+- stage 2 (set once at start-up): colour passed on, alpha `RASA ×` stage
+  1's.
+
+`level.wgsl` does this for death textures (a `LevelMaterial` copy with
+the frame in the lightmap slot, `params.x` = 2) and hit flashes.
+
+**Hit flashes** use the texture `AAAWHITE`: the powerups bank's
+(`r13-0x6f00`, loaded with `CHROMESILVER` by `FUN_800972dc`, which sets
+up the effect list) for bodies, the level's own world bank's
+(`DAT_8028c4f4`, from the bank `DAT_8028c4f0` that `FUN_800a8dfc` loads
+as `WORLD`) for obstacles. It is
+an 8×8 CI4 texture of one colour, RGB5A3 `0xDF97` = (189, 231, 189),
+opaque, in every bank that has it (the powerups, every realm's items,
+67 of the 70 levels: not `levelT4`, `ORIGlevelL1`, `levelC2_acorn`), so
+over a body it draws the lit silhouette in a pale green-white.
+
+- **Monsters** (`FUN_8004db94`, the reaction): after a blow of at least 1
+  (`r2-0x6f10`) is turned into a reaction, a monster left with hit points
+  gets the timed texture effect (`+0x1E4`, `FUN_80090a00(1, fx, AAAWHITE,
+  end 1, repeat 1)`); the monster's update steps it (`FUN_80090a48`) and
+  draws it (`FUN_80090aec`: mode −4, `+0x6A` = 999, `r2-0x5758`) — on for
+  the update it starts in and the next, then mode −1. A death texture
+  later takes the same slot.
+- **Heroes** (`FUN_80085ca8`): a blow of more than 1 (`r2-0x5c70`) — the
+  same one that picks a reaction — starts the same effect on `+0x7DC`,
+  stepped by `FUN_80077ccc`. The slot is shared with the heroes' other
+  texture effects (the chrome power-ups: `CHROMESILVER`/`CHROMEGOLD`, mode
+  −3).
+- **Critters** (`0x800382c0`, the damage routine, a blow the critter lives
+  through without kind `0x1000000`): kinds `0x100320` set the critter's
+  flash `+0xABC` = 2; other kinds, landing on a `NODE` sphere, set that
+  node's `+0x548` = 2 (checked in the machine code at `0x80038bc0`: `and.`
+  with `0x100320`, then the node branch). `FUN_8003eaa4` (from the critter
+  update `FUN_80038cf4`, the body and then each part) shows a positive
+  count (mode −4 with `AAAWHITE`, `+0x6A` = 255) and counts it down; at 0
+  it turns the override off. A part's flash covers its subtree; the
+  body's the whole model.
+- **Obstacles** (class 10, `FUN_8005c1c8`): a blow that does damage and
+  leaves the item standing (not subtype 0x29) sets `+0xE0` = 1; the item
+  update (`FUN_800606e8`) then draws the root object with mode −2 and the
+  level's `AAAWHITE` (its own object only, `param_4` = 0) and render flag
+  `0x4000` (no lightmap) over the whole model, for that update, and clears
+  it. Counts of 2 and more blink (30 fields on, 30 off, one count each 60).
+
+In this rewrite the hit flash's colour and mode ride on the meshes'
+`MeshTag` (`flash.rs`, bits 0–23 the colour, 24 over the object, 25 in
+place of the texture, 26 no lightmap), read by `level.wgsl`, so a flash
+costs no material copies. Stand-ins: node-sphere flashes aren't drawn
+(which model node a `NODE` names, `+0x500`, isn't traced); the `+0x6A`
+value the flashes set (a sort key, `FUN_800c67a0`) isn't used; heroes'
+other texture effects aren't done. A flash's two updates are game ticks;
+a frame slower than two ticks can miss one.
+
 ## Particle-system nodes
 
 World nodes with node flag `0x800` (named `…PSYSE_FLAME…`, `…PSYSF_SPARK…`)

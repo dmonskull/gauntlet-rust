@@ -366,7 +366,10 @@ no damage (−2 when above 2.0, `r2-0x67f0`).
   D/G/H/I/J/K`) and hint `0x1B`. Blows with kind `0x400` of 5 or more
   (`r2-0x67d8`) blow chests apart (`CHESTSEXP0` / `CHESTGEXP0` effects).
 - **Obstacles** (class 10), keyed on the **type's** subtype (not the
-  placement's override): not dead → hit flash (`+0xE0` = 1); then
+  placement's override): damaged, not dead and not 0x29 → hit flash
+  (`+0xE0` = 1: the next item update draws the root object in the
+  level's `AAAWHITE` and the model without its lightmap, once —
+  [rendering.md](rendering.md), "Texture overrides"); then
   - 0x2B BARREL and the rest: not dead → `S_WEAPONHITWOOD` (`0x3C`); dead →
     used, break sound; stays (broken);
   - 0x29 SAFEROCK: `FUN_80063d9c` steps its model down by its hit points
@@ -516,7 +519,7 @@ tier 1 (its model is loaded with the level; on levelA2
 `GDL_WARP="9.69,2.5,-50.8"` + attack breaks one open).
 
 Stand-ins: blasts and gas hurt once, at once (no effect or lingering
-cloud); no hit flash or hints 0x14 / 0x1B; a released monster starts
+cloud); no hints 0x14 / 0x1B; a released monster starts
 right away (the game wakes a placed-monster item); a shootable wall's in-between hits are silent;
 safe rocks aren't hittable; walls' own collision (item shape 4) isn't
 ported, so shootable walls never blocked the hero in the first place.

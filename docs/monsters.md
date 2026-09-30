@@ -493,6 +493,10 @@ the blow into the monster: damage `+0x2A0`, kind bits `+0x2A4`, push
 - otherwise kind & `0x10`: HIT1 (`0x1C`) with push × 8 (`r2-0x6d48`);
 - otherwise: HIT1, no push.
 
+After the reaction a monster left with hit points flashes: `AAAWHITE` over
+its body for that update and the next ([rendering.md](rendering.md),
+"Texture overrides"; `monsters.rs`, `flash.rs`).
+
 The knockback speed is capped at 40 (`r2-0x6d40` = 40², `r2-0x6d38`).
 Every update it keeps 0.8 of itself (`r2-0x6de0`), components under 0.01
 stop (`r2-0x6ea8`), and upward speed falls at 100/s (`r2-28000`). While
@@ -591,10 +595,11 @@ when the system is gone), living 0.3–0.8 s and falling.
 **In this rewrite** (`deaths.rs`, the dying branch of `monsters.rs`, the
 hit effects in `damage.rs`, `EffectAt` in `effects.rs`, bursts in
 `particles.rs`): all of the above for regular monsters (the golem is a
-critter here). Stand-ins: the second stage's blend isn't decoded — the
-frame multiplies the body's colour × 2 and its alpha, which fits the
-textures (frame 0 is ~(180, 205, 170): white at × 2) — and it's sampled
-with the body's own UVs; `+0x44` is taken as the monster's centre; an
+critter here). The second stage is decoded ([rendering.md](rendering.md),
+"Texture overrides"): the frame, sampled with the body's own coordinates,
+takes the place of the body's colour — lighting × frame × 2 (frame 0 is
+~(180, 205, 170): near white) — and its alpha shows where the body's own
+is above 2/255. Stand-ins: `+0x44` is taken as the monster's centre; an
 effect's scale scales its particles' sizes and speeds, and the node's
 vector is taken as the spray direction; the depth bias isn't applied; the
 DEATHMAGIC switch isn't traced.

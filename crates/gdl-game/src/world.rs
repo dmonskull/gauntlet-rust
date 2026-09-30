@@ -10,6 +10,7 @@ use crate::billboard::Billboard;
 use crate::texanim::{self, LevelTexAnims, TexAnim};
 use crate::camera::FlyCamera;
 use crate::collision_debug::{self, CollisionOverlay};
+use crate::flash::{self, FlashColours};
 use crate::level::{LevelData, LoadedGame};
 use crate::level_material::LevelMaterial;
 use crate::mechanics;
@@ -125,6 +126,7 @@ fn change_level(
     mut windows: Query<&mut Window>,
     // The realm last played outside the tower (where the heroes come back).
     mut last_realm: Local<Option<u32>>,
+    mut flash_colours: ResMut<FlashColours>,
 ) {
     let Some(step) = requests.read().map(|r| r.0).reduce(|a, b| a + b) else {
         return;
@@ -143,6 +145,8 @@ fn change_level(
     let mut stats = CurrentLevelStats { name: game.current_name().to_string(), ..default() };
     match game.load_current() {
         Ok(level) => {
+            // Its obstacles flash with its own AAAWHITE.
+            flash_colours.level = flash::white_of(&level.model, &level.textures);
             // Some level textures animate through frames kept in the always
             // loaded WEAPONS model file (torches).
             let shared = shared_textures(&mut game.install);

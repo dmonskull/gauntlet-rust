@@ -396,7 +396,10 @@ reaction:
 | other | 1 | — | HITREACT (`0x1B`) while standing or moving |
 
 Knockback classes gain 1 when the push comes from more than 90° off the
-facing (FALLFRNT → FALLDOWN) and turn the hero to face the blow. Ported in
+facing (FALLFRNT → FALLDOWN) and turn the hero to face the blow. A blow of
+more than 1 also plays its hit effect (`FUN_8009399c`, unless kind
+`0x1000000`) and flashes the hero for two updates
+([rendering.md](rendering.md), "Texture overrides"). Ported in
 `player.rs` (`hit_reaction`); the monster size is the radius stand-in from
 [monsters.md](monsters.md), and the 2/3 stun variants and the post-hit stun
 timer (class 100 → STUN2) aren't wired yet.

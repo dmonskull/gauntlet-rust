@@ -4,8 +4,13 @@
 // turns the finished picture linear):
 //   stage 0: clamp(texture x rasterized colour x 2)
 //   stage 1 (lightmap): stage 0 x lightmap alpha
+//   or stage 1 (a texture over the object, the game's override −4: a death
+//   texture, a hit flash): clamp(rasterized colour x that texture x 2),
+//   alpha that texture's where stage 0's is above 2/255, else 0; then x
+//   rasterized alpha (docs/rendering.md, "Texture overrides")
 
 #import bevy_pbr::forward_io::VertexOutput
+#import bevy_pbr::mesh_functions
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var diffuse_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var diffuse_sampler: sampler;
@@ -24,6 +29,14 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var<uniform> uv_offset: vec4<f32>;
 // x: depth-test this much nearer the camera (an effect's depth bias)
 @group(#{MATERIAL_BIND_GROUP}) @binding(8) var<uniform> depth_offset: vec4<f32>;
+
+// The mesh's tag (flash.rs): bits 0-23 a colour (0xRRGGBB, opaque); bit 24
+// draws it as the texture over the object (override −4), bit 25 in place of
+// the object's texture (override −2); bit 26 skips the lightmap stage
+// (render flag 0x4000).
+const TAG_OVER: u32 = 0x1000000u;
+const TAG_REPLACE: u32 = 0x2000000u;
+const TAG_NO_LIGHTMAP: u32 = 0x4000000u;
 
 struct FragmentOutput {
     @location(0) color: vec4<f32>,
@@ -44,11 +57,18 @@ fn output(in: VertexOutput, color: vec4<f32>) -> FragmentOutput {
 
 @fragment
 fn fragment(in: VertexOutput) -> FragmentOutput {
+    let tag = mesh_functions::get_tag(in.instance_index);
+    let tag_color = vec4(f32((tag >> 16u) & 0xFFu), f32((tag >> 8u) & 0xFFu), f32(tag & 0xFFu), 255.0) / 255.0;
 #ifdef VERTEX_UVS_A
     var color = textureSample(diffuse_texture, diffuse_sampler, in.uv + uv_offset.xy);
 #else
     var color = vec4(1.0);
 #endif
+    if ((tag & TAG_REPLACE) != 0u) {
+        color = tag_color;
+    }
+    // The rasterized colour.
+    var ras = vec4(1.0);
 #ifdef VERTEX_COLORS
     if (params.w > 0.5) {
         // The game's software lighting for unlit vertices: object colour x
@@ -57,27 +77,39 @@ fn fragment(in: VertexOutput) -> FragmentOutput {
         let n = in.world_normal;
         let len = length(n);
         let d = select(0.0, max(dot(n / max(len, 1e-6), light_dir.xyz), 0.0), len > 1e-4);
-        let ras = clamp(light_color.a * (vec3(light_dir.w) + d * light_color.rgb), vec3(0.0), vec3(1.0));
-        color = color * vec4(ras, in.color.a);
+        ras = vec4(clamp(light_color.a * (vec3(light_dir.w) + d * light_color.rgb), vec3(0.0), vec3(1.0)), in.color.a);
     } else {
-        color = color * in.color;
+        ras = in.color;
     }
 #endif
+    color = color * ras;
     color = vec4(clamp(color.rgb * params.z, vec3(0.0), vec3(1.0)), color.a);
 #ifdef VERTEX_UVS_B
     let light = textureSample(lightmap_texture, lightmap_sampler, in.uv_b).a;
-    if (params.x > 0.5 && params.x < 1.5) {
+    if (params.x > 0.5 && params.x < 1.5 && (tag & TAG_NO_LIGHTMAP) == 0u) {
         color = vec4(color.rgb * light, color.a);
     }
 #endif
+    // A texture over the object: a dying monster's death texture
+    // (docs/monsters.md), sampled with the object's own coordinates, or a
+    // hit flash's one colour. The game has no such stage on lightmapped
+    // objects.
+    var over = vec4(0.0);
+    var has_over = false;
 #ifdef VERTEX_UVS_A
     if (params.x > 1.5) {
-        // A dying monster (docs/monsters.md): its death texture over the
-        // body, colour x 2 and alpha, the way the game's other stages scale.
-        let death = textureSample(lightmap_texture, lightmap_sampler, in.uv);
-        color = vec4(clamp(color.rgb * death.rgb * 2.0, vec3(0.0), vec3(1.0)), color.a * death.a);
+        over = textureSample(lightmap_texture, lightmap_sampler, in.uv);
+        has_over = true;
     }
 #endif
+    if (params.x < 0.5 && (tag & TAG_OVER) != 0u) {
+        over = tag_color;
+        has_over = true;
+    }
+    if (has_over) {
+        let a = select(0.0, over.a, color.a > 2.0 / 255.0);
+        color = vec4(clamp(ras.rgb * over.rgb * 2.0, vec3(0.0), vec3(1.0)), ras.a * a);
+    }
     if (color.a < params.y) {
         discard;
     }
