@@ -16,8 +16,8 @@ One file per system, written only once it's confirmed against the actual
 | [level-population.md](level-population.md) | Items, generators, monsters, exits and player starts in `WORLDS.PS2` |
 | [rendering.md](rendering.md) | How a level is drawn: diffuse × colour × lightmap |
 | [camera.md](camera.md) | The play camera: level camera points, per-level distance and bounds, smoothing |
-| [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning |
-| [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music |
+| [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning, footsteps |
+| [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music, positional sounds |
 | [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |
 | [combat.md](combat.md) | Controls → logical buttons, attack intents and chaining, target search, blows, damage |
 | [monsters.md](monsters.md) | Monster stats and tiers, the realm's monster slots, generators, placed monsters, the monster AI and mover, hit reactions, deaths (death textures, die effects); `CRITTER` files |
