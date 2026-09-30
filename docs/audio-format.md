@@ -246,10 +246,28 @@ not traced yet; the runtime stays on track 0.
 Every retail level's streams exist. Only the leftover `TEST.WAD` realm
 names missing ones (its record describes an older `dream1`).
 
+## Positional sounds
+
+The game's sound calls go through a few wrappers of `FUN_80015cac(−1, id,
+volume, pos, pan, priority)`: `FUN_800157ec(id, volume, priority)` plays
+centred; the rest don't play while `r13-0x7380 & 0x8000` is set (unless
+`r13-0x7854`): `FUN_80015a30(id, pan, volume, priority)` with a given
+pan; `FUN_80015a94` and `FUN_80015694(id, pos, volume, priority)` pan by
+`pos`; and `FUN_80015828(id, pos, volume, priority)` also fades with
+distance: the
+volume × `clamp(1.4 − d / 50, 0, 1)` (`r2-0x7db0`, `-0x7da8`), `d` being
+the distance from `pos` to the nearest hero in play (`FUN_80063658`), and
+nothing plays at 0. The pan: 127.5 + 127.5 × (the unit offset of `pos`
+from the camera's focus `0x8023F1BC`, flat, · the camera's right
+`0x8023F094`) × `min(|offset| / 20, 1)`, negated when `right.x · off.z <
+right.z · off.x`, clamped to −256…255; 127 (centre) with no position or
+while `r13-0x77f8` is set. The heroes' footsteps use `FUN_80015828`
+([player-movement.md](player-movement.md), "Footsteps").
+
 ## Not done / unconfirmed
 
-- Track switching during gameplay, ducking, priorities, positional
-  panning and volume curves: the runtime plays a level's track 0 and
+- Track switching during gameplay, ducking, priorities, and the
+  positional pan and fade above: the runtime plays a level's track 0 and
   effects at their call volume, nothing more.
 - Bank version 0x100 and the byte-swapped variants (`VBNK`, `pGAV`,
   `SShd`) exist in the loader but not on the disc, so aren't implemented.
