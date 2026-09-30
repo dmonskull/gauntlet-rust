@@ -405,17 +405,45 @@ reaction:
 | `0x40` | 20 | push × 100 | FALLFRNT |
 | `0x120` | 20 | push × 32 (80 with power `0x400`) | FALLFRNT (`0x85`) |
 | `0x10` | 10 | push × 16 (`r2-0x5a68`) | HITREACT (`0x82`) |
-| `0x2000` / `0x80` | 3 / 2 | — | STUN/HITREACT variants |
+| `0x2000` / `0x80` | 3 / 2 | — | HITREACT (`0x81`) / STUN1 (`0x7F`) |
 | other | 1 | — | HITREACT (`0x1B`) while standing or moving |
 
 Knockback classes gain 1 when the push comes from more than 90° off the
 facing (FALLFRNT → FALLDOWN) and turn the hero to face the blow. A blow of
 more than 1 also plays its hit effect (`FUN_8009399c`, unless kind
 `0x1000000`) and flashes the hero for two updates
-([rendering.md](rendering.md), "Texture overrides"). Ported in
-`player.rs` (`hit_reaction`); the monster size is the radius stand-in from
-[monsters.md](monsters.md), and the 2/3 stun variants and the post-hit stun
-timer (class 100 → STUN2) aren't wired yet.
+([rendering.md](rendering.md), "Texture overrides").
+
+**The stuns.** A blow that does damage (> 0 after the resistance
+routine) with kind `0x800` (poison) sets the hero's stun time `+0x898` to
+now + 1 s (`r2-0x5F20`), with `0x1000` (Death's drain) now + 1/15 s
+(`r2-0x5DF0`) — the later test, so the drain's wins; the latest blow's
+counts. The player update then adjusts the class by the action playing
+(`FUN_80080d3c`, after `FUN_80085ca8`; classes below 300): FALLDOWN
+(`0x83`) → 20 and FALLFRNT (`0x85`) → 11 (the knock-down slides on while
+it falls; the chaining gets up), HITREACT `0x82` with a class below 10 →
+10; else, **while `+0x898` is ahead and the intent is to stand (1)**, 100
+— even over a new blow's class; else with no new blow, HITREACT `0x81`
+playing → 3, STUN1 playing → 2. Class 100 asks for STUN2 (`0x7A`, intent
+`0x20`), 2 and 3 for STUN1 (`0x7F`) and HITREACT (`0x81`, intent `0x1F`)
+— or, with one of those already playing, stand (intent 1, class 0:
+READY). All three zero the move (the stick is ignored: the hero stands).
+Which blows: kind `0x80` is the damage tiles' (their type value `| 0x80`,
+[mechanics.md](mechanics.md)); poison's `0x800` (the poisoned food's blow
+is one); the drain Death's. The chooser (`FUN_800ab898`): STUN2 loops (its own flag
+and the chooser's), a READY request ends it with its clip, any other
+cuts it at once — unless in the first 10 frames (`r2-0x4DD0`) of its
+first pass (the animation status `+0xB6`, the slot's end/restart flags,
+still 0), when it waits for the clip's end; STUN1 and the HITREACTs
+`0x81`/`0x82` go on to what's asked at their end, READY if asked for
+again, and a knock-down (above `0x82`) takes over at once (mode 3);
+WEBREACT (`0x80`) loops until something other than READY is asked for.
+
+Ported in `player.rs` (`hit_reaction`, `blow_stun`, `stun_class`,
+`stun_action`) and `actions.rs` (the chooser's cases); the monster size is
+the radius stand-in from [monsters.md](monsters.md). Stand-in: a blow's
+stun starts on the tick after it lands (with its reaction), not as it
+lands.
 
 ## Turbo
 

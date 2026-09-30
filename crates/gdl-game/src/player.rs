@@ -141,6 +141,13 @@ pub struct Player {
     /// Blows taken since the last tick: damage, kind flags, summed push
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
+    /// A blow's stun (the game's `+0x898`): until when (fixed-clock
+    /// seconds) it holds a standing hero in STUN2, and the one the latest
+    /// blow since the last tick brings.
+    stun_until: f64,
+    pending_stun: Option<f32>,
+    /// The playing clip has ended or come round since it started.
+    came_round: bool,
     /// Its left wrist's skeleton node (the lightning shield's spark
     /// leaves from it), and until when each target is spared its next
     /// timed blow (the lightning shield's, the charge's: the game keeps
@@ -492,6 +499,47 @@ fn arm_death_hand(armed: &mut [bool; 2], special: u32) {
 /// Blows of this or less don't knock the hero about.
 const KNOCKLESS_DAMAGE: f32 = 2.0;
 
+/// How long a blow that does damage stuns the hero, standing (seconds):
+/// poison a second, Death's drain a fifteenth (both: the drain's).
+fn blow_stun(kind: u32) -> Option<f32> {
+    if kind & combat::hit_kind::DRAIN != 0 {
+        Some(1.0 / 15.0)
+    } else if kind & combat::hit_kind::POISON != 0 {
+        Some(1.0)
+    } else {
+        None
+    }
+}
+
+/// The game's reaction class once the action playing and a blow's stun
+/// are counted (its reaction prologue; the knock-downs' own part is
+/// `hit_reaction`'s and the chaining's): standing while a stun lasts is
+/// 100 (STUN2) — not while falling or reeling from a knockback — else a
+/// stunning blow's reaction goes on while it plays (3 HITREACT `0x81`, 2
+/// STUN1).
+fn stun_class(class: u32, current: Action, stunned_standing: bool) -> u32 {
+    match current.0 {
+        0x83 | 0x85 => class,
+        0x82 if class < 10 => class,
+        _ if stunned_standing => 100,
+        0x81 if class < 1 => 3,
+        0x7F if class < 1 => 2,
+        _ => class,
+    }
+}
+
+/// What the stuns ask for (the hero stands still meanwhile): STUN2; a
+/// stunning blow's STUN1 or HITREACT, then standing while it plays.
+fn stun_action(class: u32, current: Action) -> Option<Action> {
+    match class {
+        100 => Some(Action::STUN2),
+        2 | 3 if matches!(current, Action::STUN1 | Action::STUNREACT) => Some(Action::READY),
+        2 => Some(Action::STUN1),
+        3 => Some(Action::STUNREACT),
+        _ => None,
+    }
+}
+
 impl Player {
     /// Whether a monster's blow turns back on it (the Hand of Death or,
     /// first, the Health Vampire armed): `Some(vampire)`.
@@ -526,6 +574,11 @@ impl Player {
             self.pending_hit.0 += d;
             self.pending_hit.1 |= kind;
             self.pending_hit.2 += push;
+        }
+        if d > 0.0
+            && let Some(stun) = blow_stun(kind)
+        {
+            self.pending_stun = Some(stun);
         }
         d
     }
@@ -673,6 +726,9 @@ fn spawn_player(
         halo_drank: false,
         halo_draining: false,
         pending_hit: (0.0, 0, Vec3::ZERO),
+        stun_until: 0.0,
+        pending_stun: None,
+        came_round: false,
         left_wrist: hero.data.skeleton.node_index(crate::power_looks::left_wrist(hero.class)),
         blow_cooldowns: Vec::new(),
         flash: Flash::default(),
@@ -907,8 +963,14 @@ fn tick(
         if cut || p.armour_bits & crate::damage::resists::INVULNERABLE != 0 {
             (hit_damage, hit_flags, hit_push) = (0.0, 0, Vec3::ZERO);
         }
+        let now = time.elapsed_secs_f64();
+        if let Some(stun) = p.pending_stun.take().filter(|_| !cut) {
+            p.stun_until = now + f64::from(stun);
+        }
         let pojo = p.special_bits & power::POJO != 0;
         let (reaction, knock, reaction_face) = hit_reaction(hit_damage, hit_flags, hit_push, facing, pojo);
+        let reaction = stun_class(reaction, current, now < p.stun_until && intent == Intent::Idle);
+        let stunned = matches!(reaction, 2 | 3 | 100);
         // A blow of more than a point flashes the hero.
         if hit_damage > HIT_FLASH_DAMAGE {
             p.flash.start();
@@ -1073,7 +1135,7 @@ fn tick(
                 p.turbo_cost = TURBO_ATTACK;
             }
         }
-        if let Some(a) = reaction_action(reaction) {
+        if let Some(a) = reaction_action(reaction).or_else(|| stun_action(reaction, current)) {
             requested = a;
         } else if reaction == 1 && matches!(intent, Intent::Idle | Intent::Walk | Intent::Run) {
             requested = Action::HITREACT;
@@ -1086,20 +1148,22 @@ fn tick(
         // The chaining. A looping clip counts as ended each time it comes
         // round (a stand-in: the game's end flag for loops isn't traced).
         let clips = animator.clips.clone();
+        let loops = clips.actions.get(animator.action).is_some_and(|a| a.loops());
+        let wrapped = loops && p.last_clip.0 == animator.action && animator.frame < p.last_clip.1;
+        let ended = animator.finished() || wrapped;
+        p.came_round |= ended;
         let env = Env {
             frame: animator.frame,
             class: p.class,
             has_low2: clips.actions.iter().any(|a| a.name == Action::ATTLOW2.name()),
             magic_released: p.magic.flags & MagicState::RELEASED != 0,
+            came_round: p.came_round,
         };
         let mut next = p.actions.next(requested, &env);
         // With a shield on its arm the hero stands and moves behind it.
         if p.armour_bits & SHIELDS != 0 {
             next.action = shield_action(next.action);
         }
-        let loops = clips.actions.get(animator.action).is_some_and(|a| a.loops());
-        let wrapped = loops && p.last_clip.0 == animator.action && animator.frame < p.last_clip.1;
-        let ended = animator.finished() || wrapped;
         let (move_factor, turn_factor) = actions::factors(current, p.class.unwrap_or(0));
         let clip = clip_for(&animator, next.action);
         let again = next.again && ended && clip == animator.action;
@@ -1109,6 +1173,7 @@ fn tick(
             } else {
                 animator.play(clip);
             }
+            p.came_round = false;
             let strike = p.actions.switched(next.action, p.class);
             // A turbo attack pays for itself as it lands.
             if matches!(current.0, 0x56 | 0x57) {
@@ -1219,7 +1284,8 @@ fn tick(
         // Facing: toward the stick, or held while strafing and defending;
         // attacking in place turns toward the target.
         let category = p.actions.action.category().0;
-        let mut face = (magnitude > 0.0 && !keeps_facing).then_some(stick.heading);
+        let drive = if stunned { 0.0 } else { drive };
+        let mut face = (magnitude > 0.0 && !keeps_facing && !stunned).then_some(stick.heading);
         if ATTACK_AIM && (1..=10).contains(&category) && category != 7 && !strafing && drive == 0.0 {
             face = Some(aim);
         }
@@ -1319,6 +1385,28 @@ mod tests {
         assert_eq!(hit_reaction(5.0, 0x20, -from_front, 0.0, false).0, 20);
         assert_eq!(reaction_action(21), Some(Action(0x83)));
         assert_eq!(hit_reaction(5.0, 0x20, -from_front, 0.0, true).1, 80.0, "the Pojo flies further");
+    }
+
+    #[test]
+    fn stuns() {
+        // Poison stuns for a second, Death's drain for a fifteenth.
+        assert_eq!(blow_stun(combat::hit_kind::POISON), Some(1.0));
+        assert_eq!(blow_stun(combat::hit_kind::DRAIN | combat::hit_kind::POISON), Some(1.0 / 15.0));
+        assert_eq!(blow_stun(0x10), None);
+        // Standing while stunned: STUN2, even over a new blow — not while
+        // falling.
+        assert_eq!(stun_class(0, Action::READY, true), 100);
+        assert_eq!(stun_class(20, Action::READY, true), 100);
+        assert_eq!(stun_class(0, Action(0x85), true), 0);
+        assert_eq!(stun_action(100, Action::READY), Some(Action::STUN2));
+        // A stunning blow: STUN1 (a damage tile's) or HITREACT (0x2000),
+        // then standing while it plays.
+        assert_eq!(stun_action(hit_reaction(5.0, 0x80, Vec3::Z, 0.0, false).0, Action::WALK1), Some(Action::STUN1));
+        assert_eq!(stun_action(hit_reaction(5.0, 0x2000, Vec3::Z, 0.0, false).0, Action::READY), Some(Action::STUNREACT));
+        assert_eq!(stun_class(0, Action::STUN1, false), 2);
+        assert_eq!(stun_action(2, Action::STUN1), Some(Action::READY));
+        assert_eq!(stun_class(0, Action::STUNREACT, true), 100);
+        assert_eq!(stun_class(0, Action::WALK1, false), 0);
     }
 
     #[test]

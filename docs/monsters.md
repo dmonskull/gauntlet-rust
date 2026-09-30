@@ -846,6 +846,6 @@ DEATHGRAB → DEATHGRABR, `S_HALO` once, `S_DEATHDIE` going on at it, the
 drain effect on the hero). Death moves by its AI whatever it plays (its
 atrees have READY and START only). Stand-ins: the drain effects play
 once per contact instead of holding until it ends; a hero killed by a
-drain doesn't empty the Death; the STUN2 while standing drained (the
-hero's `+0x898`) isn't done; dormant Deaths (the statue) and a Death
-with the suicide AI aren't.
+drain doesn't empty the Death; dormant Deaths (the statue) and a Death
+with the suicide AI aren't. The STUN2 while standing drained is done
+([combat.md](combat.md), "The stuns").
