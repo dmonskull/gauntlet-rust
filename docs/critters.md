@@ -780,7 +780,8 @@ scene's brightness is clamp(`r13-0x7160` × `r13-0x715c` + offset, 0, 1)
 boss's highlight `+0xABE` is 0xFF.
 
 **The heroes** (player code, `0x8007692c`, `0x80080d3c`): in state 2 they
-stand still facing the boss; in 2–3 each hero's highlight `+0x7FC` is 2.0
+stand still facing the boss (`0x80080d3c`: the wanted heading is the one
+to the boss object `r13-0x7760`, the speed `r2-0x5c80` = 0); in 2–3 each hero's highlight `+0x7FC` is 2.0
 for the one with the item and 0.8 for the others; the item's owner goes
 `+0x834` 1 → 2, clearing the realm's bit (`0x800a1bc8`: the item is used
 up), then throws the legendary weapon (`+0x834` 3 after 60 fields, then
@@ -789,6 +790,19 @@ chimera, P-boss and yeti). Its hit takes 0.1 × the boss's hit points
 (1.5 × a chimera head's own, 0.25 for the lich) and sets the boss's
 `+0xAC8` to 0.5, 0.25 or 0.1 s, during which its blows flagged 0x4000 do
 nothing.
+
+**In this rewrite, player side** (`player.rs`, `scene_light.rs`): in state
+2 the stick is ignored and the hero turns to face the boss; the scene
+darkens by `CritterLevel::light_offset()` — a black veil over the 3D view
+under the HUD, letting through brightness^2.2 because Bevy blends in linear
+space while the game scales gamma-space colours. Not done yet: the
+highlights (`+0x7FC`), the owner's glow effect (effect list `0x5C`) and
+sounds (`0x8009c214` 0 and 1), and the legendary weapon itself — from
+`+0x834` 4 the owner is forced into action `0x63` (ATTPWRATHROW) against
+the dragon, chimera, P-boss and yeti, `0x6B` against the djinn and drider,
+`0x73` (MAGICS) otherwise; the input classifier (`0x80088170`) masks two of
+the owner's button bits (`0x900`) meanwhile; where the strike releases the
+weapon (the event code in `0x800ab898` reads `+0x834`) isn't traced.
 
 ## Boss camera (pointers)
 

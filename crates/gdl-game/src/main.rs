@@ -40,6 +40,7 @@ mod player_state;
 mod texanim;
 mod population;
 mod quest;
+mod scene_light;
 mod projectiles;
 mod status_hud;
 mod viewer;
@@ -151,7 +152,7 @@ fn main() {
         app.insert_resource(game)
             .insert_resource(choice)
             .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
-            .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin, deaths::DeathsPlugin, quest::QuestPlugin))
+            .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin, deaths::DeathsPlugin, quest::QuestPlugin, scene_light::SceneLightPlugin))
             .add_plugins((
                 player_state::PlayerStatePlugin,
                 items::ItemsPlugin,
