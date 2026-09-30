@@ -67,9 +67,8 @@ const UNAWARE_HOLD: f32 = 20.0;
 const UNAWARE_LOOK: f32 = 0.5;
 /// The AIs that hand a tick with no aware target over to the unaware ones
 /// (5 or 6 by the monster's slot); the game puts each monster's own AI
-/// back after its tick. (The suicide runner does once it runs; the
-/// throwers `0x13`–`0x16` also do in the game, not here yet.)
-const GOES_UNAWARE: [i16; 8] = [0, 1, 3, 7, 8, 10, 0xD, 0xE];
+/// back after its tick. (The suicide runner does too, once it runs.)
+const GOES_UNAWARE: [i16; 12] = [0, 1, 3, 7, 8, 10, 0xD, 0xE, 0x13, 0x14, 0x15, 0x16];
 /// The AIs that run from a charging suicide runner near them (the level's
 /// "leader"): within 10 units of it, while its player is within their
 /// awareness.
