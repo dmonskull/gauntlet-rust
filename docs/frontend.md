@@ -549,7 +549,8 @@ catalog lengths, the most waits, the 16-line limit, sentences and the
 boss end's gate, on real time. In them: the hints (0.5 s, gated), the
 message box's line (the tower's unlocks, 10 s), the tower wizard's pieces
 (10 s) and ranks (the hero's name, then `S_EXP…`, 5 s), the bosses'
-wizard (10 s), and the heroes' eating and poison lines. Every level
+wizard (10 s), the runestone count (no limit, gated;
+`pickup_notices.rs`), and the heroes' eating and poison lines. Every level
 change by name waits while a queue holds a line (`exits.rs`): an exit,
 the boss level's end, the last hero out (`frontend.rs`, `death`: once
 the DEATH action is over outside the tower the hero is out — the HUD
@@ -560,7 +561,7 @@ level start's own wait, `FUN_800a097c`); the queues aren't emptied and
 the voices aren't stopped as the new level starts (they're empty by
 then); lines aren't panned and there's no 12-voice limit, so the priority
 does nothing. Not done: the level's name lines and the opening's wait,
-the health warnings, the taunts, the hurt cries, the runestone count.
+the health warnings, the taunts, the hurt cries.
 
 The save (`FUN_8007a670(p, 1)`, from `FUN_80053530`) happens when a level
 outside the tower starts, except in the secret realm (12) and in `levelE2`
