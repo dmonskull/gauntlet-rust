@@ -37,7 +37,7 @@ use crate::level_material::LevelMaterial;
 use crate::locomotion;
 use crate::play_camera::PlayCamera;
 use crate::player::{Player, PlayerTick};
-use crate::player_state::power;
+use crate::player_state::{EnemyScale, power};
 use crate::population::LevelPopulation;
 use crate::projectiles::{self, MonsterShot};
 use crate::texanim::{LevelTexAnims, TexAnim};
@@ -1874,12 +1874,15 @@ fn log_hits(mut hits: MessageReader<MonsterHit>, monsters: Query<&Monster>) {
     }
 }
 
-fn interpolate(fixed: Res<Time<Fixed>>, mut monsters: Query<(&Monster, &mut Transform)>) {
+/// Places the monsters between ticks, drawn at the enemies' scale (the
+/// shrink power's).
+fn interpolate(fixed: Res<Time<Fixed>>, enemies: Res<EnemyScale>, mut monsters: Query<(&Monster, &mut Transform)>) {
     let t = fixed.overstep_fraction();
     for (m, mut transform) in &mut monsters {
         let (p0, f0) = m.previous;
         transform.translation = Vec3::from(p0).lerp(Vec3::from(m.position), t);
         transform.rotation = Quat::from_rotation_y(f0 + locomotion::wrap(m.facing - f0) * t);
+        transform.scale = Vec3::splat(enemies.0);
     }
 }
 

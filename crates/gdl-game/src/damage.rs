@@ -39,7 +39,7 @@ use crate::effects::EffectAt;
 use crate::generators::Generator;
 use crate::monsters::{self, Monster, MonsterHit, MonsterLevel};
 use crate::player::Player;
-use crate::player_state::{DamagePlayer, PlayerState};
+use crate::player_state::{DamagePlayer, EnemyScale, PlayerState};
 use crate::player::PlayerTick;
 use crate::population::{GeneratorLooks, PlacementIndex};
 
@@ -66,6 +66,7 @@ pub(crate) fn apply_hits(
     mut sounds: MessageWriter<PlaySound>,
     mut effects: MessageWriter<EffectAt>,
     heroes: Query<(), With<Player>>,
+    enemies: Res<EnemyScale>,
 ) {
     for hit in hits.read() {
         // Only a hero's blows earn experience (a monster's bomb or blast
@@ -84,6 +85,9 @@ pub(crate) fn apply_hits(
                 let armour = if m.enemy == DEATH { DEATH_ARMOUR } else { 0.0 };
                 let mut kind = hit.kind;
                 let mut damage = resist(hit.damage, &mut kind, armour, 0, boss_level);
+                if enemies.shrunk() {
+                    damage *= SHRUNK_TAKE;
+                }
                 if by_hero && damage < HERO_BLOW_LEAST {
                     damage = HERO_BLOW_LEAST;
                 }
@@ -322,6 +326,9 @@ const DEATH: i32 = 0x1E;
 const DEATH_ARMOUR: f32 = 1.0;
 /// A hero's blow on a monster takes at least this.
 const HERO_BLOW_LEAST: f32 = 1.0;
+/// Shrunk (`EnemyScale`), monsters take twice the damage and deal half.
+const SHRUNK_TAKE: f32 = 2.0;
+const SHRUNK_DEAL: f32 = 0.5;
 
 /// The monster type whose blows knock heroes down.
 const KNOCKDOWN_MONSTER: i32 = 0x1D;
@@ -331,6 +338,7 @@ fn hurt_hero(
     monsters: Query<&Monster>,
     mut players: Query<&mut Player>,
     mut damage: MessageWriter<DamagePlayer>,
+    enemies: Res<EnemyScale>,
 ) {
     for hit in hits.read() {
         let Ok(mut p) = players.get_mut(hit.player) else { continue };
@@ -346,15 +354,18 @@ fn hurt_hero(
             if m.enemy == KNOCKDOWN_MONSTER {
                 flags |= 0x20;
             }
-            if !big {
-                flags |= 0x4000_0000;
+            // Small monsters' blows — and every one while they're shrunk
+            // — are the kind levitation dodges.
+            if !big || enemies.shrunk() {
+                flags |= hit_kind::SMALL_MONSTER;
             }
             if flags & 0x130 != 0 {
                 let d = Vec3::from(p.mover.position) - Vec3::from(m.position);
                 push = Vec3::new(d.x, 0.0, d.z).normalize_or_zero();
             }
         }
-        let amount = p.take_blow(hit.damage, flags, push);
+        let blow = if enemies.shrunk() { hit.damage * SHRUNK_DEAL } else { hit.damage };
+        let amount = p.take_blow(blow, flags, push);
         if amount != 0.0 {
             damage.write(DamagePlayer { amount });
         }
@@ -375,7 +386,7 @@ mod tests {
         assert_eq!(plain(1.0, 1.5), 0.0);
         assert_eq!(plain(-2.0, 1.5), 2.0);
         // Magic and poison go straight through.
-        assert_eq!(resist(1.0, &mut hit_kind::POISON, 1.5, 0, false), 1.0);
+        assert_eq!(resist(1.0, &mut { hit_kind::POISON }, 1.5, 0, false), 1.0);
     }
 
     #[test]
@@ -389,7 +400,7 @@ mod tests {
     #[test]
     fn the_gas_mask_stops_poison_and_resists_acid() {
         let mask = 0x2008;
-        assert_eq!(resist(30.0, &mut hit_kind::POISON, 0.0, mask, false), 0.0);
+        assert_eq!(resist(30.0, &mut { hit_kind::POISON }, 0.0, mask, false), 0.0);
         assert_eq!(resist(30.0, &mut 4, 0.0, mask, false), 15.0);
         // Light, which acid resistance leaves it weak to.
         assert_eq!(resist(30.0, &mut 3, 0.0, mask, false), 60.0);

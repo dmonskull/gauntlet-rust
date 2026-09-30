@@ -95,7 +95,7 @@ use crate::locomotion;
 use crate::mechanics::Mechanics;
 use crate::monsters::{MonsterLevel, MonsterTick};
 use crate::player::Player;
-use crate::player_state::{DamagePlayer, PlayerState};
+use crate::player_state::{DamagePlayer, EnemyScale, PlayerState};
 use crate::population::LevelPopulation;
 use crate::projectiles::{cylinder_hit, load_atree, spawn_critter_missile};
 use crate::world::{LevelEntity, LevelGround};
@@ -515,6 +515,10 @@ const ANGER_CAP: f32 = 1.5;
 const UNAIMED_DROP: f32 = -0.5;
 
 /// Blow kind bits.
+/// Shrunk (`EnemyScale`), critters other than bosses take twice the
+/// damage and deal half.
+const SHRUNK_TAKE: f32 = 2.0;
+const SHRUNK_DEAL: f32 = 0.5;
 const KIND_STRONG: u32 = 0x10;
 const KIND_KNOCKDOWN: u32 = 0x20;
 const KIND_HEAVY: u32 = 0x100;
@@ -593,6 +597,8 @@ pub struct CritterLevel {
     hit_point_scale: f32,
     speed_scale: f32,
     damage_scale: f32,
+    /// The enemies' scale this tick (the shrink power's, `EnemyScale`).
+    enemy_scale: f32,
     /// Per player: until when critter blows can't hit it.
     guard: HashMap<Entity, f32>,
     /// The boss, once made; whether it has died (its DEATH has played:
@@ -979,6 +985,10 @@ impl Critter {
         }
         let boss_level = level.is_some_and(|l| l.boss_type >= 0);
         damage = crate::damage::resist(damage, &mut kind_bits, ty.armor, ty.resist, boss_level);
+        // Shrunk, all but bosses take twice.
+        if !boss && level.is_some_and(|l| l.enemy_scale < 1.0) {
+            damage *= SHRUNK_TAKE;
+        }
         self.damage_taken += damage;
         // Bosses take less with more players, except in their intro's
         // first four states.
@@ -1245,6 +1255,7 @@ fn setup_level(
         hit_point_scale: t.monster_hit_points * testing_scale,
         speed_scale: t.monster_speed,
         damage_scale: t.monster_damage,
+        enemy_scale: 1.0,
         guard: HashMap::new(),
         boss: None,
         boss_dead: false,
@@ -1600,11 +1611,12 @@ fn tick_critters(
     mut hurt: MessageWriter<DamagePlayer>,
     mut sounds: MessageWriter<PlaySound>,
     mut death_shot: Local<Option<u32>>,
-    (colours, mut tags): (Res<FlashColours>, Query<&mut MeshTag>),
+    (colours, mut tags, enemies): (Res<FlashColours>, Query<&mut MeshTag>, Res<EnemyScale>),
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     let level = &mut *level;
     level.now += DT;
+    level.enemy_scale = enemies.0;
     let now = level.now;
     update_intro(level);
     // The hero who brought the legendary item uses it up once the level
@@ -2774,13 +2786,18 @@ fn deal(
     blows: &mut Vec<Blow>,
     commands: &mut Commands,
 ) {
-    let damage = d.damage * level.damage_scale;
+    let mut damage = d.damage * level.damage_scale;
     if matches!(d.kind, 1 | 2 | 8) {
         if first {
             launch(c, me, d, damage, level, commands);
             level.events.push("missile");
         }
         return;
+    }
+    // Shrunk, all but bosses deal half (their missiles' damage isn't
+    // traced).
+    if c.class() != class::BOSS && level.enemy_scale < 1.0 {
+        damage *= SHRUNK_DEAL;
     }
     let offset = node.matrix3 * Vec3::from(d.offset);
     let at = Vec3::from(c.node_at.unwrap_or(c.position)) + offset;
@@ -3014,12 +3031,15 @@ fn turn(c: &mut Critter, m: &CritterMove, heroes: &[Hero]) {
     c.yaw = locomotion::wrap(c.yaw + d);
 }
 
-fn interpolate(fixed: Res<Time<Fixed>>, mut critters: Query<(&Critter, &mut Transform)>) {
+/// Places the critters between ticks, drawn at the enemies' scale (the
+/// shrink power's).
+fn interpolate(fixed: Res<Time<Fixed>>, enemies: Res<EnemyScale>, mut critters: Query<(&Critter, &mut Transform)>) {
     let t = fixed.overstep_fraction();
     for (c, mut transform) in &mut critters {
         let (p0, f0) = c.previous;
         transform.translation = Vec3::from(p0).lerp(Vec3::from(c.position), t);
         transform.rotation = Quat::from_rotation_y(f0 + locomotion::wrap(c.yaw - f0) * t);
+        transform.scale = Vec3::splat(enemies.0);
     }
 }
 
@@ -3152,6 +3172,7 @@ mod tests {
             hit_point_scale: 1.0,
             speed_scale: 1.0,
             damage_scale: 1.0,
+            enemy_scale: 1.0,
             guard: HashMap::new(),
             boss: None,
             boss_dead: false,

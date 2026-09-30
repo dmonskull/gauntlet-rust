@@ -126,6 +126,8 @@ pub struct Player {
     boss_level: bool,
     /// Its special powers' bits (`PowerBits::special`).
     pub special_bits: u32,
+    /// Its model's scale: the ogre's, grown, at level 99.
+    model_scale: f32,
     /// Blows taken since the last tick: damage, kind flags, summed push
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
@@ -205,6 +207,15 @@ fn apply_powers(
         p.armour_bits = b.armour;
         p.special_bits = b.special;
         p.boss_level = boss_level;
+        p.model_scale = if p.class == Some(OGRE) {
+            OGRE_SCALE
+        } else if b.special & power::GROW != 0 {
+            GROWN_SCALE
+        } else if state.level >= crate::player_state::MAX_LEVEL {
+            TOP_LEVEL_SCALE
+        } else {
+            1.0
+        };
         let speed = (p.base_speed + b.speed).clamp(locomotion::SPEED_MIN, locomotion::SPEED_MAX);
         if p.mover.speed != speed {
             p.mover.speed = speed;
@@ -302,8 +313,19 @@ const LIGHTNING_COOLDOWN: f64 = 1.0;
 const LIGHTNING_SPARK: &str = "L_SHLD_ACTIVE";
 const LEFT_WRIST: &str = "L_WRIST";
 
+/// The hero's model scale: the ogre's (class 12) always; grown (the
+/// special power `0x100`); at level 99.
+const OGRE: usize = 12;
+const OGRE_SCALE: f32 = 1.6;
+const GROWN_SCALE: f32 = 1.3;
+const TOP_LEVEL_SCALE: f32 = 1.2;
+/// Grown, the hero's blows (the game's contact routine: melee, the
+/// shields) do twice as much, and push with it.
+const GROWN_BLOWS: f32 = 2.0;
+
 /// A shield's blow on the target it touches.
-fn shield_blow(hero: Entity, f: &combat::Found, damage: f32, kind: u32, facing: f32) -> Hit {
+fn shield_blow(hero: Entity, f: &combat::Found, damage: f32, kind: u32, facing: f32, grown: bool) -> Hit {
+    let damage = if grown { damage * GROWN_BLOWS } else { damage };
     let sighted = matches!(f.kind, TargetKind::Monster | TargetKind::Object);
     let push = if sighted { combat::push(facing, damage) } else { Vec3::ZERO };
     Hit { target: f.entity, attacker: hero, damage, kind, push, at: f.position, target_kind: f.kind, ranged: false }
@@ -528,6 +550,7 @@ fn spawn_player(
         armour_bits: 0,
         boss_level: false,
         special_bits: 0,
+        model_scale: 1.0,
         pending_hit: (0.0, 0, Vec3::ZERO),
         left_wrist: hero.data.skeleton.node_index(LEFT_WRIST),
         shield_cooldowns: Vec::new(),
@@ -784,6 +807,7 @@ fn tick(
         let found = combat::search(position, wanted, candidates());
         let touching = found.filter(|f| reaction == 0 && f.distance < combat::WALK_INTO + p.radius);
         let shielded = touching.is_some() && p.armour_bits & (FIRE_WALL | LIGHTNING_SHIELD) != 0;
+        let grown = p.special_bits & power::GROW != 0;
         if let Some(f) = touching.filter(|_| shielded) {
             if p.armour_bits & FIRE_WALL != 0 {
                 // Standing counts as walking; walking or running into it
@@ -792,13 +816,13 @@ fn tick(
                     intent = Intent::Walk;
                 }
                 if matches!(intent, Intent::Walk | Intent::Run) {
-                    hits.write(shield_blow(entity, &f, FIRE_WALL_DAMAGE, FIRE_WALL_KIND, facing));
+                    hits.write(shield_blow(entity, &f, FIRE_WALL_DAMAGE, FIRE_WALL_KIND, facing, grown));
                 }
             } else {
                 let now = time.elapsed_secs_f64();
                 p.shield_cooldowns.retain(|(_, until)| *until > now);
                 if p.shield_cooldowns.iter().all(|(e, _)| *e != f.entity) {
-                    hits.write(shield_blow(entity, &f, LIGHTNING_DAMAGE, LIGHTNING_KIND, facing));
+                    hits.write(shield_blow(entity, &f, LIGHTNING_DAMAGE, LIGHTNING_KIND, facing, grown));
                     p.shield_cooldowns.push((f.entity, now + LIGHTNING_COOLDOWN));
                     // The shield's spark, from the left wrist toward it.
                     let wrist = p.left_wrist.and_then(|n| animator.bone(n)).and_then(|b| bodies.get(b).ok());
@@ -1038,7 +1062,10 @@ fn strike_blow(
     if sighted && ground.is_some_and(|g| g.0.wall(position.to_array(), found.position.to_array(), combat::SIGHT_RADIUS).is_some()) {
         return None;
     }
-    let (damage, kind) = combat::blow(strike, p.strength, &found);
+    let (mut damage, kind) = combat::blow(strike, p.strength, &found);
+    if p.special_bits & power::GROW != 0 {
+        damage *= GROWN_BLOWS;
+    }
     let kind = kind | p.weapon;
     let push = if sighted { combat::push(facing, damage) } else { Vec3::ZERO };
     let at = position + Vec3::new(facing.sin(), 0.0, facing.cos()) * (combat::REACH + p.radius);
@@ -1052,6 +1079,10 @@ fn interpolate(fixed: Res<Time<Fixed>>, mut players: Query<(&Player, &mut Transf
         let (p1, f1) = (player.mover.position, player.mover.facing);
         transform.translation = Vec3::from(p0).lerp(Vec3::from(p1), t);
         transform.rotation = Quat::from_rotation_y(f0 + locomotion::wrap(f1 - f0) * t);
+        let scale = Vec3::splat(player.model_scale);
+        if transform.scale != scale {
+            transform.scale = scale;
+        }
     }
 }
 
