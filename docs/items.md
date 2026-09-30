@@ -294,6 +294,7 @@ string (−1 = the whole group), `VOICE1` sound id. The ones items use:
 | 8 | `SAVEKEYS` | `S_SAVEKEYS` |
 | 9 | `TRANSPORTERSMOVEYOU` | `S_TRANSPORTER` |
 | `0xF`, `0x10` | `EATMEAT`, `EATFRUIT` | `S_MEATGIVES`, `S_FRUITGIVES` |
+| `0xE` | `SHOOTPOTIONLESSER` ("SHOOTING MAGIC / HAS A LOWER EFFECT"): a hero's missile or blast sets off a potion lying on the floor (`FUN_8002f400`) | `S_SHOOTINGMAGIC` |
 | `0x11` | `COLLECTGOLD` | `S_COLLECTGOLD` |
 | `0x14` | `FOUNDSECRETWALLS` ("MULTIPLE HITS DESTROY / SECRET WALLS"): a hero's melee blow (`FUN_8008615c`) that does damage to an obstacle whose type has no name (type `+0x28` = 0: the secret walls) | `S_MULTIPLEHITS` |
 | `0x15` | `AVOIDOBJECTS` ("AVOID DANGEROUS OBJECTS"): a damage tile hurts the hero (`FUN_8005d71c` case 8) | `S_AVOID` |
@@ -337,7 +338,7 @@ generator (item class 3) earns 5 × the hit value for its monster type
 (`+0xDC`; -2 → 1, -3 → 2, other negatives → 0) and destroying it 5 × the
 kill value, through the same `FUN_80076144` scaling (ported). A blow on a
 potion (class 1 subtype 4) sets it off (`FUN_80076618`, the potion's magic;
-not ported).
+[effects.md](effects.md), "Shooting potions").
 
 ## The tower's wizard
 

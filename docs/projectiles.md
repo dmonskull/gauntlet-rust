@@ -179,7 +179,9 @@ old to the new position:
 4. **Items** (flag 2): `FUN_8005ed30` (the item touch test `FUN_8005f0e0`
    with the missile's radius), filtered by `FUN_8009682c` — missiles with
    flag `0x1000` (monsters') pass generators, flag `0x100` passes most
-   other items — then `FUN_8005c1c8(damage, item, kind, owner − 1)`.
+   other items — then `FUN_8005c1c8(damage, item, kind, owner − 1)` and,
+   for a player's missile that did damage, `FUN_8002f400` (a potion lying
+   on the floor goes off: [effects.md](effects.md), "Shooting potions").
 5. **Level** (flag 4): `FUN_8000cfa0` (every surface, nodes `0x23E`) with
    0.5 × radius (`r2-0x5700`). Kind `0x200000` bounces (reflected, upward
    speed × 0.4); otherwise it stops.

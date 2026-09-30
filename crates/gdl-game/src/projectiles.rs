@@ -30,7 +30,8 @@ use gdl_formats::{LevelCollision, ModelFile, enemy};
 use crate::actions::Strike;
 use crate::character::{self, CharacterData, CharacterModel};
 use crate::combat::{self, CritterAim, Hit, TargetKind, Targetable};
-use crate::effects::{BlastAt, PotionBurst};
+use crate::effects::{BlastAt, PotionBurst, StrikePotion, is_floor_potion};
+use crate::items::LevelItems;
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion;
@@ -716,6 +717,20 @@ pub(crate) fn bodies(targets: &Query<(Entity, &GlobalTransform, &Targetable, Opt
         .collect()
 }
 
+/// The first potion lying on the floor a segment meets (hero missiles
+/// only): its upright cylinder grown by the missile's radius (stand-in for
+/// the game's item touch test, as for [`item_hit`]).
+fn potion_hit(a: Vec3, b: Vec3, radius: f32, items: &LevelItems) -> Option<(f32, usize)> {
+    items
+        .views()
+        .filter(is_floor_potion)
+        .filter_map(|v| {
+            let centre = Vec3::from(v.shape.centre);
+            cylinder_hit(a, b, centre, radius + v.shape.radius, radius + v.shape.reach).map(|s| (s, v.placement))
+        })
+        .min_by(|x, y| x.0.total_cmp(&y.0))
+}
+
 /// The first generator or breakable (hero missiles only) a segment meets:
 /// the item's upright extent around its feet grown by the missile's
 /// radius (stand-in for the game's item touch test).
@@ -837,6 +852,7 @@ fn launch_hero(
     ground: Option<Res<LevelGround>>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
+    (items, mut struck): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>),
 ) {
     for shot in shots.read() {
         let Some(hero) = hero.as_deref() else { continue };
@@ -854,9 +870,15 @@ fn launch_hero(
             debug!("throw blocked by a wall at release");
             continue;
         }
-        // Something breakable right there takes it at once.
-        let items = targets.iter().map(|(e, g, t)| (e, g.translation(), t));
-        if let Some((s, target, target_kind)) = item_hit(launch.check, launch.start, radius, items) {
+        // Something breakable right there takes it at once; a potion lying
+        // there goes off.
+        let found = item_hit(launch.check, launch.start, radius, targets.iter().map(|(e, g, t)| (e, g.translation(), t)));
+        let potion = items.as_deref().and_then(|i| potion_hit(launch.check, launch.start, radius, i));
+        if let Some((_, placement)) = potion.filter(|(s, _)| found.is_none_or(|f| *s < f.0)) {
+            struck.write(StrikePotion { placement, by: Some(shot.hero) });
+            continue;
+        }
+        if let Some((s, target, target_kind)) = found {
             let at = launch.check.lerp(launch.start, s);
             hits.write(Hit { target, attacker: shot.hero, damage, kind, push: Vec3::ZERO, at, target_kind, ranged: true });
             continue;
@@ -941,6 +963,7 @@ fn fly(
     mut hits: MessageWriter<Hit>,
     mut damage: MessageWriter<DamagePlayer>,
     mut potions: MessageWriter<BlastAt>,
+    (items, mut struck): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>),
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -1003,10 +1026,17 @@ fn fly(
                 stop = Some(Stop::At(to));
             }
         }
-        // Generators and breakables (hero missiles; the monsters' pass them).
+        // Generators, breakables and potions on the floor (hero missiles;
+        // the monsters' pass them): the nearest along the way.
+        let potion = items.as_deref().filter(|_| stop.is_none() && hero_owned).and_then(|i| potion_hit(from, to, r, i));
         if stop.is_none() && hero_owned {
-            let items = targets.iter().map(|(e, g, t, _)| (e, g.translation(), t));
-            if let Some((s, target, target_kind)) = item_hit(from, to, r, items) {
+            let found = item_hit(from, to, r, targets.iter().map(|(e, g, t, _)| (e, g.translation(), t)));
+            if let Some((s, placement)) = potion.filter(|(s, _)| found.is_none_or(|f| *s < f.0)) {
+                to = from.lerp(to, s);
+                info!("missile strikes a potion (placement {placement})");
+                struck.write(StrikePotion { placement, by: Some(p.owner.entity()) });
+                stop = Some(Stop::At(to));
+            } else if let Some((s, target, target_kind)) = found {
                 to = from.lerp(to, s);
                 info!("missile hits {target_kind:?} {target:?} for {:.1}", p.damage);
                 hits.write(Hit {

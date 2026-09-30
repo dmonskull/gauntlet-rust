@@ -44,6 +44,7 @@ pub struct EffectsPlugin;
 impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<UsePotion>()
+            .add_message::<StrikePotion>()
             .add_message::<BlastAt>()
             .add_message::<EffectAt>()
             .add_message::<ExplosionAt>()
@@ -52,7 +53,7 @@ impl Plugin for EffectsPlugin {
             .init_resource::<PotionCycle>()
             .add_systems(
                 FixedUpdate,
-                (use_potions, spawn_blasts, spawn_explosions, tick_blasts, spawn_one_shots, tick_one_shots)
+                (use_potions, set_off_potions, spawn_blasts, spawn_explosions, tick_blasts, spawn_one_shots, tick_one_shots)
                     .chain()
                     .after(MonsterTick),
             )
@@ -147,6 +148,28 @@ pub struct UsePotion {
     /// Video fields the throw was wound up.
     pub charge: f32,
 }
+
+/// A potion lying on the floor struck by a hero's missile or blast (`by`
+/// the hero), or reached by another potion's blast (by nobody).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct StrikePotion {
+    pub placement: usize,
+    pub by: Option<Entity>,
+}
+
+/// A potion lying on the floor, which blows and blasts set off.
+pub fn is_floor_potion(v: &crate::items::ItemView) -> bool {
+    v.live && v.ty.class == gdl_formats::population::ItemClass::Powerup && v.ty.subtype == POTION
+}
+
+/// The powerup subtype of potions.
+const POTION: i32 = 4;
+/// A potion set off by a blow: its magic at 0.8 (`r2-0x67ec`), for nobody
+/// — 40 × 0.8 damage out to 20 × 0.8 — and, struck by a hero, the hero's
+/// own blast of it at 0.8 of their magic power.
+const STRUCK_POWER: f32 = 0.8;
+const NOBODYS_DAMAGE: f32 = 40.0 * STRUCK_POWER;
+const NOBODYS_RADIUS: f32 = 20.0 * STRUCK_POWER;
 
 /// A thrown potion burst (`projectiles.rs`).
 #[derive(Message, Clone, Copy, Debug)]
@@ -718,6 +741,53 @@ fn use_potions(
 /// The shield lasts three seconds.
 const SHIELD_LIFE: f32 = 3.0;
 
+/// Potions lying on the floor that a blow or blast struck go off (the
+/// game's item damage for them, then its item-hit routine for a hero's):
+/// the potion is gone, its magic bursts there for nobody, and a hero who
+/// struck it gets a blast of their own of it at 0.8 of their power, with
+/// its sound and the hint that shooting magic has a lower effect.
+#[allow(clippy::too_many_arguments)]
+fn set_off_potions(
+    mut commands: Commands,
+    mut strikes: MessageReader<StrikePotion>,
+    items: Option<ResMut<crate::items::LevelItems>>,
+    state: Option<Res<PlayerState>>,
+    magic: Option<Res<HeroMagic>>,
+    mut cycle: ResMut<PotionCycle>,
+    mut blasts: MessageWriter<BlastAt>,
+    (mut sounds, mut hints): (MessageWriter<PlaySound>, MessageWriter<crate::hints::ShowHint>),
+) {
+    let Some(mut items) = items else {
+        strikes.clear();
+        return;
+    };
+    for s in strikes.read() {
+        let Some(view) = items.view(s.placement).filter(is_floor_potion) else { continue };
+        let at = Vec3::from(view.shape.centre);
+        let value = view.ty.value.max(0) as u32;
+        let mut colour = || {
+            if value & 0xF != 0 {
+                return value;
+            }
+            cycle.0 += 1;
+            value | ((cycle.0 - 1) % 4 + 1)
+        };
+        let kind = colour();
+        items.free(s.placement, &mut commands);
+        info!("a potion is struck at {at:?}");
+        blasts.write(BlastAt { owner: Entity::PLACEHOLDER, at, kind: kind | 0x200, damage: NOBODYS_DAMAGE, radius: NOBODYS_RADIUS });
+        if let Some(hero) = s.by {
+            let kind = colour();
+            let level = state.as_ref().map_or(1, |s| s.level.max(1));
+            let stat = magic.as_ref().map_or(400.0, |m| locomotion::stat_at_level(m.stat[0], m.stat[1], level, 0.0));
+            let e = potion_effect(kind, 0, 0, STRUCK_POWER * magic_power(stat), level);
+            sounds.write(PlaySound(POTION_SOUND[colour_index(kind)].into()));
+            blasts.write(BlastAt { owner: hero, at, kind: e.kind, damage: e.damage, radius: e.radius });
+            hints.write(crate::hints::ShowHint(crate::hints::Hint::ShootPotion));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_blasts(
     mut commands: Commands,
@@ -870,6 +940,7 @@ fn tick_blasts(
     targets: Query<(Entity, &GlobalTransform, &Targetable, Option<&Monster>)>,
     mut hits: MessageWriter<Hit>,
     (mut hurt, mut stages): (MessageWriter<DamagePlayer>, MessageWriter<NextStage>),
+    (items, mut struck): (Option<Res<crate::items::LevelItems>>, MessageWriter<StrikePotion>),
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -949,6 +1020,19 @@ fn tick_blasts(
             let dy = b.centre.y - (feet.y + 0.5 * t.height);
             if across <= t.radius + reach && dy.abs() <= 0.5 * t.height + reach {
                 hit(e, t.kind, b);
+            }
+        }
+        // Potions lying in its reach go off too.
+        if b.items
+            && let Some(items) = items.as_deref()
+        {
+            let by = players.contains(b.owner).then_some(b.owner);
+            for v in items.views().filter(is_floor_potion) {
+                let c = Vec3::from(v.shape.centre);
+                let across = Vec2::new(c.x - b.centre.x, c.z - b.centre.z).length();
+                if across <= v.shape.radius + reach && (b.centre.y - c.y).abs() <= v.shape.reach + reach {
+                    struck.write(StrikePotion { placement: v.placement, by });
+                }
             }
         }
         // A monster's explosion hurts heroes too: through their armour, and
