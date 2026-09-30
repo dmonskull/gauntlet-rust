@@ -128,6 +128,10 @@ pub struct Player {
     pub special_bits: u32,
     /// Its model's scale: the ogre's, grown, at level 99.
     model_scale: f32,
+    /// The Hand of Death and the Health Vampire armed (the game's `+0xA1E`,
+    /// `+0xA20`): each set while its power is on (the vampire's only
+    /// while the hand's is off), both cleared once neither is.
+    death_hand: [bool; 2],
     /// Blows taken since the last tick: damage, kind flags, summed push
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
@@ -207,6 +211,7 @@ fn apply_powers(
         p.armour_bits = b.armour;
         p.special_bits = b.special;
         p.boss_level = boss_level;
+        arm_death_hand(&mut p.death_hand, b.special);
         p.model_scale = if p.class == Some(OGRE) {
             OGRE_SCALE
         } else if b.special & power::GROW != 0 {
@@ -356,15 +361,16 @@ const HEAD: &str = "HEAD";
 /// The breath the hero's powers give (first that applies): Skorne's horns
 /// or mask (BOSS_BREATHE, 50 fire), fire (or the Pojo's), acid, lightning
 /// (40, each with the heavy kind): effect, kind, damage, sound.
-fn breath_of(special: u32) -> Option<(&'static str, u32, f32, &'static str)> {
+fn breath_of(special: u32) -> Option<(&'static str, u32, f32, Option<&'static str>)> {
     if special & 0x3000 != 0 {
-        Some(("BOSS_BREATHE", 0x21, 50.0, if special & 0x1000 != 0 { "S_HORNS" } else { "S_MASK" }))
+        Some(("BOSS_BREATHE", 0x21, 50.0, Some(if special & 0x1000 != 0 { "S_HORNS" } else { "S_MASK" })))
     } else if special & 0x410 != 0 {
-        Some(("FIREBREATHE", 0x21, 40.0, "S_BREATHFIRE"))
+        // The Pojo alone has no breath sound of its own (it has its turbo's).
+        Some(("FIREBREATHE", 0x21, 40.0, (special & 0x10 != 0).then_some("S_BREATHFIRE")))
     } else if special & 0x20 != 0 {
-        Some(("ACIDBREATHE", 0x24, 40.0, "S_BREATHGAS"))
+        Some(("ACIDBREATHE", 0x24, 40.0, Some("S_BREATHGAS")))
     } else if special & 0x40 != 0 {
-        Some(("ELECBREATHE", 0x22, 40.0, "S_BREATHELEC"))
+        Some(("ELECBREATHE", 0x22, 40.0, Some("S_BREATHELEC")))
     } else {
         None
     }
@@ -391,6 +397,8 @@ fn shield_action(action: Action) -> Action {
 /// Knockback speeds the hero's reactions add along the blow's push.
 const STRONG_KNOCKBACK: f32 = 16.0;
 const KNOCKDOWN_KNOCKBACK: f32 = 32.0;
+/// The Pojo, being small, flies further when knocked down.
+const POJO_KNOCKDOWN_KNOCKBACK: f32 = 80.0;
 const FLING_KNOCKBACK: f32 = 100.0;
 /// Blows of more than this flash the hero (and draw a reaction).
 const HIT_FLASH_DAMAGE: f32 = 1.0;
@@ -401,7 +409,7 @@ const HIT_FLASH_DAMAGE: f32 = 1.0;
 /// knockdown, 30 fling; knockback classes gain 1 when the push comes from
 /// behind the facing. Returns the class, the knockback speed, and the
 /// heading to face (for the knockback classes).
-fn hit_reaction(damage: f32, flags: u32, push: Vec3, facing: f32) -> (u32, f32, Option<f32>) {
+fn hit_reaction(damage: f32, flags: u32, push: Vec3, facing: f32, pojo: bool) -> (u32, f32, Option<f32>) {
     if damage <= 1.0 {
         return (if flags & 0x80 != 0 { 2 } else { 0 }, 0.0, None);
     }
@@ -410,7 +418,7 @@ fn hit_reaction(damage: f32, flags: u32, push: Vec3, facing: f32) -> (u32, f32, 
     } else if flags & 0x40 != 0 {
         (20, FLING_KNOCKBACK)
     } else if flags & 0x120 != 0 {
-        (20, KNOCKDOWN_KNOCKBACK)
+        (20, if pojo { POJO_KNOCKDOWN_KNOCKBACK } else { KNOCKDOWN_KNOCKBACK })
     } else if flags & 0x10 != 0 {
         (10, STRONG_KNOCKBACK)
     } else if flags & 0x2000 != 0 {
@@ -442,10 +450,36 @@ fn reaction_action(class: u32) -> Option<Action> {
     }
 }
 
+/// The Hand of Death's and the Health Vampire's special bits.
+const HAND_OF_DEATH: u32 = 0x20_0000;
+const HEALTH_VAMPIRE: u32 = 0x40_0000;
+
+/// Arms the Hand of Death while its power is on, else the Health Vampire
+/// while its is; clears both once neither is.
+fn arm_death_hand(armed: &mut [bool; 2], special: u32) {
+    if special & HAND_OF_DEATH != 0 {
+        armed[0] = true;
+    } else if special & HEALTH_VAMPIRE != 0 {
+        armed[1] = true;
+    } else {
+        *armed = [false; 2];
+    }
+}
+
 /// Blows of this or less don't knock the hero about.
 const KNOCKLESS_DAMAGE: f32 = 2.0;
 
 impl Player {
+    /// Whether a monster's blow turns back on it (the Hand of Death or,
+    /// first, the Health Vampire armed): `Some(vampire)`.
+    pub fn turns_blows(&self) -> Option<bool> {
+        match self.death_hand {
+            [_, true] => Some(true),
+            [true, false] => Some(false),
+            _ => None,
+        }
+    }
+
     /// A blow lands on the hero (the game's hurt-player routine,
     /// `docs/combat.md`): through its armour and armour powers
     /// (`damage::resist`) — levitation dodging small monsters' blows —
@@ -609,6 +643,7 @@ fn spawn_player(
         boss_level: false,
         special_bits: 0,
         model_scale: 1.0,
+        death_hand: [false; 2],
         pending_hit: (0.0, 0, Vec3::ZERO),
         left_wrist: hero.data.skeleton.node_index(crate::power_looks::left_wrist(hero.class)),
         shield_cooldowns: Vec::new(),
@@ -844,7 +879,8 @@ fn tick(
         if cut || p.armour_bits & crate::damage::resists::INVULNERABLE != 0 {
             (hit_damage, hit_flags, hit_push) = (0.0, 0, Vec3::ZERO);
         }
-        let (reaction, knock, reaction_face) = hit_reaction(hit_damage, hit_flags, hit_push, facing);
+        let pojo = p.special_bits & power::POJO != 0;
+        let (reaction, knock, reaction_face) = hit_reaction(hit_damage, hit_flags, hit_push, facing, pojo);
         // A blow of more than a point flashes the hero.
         if hit_damage > HIT_FLASH_DAMAGE {
             p.flash.start();
@@ -934,9 +970,15 @@ fn tick(
                 _ => Action::MAGICS,
             };
         }
-        // Turbo attacks: a full meter swings ATTPWRC, 40 or more ATTPWRB.
+        // Turbo attacks: a full meter swings ATTPWRC, 40 or more ATTPWRB;
+        // the Pojo breathes fire for 40.
         if intent == Intent::Turbo {
-            if p.turbo >= TURBO_MAX {
+            if p.special_bits & power::POJO != 0 {
+                if p.turbo >= TURBO_ATTACK {
+                    requested = Action::ATTBREATHE;
+                    p.turbo_cost = TURBO_ATTACK;
+                }
+            } else if p.turbo >= TURBO_MAX {
                 requested = Action(0x57);
                 p.turbo_cost = TURBO_MAX;
             } else if p.turbo >= TURBO_ATTACK {
@@ -1022,7 +1064,14 @@ fn tick(
                 && let Some((fx, kind, damage, sound)) = breath_of(p.special_bits)
             {
                 let head = animator.node(HEAD).and_then(|n| animator.bone(n));
-                effects_breath.write(BreathAt { hero: entity, head, fx, kind, damage, radius: BREATH_RADIUS, sound });
+                // The Pojo's breathes from its own head and pays its turbo.
+                let pojo = p.special_bits & power::POJO != 0;
+                if pojo {
+                    p.turbo = (p.turbo - p.turbo_cost).max(0.0);
+                    p.turbo_cost = 0.0;
+                }
+                let breath = BreathAt { hero: entity, head, fx, kind, damage, radius: BREATH_RADIUS, sound, pojo };
+                effects_breath.write(breath);
                 spent.write(SpendPower { subtype: power::SPECIAL, bits: BREATHS });
             }
             // The hammer comes down as its recovery starts, and a use is
@@ -1174,12 +1223,45 @@ mod tests {
     #[test]
     fn hits_flinch_knock_back_or_down_like_the_game() {
         let from_front = Vec3::new(0.0, 0.0, -1.0);
-        assert_eq!(hit_reaction(0.5, 0, from_front, 0.0).0, 0, "a scratch does nothing");
-        assert_eq!(hit_reaction(5.0, 0x4000_0000, from_front, 0.0).0, 1);
-        let (class, speed, face) = hit_reaction(5.0, 0x10, from_front, 0.0);
+        assert_eq!(hit_reaction(0.5, 0, from_front, 0.0, false).0, 0, "a scratch does nothing");
+        assert_eq!(hit_reaction(5.0, 0x4000_0000, from_front, 0.0, false).0, 1);
+        let (class, speed, face) = hit_reaction(5.0, 0x10, from_front, 0.0, false);
         assert_eq!((class, speed), (11, 16.0), "pushed back by a blow from the front");
         assert!(face.unwrap().abs() < 1e-5, "turns to face the attacker");
-        assert_eq!(hit_reaction(5.0, 0x20, -from_front, 0.0).0, 20);
+        assert_eq!(hit_reaction(5.0, 0x20, -from_front, 0.0, false).0, 20);
         assert_eq!(reaction_action(21), Some(Action(0x83)));
+        assert_eq!(hit_reaction(5.0, 0x20, -from_front, 0.0, true).1, 80.0, "the Pojo flies further");
+    }
+
+    #[test]
+    fn powers_take_over_the_attacks_in_the_games_order() {
+        assert_eq!(special_attack(0, 0), None);
+        assert_eq!(special_attack(0x10, 0), Some(Action::ATTBREATHE));
+        // The hammer comes before a breath, Skorne's horns before both.
+        assert_eq!(special_attack(0x10, HAMMER), Some(Action::ATTCHOP));
+        assert_eq!(special_attack(0x1010, HAMMER), Some(Action::ATTBREATHE));
+        assert_eq!(special_attack(0x8000, 0), Some(Action(0x67)));
+        assert_eq!(special_attack(0, 0x10_0000), Some(Action(0x6B)));
+        // The Pojo's breath comes from its turbo, not the attacks.
+        assert_eq!(special_attack(0x400, 0), None);
+    }
+
+    #[test]
+    fn breaths_by_power() {
+        assert_eq!(breath_of(0x20).map(|b| (b.0, b.1)), Some(("ACIDBREATHE", 0x24)));
+        assert_eq!(breath_of(0x2040).map(|b| (b.0, b.2, b.3)), Some(("BOSS_BREATHE", 50.0, Some("S_MASK"))));
+        assert_eq!(breath_of(0x400).map(|b| (b.0, b.3)), Some(("FIREBREATHE", None)));
+        assert_eq!(breath_of(0), None);
+    }
+
+    #[test]
+    fn the_hand_of_death_latches_before_the_vampire() {
+        let mut p = [false; 2];
+        arm_death_hand(&mut p, HAND_OF_DEATH | HEALTH_VAMPIRE);
+        assert_eq!(p, [true, false]);
+        arm_death_hand(&mut p, HEALTH_VAMPIRE);
+        assert_eq!(p, [true, true], "the hand stays armed until neither is on");
+        arm_death_hand(&mut p, 0);
+        assert_eq!(p, [false, false]);
     }
 }
