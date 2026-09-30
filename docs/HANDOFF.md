@@ -1,6 +1,6 @@
 # Handoff: where the rewrite stands and how to continue
 
-Last updated 2026-09-29. Read this first when resuming.
+Last updated 2026-09-30. Read this first when resuming.
 
 ## State of `master`
 
@@ -27,6 +27,11 @@ What plays (details in [INDEX.md](INDEX.md)):
   - Generators and placed monsters, chase AIs, arrow and bomb throwers.
   - Fireball AIs fire on their attack blows.
   - Hit and death sounds (close and far versions).
+  - Deaths as in the game: DEATH or the knock-down plays while the body
+    dissolves through its death texture (blood, or fire/electric/light/acid
+    for magic, knights' and trees' own), then it's gone; small monsters go
+    at once; elemental kills leave their die effect ([monsters.md](monsters.md)
+    "Deaths").
 - **Generators**: level-scaled damage, armour, experience ×5, realm sounds.
 - **Level mechanics** (`mechanics.rs`)
   - Triggers and chains; lifts, elevators and trap walls.
@@ -57,8 +62,24 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on master `1853c94` (bosses, throw aim, golem
-fix) passed all 67 real levels; only the two empty folders fail.
+The all-levels smoke test on master `27d92a9` (magic potions merged)
+passed all 67 real levels; only the two empty folders fail.
+
+## Fixed from user reports (2026-09-30)
+
+- **Monsters swinging and running too fast**: an action's rate is time per
+  frame (rate / 900 s), not frames per second. Most monster attacks and
+  some walks are rate 60, so they ran 4× too fast (a grunt landed ~5 blows
+  a second; now one every ~0.6 s as in the game). Fixed for everything
+  animated (heroes too, whose 45/60/15-rate clips were off the same way),
+  with the game's end-of-clip and loop timing; see
+  [animation-format.md](animation-format.md) "Playing an action". The
+  critters' own clock (`critters.rs`) still needs the same change — handed
+  to the critters helper.
+- **Enemies vanishing in place**: see "Deaths" above.
+- Also: "big monster" is the floor step `+0x23C` > 2 (was a radius
+  stand-in) — knock-down push and the hero's low-target test (kicks and
+  low attacks now find small monsters).
 
 ## Work in progress
 
@@ -71,9 +92,14 @@ fix) passed all 67 real levels; only the two empty folders fail.
 - **Magic potions**: merged. Tap for a blast, tap twice for the shield,
   hold to throw; the game's effect models are used (the light potion's
   starburst is verified). See [effects.md](effects.md).
-- **Test aids**: `GDL_LOOK_AT`, `GDL_PARTICLE_TEST`, `GDL_POTIONS`, and
-  screenshot bursts with `GDL_SHOTS` / `GDL_SHOT_EVERY`. Frame what's being
-  tested instead of hunting for it (a user rule).
+- **Test aids**: `GDL_LOOK_AT` (now with a yaw: `"x,y,z,dist,180"` looks
+  from the other side), `GDL_PARTICLE_TEST`, `GDL_POTIONS`, `GDL_THROWER`
+  (a monster in front of the hero), and screenshot bursts with `GDL_SHOTS`
+  / `GDL_SHOT_EVERY`. Frame what's being tested instead of hunting for it
+  (a user rule). A death check on levelA1: `GDL_THROWER=4,7,2
+  GDL_BUTTONS=attack GDL_LOOK_AT="0,-1.5,-9,10,180" GDL_SHOT_AT=36
+  GDL_SHOTS=60 GDL_SHOT_EVERY=2`; for a fire kill add `GDL_POTIONS=2,1` and
+  use `GDL_BUTTONS="magic@30-32"` with the burst from frame 70.
 - **World particles**: `particles.rs` runs every level's `PSYS` nodes
   (torch flames, smoke, pool fires, mist, embers) from the decoded records
   and presets ([rendering.md](rendering.md)). The emitter's own ring and
@@ -130,8 +156,11 @@ waits.
    - gargoyle sections;
    - quest triggers (flag 0x40) gating realms;
    - UnlockLevel / UnlockSection.
-6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**, **hit flashes**,
-   **monster hit-effect sparks**.
+6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**, **hit flashes**.
+7. **Hit effects**: the per-blow effect models (BLOODFX1, FIREHIT,
+   HITCOL…, tables in [monsters.md](monsters.md) "Deaths") and the kill's
+   BLOODFX2. BLOODFX1/2 are made of texture-animation nodes (atree node
+   kind 4, `FUN_80018304`), which need decoding first.
 
 ## Working rules (from the user)
 

@@ -19,6 +19,7 @@ use gdl_formats::population::{
 use gdl_formats::{LevelCollision, MoveParams};
 
 use crate::audio::PlaySound;
+use crate::character;
 use crate::exits::ChangeLevelTo;
 use crate::hints::{Hint, Hints, ShowHint};
 use crate::player::{Player, PlayerTick};
@@ -290,18 +291,11 @@ impl Item {
             self.done = true;
             return;
         };
-        let last = a.frames.saturating_sub(1) as f32;
-        self.frame += dt * a.rate.max(1) as f32;
-        if self.frame >= last {
-            // A looping action has finished a cycle, which counts as its end
-            // for whatever waits on it.
-            if a.loops() && last > 0.0 {
-                self.frame %= last;
-                self.done = true;
-            } else {
-                self.frame = last.max(0.0);
-                self.done = true;
-            }
+        // A looping action finishing a cycle counts as its end for whatever
+        // waits on it.
+        let wrapped = character::advance_clip(&mut self.frame, dt, a.frames, a.rate, a.loops());
+        if wrapped || (!a.loops() && self.frame >= character::clip_end(a.frames)) {
+            self.done = true;
         }
     }
 

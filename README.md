@@ -105,7 +105,7 @@ blasts), co-op. [`docs/INDEX.md`](docs/INDEX.md) has what's confirmed.
 
 Environment switches for testing: `GDL_SCREENSHOT=out.png` (with
 `GDL_SHOT_AT=<frame>`) saves a screenshot and exits, `GDL_STICK=x,y` holds
-the stick, `GDL_FREE_CAMERA=1` starts in the free camera, `GDL_WARP="x,y,z"` (start the hero there), `GDL_LIST_NEAR="x,y,z"` (log level objects near a point), `GDL_LOOK_AT="x,y,z[,distance]"` (pin the camera on a point), `GDL_PARTICLE_TEST=<letter>` (that particle record 6 units ahead of the start), `GDL_POTIONS=n` (potions at level start), `GDL_FPS=1` logs
+the stick, `GDL_FREE_CAMERA=1` starts in the free camera, `GDL_WARP="x,y,z"` (start the hero there), `GDL_LIST_NEAR="x,y,z"` (log level objects near a point), `GDL_LOOK_AT="x,y,z[,distance[,yaw]]"` (pin the camera on a point; yaw in degrees turns it round from −Z), `GDL_PARTICLE_TEST=<letter>` (that particle record 6 units ahead of the start), `GDL_POTIONS=n` (potions at level start), `GDL_FPS=1` logs
 the frame rate, `GDL_BUTTONS=attack@20-21,power` holds buttons,
 `GDL_DUMMY=4` places a practice target, `GDL_DEBUG_HUD=1` shows the
 developer overlay.

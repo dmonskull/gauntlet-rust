@@ -16,9 +16,14 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, animate);
+        app.add_systems(Update, animate.in_set(Animate));
     }
 }
+
+/// Posing characters for the frame (bones, and flipbook meshes and
+/// materials swapped in).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Animate;
 
 /// The game's player class order, and the bone each class holds its weapon
 /// in (tables in `main.dol`; `docs/animation-format.md`).
@@ -249,10 +254,58 @@ impl Animator {
         self.clips.actions.get(self.action).map_or("", |a| a.name.as_str())
     }
 
-    /// A non-looping action has reached its last frame.
+    /// A non-looping action has played out (see [`clip_end`]).
     pub fn finished(&self) -> bool {
-        self.clips.actions.get(self.action).is_none_or(|a| !a.loops() && self.frame >= a.frames.saturating_sub(1) as f32)
+        self.clips.actions.get(self.action).is_none_or(|a| !a.loops() && self.frame >= clip_end(a.frames))
     }
+}
+
+/// Frames a second an action with this rate plays at. The game gives each
+/// frame rate / 30 × its clock's 1/30 s, i.e. rate / 900 seconds
+/// (`docs/animation-format.md`): 30 plays at 30 frames a second, 60 at 15,
+/// 45 at 20, 15 at 60. A rate of 0 plays at 30.
+pub fn clip_fps(rate: u16) -> f32 {
+    if rate == 0 { 30.0 } else { 900.0 / f32::from(rate) }
+}
+
+/// Where a clip ends, in frames: the game shows the nearest frame and is
+/// done once that would be past the last one, half a frame after the last
+/// frame comes up. A clip with no frames is over at once.
+pub fn clip_end(frames: u16) -> f32 {
+    (f32::from(frames) - 0.5).max(0.0)
+}
+
+/// A looping clip's length in frames: it starts over on the first 30 Hz
+/// game tick at or past its end, so a 30-rate loop of `n` frames lasts `n`
+/// ticks and a 60-rate one `2n − 1`.
+pub fn loop_length(frames: u16, rate: u16) -> f32 {
+    let per_tick = clip_fps(rate) / 30.0;
+    ((clip_end(frames) / per_tick).ceil() * per_tick).max(per_tick)
+}
+
+/// Moves a clip's frame on by `dt` seconds: a looping clip wraps round (the
+/// result says it did), any other stops at its end.
+pub fn advance_clip(frame: &mut f32, dt: f32, frames: u16, rate: u16, loops: bool) -> bool {
+    *frame += dt * clip_fps(rate);
+    if frames == 0 {
+        *frame = 0.0;
+        return false;
+    }
+    if loops {
+        let length = loop_length(frames, rate);
+        if *frame >= length {
+            *frame %= length;
+            return true;
+        }
+    } else {
+        *frame = frame.min(clip_end(frames));
+    }
+    false
+}
+
+/// The frame of a flipbook to show: the nearest, as the game rounds it.
+pub fn shown_frame(frame: f32, frames: usize) -> usize {
+    ((frame + 0.5) as usize).min(frames.saturating_sub(1))
 }
 
 /// A character's meshes, built once and shared by every copy spawned with
@@ -368,6 +421,15 @@ impl CharacterModel {
 
     /// Spawns a copy posed at `transform`, with an [`Animator`] on its root
     /// entity, which is returned.
+    /// Every material the model draws with (its parts, flipbook frames and
+    /// weapon; not the shadow). Built for this model alone.
+    pub fn materials(&self) -> impl Iterator<Item = &Handle<LevelMaterial>> {
+        let parts = self.parts.iter().flat_map(|(p, _)| p.iter());
+        let frames = self.flipbooks.iter().flat_map(|(_, f)| f.iter().flatten().flatten());
+        let weapon = self.weapon.iter().flat_map(|(_, p)| p.iter());
+        parts.chain(frames).chain(weapon).map(|(_, m)| m)
+    }
+
     pub fn spawn(&self, transform: Transform, commands: &mut Commands) -> Entity {
         let root = commands.spawn((transform, Visibility::default())).id();
         let attach = |parts: &PartMeshes, parent: Entity, commands: &mut Commands| {
@@ -456,16 +518,10 @@ fn animate(
 ) {
     for mut a in &mut animators {
         let Some(action) = a.clips.actions.get(a.action) else { continue };
-        let (frames, rate, loops) = (action.frames as f32, action.rate.max(1) as f32, action.loops());
-        a.frame += time.delta_secs() * rate;
-        if frames > 1.0 {
-            let last = frames - 1.0;
-            if a.frame > last {
-                a.frame = if loops { a.frame % last } else { last };
-            }
-        } else {
-            a.frame = 0.0;
-        }
+        let (frames, rate, loops) = (action.frames, action.rate, action.loops());
+        advance_clip(&mut a.frame, time.delta_secs(), frames, rate, loops);
+        // Tracks are sampled between keys; past the last frame they hold it.
+        let sample_at = a.frame.min(f32::from(frames.saturating_sub(1)));
 
         if let Blend::Pending { duration } = a.blend {
             let from = a.bones.iter().map(|&b| bones.get(b).copied().unwrap_or_default()).collect();
@@ -483,7 +539,7 @@ fn animate(
             let Ok(mut t) = bones.get_mut(bone) else { continue };
             let pose = match &a.tracks[i] {
                 Some(track) => {
-                    let pose = track.sample(a.frame);
+                    let pose = track.sample(sample_at);
                     let m = Mat4::from_cols_array(&rotation_matrix(pose.rotation, track.flags));
                     Transform {
                         translation: a.rest[i] + Vec3::from(pose.translation),
@@ -506,10 +562,10 @@ fn animate(
             a.blend = Blend::None;
         }
 
-        let (action, frame) = (a.action, a.frame as usize);
+        let (action, frame) = (a.action, a.frame);
         for (_, book) in &mut a.flipbooks {
             let Some(frames) = book.frames.get(action) else { continue };
-            let k = frame.min(frames.len().saturating_sub(1));
+            let k = shown_frame(frame, frames.len());
             if book.shown == Some((action, k)) {
                 continue;
             }
@@ -527,5 +583,42 @@ fn animate(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clip_rates_are_time_per_frame() {
+        assert_eq!(clip_fps(30), 30.0);
+        assert_eq!(clip_fps(60), 15.0);
+        assert_eq!(clip_fps(45), 20.0);
+        assert_eq!(clip_fps(15), 60.0);
+        assert_eq!(clip_fps(0), 30.0);
+    }
+
+    #[test]
+    fn clips_end_half_a_frame_after_their_last() {
+        // A grunt's 5-frame ATTACK1 at rate 60 lasts 4.5 frames of 1/15 s.
+        let (mut frame, mut ticks) = (0.0, 0);
+        while frame < clip_end(5) {
+            advance_clip(&mut frame, 1.0 / 30.0, 5, 60, false);
+            ticks += 1;
+        }
+        assert_eq!(ticks, 9);
+        assert_eq!(frame, 4.5);
+        assert_eq!(shown_frame(frame, 5), 4);
+    }
+
+    #[test]
+    fn loops_restart_on_the_tick_past_their_end() {
+        assert_eq!(loop_length(30, 30), 30.0);
+        assert_eq!(loop_length(16, 60), 15.5);
+        // A 30-frame walk at rate 30 comes round every 30 ticks.
+        let mut frame = 0.0;
+        let wraps = (0..90).filter(|_| advance_clip(&mut frame, 1.0 / 30.0, 30, 30, true)).count();
+        assert_eq!(wraps, 3);
     }
 }
