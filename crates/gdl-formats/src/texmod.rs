@@ -32,6 +32,12 @@ pub enum TexModKind {
     /// when `count` is negative.
     ScrollU,
     ScrollV,
+    /// Run by an action only: the object fades from clear to solid (−4)
+    /// or from solid to clear (−5) over `count` frames from `phase`.
+    FadeIn,
+    FadeOut,
+    /// Anything else (−6): skipped.
+    Inert,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +77,10 @@ impl TexMod {
             -2 => TexModKind::ScrollU,
             -3 => TexModKind::ScrollV,
             -1 => TexModKind::Frames(FirstFrame::Named(cstr(&r[0x24..0x34]))),
-            first => TexModKind::Frames(FirstFrame::Binding(first as u16)),
+            -4 => TexModKind::FadeIn,
+            -5 => TexModKind::FadeOut,
+            first if first >= 0 => TexModKind::Frames(FirstFrame::Binding(first as u16)),
+            _ => TexModKind::Inert,
         };
         Self {
             owner: i16::from_le_bytes([r[0x00], r[0x01]]),
@@ -98,6 +107,26 @@ impl TexMod {
         let steps = ticks / self.period.max(1) as f64 - self.phase as f64;
         let t = (steps / n).rem_euclid(1.0) as f32;
         if self.count < 0 { -t } else { t }
+    }
+
+    /// The flipbook frame an action shows at its `frame` (rounded; counted
+    /// down from the end on an action that runs backwards): none before
+    /// `phase`, then one every `period` frames, holding the last.
+    pub fn action_frame(&self, frame: i32) -> u32 {
+        let f = frame - i32::from(self.phase);
+        if f < 0 {
+            return 0;
+        }
+        let f = if self.period as i32 > 0 { f / self.period as i32 } else { f };
+        f.min(i32::from(self.count) - 1).max(0) as u32
+    }
+
+    /// How far a fade has gone at an action's `frame`, 0 to 1 over `count`
+    /// frames from `phase`.
+    pub fn fade(&self, frame: i32) -> f32 {
+        let f = (frame - i32::from(self.phase)) as f32;
+        let n = f32::from(self.count);
+        if f <= 0.0 || n <= 0.0 { 0.0 } else { (f / n).min(1.0) }
     }
 
     fn steps(&self, ticks: u64) -> u64 {
@@ -128,8 +157,73 @@ mod tests {
         assert_eq!(m.frame(0), 0);
         assert_eq!(m.frame(3), 1);
         assert_eq!(m.frame(60), 0);
-        let s = TexMod { kind: TexModKind::ScrollU, count: -200, period: 0, ..m };
+        let s = TexMod { kind: TexModKind::ScrollU, count: -200, period: 0, ..m.clone() };
         assert!((s.scroll(50.0) + 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn actions_hold_their_last_frame() {
+        let m = TexMod {
+            owner: 5,
+            name: "NEWTRAN_".into(),
+            binding: 118,
+            kind: TexModKind::Frames(FirstFrame::Binding(119)),
+            count: 15,
+            phase: 3,
+            period: 2,
+            start: 0,
+        };
+        assert_eq!(m.action_frame(0), 0);
+        assert_eq!(m.action_frame(3), 0);
+        assert_eq!(m.action_frame(6), 1);
+        assert_eq!(m.action_frame(100), 14);
+        let fade = TexMod { kind: TexModKind::FadeIn, count: 19, phase: 18, ..m };
+        assert_eq!(fade.fade(10), 0.0);
+        assert!((fade.fade(18 + 19 / 2) - 9.0 / 19.0).abs() < 1e-6);
+        assert_eq!(fade.fade(200), 1.0);
+    }
+
+    /// Every action's modifiers (`+0x2C` on, `+0x28` of them) are ones its
+    /// own atree owns, in every bank on the disc.
+    #[test]
+    fn action_texmods_belong_to_their_atree() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT")
+            .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let mut dirs = vec![std::path::PathBuf::from(&root)];
+        let (mut files, mut links) = (0, 0);
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for path in entries.flatten().map(|e| e.path()) {
+                // Levels' files are modifiers only.
+                if path.is_dir() {
+                    if !path.ends_with("LEVELS") {
+                        dirs.push(path);
+                    }
+                    continue;
+                }
+                if path.file_name().is_none_or(|n| n != "ANIM.PS2") {
+                    continue;
+                }
+                let data = std::fs::read(&path).unwrap();
+                let (Ok(anim), Ok(list)) = (crate::anim::AnimFile::parse(&data), TexMod::parse_all(&data)) else {
+                    continue;
+                };
+                files += 1;
+                for (i, atree) in anim.atrees.iter().enumerate() {
+                    for action in &atree.actions {
+                        for k in action.texmods() {
+                            let m = list.get(k).unwrap_or_else(|| panic!("{path:?} {} {}: {k}", atree.name, action.name));
+                            assert_eq!(usize::try_from(m.owner).ok(), Some(i), "{path:?} {} {}", atree.name, action.name);
+                            links += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if files == 0 {
+            eprintln!("skipping: no banks under {root}");
+        }
+        eprintln!("{files} banks, {links} action modifiers");
     }
 
     /// Every level's modifiers name bindings its model file has.

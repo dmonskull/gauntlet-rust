@@ -90,4 +90,8 @@ set_depth_bias`, the shader's `DEPTH_BIAS` variant writes the depth). It
 keeps camera-facing fireballs from being cut by the floor they sit on.
 
 Not done: the bank modifiers that run free (50 in `WEAPONS`) aren't
-animated on characters and weapons yet.
+animated on characters and weapons yet (item and generator models run
+their banks' — `docs/rendering.md`, "Texture animation"). The game steps
+an effect's modifiers by its action's frame and holds the last frame past
+the run (wrapping only on a looping action); here they wrap on the tick
+count, the same while the clip lasts.

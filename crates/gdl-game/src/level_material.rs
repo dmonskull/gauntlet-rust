@@ -175,6 +175,24 @@ impl LevelMaterial {
         self.depth_offset.x = -f32::from(bias) * 2048.0 / 16_777_216.0 * near / GAME_NEAR;
     }
 
+    /// Draws with at least `needed`'s blending: a texture animation's
+    /// frames can need more than the texture it starts from (a force
+    /// field's clear base, its soft frames). The game blends everything;
+    /// masks and opaque draws are only where nothing partial shows.
+    pub fn widen_alpha(&mut self, needed: AlphaMode) {
+        match (self.alpha_mode, needed) {
+            (AlphaMode::Opaque | AlphaMode::Mask(_), AlphaMode::Blend) => {
+                self.alpha_mode = AlphaMode::Blend;
+                self.params.y = 0.0;
+            }
+            (AlphaMode::Opaque, AlphaMode::Mask(cutoff)) => {
+                self.alpha_mode = AlphaMode::Mask(cutoff);
+                self.params.y = cutoff;
+            }
+            _ => {}
+        }
+    }
+
     pub fn with_depth(mut self, test: bool, write: bool) -> Self {
         self.depth_test = test;
         self.depth_write = write;

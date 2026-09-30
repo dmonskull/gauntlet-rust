@@ -61,8 +61,9 @@ pub enum NodeKind {
     Skeletal,
     /// Swaps meshes per frame, one flipbook entry per action.
     Flipbook,
-    /// Other animation kinds (kind 3: indexes the action table; kind 4:
-    /// texture animation) — not implemented yet.
+    /// Other kinds: 3 runs a texture modifier on its object (`+0x34`: the
+    /// byte offset from the action table to its record in the file's
+    /// list), 4 is a particle system ([`Atree::particles`]).
     Other(u16),
 }
 
@@ -105,13 +106,32 @@ pub struct Action {
     /// Second parameter: 30 for almost every action.
     pub rate: u16,
     /// Remaining parameters; the first is 1 on looping actions like
-    /// `READY` and `IDLE2_LOOP`.
+    /// `READY` and `IDLE2_LOOP`, the third the number of texture modifiers
+    /// the action runs.
     pub params: [u16; 4],
+    /// `+0x2C`: the index of its first texture modifier in the file's list
+    /// (`texmod.rs`); −1 without.
+    pub first_texmod: i32,
 }
 
 impl Action {
     pub fn loops(&self) -> bool {
         self.params[0] & 1 != 0
+    }
+
+    /// `+0x2A` bit 0: its flipbook frames and texture modifiers run from
+    /// the last frame back.
+    pub fn backwards(&self) -> bool {
+        self.params[3] & 1 != 0
+    }
+
+    /// The texture modifiers it runs, as indices into the file's list.
+    pub fn texmods(&self) -> std::ops::Range<usize> {
+        let count = self.params[2] as i16;
+        match usize::try_from(self.first_texmod) {
+            Ok(first) if count > 0 => first..first + count as usize,
+            _ => 0..0,
+        }
     }
 }
 
@@ -430,6 +450,7 @@ fn parse_atree(file: &[u8], at: usize) -> Result<Atree, AnimError> {
                 frames: le_u16(e, 0x20),
                 rate: le_u16(e, 0x22),
                 params: [le_u16(e, 0x24), le_u16(e, 0x26), le_u16(e, 0x28), le_u16(e, 0x2A)],
+                first_texmod: le_u32(e, 0x2C) as i32,
             });
         }
     }

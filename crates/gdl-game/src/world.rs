@@ -5,10 +5,9 @@ use bevy::prelude::*;
 
 use std::collections::{HashMap, HashSet};
 
-use gdl_formats::texmod::{FirstFrame, TexModKind};
 
 use crate::billboard::Billboard;
-use crate::texanim::{LevelTexAnims, TexAnim};
+use crate::texanim::{self, LevelTexAnims, TexAnim};
 use crate::camera::FlyCamera;
 use crate::collision_debug::{self, CollisionOverlay};
 use crate::level::{LevelData, LoadedGame};
@@ -147,7 +146,7 @@ fn change_level(
             // Some level textures animate through frames kept in the always
             // loaded WEAPONS model file (torches).
             let shared = shared_textures(&mut game.install);
-            let built = spawn_level(&level, shared.as_ref(), &mut commands, &mut meshes, &mut materials, &mut images);
+            let mut built = spawn_level(&level, shared.as_ref(), &mut commands, &mut meshes, &mut materials, &mut images);
             collision_debug::spawn_overlay(
                 &level.collision,
                 overlay.visible,
@@ -161,6 +160,7 @@ fn change_level(
             stats.bounds = (built.min.x <= built.max.x).then_some((built.min, built.max));
             let spawned = population::spawn(
                 &level,
+                shared.as_ref(),
                 &mut game.install,
                 *view,
                 &mut commands,
@@ -170,6 +170,9 @@ fn change_level(
                 &mut images,
             );
             stats.population = spawned.summary;
+            info!("{} texture animations on the level's items", spawned.texanims.len());
+            built.anims.extend(spawned.texanims);
+            commands.insert_resource(LevelTexAnims::new(std::mem::take(&mut built.anims)));
             let entry = population::start_entry(&level.name, *last_realm);
             if let Some((realm, _)) = crate::quest::level_of(&level.name)
                 && realm != 13
@@ -211,6 +214,8 @@ struct Built {
     triangles: usize,
     min: Vec3,
     max: Vec3,
+    /// The level's texture animations.
+    anims: Vec<TexAnim>,
 }
 
 /// Places every model the world file references and merges them into a few
@@ -340,34 +345,12 @@ fn spawn_level(
         by_binding.entry(b.diffuse).or_default().push(b.material.clone());
     }
     let mut shared_cache = common.map(|(model, textures)| TextureCache::new(model, textures));
-    let anims: Vec<TexAnim> = level
-        .texmods
-        .iter()
-        .filter_map(|m| {
-            let materials = by_binding.get(&m.binding)?.clone();
-            let n = m.count.unsigned_abs();
-            let frames = match &m.kind {
-                TexModKind::Frames(FirstFrame::Binding(first)) => {
-                    (0..n).map(|k| cache.get(first + k, images).map(|(image, _)| image)).collect()
-                }
-                TexModKind::Frames(FirstFrame::Named(name)) => {
-                    let find = |model: &gdl_formats::ModelFile| model.texture_names.iter().find(|t| &t.name == name).map(|t| t.binding);
-                    match (find(&level.model), common.and_then(|(model, _)| find(model))) {
-                        (Some(first), _) => (0..n).map(|k| cache.get(first + k, images).map(|(i, _)| i)).collect(),
-                        (None, Some(first)) => {
-                            let sc = shared_cache.as_mut()?;
-                            (0..n).map(|k| sc.get(first + k, images).map(|(i, _)| i)).collect()
-                        }
-                        (None, None) => return None,
-                    }
-                }
-                _ => Vec::new(),
-            };
-            Some(TexAnim::new(m.clone(), materials, frames))
-        })
-        .collect();
+    let frames = |m: &gdl_formats::texmod::TexMod| {
+        let shared = common.map(|(model, _)| model).zip(shared_cache.as_mut());
+        texanim::flipbook_images(m, &level.model, &mut cache, shared, images)
+    };
+    let anims = texanim::bank_anims(&level.texmods, &by_binding, frames, materials);
     info!("{} of {} texture animations attached", anims.len(), level.texmods.len());
-    commands.insert_resource(LevelTexAnims::new(anims));
 
     // The particle systems its `PSYS` nodes run.
     let emitters = level.nodes.iter().enumerate().filter(|(_, n)| {
@@ -396,5 +379,5 @@ fn spawn_level(
     let made = particles::spawn_emitters(&level.particles, emitters, texture, commands, meshes, materials);
     info!("{made} particle systems ({} records)", level.particles.len());
 
-    Built { meshes: count, triangles, min: bounds.0, max: bounds.1 }
+    Built { meshes: count, triangles, min: bounds.0, max: bounds.1, anims }
 }
