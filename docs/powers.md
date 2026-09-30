@@ -477,8 +477,31 @@ shrink power's (`r13-0x7320`, below).
   (`FUN_8007ed38(1, player, 9, 0x70)`).
 - `HEAD_BREATHEF/A/E` on the body slot.
 
-How the breath effect hurts (its cone and reach in `FUN_80094418`) isn't
-traced.
+How the breath hurts (confirmed, `FUN_80094418`'s area branch, for
+players, monsters and objects alike): it grows like any area effect
+(reach R × (1.33 − f), damage × 1.5 × (f − 0.33), f the life left), and
+with its `+0x88` above −1 (`r2-0x5708`) a target is only hit when the
+horizontal direction to it (`FUN_800bdc2c` normalises x/z) is within
+that cosine of the effect's own forward direction — × 0.85
+(`r2-0x5580`) when the target is within 0.3 (`r2-0x5588`) of the reach
+plus its radius. The breath spawner, in full (`FUN_80080d3c`, on event
+`0x1000000`): special `0x3000` → effect `0x38` BOSS_BREATHE, 50
+(`r2-0x5b5c`) fire `0x21`, `S_HORNS` (`0x5A`) with the horns, else
+`S_MASK` (`0x5B`); else `0x410` → FIREBREATHE, 40, `0x21`; `0x20` →
+ACIDBREATHE, `0x24`; `0x40` → ELECBREATHE, `0x22` (sounds `0x47`–`0x49`,
+`FUN_8009ed08`). All out to 20, flags `0x2A` (items, monsters, area: not
+heroes); on the head node, or with the Pojo on its `POJOBODY1_HE_1` node,
+spending the turbo cost. ATTBREATHE's chaining: it hands over to
+ATTBREATHER (`0x6F`) at its end (at once when knocked down); event
+`0x1000000` is set as ATTBREATHE starts.
+
+Here (`player.rs`, `actions.rs`, `effects.rs::spawn_breaths`): the
+attack table (only its ATTBREATHE results are acted on — the gauntlets',
+crossbow's and hammer's attacks aren't done), the chaining, the breath
+with its cone and a use spent (`SpendPower`, not in the tower). Stand-in:
+the cone heads where the hero faces, not along the head node's own axis
+(the effect's model does ride the node). The Pojo's breath (from its
+turbo) isn't done.
 
 ### `0x80` phoenix
 

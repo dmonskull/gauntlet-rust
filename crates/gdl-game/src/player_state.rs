@@ -49,6 +49,14 @@ pub struct DamagePlayer {
     pub amount: f32,
 }
 
+/// Spends one use of a counted power: the first slot of `subtype` with
+/// any of `bits` (a breath, the crossbow, the hammer).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct SpendPower {
+    pub subtype: i32,
+    pub bits: u32,
+}
+
 /// A timed or counted powerup the hero carries — one slot of the record's
 /// eleven.
 #[derive(Clone, Debug, PartialEq)]
@@ -345,6 +353,20 @@ impl PlayerState {
         }
     }
 
+    /// Spends one use of a counted power (`docs/powers.md`, "Timing"): the
+    /// first slot of `subtype` with any of `bits` loses 1 from its amount
+    /// and ends at 0; a negative amount never runs out.
+    pub fn spend_power(&mut self, subtype: i32, bits: u32) {
+        let Some(p) = self.powers.iter_mut().find(|p| p.subtype == subtype && p.value & bits != 0) else { return };
+        if p.amount < 0.0 {
+            return;
+        }
+        p.amount -= 1.0;
+        if p.amount <= 0.0 {
+            p.time = 0.0;
+        }
+    }
+
     /// The powerups' tick (the game's stats routine): their clocks run
     /// down by `dt` seconds ([`power_clock`] decides how many), and what
     /// they add up to is worked out — a power counts on the tick it runs
@@ -398,12 +420,16 @@ pub struct PlayerStatePlugin;
 impl Plugin for PlayerStatePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<DamagePlayer>()
+            .add_message::<SpendPower>()
             .init_resource::<PlayerState>()
             .init_resource::<EnemyScale>()
             .init_resource::<TimeStop>()
             // A new hero whenever the class choice changes.
             .add_systems(Update, new_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
-            .add_systems(FixedUpdate, (take_damage, powers_and_warning.in_set(PowersTick)).chain().after(PlayerTick))
+            .add_systems(
+                FixedUpdate,
+                (take_damage, spend_powers, powers_and_warning.in_set(PowersTick)).chain().after(PlayerTick),
+            )
             .add_systems(Update, test_powers.run_if(resource_exists_and_changed::<LevelPopulation>));
     }
 }
@@ -451,6 +477,20 @@ fn take_damage(
         debug!("the hero takes {:.1}: {:.1} health", hit.amount, state.health);
         if died {
             info!("the hero has died");
+        }
+    }
+}
+
+/// Spends the counted powers' uses (not in the tower).
+fn spend_powers(
+    mut spent: MessageReader<SpendPower>,
+    mut state: ResMut<PlayerState>,
+    population: Option<Res<LevelPopulation>>,
+) {
+    let in_tower = population.as_ref().and_then(|p| crate::quest::level_of(&p.level)).is_some_and(|(realm, _)| realm == TOWER_REALM);
+    for s in spent.read() {
+        if !in_tower {
+            state.spend_power(s.subtype, s.bits);
         }
     }
 }
@@ -641,6 +681,17 @@ mod tests {
         let before: Vec<f32> = s.powers.iter().map(|p| p.time).collect();
         s.tick_powers(5.0 * power_clock(true, false, false, false, false));
         assert_eq!(before, s.powers.iter().map(|p| p.time).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn counted_powers_are_spent_one_use_at_a_time() {
+        let mut s = PlayerState::default();
+        s.grant_power(power::SPECIAL, 0x10, 2.0, -1.0);
+        s.spend_power(power::SPECIAL, 0x70);
+        assert_eq!(s.tick_powers(0.1).special & 0x10, 0x10, "one use left");
+        s.spend_power(power::SPECIAL, 0x70);
+        assert_eq!(s.tick_powers(0.1).special & 0x10, 0, "used up");
+        assert!(s.powers.is_empty());
     }
 
     #[test]

@@ -49,11 +49,21 @@ impl Plugin for EffectsPlugin {
             .add_message::<EffectAt>()
             .add_message::<ExplosionAt>()
             .add_message::<NextStage>()
+            .add_message::<BreathAt>()
             .init_resource::<EffectModels>()
             .init_resource::<PotionCycle>()
             .add_systems(
                 FixedUpdate,
-                (use_potions, set_off_potions, spawn_blasts, spawn_explosions, tick_blasts, spawn_one_shots, tick_one_shots)
+                (
+                    use_potions,
+                    set_off_potions,
+                    spawn_blasts,
+                    spawn_explosions,
+                    spawn_breaths,
+                    tick_blasts,
+                    spawn_one_shots,
+                    tick_one_shots,
+                )
                     .chain()
                     .after(MonsterTick),
             )
@@ -262,10 +272,16 @@ pub fn potion_effect(kind: u32, mode: u8, slot: usize, power: f32, level: u32) -
 }
 
 /// How long an effect lasts: its clip's frames at the clip's frame rate
-/// (rate / 900 s a frame; rate 0 plays at 30).
+/// (rate / 900 s a frame; rate 0 plays at 30). A clip of no frames (the
+/// particle effects: the breaths, the blood sprays) counts as 30 (the
+/// game's effect spawner, which also keeps those going round).
 pub fn effect_life(frames: u16, rate: u16) -> f32 {
+    let frames = if frames == 0 { NO_FRAMES_LIFE } else { frames };
     f32::from(frames) / clip_fps(rate)
 }
+
+/// The frames an effect whose clip has none lasts.
+const NO_FRAMES_LIFE: u16 = 30;
 
 /// A growing blast's reach and damage share at `left` of `life` seconds
 /// remaining: from a third of the radius (full damage × 1.005) out to all of
@@ -288,7 +304,32 @@ enum BlastShape {
     Grow,
     /// The shield: a steady radius around its hero.
     Aura(Entity),
+    /// A breath: grows like a blast from its hero's head (the node, when
+    /// found), only within its cone ahead of the hero.
+    Breath { hero: Entity, head: Option<Entity> },
 }
+
+/// A hero breathes (ATTBREATHE starts, `player.rs`): the effect `fx` on its
+/// head — a blast out to `radius` doing `damage` of `kind` in a cone ahead
+/// (`docs/powers.md`, "breaths"), hitting monsters and items, not heroes —
+/// and its sound.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct BreathAt {
+    pub hero: Entity,
+    pub head: Option<Entity>,
+    pub fx: &'static str,
+    pub kind: u32,
+    pub damage: f32,
+    pub radius: f32,
+    pub sound: &'static str,
+}
+
+/// A breath's cone: targets whose direction from it is within this cosine
+/// of its heading (30°) — this much wider (× the cosine) within 0.3 of its
+/// reach.
+const BREATH_CONE: f32 = 0.866;
+const BREATH_CONE_NEAR: f32 = 0.85;
+const BREATH_NEAR: f32 = 0.3;
 
 /// A magic effect or explosion doing damage.
 #[derive(Component)]
@@ -316,6 +357,9 @@ struct Blast {
     /// by the stages after it).
     scale: Vec3,
     drop: f32,
+    /// A breath's heading (unit, across the floor): targets outside its
+    /// cone aren't hit.
+    heading: Option<Vec2>,
 }
 
 /// What a blast does to heroes.
@@ -790,6 +834,7 @@ fn use_potions(
                         then: &[],
                         scale: Vec3::new(scale, 1.0, scale),
                         drop: 0.0,
+                        heading: None,
                     },
                     c,
                 );
@@ -904,6 +949,7 @@ fn spawn_blasts(
                 then: &[],
                 scale: Vec3::splat((b.radius / 32.0).min(1.0)),
                 drop: 0.0,
+                heading: None,
             },
             c,
         );
@@ -979,6 +1025,7 @@ fn spawn_explosions(
             then,
             scale,
             drop,
+            heading: None,
         };
         spawn_blast(&mut commands, effect.as_ref(), blast, colour_index(kind));
         if !e.poison
@@ -1018,9 +1065,97 @@ fn spawn_explosions(
             then: rest,
             scale: s.scale,
             drop: s.drop,
+            heading: None,
         };
         spawn_blast(&mut commands, effect.as_ref(), blast, colour_index(s.kind));
     }
+}
+
+/// The mesh, material and image stores, for building models.
+type Assets3d<'w> = (ResMut<'w, Assets<Mesh>>, ResMut<'w, Assets<LevelMaterial>>, ResMut<'w, Assets<Image>>);
+
+/// A hero's breath goes out: its effect on the hero's head (its node's
+/// child, turning with it) for the effect's life, its sound, and the blast
+/// that hurts, riding the head.
+#[allow(clippy::too_many_arguments)]
+fn spawn_breaths(
+    mut commands: Commands,
+    mut requests: MessageReader<BreathAt>,
+    mut game: ResMut<LoadedGame>,
+    mut models: ResMut<EffectModels>,
+    mut sounds: MessageWriter<PlaySound>,
+    bones: Query<&GlobalTransform>,
+    players: Query<&Player>,
+    (mut meshes, mut materials, mut images): Assets3d,
+    mut seed: Local<u32>,
+) {
+    for b in requests.read() {
+        let Ok(p) = players.get(b.hero) else { continue };
+        let effect = models.effect(b.fx, &mut game, &mut meshes, &mut materials, &mut images);
+        let life = effect.as_ref().map_or(1.0, |e| e.life);
+        let centre = b
+            .head
+            .and_then(|h| bones.get(h).ok())
+            .map_or(Vec3::from(p.mover.position) + Vec3::Y * projectiles::PLAYER_CENTRE, |g| g.translation());
+        if let Some(e) = &effect {
+            // Its particle systems stream out along their directions as
+            // the head (or, without one, the hero) is turned.
+            let turn = b
+                .head
+                .and_then(|h| bones.get(h).ok())
+                .map_or(Quat::from_rotation_y(p.mover.facing), |g| g.to_scale_rotation_translation().1);
+            for (k, (params, material, direction)) in e.particles.iter().enumerate() {
+                *seed = seed.wrapping_add(0x9E37_79B9);
+                let direction = turn * *direction;
+                particles::spawn_burst(params.clone(), material.clone(), centre, direction, *seed ^ k as u32, &mut commands, &mut meshes);
+            }
+            let model = e.model.spawn(Transform::default(), &mut commands);
+            commands.entity(model).insert(OneShot(life));
+            match b.head {
+                Some(head) => {
+                    commands.entity(model).insert(ChildOf(head));
+                }
+                None => {
+                    let facing = Quat::from_rotation_y(p.mover.facing);
+                    commands.entity(model).insert((Transform::from_translation(centre).with_rotation(facing), LevelEntity));
+                }
+            }
+        }
+        sounds.write(PlaySound(b.sound.into()));
+        info!("{} from the hero: {:.1} damage out to {:.1} over {life:.2} s", b.fx, b.damage, b.radius);
+        let blast = Blast {
+            owner: b.hero,
+            shape: BlastShape::Breath { hero: b.hero, head: b.head },
+            centre,
+            kind: b.kind,
+            damage: b.damage,
+            radius: b.radius,
+            life,
+            age: 0.0,
+            spared: HashMap::new(),
+            spared_items: HashMap::new(),
+            heroes: Heroes::Spared,
+            items: true,
+            then: &[],
+            scale: Vec3::ONE,
+            drop: 0.0,
+            heading: Some(Vec2::new(p.mover.facing.sin(), p.mover.facing.cos())),
+        };
+        // The blast alone (its look is the model on the head).
+        commands.spawn((Transform::from_translation(centre), blast, BlastColour(colour_index(b.kind), true), LevelEntity));
+    }
+}
+
+/// Whether a breath's cone takes in a target at `to` whose surface is
+/// `reach` from it at the most: within 30° of its heading across the floor,
+/// wider close up. Other blasts take in everything.
+fn in_cone(b: &Blast, to: Vec3, reach: f32) -> bool {
+    let Some(heading) = b.heading else { return true };
+    let d = Vec2::new(to.x - b.centre.x, to.z - b.centre.z);
+    let distance = d.length();
+    let dir = if distance > 1e-4 { d / distance } else { heading };
+    let limit = if distance < BREATH_NEAR * reach { BREATH_CONE * BREATH_CONE_NEAR } else { BREATH_CONE };
+    dir.dot(heading) >= limit
 }
 
 /// The effect's model; without one, a stand-in: a translucent sphere in
@@ -1057,6 +1192,7 @@ fn tick_blasts(
         MessageWriter<StrikePotion>,
         MessageWriter<BlastItem>,
     ),
+    bones: Query<&GlobalTransform, Without<Targetable>>,
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -1092,10 +1228,21 @@ fn tick_blasts(
         {
             b.centre = Vec3::from(p.mover.position);
         }
-        // Grow: reach and share by the time left; the shield: steady, full
-        // damage, each target spared a second (at most what's left).
+        // A breath rides its hero's head, heading where the hero faces
+        // (stand-in for the head node's own heading).
+        if let BlastShape::Breath { hero, head } = b.shape
+            && let Ok((_, p)) = players.get(hero)
+        {
+            b.centre = head
+                .and_then(|h| bones.get(h).ok())
+                .map_or(Vec3::from(p.mover.position) + Vec3::Y * projectiles::PLAYER_CENTRE, |g| g.translation());
+            b.heading = Some(Vec2::new(p.mover.facing.sin(), p.mover.facing.cos()));
+        }
+        // Grow (and a breath): reach and share by the time left; the
+        // shield: steady, full damage, each target spared a second (at
+        // most what's left).
         let (reach, share, spare) = match b.shape {
-            BlastShape::Grow => match blast_front(left, b.life, b.radius) {
+            BlastShape::Grow | BlastShape::Breath { .. } => match blast_front(left, b.life, b.radius) {
                 Some((r, s)) => (r, s, (left + 1.0 / 15.0).max(0.2)),
                 None => continue,
             },
@@ -1122,8 +1269,11 @@ fn tick_blasts(
             });
         };
         // A critter once: its first sphere in reach, else its body.
-        let reached: Vec<&projectiles::Body> =
-            bodies.iter().filter(|body| (body.centre - b.centre).length() <= reach + body.radius).collect();
+        let reached: Vec<&projectiles::Body> = bodies
+            .iter()
+            .filter(|body| (body.centre - b.centre).length() <= reach + body.radius)
+            .filter(|body| in_cone(b, body.centre, reach + body.radius))
+            .collect();
         for body in combat::one_per_critter(reached, |body| body.aim) {
             hit(body.entity, body.kind, b);
         }
@@ -1134,7 +1284,7 @@ fn tick_blasts(
             let feet = g.translation();
             let across = Vec2::new(feet.x - b.centre.x, feet.z - b.centre.z).length();
             let dy = b.centre.y - (feet.y + 0.5 * t.height);
-            if across <= t.radius + reach && dy.abs() <= 0.5 * t.height + reach {
+            if across <= t.radius + reach && dy.abs() <= 0.5 * t.height + reach && in_cone(b, feet, t.radius + reach) {
                 hit(e, t.kind, b);
             }
         }
@@ -1148,7 +1298,9 @@ fn tick_blasts(
             let in_reach = |v: &crate::items::ItemView| {
                 let c = Vec3::from(v.shape.centre);
                 let across = Vec2::new(c.x - b.centre.x, c.z - b.centre.z).length();
-                across <= v.shape.radius + reach && (b.centre.y - c.y).abs() <= v.shape.reach + reach
+                across <= v.shape.radius + reach
+                    && (b.centre.y - c.y).abs() <= v.shape.reach + reach
+                    && in_cone(b, c, v.shape.radius + reach)
             };
             for v in items.views().filter(is_floor_potion) {
                 if in_reach(&v) {
@@ -1227,7 +1379,9 @@ fn follow_blasts(
     for (entity, b, colour, mut transform, children) in &mut blasts {
         transform.translation = b.centre - Vec3::Y * b.drop;
         let reach = match b.shape {
-            BlastShape::Grow => blast_front(b.life - b.age, b.life, b.radius).map_or(0.0, |(r, _)| r),
+            BlastShape::Grow | BlastShape::Breath { .. } => {
+                blast_front(b.life - b.age, b.life, b.radius).map_or(0.0, |(r, _)| r)
+            }
             BlastShape::Aura(_) => b.radius,
         };
         // The sphere is in the blast's (scaled) space.
@@ -1285,6 +1439,7 @@ mod tests {
         assert!(blast_front(0.6, life, 30.0).is_none());
         assert!((effect_life(37, 60) - 37.0 * 60.0 / 900.0).abs() < 1e-5);
         assert!((effect_life(30, 0) - 1.0).abs() < 1e-5);
+        assert!((effect_life(0, 60) - 2.0).abs() < 1e-5, "no frames: 30 of them");
     }
 
     #[test]

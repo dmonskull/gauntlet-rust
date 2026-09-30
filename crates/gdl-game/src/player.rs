@@ -38,9 +38,9 @@ use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
-use crate::player_state::{PlayerState, power};
+use crate::player_state::{PlayerState, SpendPower, power};
 use crate::population::LevelPopulation;
-use crate::effects::{EffectAt, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
+use crate::effects::{BreathAt, EffectAt, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
 use crate::flash::{self, Flash, FlashColours};
 use crate::fade::BodyLook;
 use crate::hints::{Hint, ShowHint};
@@ -323,6 +323,52 @@ const TOP_LEVEL_SCALE: f32 = 1.2;
 /// shields) do twice as much, and push with it.
 const GROWN_BLOWS: f32 = 2.0;
 
+/// The attack a power puts in place of the hero's own (the player
+/// update's table, first that applies): Skorne's horns or mask breathe,
+/// his left and right gauntlets fire (ATTFIREL, ATTFIRELR), the super
+/// crossbow shoots (SSHOT1), the hammer chops (ATTCHOP), a breath power
+/// breathes.
+fn special_attack(special: u32, weapon: u32) -> Option<Action> {
+    if special & 0x3000 != 0 {
+        Some(Action::ATTBREATHE)
+    } else if special & 0x8000 != 0 {
+        Some(Action(0x67))
+    } else if special & 0x4000 != 0 {
+        Some(Action(0x68))
+    } else if weapon & 0x10_0000 != 0 {
+        Some(Action(0x6B))
+    } else if weapon & 0x1000_0000 != 0 {
+        Some(Action(0x70))
+    } else if special & BREATHS != 0 {
+        Some(Action::ATTBREATHE)
+    } else {
+        None
+    }
+}
+
+/// The special bits of the breath powers (fire, acid, lightning).
+const BREATHS: u32 = 0x70;
+/// A breath's reach, and the node it goes out from.
+const BREATH_RADIUS: f32 = 20.0;
+const HEAD: &str = "HEAD";
+
+/// The breath the hero's powers give (first that applies): Skorne's horns
+/// or mask (BOSS_BREATHE, 50 fire), fire (or the Pojo's), acid, lightning
+/// (40, each with the heavy kind): effect, kind, damage, sound.
+fn breath_of(special: u32) -> Option<(&'static str, u32, f32, &'static str)> {
+    if special & 0x3000 != 0 {
+        Some(("BOSS_BREATHE", 0x21, 50.0, if special & 0x1000 != 0 { "S_HORNS" } else { "S_MASK" }))
+    } else if special & 0x410 != 0 {
+        Some(("FIREBREATHE", 0x21, 40.0, "S_BREATHFIRE"))
+    } else if special & 0x20 != 0 {
+        Some(("ACIDBREATHE", 0x24, 40.0, "S_BREATHGAS"))
+    } else if special & 0x40 != 0 {
+        Some(("ELECBREATHE", 0x22, 40.0, "S_BREATHELEC"))
+    } else {
+        None
+    }
+}
+
 /// A shield's blow on the target it touches.
 fn shield_blow(hero: Entity, f: &combat::Found, damage: f32, kind: u32, facing: f32, grown: bool) -> Hit {
     let damage = if grown { damage * GROWN_BLOWS } else { damage };
@@ -435,6 +481,16 @@ impl Player {
         self.previous = (at, facing);
     }
 }
+
+/// What the hero's tick sends: shots, potions, effects, breaths and spent
+/// power uses.
+type HeroWriters<'w> = (
+    MessageWriter<'w, HeroShot>,
+    MessageWriter<'w, UsePotion>,
+    MessageWriter<'w, EffectAt>,
+    MessageWriter<'w, BreathAt>,
+    MessageWriter<'w, SpendPower>,
+);
 
 /// Player movement; the play camera ticks after it.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -705,7 +761,7 @@ fn tick(
     mut players: Query<(Entity, &mut Player, &mut Animator)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
-    (mut shots, mut potions, mut effects): (MessageWriter<HeroShot>, MessageWriter<UsePotion>, MessageWriter<EffectAt>),
+    (mut shots, mut potions, mut effects, mut effects_breath, mut spent): HeroWriters,
     mut hints: MessageWriter<ShowHint>,
     (colours, mut tags, mut commands): (Res<FlashColours>, Query<&mut MeshTag>, Commands),
     state: Option<Res<PlayerState>>,
@@ -857,6 +913,14 @@ fn tick(
 
         let mut requested =
             combat::request(intent, p.actions.range, stick.magnitude, walked_into, p.actions.combo, p.request);
+        // A power's own attack takes the place of every attack (not one
+        // made by walking into something). Only the breath's is done.
+        if !walked_into
+            && matches!(intent, Intent::Quick | Intent::Power | Intent::StrafeAttack(_))
+            && special_attack(p.special_bits, p.weapon) == Some(Action::ATTBREATHE)
+        {
+            requested = Action::ATTBREATHE;
+        }
         if intent == Intent::Magic {
             requested = match magic {
                 Some(MagicIntent::Throw) => Action::THROWPOTIONS,
@@ -950,6 +1014,14 @@ fn tick(
             // A potion: the blast (the shield after a double tap), or the
             // throw (mode 3 with the throw button held). Not during a
             // camera cut.
+            // The breath goes out as ATTBREATHE starts, and a use is spent.
+            if strike.0 & Strike::BREATH != 0
+                && let Some((fx, kind, damage, sound)) = breath_of(p.special_bits)
+            {
+                let head = animator.node(HEAD).and_then(|n| animator.bone(n));
+                effects_breath.write(BreathAt { hero: entity, head, fx, kind, damage, radius: BREATH_RADIUS, sound });
+                spent.write(SpendPower { subtype: power::SPECIAL, bits: BREATHS });
+            }
             if strike.0 & (Strike::MAGIC | Strike::THROW_POTION) != 0 && !cut {
                 let mode = if strike.0 & Strike::THROW_POTION != 0 {
                     if held & button::THROW_MAGIC != 0 { 3 } else { 2 }
