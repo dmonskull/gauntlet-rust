@@ -142,8 +142,44 @@ resolved yet. We evaluate scrolls between ticks so they glide.
 World nodes with node flag `0x800` (named `…PSYSE_FLAME…`, `…PSYSF_SPARK…`)
 are particle emitters: their model is only a placeholder shape (a white
 pyramid with `AAAWHITE`), which the game doesn't draw; triggers switch
-some on and off (`docs/mechanics.md`). `world.rs` leaves them out; the
-flames and sparks they emit aren't ported yet. What's known so far:
+some on and off (`docs/mechanics.md`). `world.rs` leaves the shape out and
+[`particles.rs`](../crates/gdl-game/src/particles.rs) runs the flames,
+smoke, pool fires, mist, embers and fireflies.
+
+**The records** (`gdl_formats::psys`): a level's `WORLDS.PS2` header words
+28/29 are the count and offset of its `0x138`-byte particle records (the
+world struct's `+0x9C`/`+0xA0`, `DAT_8028c508`/`DAT_8028c50c`); they end
+the file. Fields, by word, with the bit of word 4 that says they're set
+and what `FUN_800ceeb8` makes of them:
+
+| words | bit | meaning |
+| --- | --- | --- |
+| 0 | — | kind, ≥ `0x100` |
+| 1 (`+4` i16, `+6` byte) | 1 | built-in preset first (`0x80127fc4`, ids 0–7); the letter `PSYS<letter>` names |
+| 2, 3 | — | flag values and mask: `0x80` → instance `0x800000` (additive), `0x100` → `0x40000000`, `0x200` → `0x800`, `0x400` → `0x40`, `0x800` → `0x80`; `1/2/4/0x20/0x40` → emitter flags |
+| 5, 6, 7 | 2, 4, 8 | emitter counts (`+0x2E`: ring size, `+0x30`, `+0x32`) |
+| 8, 9 | `0x10` | the two emitting phases' lengths, s (× 30 → frames; 999 on every record) |
+| 10, 11 | `0x20` | particle life: shortest, plus a random extra, s |
+| 14 | `0x40` | spray cone, degrees (half-angle π·v/360; ≥ 359 all round) |
+| 15 | `0x8000` | `+0x5C` |
+| 0x10–0x17 | `0x4000` | texture name (in the level's `objects.ngc`, or `WEAPONS`) |
+| 0x18–0x1A | `0x80` | direction (default up) |
+| 0x1B–0x1D | `0x100` | start box half-size |
+| 0x1E–0x21 | `0x200` | emission rates, particles/s: phase A start and slope, phase B start and slope (`+0xD0..DC`) |
+| 0x22 | `0x400` | rate jitter, % |
+| 0x23 | `0x800` | buoyancy: × −32/900 per frame² (negative rises) |
+| 0x24 | `0x1000` | `+0x9C` (× −1; not identified) |
+| 0x25 | `0x2000` | start speed, units/s |
+| 0x26–0x29 | `0x10000` / `0x20000` | four colour keys `0xAARRGGBB` (RGB / alpha) over the life |
+| 0x2A–0x2D | `0x40000` | four size keys |
+| 0x2E | `0x80000` | a start delay, s |
+
+The library (`FUN_800cbf44`, per emitter per frame) keeps particles in
+packed rings filled through emitter callbacks and states 0 (delay) → 2/3
+(phase A: rate `+0xD0` + `+0xD4`·t) → 4/5 (phase B) → 6 (done) → 8
+(freed); `particles.rs` simulates each particle directly from the record
+instead (stand-in), with the phases taken as always on. What's known of
+the setup:
 
 - `FUN_800aae??` (the world-instance setup, around `0x800aaeb0`): a node
   whose name contains `PSYS` (`r2-0x5000`) takes the letter after it

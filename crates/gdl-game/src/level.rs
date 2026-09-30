@@ -34,6 +34,8 @@ pub struct LevelData {
     pub collision: LevelCollision,
     /// Animated and scrolling textures (`ANIM.PS2`; none if it's missing).
     pub texmods: Vec<TexMod>,
+    /// The particle systems its `PSYS` nodes run (`gdl_formats::psys`).
+    pub particles: Vec<gdl_formats::psys::ParticleRecord>,
 }
 
 #[derive(Resource)]
@@ -118,6 +120,7 @@ pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, St
     let positions = world.world_positions().map_err(|e| format!("WORLDS.PS2: {e}"))?;
     let population = Population::parse(&world_file).map_err(|e| format!("WORLDS.PS2 population: {e}"))?;
     let collision = LevelCollision::new(&world).map_err(|e| format!("WORLDS.PS2 collision: {e}"))?;
+    let particles = gdl_formats::psys::world_records(&world_file).map_err(|e| format!("WORLDS.PS2 particles: {e}"))?;
 
     // Nodes find their model by name, like the game does.
     let by_name: std::collections::HashMap<&str, usize> =
@@ -137,7 +140,7 @@ pub fn load_level(install: &mut GameInstall, name: &str) -> Result<LevelData, St
     };
 
     let nodes = world.nodes;
-    Ok(LevelData { name: name.to_string(), model, textures, placements, placement_nodes, nodes, population, collision, texmods })
+    Ok(LevelData { name: name.to_string(), model, textures, placements, placement_nodes, nodes, population, collision, texmods, particles })
 }
 
 fn summarize(level: &LevelData) -> LevelSummary {

@@ -10,6 +10,7 @@ pub mod fst;
 pub mod model;
 pub mod pdata;
 pub mod population;
+pub mod psys;
 pub mod rvz;
 pub mod texmod;
 pub mod text;

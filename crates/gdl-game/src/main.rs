@@ -31,6 +31,7 @@ mod mechanics;
 mod model_mesh;
 mod options;
 mod monsters;
+mod particles;
 mod play_camera;
 mod player;
 mod player_state;
@@ -96,6 +97,7 @@ fn main() {
         billboard::BillboardPlugin,
         options::OptionsPlugin,
         texanim::TexAnimPlugin,
+        particles::ParticlesPlugin,
         autoshot::AutoShotPlugin,
     ));
 
