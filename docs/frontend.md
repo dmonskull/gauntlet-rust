@@ -286,9 +286,11 @@ kind). `FUN_80075cac` sets the panel's textures from the player's state
 (`FUN_8007605c`: 0 not in, 1 playing, 2 ready, 3 naming, 6 picking a
 class, 10 out of the level); `FUN_80074f0c` draws the per-frame parts
 (from the player update); `FUN_80074cf8` shows the legendary-key and
-rune rows; `FUN_80074850` hides a panel.
+rune rows; `FUN_80074850` hides a panel. Sprites are kept from frame to
+frame (shown or hidden); text is issued anew every frame.
 
-Sprites (x from the panel's left, sprite depth: lower is in front):
+Sprites (x from the panel's left; depth 64000, `r2-0x6010`, unless
+noted — lower is in front):
 
 | sprite | position, size | texture |
 | --- | --- | --- |
@@ -297,14 +299,14 @@ Sprites (x from the panel's left, sprite depth: lower is in front):
 | `0x80275468` | (0, 320), 128 wide | `S4_FRAME` |
 | `0x8027546c` | (0, 344), 148 wide | (not set here) |
 | `0x80275470` | (6, 357), 20 × 20, depth 63990 | `coin` |
-| `0x80275474` | (61, 357), 20 × 20 | `heart` |
+| `0x80275474` | (61, 357), 20 × 20, depth 63990 | `heart` |
 | `0x802753a0` × 12 | (15 + 8i + i/3, 306) | `SM_RUNE_<blu,red,yel,gre>_<01..03>`, shown for bit i of the runestones held (`+0x1ECA`) |
-| `0x80275320` × 8 | (12 + 12i, 300) | `SM_KEY_<colour>` (`0x8011fdc0`), per-class key bits; shown only while `r13-0x6fdc` (300 fields from a level's start) runs |
+| `0x80275320` × 8 | (12 + 12i, 300), the texture's size | `SM_KEY_<c>`, c = `0x8011fdc0[i]`: blu, red, yel, gre, gre, red, yel, blu; the legendary-key row (below) |
 | `0x802752e0` × 4 | (26, 322 + 3i) | — |
 | `0x80275270` × 7 | table `0x8011f414` (name, x, y, depth; stride `0x14`): `trbo_full_new` ×2 (0, 304), `trbo_glint`, `turbo_glow_new`, `black_bar` ×2, `trbo_gleem1` (80, 310) | the turbo meter |
 | `0x80275260` | centre x − 14, y −323 (off screen), hidden | `BTMBK_LEVL`: the level plate, shown only in the mode `r13-0x7338` |
-| `0x80274894` | (8, 340), 16 × 16 | `RUNE13` (in the 13th-rune modes) |
-| `0x802748a4` | (104, 338), 16 × 16 | `QUEST_ICON` (a quest item held, not in the tower) |
+| `0x80274894` | (8, 340), 16 × 16 | `RUNE13` (`r2-0x5d68`): the thirteenth runestone held (below) |
+| `0x802748a4` | (104, 338), 16 × 16 | `QUEST_ICON` (set by `FUN_80075cac`; each boss level's `ITEMS/<level>` has its own, the realm's legendary item — levelB6's is the ice axe): that item brought to the boss (below) |
 
 Text (`FUN_80074f0c`, in the player's colour `0x8011f990`: `0xFFFF80`,
 `0x87CEEB`, `0xFFC0E0`, `0x80FF80`, unless noted):
@@ -317,8 +319,75 @@ Text (`FUN_80074f0c`, in the player's colour `0x8011f990`: `0xFFFF80`,
 - keys (`+0x1EB8`) when any: `KEY_ICON` at (8, 323) and the count in
   `score` × 0.8 at (26, 327); potions (`+0x1EBC`) when any: the last
   potion's icon at (102, 323) and the count at (92, 327);
-- a player out of the level: "Wait In Tower" / "Quit Game" with the A/B
-  buttons (in play) or "IN TOWER".
+- a player out of the level (below): "Wait In Tower" / "Quit Game", or
+  "IN TOWER".
+
+**The legendary-key row** (`FUN_80074cf8`, every frame from
+`FUN_8007496c(-1)`): `r13-0x6fdc` is set to 300 as a level starts, except
+in the secret realm (`FUN_80053530`, realm 12), and when a runestone none
+of the players holds is picked up (`FUN_8005de3c`, class 10); a new mode
+(`FUN_80015084`), character select (`FUN_8008ffec`) and the HUD's build
+(`FUN_8007bb40`) zero it. While it is at least 1 and no menu is open
+(`r13-0x7060`, the open menu's id from `FUN_80073b20`, is 0) it counts
+down by the fields elapsed (not below 0) and, for each player once a
+frame (`+0x966` & 2, cleared by
+`FUN_80054140`): in state 1, 2, 4 or 5 key i is shown for bit i of the
+class record's `+0xDD4` — the realms beaten by their place in the tower's
+order (`0x801244dc`: tower, G, B, A, K, D, C, I), merged in from the
+session's `+0x1EC8` when the record is saved (`FUN_8007a9e0`) — and in
+other states (dying, out) the row is hidden; in state 1 or 5 (outside the
+attract loop) the runestone slots are set again from `+0x1ECA`. Otherwise
+(run out, or a menu open, which also holds the count) every key is
+hidden: the row shows for 5 s. The pickup count (`FUN_80074b08`: its icon
+16 × 16 at (28, 288), "n/need" in `8Hifonts` × 1.5 white at (48, 292))
+shows, and its 3 s (`+0x92C`) run, only in play (`0x4010`) with no menu
+and `r13-0x6fdc` < 1: it waits for the row.
+
+**The icons** (`FUN_80074f0c`): while the player's health (`+0x1EB4`) is
+above 0 and no player menu is up (`r13-0x70b4`), `QUEST_ICON` shows in
+play (`0x4010`) outside the tower while the player's `+0x834` ≠ 0 — 1 for
+the first hero bringing the realm's legendary item as a boss level starts
+(`FUN_80057020`; critters.md, "The boss intro"), 2–4 as the item is used
+and the legendary weapon thrown, back to 0 when the weapon is released
+(`FUN_80080d3c`) or the player goes out (`FUN_80078de8`) — and `RUNE13` in
+modes `0x400F`–`0x4010` while the runestones held (`+0x1ECA`) have bit 12
+(`0x1000`: the thirteenth, `RUNEE1`). With no health left (or that menu
+up) the icons keep their look and the turbo meter's seven sprites are
+hidden. The panel's rebuild (`FUN_80075cac` → `FUN_80074850`) hides both.
+
+**Out of the level** (state `0xB`, `FUN_80074f0c`):
+
+- In play (`0x4010`) with a player still playing (`r13-0x739c`: players
+  in state 1 or 5, counted every frame by `FUN_80054140`) and the out
+  player's `+0x3338` = 1 (set as it goes out, `FUN_80079094`): the A
+  button's picture (`r13-0x6cb0`) at (6, 332) and B's (`r13-0x6cb4`) at
+  (6, 352), both 14 × 14, "Wait In Tower" at (20, 336) and "Quit Game" at
+  (20, 356), in `8Hifonts` × 1.2 (`r2-0x5fe0`), white; gold, coin, health
+  and heart aren't drawn. In the player update (`FUN_8007692c`, state
+  `0xB`) B quits (`FUN_80079418`) and A clears `+0x3338`: the player waits.
+- Otherwise, outside modes `0x400D`, `0x4013` and `0x4017` (and unless
+  `r13-0x70d0` or `0x80256f80` is set): the panel is rebuilt
+  (`FUN_80075cac`, panel state 10: `S3` over `S4` in the joined colour,
+  framed, coin and heart, no runestones) and "IN TOWER" is drawn in
+  `8Hifonts` × 1.2 centred on the panel at y 340 in the player's colour,
+  with gold and health (0: going out sets it, `FUN_80079094`); no name or
+  level.
+- With one player the prompt never shows (nobody is left playing). The
+  hero goes out as its death ends; the player update then reports the
+  level over, and play ends (`FUN_8009a140(0)`: mode `0x4012`, then the
+  tower) as soon as no sound is playing (`FUN_8001538c`) — until then its
+  panel shows "IN TOWER".
+
+Here (`game_hud.rs`, player 1): the key row, the pickup count's wait, both
+icons and the hidden turbo meter at 0 health as above. The key row reads
+the hero's realms beaten (`PlayerState::realms_beaten` through
+`quest::boss_marks`) rather than a copy saved with the record; a level
+start is `LevelPopulation` changing, a new runestone a new bit of
+`PlayerState::runestones`; the counts run on game time, which stops under
+a message box (the game's box doesn't update the row either). A hero
+holding `+0x834` = 1 is the boss intro's first state
+(`CritterLevel::intro` = 1, `critters.rs`); the legendary weapon's throw
+isn't done, so the icon goes when the item is used up (intro state 2).
 
 Turbo meter (`FUN_80075828`): the shown value (`+0x82C`) moves toward the
 meter (`+0x828`, 0–100) by the fields elapsed (down twice as fast). At
@@ -462,10 +531,13 @@ Start, triggers.
   starts that class fresh (the game keeps each class's progress in the
   character record).
 - HUD: players 2–4's panels only wait (`S3` over `S4` in the slot's dim
-  colour `0x8011f9b0`, framed: no joining yet); the
-  legendary-key row, the quest and rune-13 icons and the "Wait In Tower"
-  prompt aren't drawn; the panel is hidden while a menu is up (its numbers
-  would draw over the menu's parchment, text being drawn after images).
+  colour `0x8011f9b0`, framed: no joining yet); the out-of-level panel
+  ("IN TOWER") isn't drawn — the hero's return to the tower follows its
+  death at once, without the game's wait for the sounds to end; the quest
+  icon goes when the legendary item is used up, not at the weapon's throw
+  (not done); the key row reads the hero's current realms beaten; the
+  panel is hidden while a menu is up (its numbers would draw over the
+  menu's parchment, text being drawn after images).
   Runestone slot i is lit by stone i (the stones are numbered 0–11 by
   their item type's `+0x40`, RUNEA1 = 0 … RUNED3 = 11; RUNEE1 = 12 is
   rune 13); slots used to be lit one stone late.
