@@ -347,11 +347,11 @@ fn special_attack(special: u32, weapon: u32) -> Option<Action> {
     if special & 0x3000 != 0 {
         Some(Action::ATTBREATHE)
     } else if special & 0x8000 != 0 {
-        Some(Action(0x67))
+        Some(Action::ATTFIREL)
     } else if special & 0x4000 != 0 {
-        Some(Action(0x68))
+        Some(Action::ATTFIRELR)
     } else if weapon & 0x10_0000 != 0 {
-        Some(Action(0x6B))
+        Some(Action::SSHOT1)
     } else if weapon & HAMMER != 0 {
         Some(Action::ATTCHOP)
     } else if special & BREATHS != 0 {
@@ -1040,11 +1040,10 @@ fn tick(
             requested = Action::DEATHGRABS;
         }
         // A power's own attack takes the place of every attack (not one
-        // made by walking into something). Only the breath's and the
-        // hammer's are done.
+        // made by walking into something).
         if !walked_into
             && matches!(intent, Intent::Quick | Intent::Power | Intent::StrafeAttack(_))
-            && let Some(a) = special_attack(p.special_bits, p.weapon).filter(|a| matches!(*a, Action::ATTBREATHE | Action::ATTCHOP))
+            && let Some(a) = special_attack(p.special_bits, p.weapon)
         {
             requested = a;
         }
@@ -1103,7 +1102,8 @@ fn tick(
         let ended = animator.finished() || wrapped;
         let (move_factor, turn_factor) = actions::factors(current, p.class.unwrap_or(0));
         let clip = clip_for(&animator, next.action);
-        if next.switch.applies(clip != animator.action, ended) {
+        let again = next.again && ended && clip == animator.action;
+        if again || next.switch.applies(clip != animator.action, ended) {
             if clip != animator.action {
                 animator.play_blended(&clips.actions[clip].name, next.blend);
             } else {
@@ -1328,8 +1328,9 @@ mod tests {
         // The hammer comes before a breath, Skorne's horns before both.
         assert_eq!(special_attack(0x10, HAMMER), Some(Action::ATTCHOP));
         assert_eq!(special_attack(0x1010, HAMMER), Some(Action::ATTBREATHE));
-        assert_eq!(special_attack(0x8000, 0), Some(Action(0x67)));
-        assert_eq!(special_attack(0, 0x10_0000), Some(Action(0x6B)));
+        assert_eq!(special_attack(0x8000, 0), Some(Action::ATTFIREL));
+        assert_eq!(special_attack(0x4000, 0x10_0000), Some(Action::ATTFIRELR));
+        assert_eq!(special_attack(0, 0x10_0000 | HAMMER), Some(Action::SSHOT1));
         // The Pojo's breath comes from its turbo, not the attacks.
         assert_eq!(special_attack(0x400, 0), None);
     }

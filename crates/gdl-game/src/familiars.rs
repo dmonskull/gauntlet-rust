@@ -106,7 +106,7 @@ fn shot(feet: Vec3, facing: f32, mouth: Vec3, scale: f32, aim: Vec3, targeted: b
     let aim = if weapon & STRAIGHT != 0 {
         Vec3::new(facing.sin(), 0.0, facing.cos())
     } else {
-        projectiles::hero_aim(facing, aim, targeted, 0.0, dwarf)
+        projectiles::hero_aim(facing, aim, targeted, 0.0, dwarf, false)
     };
     let target = aim * REACH;
     let (gravity, drop) = if boss { (0.0, 0.0) } else { (GRAVITY, DROP) };
