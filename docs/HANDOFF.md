@@ -189,7 +189,13 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on `5a1b996` (the armour and special power-ups:
+The all-levels smoke test on `70b2f0a` (Death and the halo, the familiars
+and the phoenix, the Pojo's throws, Skorne's gauntlets and the super
+crossbow with every release's throw sound, and the helper's level-up
+flash and level-up routine) passed all 67 real levels; only the known
+warnings (the test levels' missing `dream1a_1.ads`, no lookout 0 on L2/L3).
+
+Before that, the all-levels smoke test on `5a1b996` (the armour and special power-ups:
 the resistance routine everywhere, chrome, shields, invisibility, shrink,
 grow, time stop, breaths, the hammer; the helper's blasts on items,
 CHESTEXP, the power-up looks, x-ray, the lift and the hourglass) passed
