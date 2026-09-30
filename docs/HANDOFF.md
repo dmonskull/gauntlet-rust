@@ -70,8 +70,8 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on master `5c1f9ba` (tower progression)
-passed all 67 real levels.
+The all-levels smoke test on master `59dbbe3` (boss victory merged, quest
+HUD) passed all 67 real levels.
 
 ## Fixed from user reports (2026-09-30)
 
@@ -145,8 +145,11 @@ passed all 67 real levels.
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
-1. **Finish bosses**: A5 chimera or B6 dragon first, then the rest. See
-   [critters.md](critters.md).
+1. **Finish bosses** (the critters helper: intro and victory merged;
+   chimera parts, all boss levels and the boss camera next). Player side,
+   mine: the intro's stand-still and darkening are done; the legendary
+   weapon's throw, the highlights and the owner's glow aren't
+   ([critters.md](critters.md), "The heroes").
 2. ~~In-game HUD~~: done (the remaining HUD details are listed above).
 3. ~~Effects system and magic potions~~: done (effects.md)
    (it knows the effect slots at `0x802855ac` and `FUN_80094418`):
