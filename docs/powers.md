@@ -80,10 +80,19 @@ spent yet.
 ## The looks: where they hang
 
 Every tick `FUN_8007c4f0` attaches (`FUN_800b89b0(model, 0, node,
-flags)`, found by name with `FUN_800b8658`) or frees one model per slot.
-The nodes are found when the hero is built (`FUN_8007ae84`):
-`<class>L_WRIST` → `+0x6CC`, `<class>R_WRIST` → `+0x6D0`, `<class>HEAD` →
-`+0x6D4` (`r2-0x5DB8` "%s%s", `r2-0x5DB0` "%sHEAD"). The models are in
+flags)`, found by name with `FUN_800b8658`), swaps (`FUN_800b8aa0`, the
+new model object on the same instance) or frees one model per slot. The
+flags are ORed into the new instance's draw flags (`+0x60`): `0x8000` is
+the extra texture stage of [rendering.md](rendering.md) (the
+environment-map path — Skorne's pieces shine), `0x1000` isn't
+identified, `0x10` and `0x800` are outside the draw mask. The nodes are
+found when the hero is built (`FUN_8007ae84`): `<class>` + the class's
+left wrist → `+0x6CC`, right wrist → `+0x6D0`, `<class>HEAD` → `+0x6D4`
+(`r2-0x5DB8` "%s%s", `r2-0x5DB0` "%sHEAD"; `<class>` is the skeleton's
+name, `+0x6C0`). The wrist names are per class (`0x8011F90C` left,
+`0x8011F94C` right, by class index): `L_WRIST`/`R_WRIST` for classes
+0–3 and 8–11, `LEFTHAND`/`RIGHTHAN` for 4–6 and 12–14, `LEFTHAND`/`RHEND`
+for the jester (7) and 15. The models are in
 `POWERUPS/objects.ngc` (and `WEAPONS`); the body's atrees come from the
 `POWERUPS` bank (`r13-0x718C`) or `WEAPONS` (`r13-0x7188`), loaded by
 `FUN_80030c38`.
@@ -103,19 +112,49 @@ The nodes are found when the hero is built (`FUN_8007ae84`):
   (`WEAP_HOLD_RED/BLU/YEL/GRE`, `0x8023FD84`, from `WEAPONS`) on the
   weapon — the weapon powers' part, for projectiles.md.
 - The body slot's animation (`FUN_80011104(slot, action, mode)`): the
-  Pojo's by the hero's action (ATTBREATHE → 3; SHOVE, WALK/RUN, SHIELD_RUN,
-  PUSH → 1; HITREACT, the falls and GETUPs → 4; DEATH → 5, held; a peck
-  (`+0x900` bit `0x20000000`) → 2); the others switch to their action 1
-  during a throw event (`+0x900` bit `0x10000000`, with the short `+0x7A0`
-  above 1), else action 0.
+  Pojo's by the hero's action (`+0x208`): SHOVE `0x08`, WALK1–RUN2
+  `0x11`–`0x14`, SHIELD_RUN `0x16`, PUSH `0x19`, PUSHED `0x1A` → 1 (RUN);
+  ATTBREATHE `0x6E` → 3 (ATTPWR); HITREACT `0x1B`, `0x7F`–`0x83` (STUN1,
+  WEBREACT, the HITREACTs, FALLDOWN), FALLFRNT `0x85`, FLYUP `0x87`,
+  GRABBED `0x94` → 4 (HIT; not GETUP `0x84` or GETUP2 `0x86`); DEATH
+  `0x7E` → 5; a peck → 2 (ATTACK); else 0 (READY). The peck is `+0x900`
+  bit `0x20000000`, set by the player update when the attack's blow event
+  (`+0x900` bit 1) comes with the Pojo, and cleared here. The others play
+  their action 1 on a throw event (`+0x900` bit `0x10000000`, set when a
+  throw lets go and cleared by the next player update after the phoenix
+  fires) while the short `+0x7A0` is above 1 (their action count,
+  unconfirmed), else action 0. Mode 2 goes with 2–5 and the throw's 1,
+  and whenever the short `+0x7A2` is 0; 0 otherwise (not traced).
+- The second head slot latches each model when it comes on (`+0xA1E` the
+  Hand of Death, `+0xA20` the Health Vampire; both clear when both powers
+  are off): a model is swapped in only when its power comes on afresh.
+- The Pojo hides the hero's skeleton (flag 2 on its root node instance,
+  `**(+0x7C)`: the draw skips the subtree, the wrist and head models
+  with it); a right-wrist model hides the held weapon (`+0x6E0`) the same
+  way.
+- Instances link parent `+0x74`, first child `+0x78`, next sibling
+  `+0x7C` (`FUN_800bb084`); the hero model's first child is the
+  skeleton's root node, so the wings hang on that node's first child
+  (`ROOT_PELVIS` for the warrior).
 - Model scale (`FUN_800ba6f8` on `+0x74`): the ogre (weapon type `+0x0C`
   = 12, OGR) 1.6
   (`r2-0x5E74`); grown 1.3 (`r2-0x5D28`); at level 99 1.2 (`r2-0x5FE0`);
   else 1. Above level 98 the head node is × 1.5 (`r2-0x5FE8`).
 
-To build: attach models to named nodes of the hero's skeleton
-(`CharacterModel`), the body atrees with their actions; a free/attach per
-tick from the bits.
+Here: `power_looks.rs` — every tick after the powers, the four object
+slots and the body slot from `PlayerState.bits` as the table (the head 2
+latches too), on the class's nodes (`Animator::node`), the body's atree
+on the hero's root, head or root's first child; the held weapon hidden
+with a right-wrist model, the skeleton with the Pojo; the Pojo's actions
+by the hero's (`Player::actions`), the others' action 1 on a `HeroShot`
+when they have a second; the body faded (`fade.rs`) in its power's last
+second. Stand-ins: mode 2 is read as "plays through once before the next
+action takes over"; the peck is a landed hand blow (`combat::Hit` from
+the hero, not ranged), not the blow event itself. Not done: the attach
+flags (no environment map; drawn with the objects' own materials), the
+class 1/5/7 `+0x60` bits, the weapon glows, the head 2 pickup sparkle, the
+model scales. `FW_SHLD_ACTIVE` waits for SHIELD_RUN, which the action
+machine doesn't produce yet (the shields' actions, below).
 
 ## The resistance routine (`FUN_8002f58c`)
 
