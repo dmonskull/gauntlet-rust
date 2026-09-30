@@ -50,6 +50,7 @@ impl Plugin for EffectsPlugin {
             .add_message::<ExplosionAt>()
             .add_message::<NextStage>()
             .add_message::<BreathAt>()
+            .add_message::<ChopAt>()
             .init_resource::<EffectModels>()
             .init_resource::<PotionCycle>()
             .add_systems(
@@ -60,6 +61,7 @@ impl Plugin for EffectsPlugin {
                     spawn_blasts,
                     spawn_explosions,
                     spawn_breaths,
+                    spawn_chops,
                     tick_blasts,
                     spawn_one_shots,
                     tick_one_shots,
@@ -304,9 +306,10 @@ enum BlastShape {
     Grow,
     /// The shield: a steady radius around its hero.
     Aura(Entity),
-    /// A breath: grows like a blast from its hero's head (the node, when
-    /// found), only within its cone ahead of the hero.
-    Breath { hero: Entity, head: Option<Entity> },
+    /// Grows like a blast from its hero as it moves: a breath from the
+    /// head node (only within its cone ahead of the hero), the hammer's
+    /// ring from the hero's feet.
+    Rides { hero: Entity, head: Option<Entity>, cone: bool },
 }
 
 /// A hero breathes (ATTBREATHE starts, `player.rs`): the effect `fx` on its
@@ -323,6 +326,25 @@ pub struct BreathAt {
     pub radius: f32,
     pub sound: &'static str,
 }
+
+/// A hero's hammer comes down (ATTCHOPR starts, `player.rs`): EXPRING on
+/// the hero, a blast from its feet out to 35 doing 100 heavy damage to
+/// monsters and items, a camera shake and `S_THUNDERHAMMER`
+/// (`docs/items.md`, "Attack overrides").
+#[derive(Message, Clone, Copy, Debug)]
+pub struct ChopAt {
+    pub hero: Entity,
+}
+
+const CHOP_FX: &str = "EXPRING";
+const CHOP_DAMAGE: f32 = 100.0;
+const CHOP_RADIUS: f32 = 35.0;
+const CHOP_KIND: u32 = combat::hit_kind::HEAVY;
+const CHOP_SOUND: &str = "S_THUNDERHAMMER";
+/// The chop's shake: the target round a 0.3 circle for 30 fields, priority
+/// 200.
+const CHOP_SHAKE: crate::play_camera::Shake =
+    crate::play_camera::Shake { amplitude: 0.3, what: 0, delay: 0.0, fields: 30.0, priority: 200 };
 
 /// A breath's cone: targets whose direction from it is within this cosine
 /// of its heading (30°) — this much wider (× the cosine) within 0.3 of its
@@ -1093,10 +1115,7 @@ fn spawn_breaths(
         let Ok(p) = players.get(b.hero) else { continue };
         let effect = models.effect(b.fx, &mut game, &mut meshes, &mut materials, &mut images);
         let life = effect.as_ref().map_or(1.0, |e| e.life);
-        let centre = b
-            .head
-            .and_then(|h| bones.get(h).ok())
-            .map_or(Vec3::from(p.mover.position) + Vec3::Y * projectiles::PLAYER_CENTRE, |g| g.translation());
+        let centre = b.head.and_then(|h| bones.get(h).ok()).map_or(Vec3::from(p.mover.position), |g| g.translation());
         if let Some(e) = &effect {
             // Its particle systems stream out along their directions as
             // the head (or, without one, the hero) is turned.
@@ -1125,7 +1144,7 @@ fn spawn_breaths(
         info!("{} from the hero: {:.1} damage out to {:.1} over {life:.2} s", b.fx, b.damage, b.radius);
         let blast = Blast {
             owner: b.hero,
-            shape: BlastShape::Breath { hero: b.hero, head: b.head },
+            shape: BlastShape::Rides { hero: b.hero, head: b.head, cone: true },
             centre,
             kind: b.kind,
             damage: b.damage,
@@ -1143,6 +1162,51 @@ fn spawn_breaths(
         };
         // The blast alone (its look is the model on the head).
         commands.spawn((Transform::from_translation(centre), blast, BlastColour(colour_index(b.kind), true), LevelEntity));
+    }
+}
+
+/// The hammer's chop: its ring rides the hero, its blast from the feet.
+#[allow(clippy::too_many_arguments)]
+fn spawn_chops(
+    mut commands: Commands,
+    mut requests: MessageReader<ChopAt>,
+    mut game: ResMut<LoadedGame>,
+    mut models: ResMut<EffectModels>,
+    (mut sounds, mut shakes): (MessageWriter<PlaySound>, MessageWriter<crate::play_camera::Shake>),
+    players: Query<&Player>,
+    (mut meshes, mut materials, mut images): Assets3d,
+) {
+    for c in requests.read() {
+        let Ok(p) = players.get(c.hero) else { continue };
+        let feet = Vec3::from(p.mover.position);
+        let effect = models.effect(CHOP_FX, &mut game, &mut meshes, &mut materials, &mut images);
+        let life = effect.as_ref().map_or(1.0, |e| e.life);
+        if let Some(e) = &effect {
+            let model = e.model.spawn(Transform::default(), &mut commands);
+            commands.entity(model).insert((OneShot(life), ChildOf(c.hero)));
+        }
+        sounds.write(PlaySound(CHOP_SOUND.into()));
+        shakes.write(CHOP_SHAKE);
+        info!("the hammer comes down: {CHOP_DAMAGE:.0} damage out to {CHOP_RADIUS:.0} over {life:.2} s");
+        let blast = Blast {
+            owner: c.hero,
+            shape: BlastShape::Rides { hero: c.hero, head: None, cone: false },
+            centre: feet,
+            kind: CHOP_KIND,
+            damage: CHOP_DAMAGE,
+            radius: CHOP_RADIUS,
+            life,
+            age: 0.0,
+            spared: HashMap::new(),
+            spared_items: HashMap::new(),
+            heroes: Heroes::Spared,
+            items: true,
+            then: &[],
+            scale: Vec3::ONE,
+            drop: 0.0,
+            heading: None,
+        };
+        commands.spawn((Transform::from_translation(feet), blast, BlastColour(colour_index(CHOP_KIND), true), LevelEntity));
     }
 }
 
@@ -1229,20 +1293,21 @@ fn tick_blasts(
             b.centre = Vec3::from(p.mover.position);
         }
         // A breath rides its hero's head, heading where the hero faces
-        // (stand-in for the head node's own heading).
-        if let BlastShape::Breath { hero, head } = b.shape
+        // (stand-in for the head node's own heading); the hammer's ring
+        // the hero's feet.
+        if let BlastShape::Rides { hero, head, cone } = b.shape
             && let Ok((_, p)) = players.get(hero)
         {
-            b.centre = head
-                .and_then(|h| bones.get(h).ok())
-                .map_or(Vec3::from(p.mover.position) + Vec3::Y * projectiles::PLAYER_CENTRE, |g| g.translation());
-            b.heading = Some(Vec2::new(p.mover.facing.sin(), p.mover.facing.cos()));
+            b.centre = head.and_then(|h| bones.get(h).ok()).map_or(Vec3::from(p.mover.position), |g| g.translation());
+            if cone {
+                b.heading = Some(Vec2::new(p.mover.facing.sin(), p.mover.facing.cos()));
+            }
         }
         // Grow (and a breath): reach and share by the time left; the
         // shield: steady, full damage, each target spared a second (at
         // most what's left).
         let (reach, share, spare) = match b.shape {
-            BlastShape::Grow | BlastShape::Breath { .. } => match blast_front(left, b.life, b.radius) {
+            BlastShape::Grow | BlastShape::Rides { .. } => match blast_front(left, b.life, b.radius) {
                 Some((r, s)) => (r, s, (left + 1.0 / 15.0).max(0.2)),
                 None => continue,
             },
@@ -1379,7 +1444,7 @@ fn follow_blasts(
     for (entity, b, colour, mut transform, children) in &mut blasts {
         transform.translation = b.centre - Vec3::Y * b.drop;
         let reach = match b.shape {
-            BlastShape::Grow | BlastShape::Breath { .. } => {
+            BlastShape::Grow | BlastShape::Rides { .. } => {
                 blast_front(b.life - b.age, b.life, b.radius).map_or(0.0, |(r, _)| r)
             }
             BlastShape::Aura(_) => b.radius,

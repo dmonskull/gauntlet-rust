@@ -135,8 +135,15 @@ its clip's end unless knocked down (switch mode 0); SSHOT1/2 (0x6B/0x6C)
 → SSHOT2 while the crossbow shot is still asked for (with the player's
 `+0xB4` = 1, which idle loops also set — its effect on the clip isn't
 pinned down), else SSHOTR (0x6D) when a category-0 action is asked for,
-else switch mode 1. Not ported: our chaining has no cases for 0x67–0x72
-yet. Special `0x4000`/`0x8000` also pick the missile records
+else switch mode 1. Ported: the ATTBREATHE and ATTCHOP results and their
+chaining (`actions.rs`; [powers.md](powers.md), "breaths"); the hammer's
+blow on event `0x2000000` as ATTCHOPR starts (`FUN_80080d3c`): effect
+`0x1C` EXPRING on the hero's model, damage 100 (`r2-0x5b60`) out to 35
+(`r2-0x5b00`, `+0x614` = 0.1, `r2-0x5b10`, not traced) with kind `0x20`,
+flags `0x2A` (monsters, items, area), a hammer use spent, a shake
+(`FUN_800277ec(0.3, 0, 0, 30, 200)`) and `S_THUNDERHAMMER` (`0x50`) —
+`effects.rs::spawn_chops`. Not ported: the gauntlets' and the crossbow's
+cases. Special `0x4000`/`0x8000` also pick the missile records
 `0x80119b88`/`0x80119b58` (no power-up on the disc has them; not traced).
 Rapid fire (weapon `0x20000000`) isn't among these: the action state
 machine sets the player's `+0xA8` to 0.75 (`r2-0x4da4`) instead of 1
