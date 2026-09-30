@@ -375,8 +375,8 @@ hidden. The panel's rebuild (`FUN_80075cac` → `FUN_80074850`) hides both.
 - With one player the prompt never shows (nobody is left playing). The
   hero goes out as its death ends; the player update then reports the
   level over, and play ends (`FUN_8009a140(0)`: mode `0x4012`, then the
-  tower) as soon as no sound is playing (`FUN_8001538c`) — until then its
-  panel shows "IN TOWER".
+  tower) once the voice queues are empty (below, "Death") — at the
+  earliest the frame after; until then its panel shows "IN TOWER".
 
 Here (`game_hud.rs`, player 1): the key row, the pickup count's wait, both
 icons and the hidden turbo meter at 0 health as above. The key row reads
@@ -388,6 +388,10 @@ a message box (the game's box doesn't update the row either). A hero
 holding `+0x834` = 1 is the boss intro's first state
 (`CritterLevel::intro` = 1, `critters.rs`); the legendary weapon's throw
 isn't done, so the icon goes when the item is used up (intro state 2).
+The out hero (`Frontend::hero_out`, see "Death") gets the "IN TOWER"
+panel: `S3`, `S4` in the joined colour, the frame, coin and heart, "IN
+TOWER", gold and health, and the key and potion counts when it has any;
+no runestones, key row, icons, turbo meter, pickup count, name or level.
 
 Turbo meter (`FUN_80075828`): the shown value (`+0x82C`) moves toward the
 meter (`+0x828`, 0–100) by the fields elapsed (down twice as fast). At
@@ -419,6 +423,54 @@ then `FUN_80079094`:
   out the next level is the tower (`FUN_8009a140(0)`), and there
   `FUN_80053530` revives each out hero with `FUN_8007a5a8`: the record
   saved when the last level started is copied back.
+
+**The wait for the voices.** The player update (`FUN_8007692c`) reports
+the level over from the frame after the last hero goes out (in the frame
+it goes out, its dying case keeps the level going). The play mode then
+ends the level only if `FUN_8001538c(1)` returns 0; otherwise it tries
+again next frame, the level still running and the out panel up.
+`FUN_8001538c` returns 0 at once if the audio has failed (`r13-0x7860`);
+otherwise it steps the voice queues (`FUN_80015480`) and returns 1 while
+either of them holds a line — with a limit of 50,000,000 tries ("Audio
+Play Timeout"), in effect none.
+
+- **The voice queues** (`r13-0x781c`: two counts; lines at `0x8023cb58` +
+  queue × `0x140`, 16 of `0x14` bytes: sound id, volume, two sound
+  arguments, length). `FUN_80015160(length, most wait, queue, id, …)`
+  appends a line: a length ≤ 0 is the sound's catalog length (sound record
+  `+0x14`, seconds) × 60 (`r2-0x7de0`) fields, and the line is dropped
+  when what is already queued runs more than most wait × 60 fields.
+  `FUN_80015480`, every frame, plays the first line when its turn comes
+  (`FUN_80015cac`) and removes it `length` fields later (by the field
+  counter `r13-0x6bb0`); it doesn't step, and counts nothing, while banks
+  load (`r13-0x7800`) or a sound is being started (`r13-0x7804`).
+- **Queue 1, the announcer**: hints' voices (`FUN_800a4268` →
+  `FUN_8009c37c`), the health warnings (`FUN_8009f82c` → `FUN_8009f9e0`:
+  lines picked by the player's colour and class from tables at
+  `0x8028b020`…`0x8028b360`, then `S_BADLY`, `S_LIFEFORCE`, `S_NEEDSFOOD`
+  or `S_ABOUT`), the tower wizard's (`FUN_8009bec0`, `FUN_8009bd28`:
+  `WIZTOWER` sounds) and the bosses' wizard's speeches (`FUN_8009bf48`:
+  the boss's bank), and the other announcer calls
+  (`FUN_8009bbb0`…`FUN_8009f95c`).
+- **Queue 0, the heroes**: their own voice lines (`FUN_80015124` from
+  `FUN_8009ef80`, `FUN_8009f010`, `FUN_8009f098`, and `FUN_8009f220`, the
+  hurt cries of the damage function; the character's tables at
+  `0x80122cac`…`0x80122e0c`), and a sound asked for without a position
+  while banks load (`FUN_80015cac`).
+- Nothing else counts: sounds played directly (`FUN_80015a30`,
+  `FUN_80015a94`, `FUN_800157ec`) — hits, pickups, the death cry
+  (`FUN_8009ea88`: sound 1 and the class's cry), `S_GAMEOVERVOX` — and
+  the music.
+
+Here (`frontend.rs`, `death`): once the DEATH action is over outside the
+tower the hero is out (`Frontend::hero_out`; the HUD shows its "IN TOWER"
+panel, "In-game HUD"), and from the next frame the level ends — back to
+the tower — as soon as no announcer line is playing. Stand-in: the rewrite
+has no voice queues (its voice lines play at once, side by side), so an
+announcer line is a sound of the catalog's `VOICE1` or `VOICE2` bank still
+playing; the speeches of the tower's and the bosses' wizards and the
+heroes' own lines (which the rewrite doesn't play yet) don't hold the
+level.
 
 The save (`FUN_8007a670(p, 1)`, from `FUN_80053530`) happens when a level
 outside the tower starts, except in the secret realm (12) and in `levelE2`
@@ -526,14 +578,16 @@ Start, triggers.
   out aren't drawn.
 - The dying time is the DEATH animation, at most 4 s (the game's own
   counter isn't traced).
+- An out hero's level waits only for the announcer's lines (`VOICE1`,
+  `VOICE2`) still playing, not for the game's voice queues (not in the
+  rewrite): the wizards' speeches don't hold it, lines don't wait their
+  turn, and the heroes' own lines aren't played (see Death).
 - Only player 1 is interactive on the select screen; class attributes show
   the start values (no per-character points or levels); changing class
   starts that class fresh (the game keeps each class's progress in the
   character record).
 - HUD: players 2–4's panels only wait (`S3` over `S4` in the slot's dim
-  colour `0x8011f9b0`, framed: no joining yet); the out-of-level panel
-  ("IN TOWER") isn't drawn — the hero's return to the tower follows its
-  death at once, without the game's wait for the sounds to end; the quest
+  colour `0x8011f9b0`, framed: no joining yet); the quest
   icon goes when the legendary item is used up, not at the weapon's throw
   (not done); the key row reads the hero's current realms beaten; the
   panel is hidden while a menu is up (its numbers would draw over the
