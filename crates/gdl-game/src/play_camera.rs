@@ -157,8 +157,9 @@ const INTRO_DONE: f32 = 0.3;
 const FIELDS_PER_TICK: f32 = 2.0;
 
 impl PlayCamera {
-    /// Eye and target to draw from this tick.
-    fn view(&self) -> ([f32; 3], [f32; 3]) {
+    /// Eye and target to draw from this tick (the positional sounds' ear
+    /// is its target, `audio.rs`).
+    pub fn view(&self) -> ([f32; 3], [f32; 3]) {
         if let Some(c) = self.cut.filter(|c| c.delay <= 0.0) {
             return (c.eye, c.target);
         }

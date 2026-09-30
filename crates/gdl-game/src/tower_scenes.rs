@@ -15,7 +15,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use gdl_formats::population::{LocatorKind, PlacementParams};
 
-use crate::audio::{EffectName, PlaySound, QueueVoice};
+use crate::audio::{EffectName, PlaySoundAt, QueueVoice};
 use crate::character::CharacterModel;
 use crate::effects::{EffectAt, EffectOn, ParticleSystems};
 use crate::fade::Fade;
@@ -250,6 +250,10 @@ const CUT_DONE: f32 = 5.0;
 /// these (50 fields in; 80 for the thirteenth).
 const CHIME_AT: f32 = 250.0;
 const KNOCK13_AT: f32 = 220.0;
+/// The scenes' sounds — the glass's chime, the stones' knocks and fall,
+/// the shards' — play centred at this requested volume (twice a call's
+/// own, `audio::PlaySoundAt`).
+const CHIME_VOLUME: u8 = 0xFF;
 /// Reveals fade in over this many fields.
 const REVEAL_FIELDS: f32 = 180.0;
 /// Fields and seconds a tick.
@@ -408,7 +412,7 @@ fn run_scene(
     (mut captions, mut caption_requests): (ResMut<Captions>, MessageWriter<ShowCaption>),
     (mut cuts, mut sounds, mut effects, mut riding): (
         MessageWriter<StartCut>,
-        MessageWriter<PlaySound>,
+        MessageWriter<PlaySoundAt>,
         MessageWriter<EffectAt>,
         MessageWriter<EffectOn>,
     ),
@@ -557,8 +561,8 @@ fn run_scene(
     }
     let (hold, extra) = camera.cut_counts().unwrap_or((0.0, 0.0));
     let done = hold < CUT_DONE && extra < CUT_DONE;
-    let sound = |name: &str, sounds: &mut MessageWriter<PlaySound>| {
-        sounds.write(PlaySound(name.into()));
+    let sound = |name: &str, sounds: &mut MessageWriter<PlaySoundAt>| {
+        sounds.write(PlaySoundAt::centred(name, CHIME_VOLUME));
     };
     scene.follow = match scene.follow {
         // All eight: the glass's chime, then the Desecrated Temple's portal
@@ -753,7 +757,7 @@ fn place(
     light: &mut ShardLight,
     commands: &mut Commands,
     cuts: &mut MessageWriter<StartCut>,
-    sounds: &mut MessageWriter<PlaySound>,
+    sounds: &mut MessageWriter<PlaySoundAt>,
     meshes: &mut Assets<Mesh>,
 ) {
     leave(scene, camera, captions, commands);
@@ -769,8 +773,8 @@ fn place(
             crate::effects::spray(&particles, at, 1.0, &mut seed, commands, meshes);
         }
     };
-    let sound = |name: &str, sounds: &mut MessageWriter<PlaySound>| {
-        sounds.write(PlaySound(name.into()));
+    let sound = |name: &str, sounds: &mut MessageWriter<PlaySoundAt>| {
+        sounds.write(PlaySoundAt::centred(name, CHIME_VOLUME));
     };
     scene.follow = match what {
         Announce::Shard(n) => {

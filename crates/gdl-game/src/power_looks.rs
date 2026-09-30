@@ -21,7 +21,7 @@ use gdl_formats::texmod::TexMod;
 use gdl_formats::population::{ItemClass, ItemType, PlacementParams};
 
 use crate::actions::Action;
-use crate::audio::PlaySound;
+use crate::audio::{CALL_VOLUME, PlaySoundAt};
 use crate::billboard::Billboard;
 use crate::character::{self, Animator, CharacterData, CharacterModel, clip_end, clip_fps, loop_length};
 use crate::combat::Hit;
@@ -506,6 +506,8 @@ const XRAY_FADE: f32 = 192.0 / 255.0;
 /// What's inside is shown at this scale.
 const XRAY_SCALE: f32 = 0.65;
 const XRAY_SOUND: &str = "S_XRAY";
+/// The hero's top point above its feet (`PDAT +0x50`, every class).
+const HERO_TOP: f32 = 4.4;
 /// The key powerup's subtype.
 const KEY: i32 = 2;
 
@@ -564,7 +566,7 @@ fn xray(
     players: Query<&Player>,
     transforms: Query<&Transform>,
     mut fades: Query<&mut Fade>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
 ) {
     let on = state.is_some_and(|s| s.bits.special & XRAY != 0);
     let hero = players.iter().next().map(|p| Vec3::from(p.mover.position));
@@ -648,7 +650,10 @@ fn xray(
         changed = true;
     }
     if changed {
-        sounds.write(PlaySound(XRAY_SOUND.into()));
+        // At the hero's top point, panned only (`docs/audio-format.md`).
+        if let Some(hero) = hero {
+            sounds.write(PlaySoundAt::panned(XRAY_SOUND, hero + Vec3::Y * HERO_TOP, CALL_VOLUME));
+        }
         debug!("x-ray: container {placement} shows {:?}", xray.shown);
     }
 }

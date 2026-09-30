@@ -4,7 +4,10 @@
 //! `docs/audio-format.md`): the level's world-data audio record names a
 //! stream; a level starts on track 0 and plays its parts in order, the last
 //! one looping. Sound effects are played by catalog name through
-//! [`PlaySound`]; `N` steps through the current level's bank.
+//! [`PlaySound`] (centred, at the call's own volume) or [`PlaySoundAt`]
+//! (the game's positional calls: a requested volume, a pan from where the
+//! sound is relative to the camera, and a fade with the distance from the
+//! heroes); `N` steps through the current level's bank.
 //!
 //! Voice lines wait their turn in the game's two voice queues
 //! ([`QueueVoice`], [`VoiceQueues`]; `docs/frontend.md`, "The voice
@@ -19,12 +22,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bevy::audio::{AddAudioSource, Decodable, Source};
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use gdl_formats::audio::{AdsSamples, AdsStream, AudioCatalog, SoundBank};
 use gdl_formats::{LevelAudio, WorldData};
 
+use crate::frontend::Frontend;
 use crate::level::LoadedGame;
 use crate::options::{GameOptions, SoundKind};
+use crate::play_camera::PlayCamera;
+use crate::player::Player;
+use crate::player_state::PlayerState;
 use crate::world::CurrentLevelStats;
 
 pub struct GameAudioPlugin;
@@ -34,6 +42,7 @@ impl Plugin for GameAudioPlugin {
         app.add_audio_source::<MusicTrack>()
             .add_audio_source::<SoundEffect>()
             .add_message::<PlaySound>()
+            .add_message::<PlaySoundAt>()
             .add_message::<StopSound>()
             .add_message::<LoopSound>()
             .add_message::<QueueVoice>()
@@ -42,9 +51,119 @@ impl Plugin for GameAudioPlugin {
             .add_systems(Startup, load_audio_tables)
             .add_systems(
                 Update,
-                (level_music, audio_keys, step_voices, play_sounds, stop_sounds, loop_sounds).chain(),
+                (level_music, audio_keys, step_voices, play_sounds, play_sounds_at, stop_sounds, loop_sounds).chain(),
             );
     }
+}
+
+/// Plays a sound effect by catalog name the way the game's own calls do
+/// (`docs/audio-format.md`, "Positional sounds"): at `volume`, the call's
+/// requested volume ([`CALL_VOLUME`] plays it at its own, `0xE0` louder);
+/// panned by where `at` lies from the camera's focus (none: centred); and
+/// with `fade`, quieter the further `at` is from the nearest hero in play —
+/// full within 20, silent from 70, not played at all then. The pan and the
+/// fade are taken once, as it starts.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct PlaySoundAt {
+    pub name: String,
+    pub at: Option<Vec3>,
+    pub volume: u8,
+    pub fade: bool,
+}
+
+impl PlaySoundAt {
+    /// Panned by where it is.
+    pub fn panned(name: impl Into<String>, at: Vec3, volume: u8) -> Self {
+        Self { name: name.into(), at: Some(at), volume, fade: false }
+    }
+
+    /// Panned by where it is and faded by its distance from the heroes.
+    pub fn faded(name: impl Into<String>, at: Vec3, volume: u8) -> Self {
+        Self { name: name.into(), at: Some(at), volume, fade: true }
+    }
+
+    /// Centred, at a requested volume.
+    pub fn centred(name: impl Into<String>, volume: u8) -> Self {
+        Self { name: name.into(), at: None, volume, fade: false }
+    }
+}
+
+/// The requested volume that plays a call at its own volume.
+pub const CALL_VOLUME: u8 = 127;
+/// The pan dead ahead of the camera's focus (and of a sound with no place).
+pub const CENTRE_PAN: i32 = 127;
+/// Offsets from the focus pan fully to a side from this far.
+const PAN_REACH: f32 = 20.0;
+/// The fade: full volume, less 1/50 a unit, capped at 1.
+const FADE_START: f32 = 1.4;
+const FADE_PER_UNIT: f32 = 1.0 / 50.0;
+/// The distance the fade takes with no hero in play.
+const NO_HERO: f32 = 1000.0;
+
+/// The positional pan (`docs/audio-format.md`, "Positional sounds"),
+/// `-256..=255`: with `o` the level offset of `at` from the camera's
+/// `focus`, 127.5 + 127.5 × (`o`'s direction · `right`) × min(|`o`| / 20,
+/// 1), truncated — 0 full left, 127 dead ahead, 255 full right — and
+/// negated when `o` points away from the way the camera faces (behind the
+/// focus). `right` is the camera's right, level and of unit length.
+pub fn pan(at: Vec3, focus: Vec3, right: Vec3) -> i32 {
+    let offset = Vec3::new(at.x - focus.x, 0.0, at.z - focus.z);
+    let length = offset.length();
+    let unit = if length > 0.0 { offset / length } else { offset };
+    let reach = (length / PAN_REACH).min(1.0);
+    let mut p = (127.5 * unit.dot(right) * reach + 127.5) as i32;
+    if right.x * unit.z < right.z * unit.x {
+        p = -p;
+    }
+    p.clamp(-256, 255)
+}
+
+/// The distance fade: 1.4 − `distance` / 50, clamped to 0–1.
+pub fn fade(distance: f32) -> f32 {
+    (FADE_START - distance * FADE_PER_UNIT).clamp(0.0, 1.0)
+}
+
+/// The sound driver's mixer settings for a pan (the pan as an angle, 512
+/// to the turn): the side pan, 0 left … 127 right (|pan| / 2), and the
+/// surround pan, 0 behind … 127 in front.
+fn mix(pan: i32) -> (u32, u32) {
+    let side = |shift: i32| ((0x100 - ((pan + shift) & 0x1ff)).unsigned_abs() >> 1).min(127);
+    (side(0x100), side(0x180))
+}
+
+/// The mixer's pan table, tenths of a dB: a channel `k` steps away from
+/// its own side (0 … 127) gets 10·log10((127 − k) / 127) — constant power,
+/// −3 dB each at the centre — and −90.4 dB at 127.
+fn pan_db(k: u32) -> i32 {
+    if k >= 127 {
+        return -904;
+    }
+    (100.0 * (f64::from(127 - k) / 127.0).log10()).round() as i32
+}
+
+/// The left and right gains of a pan: the mixer's side pan through its
+/// table, relative to the centre's so a centred sound plays as an unpanned
+/// one. The surround pan (front or behind) needs a surround decoder and
+/// isn't applied here.
+pub fn stereo_gains(pan: i32) -> [f32; 2] {
+    let (side, _surround) = mix(pan);
+    let amp = |db: i32| 10f32.powf(db as f32 / 200.0);
+    let centre = amp(pan_db(mix(CENTRE_PAN).0));
+    [amp(pan_db(side)) / centre, amp(pan_db(127 - side)) / centre]
+}
+
+/// Where the positional sounds are heard from: the camera's focus (the
+/// target of its view) and its right, level.
+fn ear(camera: &PlayCamera) -> (Vec3, Vec3) {
+    let (eye, target) = camera.view();
+    let (eye, target) = (Vec3::from(eye), Vec3::from(target));
+    let ahead = Vec3::new(target.x - eye.x, 0.0, target.z - eye.z);
+    let ahead = if ahead.length_squared() > 1e-8 {
+        ahead.normalize()
+    } else {
+        Vec3::new(camera.yaw().sin(), 0.0, camera.yaw().cos())
+    };
+    (target, Vec3::new(ahead.z, 0.0, -ahead.x))
 }
 
 /// The game's two voice queues.
@@ -400,38 +519,101 @@ fn audio_keys(
     }
 }
 
-fn play_sounds(
-    mut commands: Commands,
-    mut requests: MessageReader<PlaySound>,
-    mut game: ResMut<LoadedGame>,
-    mut tables: ResMut<AudioTables>,
-    mut status: ResMut<AudioStatus>,
-    mut effects: ResMut<Assets<SoundEffect>>,
-    options: Res<GameOptions>,
-) {
-    for PlaySound(name) in requests.read() {
+/// What starting a sound effect takes.
+#[derive(SystemParam)]
+struct Effects<'w, 's> {
+    commands: Commands<'w, 's>,
+    game: ResMut<'w, LoadedGame>,
+    tables: ResMut<'w, AudioTables>,
+    status: ResMut<'w, AudioStatus>,
+    assets: ResMut<'w, Assets<SoundEffect>>,
+    options: Res<'w, GameOptions>,
+}
+
+impl Effects<'_, '_> {
+    /// Builds and starts a sound effect: centred at its call's volume, or
+    /// as a positional call asks.
+    fn start(&mut self, name: &str, look: Option<EffectLook>) {
         let started = std::time::Instant::now();
-        let built = build_sound(&mut game, &mut tables, name);
+        let built = build_sound(&mut self.game, &mut self.tables, name);
         let took = started.elapsed();
         if took.as_millis() > 2 {
             debug!("sound {name} took {took:?} to build");
         }
         match built {
-            Ok(effect) => {
-                commands.spawn((
-                    EffectName(name.clone()),
+            Ok(mut effect) => {
+                if let Some(look) = look {
+                    effect.gain *= f32::from(look.volume) / f32::from(CALL_VOLUME);
+                    effect.stereo = look.stereo;
+                }
+                self.commands.spawn((
+                    EffectName(name.to_string()),
                     SoundKind::Effect,
-                    AudioPlayer(effects.add(effect)),
-                    PlaybackSettings { volume: options.category(SoundKind::Effect), ..PlaybackSettings::DESPAWN },
+                    AudioPlayer(self.assets.add(effect)),
+                    PlaybackSettings { volume: self.options.category(SoundKind::Effect), ..PlaybackSettings::DESPAWN },
                 ));
-                status.last_sound = name.clone();
+                self.status.last_sound = name.to_string();
             }
             Err(e) => {
                 warn!("sound {name}: {e}");
-                status.last_sound = format!("{name} failed: {e}");
+                self.status.last_sound = format!("{name} failed: {e}");
             }
         }
     }
+}
+
+fn play_sounds(mut requests: MessageReader<PlaySound>, mut effects: Effects) {
+    for PlaySound(name) in requests.read() {
+        effects.start(name, None);
+    }
+}
+
+/// The game's positional calls: the fade (skipping what it silences) and
+/// the pan from the heroes and the camera as the sound starts.
+fn play_sounds_at(
+    mut requests: MessageReader<PlaySoundAt>,
+    mut effects: Effects,
+    camera: Option<Res<PlayCamera>>,
+    heroes: Query<&Player>,
+    state: Option<Res<PlayerState>>,
+    frontend: Option<Res<Frontend>>,
+) {
+    if requests.is_empty() {
+        return;
+    }
+    let ear = camera.as_deref().map(ear);
+    // The heroes in play (not dead, not out of the level): their feet.
+    let in_play = state.is_some_and(|s| s.alive) && !frontend.is_some_and(|f| f.hero_out());
+    let feet: Vec<Vec3> = if in_play { heroes.iter().map(|p| Vec3::from(p.mover.position)).collect() } else { Vec::new() };
+    for r in requests.read() {
+        let volume = match r.at.filter(|_| r.fade) {
+            Some(at) => {
+                let nearest = feet.iter().map(|f| f.distance(at)).fold(NO_HERO, f32::min);
+                let f = fade(nearest);
+                if f <= 0.0 {
+                    debug!("sound {} faded out ({nearest:.0} from the heroes)", r.name);
+                    continue;
+                }
+                (f32::from(r.volume) * f) as u8
+            }
+            None => r.volume,
+        };
+        let pan = match (r.at, ear) {
+            (Some(at), Some((focus, right))) => pan(at, focus, right),
+            _ => CENTRE_PAN,
+        };
+        let look = EffectLook { volume, stereo: (pan != CENTRE_PAN).then(|| stereo_gains(pan)) };
+        debug!("sound {} at {:?}: volume {volume}, pan {pan}", r.name, r.at);
+        effects.start(&r.name, Some(look));
+    }
+}
+
+/// How a positional call plays: its requested volume and its left and
+/// right gains (none: centred).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EffectLook {
+    volume: u8,
+    stereo: Option<[f32; 2]>,
 }
 
 fn stop_sounds(mut commands: Commands, mut requests: MessageReader<StopSound>, playing: Query<(Entity, &EffectName)>) {
@@ -505,7 +687,7 @@ fn build_sound(game: &mut LoadedGame, tables: &mut AudioTables, name: &str) -> R
     let loop_from = loop_from.filter(|&l| l < segments.len());
     // Volume is 0..127 of full scale.
     let gain = call.volume.min(127) as f32 / 127.0;
-    Ok(SoundEffect { segments: segments.into(), loop_from, gain })
+    Ok(SoundEffect { segments: segments.into(), loop_from, gain, stereo: None })
 }
 
 /// A level's music: its parts in order, the last one looping forever.
@@ -565,20 +747,31 @@ struct Segment {
 }
 
 /// A decoded sound-effect call: mono segments played in order, optionally
-/// looping from one of them.
+/// looping from one of them — centred (one channel), or panned (two, with
+/// these left and right gains). Samples are floats, so a call asked for
+/// louder than its own volume isn't clipped here.
 #[derive(Asset, TypePath)]
 pub struct SoundEffect {
     segments: Arc<[Segment]>,
     loop_from: Option<usize>,
     gain: f32,
+    stereo: Option<[f32; 2]>,
 }
 
 impl Decodable for SoundEffect {
-    type DecoderItem = i16;
+    type DecoderItem = f32;
     type Decoder = SoundEffectDecoder;
 
     fn decoder(&self) -> SoundEffectDecoder {
-        SoundEffectDecoder { segments: self.segments.clone(), loop_from: self.loop_from, gain: self.gain, segment: 0, pos: 0 }
+        SoundEffectDecoder {
+            segments: self.segments.clone(),
+            loop_from: self.loop_from,
+            gain: self.gain,
+            stereo: self.stereo,
+            segment: 0,
+            pos: 0,
+            right_next: false,
+        }
     }
 }
 
@@ -586,16 +779,16 @@ pub struct SoundEffectDecoder {
     segments: Arc<[Segment]>,
     loop_from: Option<usize>,
     gain: f32,
+    stereo: Option<[f32; 2]>,
     segment: usize,
     pos: usize,
+    /// Panned: the current sample's right channel comes next.
+    right_next: bool,
 }
 
-impl Iterator for SoundEffectDecoder {
-    type Item = i16;
-
-    fn next(&mut self) -> Option<i16> {
-        let seg = self.segments.get(self.segment)?;
-        let sample = seg.pcm[self.pos];
+impl SoundEffectDecoder {
+    fn advance(&mut self) {
+        let Some(seg) = self.segments.get(self.segment) else { return };
         self.pos += 1;
         if self.pos == seg.pcm.len() {
             self.pos = 0;
@@ -606,16 +799,41 @@ impl Iterator for SoundEffectDecoder {
                 self.segment = l;
             }
         }
-        Some((sample as f32 * self.gain) as i16)
+    }
+}
+
+impl Iterator for SoundEffectDecoder {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        let seg = self.segments.get(self.segment)?;
+        let sample = f32::from(seg.pcm[self.pos]) / 32768.0 * self.gain;
+        let out = match self.stereo {
+            Some([left, _]) if !self.right_next => {
+                self.right_next = true;
+                return Some(sample * left);
+            }
+            Some([_, right]) => {
+                self.right_next = false;
+                sample * right
+            }
+            None => sample,
+        };
+        self.advance();
+        Some(out)
     }
 }
 
 impl Source for SoundEffectDecoder {
     fn current_frame_len(&self) -> Option<usize> {
-        Some(self.segments.get(self.segment).map_or(0, |s| s.pcm.len() - self.pos))
+        let left = self.segments.get(self.segment).map_or(0, |s| s.pcm.len() - self.pos);
+        Some(match self.stereo {
+            Some(_) => left * 2 - usize::from(self.right_next),
+            None => left,
+        })
     }
     fn channels(&self) -> u16 {
-        1
+        if self.stereo.is_some() { 2 } else { 1 }
     }
     fn sample_rate(&self) -> u32 {
         self.segments.get(self.segment).map_or(22050, |s| s.sample_rate)
@@ -637,25 +855,106 @@ mod tests {
         let segments: Vec<Segment> = lens
             .iter()
             .enumerate()
-            .map(|(i, &(rate, n))| Segment { sample_rate: rate, pcm: vec![i as i16 + 1; n].into() })
+            .map(|(i, &(rate, n))| Segment { sample_rate: rate, pcm: vec![(i as i16 + 1) * 8192; n].into() })
             .collect();
-        SoundEffect { segments: segments.into(), loop_from, gain: 1.0 }
+        SoundEffect { segments: segments.into(), loop_from, gain: 1.0, stereo: None }
+    }
+
+    /// Segment n's samples come out as (n + 1) / 4 of full scale.
+    fn quarters(samples: impl Iterator<Item = f32>) -> Vec<f32> {
+        samples.map(|s| s * 4.0).collect()
     }
 
     #[test]
     fn effect_plays_segments_in_order_then_stops() {
         let mut d = effect(&[(12000, 2), (18000, 3)], None).decoder();
-        assert_eq!((d.sample_rate(), d.current_frame_len()), (12000, Some(2)));
-        let first: Vec<i16> = d.by_ref().take(2).collect();
-        assert_eq!(first, [1, 1]);
+        assert_eq!((d.sample_rate(), d.current_frame_len(), d.channels()), (12000, Some(2), 1));
+        assert_eq!(quarters(d.by_ref().take(2)), [1.0, 1.0]);
         assert_eq!((d.sample_rate(), d.current_frame_len()), (18000, Some(3)));
-        assert_eq!(d.collect::<Vec<_>>(), [2, 2, 2]);
+        assert_eq!(quarters(d), [2.0, 2.0, 2.0]);
     }
 
     #[test]
     fn effect_loops_from_its_loop_segment() {
         let d = effect(&[(12000, 1), (12000, 2)], Some(1)).decoder();
-        assert_eq!(d.take(7).collect::<Vec<_>>(), [1, 2, 2, 2, 2, 2, 2]);
+        assert_eq!(quarters(d.take(7)), [1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn a_panned_effect_plays_both_channels_by_their_gains() {
+        let mut e = effect(&[(12000, 2), (18000, 1)], None);
+        e.stereo = Some([0.5, 2.0]);
+        e.gain = 2.0;
+        let mut d = e.decoder();
+        assert_eq!((d.channels(), d.current_frame_len()), (2, Some(4)));
+        assert_eq!(quarters(d.by_ref().take(1)), [1.0]);
+        // Mid-frame: the right channel is still to come, at the same rate.
+        assert_eq!((d.sample_rate(), d.current_frame_len()), (12000, Some(3)));
+        assert_eq!(quarters(d.by_ref().take(3)), [4.0, 1.0, 4.0]);
+        assert_eq!((d.sample_rate(), d.current_frame_len()), (18000, Some(2)));
+        assert_eq!(quarters(d), [2.0, 8.0]);
+    }
+
+    #[test]
+    fn the_fade_by_distance() {
+        assert_eq!(fade(0.0), 1.0);
+        assert_eq!(fade(20.0), 1.0);
+        assert!((fade(45.0) - 0.5).abs() < 1e-6);
+        assert_eq!(fade(70.0), 0.0);
+        assert_eq!(fade(NO_HERO), 0.0);
+    }
+
+    #[test]
+    fn the_pan_from_the_camera() {
+        let (focus, right) = (Vec3::new(10.0, 0.0, 5.0), Vec3::X);
+        // The camera faces +Z here (right = (ahead.z, 0, -ahead.x)).
+        let at = |x: f32, z: f32| pan(focus + Vec3::new(x, 3.0, z), focus, right);
+        assert_eq!(at(0.0, 0.0), 127);
+        assert_eq!(at(0.0, 30.0), 127);
+        assert_eq!(at(30.0, 0.0), 255);
+        assert_eq!(at(-30.0, 0.0), 0);
+        assert_eq!(at(21.0, 21.0), 217);
+        // Within 20 of the focus the pan narrows.
+        assert_eq!(at(10.0, 0.0), 191);
+        // Behind the focus: negated.
+        assert_eq!(at(0.0, -30.0), -127);
+        assert_eq!(at(21.0, -21.0), -217);
+    }
+
+    #[test]
+    fn the_mixer_pans_by_angle() {
+        // Side pan |pan| / 2; surround pan 127 ahead, 0 behind.
+        assert_eq!(mix(127), (63, 127));
+        assert_eq!(mix(0), (0, 64));
+        assert_eq!(mix(255), (127, 64));
+        assert_eq!(mix(-127), (63, 0));
+        assert_eq!(mix(-217), (108, 44));
+        assert_eq!(mix(-256), (127, 64));
+    }
+
+    /// The mixer's table, as the game has it (spot checks).
+    #[test]
+    fn the_pan_table() {
+        let table: Vec<i32> = (0..128).map(pan_db).collect();
+        assert_eq!(table[..8], [0, 0, -1, -1, -1, -2, -2, -2]);
+        assert_eq!(table[60..68], [-28, -28, -29, -30, -30, -31, -32, -33]);
+        assert_eq!(table[122..], [-140, -150, -163, -180, -210, -904]);
+    }
+
+    #[test]
+    fn stereo_gains_keep_the_power() {
+        let [l, r] = stereo_gains(CENTRE_PAN);
+        assert!((l - 1.0).abs() < 1e-6 && (r - 1.0).abs() < 0.01, "{l} {r}");
+        let [l, r] = stereo_gains(255);
+        assert!(l < 0.001 && (r - std::f32::consts::SQRT_2).abs() < 0.01, "{l} {r}");
+        let [l, r] = stereo_gains(0);
+        assert!((l - std::f32::consts::SQRT_2).abs() < 0.01 && r < 0.001, "{l} {r}");
+        // Behind the camera it pans by the same side pan.
+        assert_eq!(stereo_gains(-255), stereo_gains(255));
+        for p in [-200, -50, 0, 40, 127, 200, 255] {
+            let [l, r] = stereo_gains(p);
+            assert!((l * l + r * r - 2.0).abs() < 0.1, "{p}: {l} {r}");
+        }
     }
 
     #[test]
