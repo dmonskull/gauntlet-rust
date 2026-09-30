@@ -877,6 +877,22 @@ pub fn spawn(
             }
         }
     }
+    // A safe rock shows each stage as it's broken down (`breakables.rs`).
+    for placement in &pop.placements {
+        let ty = pop.resolved_type(placement);
+        let PlacementParams::Obstacle { subtype, .. } = placement.params(ty.class) else { continue };
+        let own = if subtype >= 1 { i32::from(subtype) } else { ty.subtype };
+        if own != crate::items::SAFE_ROCK {
+            continue;
+        }
+        for stage in 0..=3 {
+            let name = format!("{}{stage}", ty.name);
+            if !contents.models.contains_key(&name) {
+                let model = build_model(&sources, &mut caches, &name, None, meshes, level_materials, images);
+                contents.models.insert(name, model);
+            }
+        }
+    }
     // A boss's loot (`loot.rs`): its realm's coins or Skorne's pieces.
     if pop.locators.iter().any(|l| l.kind == LocatorKind::Boss) {
         for name in LOOT_ITEMS {

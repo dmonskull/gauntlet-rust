@@ -610,8 +610,24 @@ running out makes it again (`0x80063d2c`: shown, hit points 3 × the
 type's, armour the type's `+0x42`, stage 3). A5's rocks start at stage 1,
 B6's and K5's at 3.
 
-Here: the stage models, the touch rule and I5's hidden start. Not done:
-rocks taking damage, the throw (kind 6) and the volley (kind 5).
+**Blows on a rock** (the item damage routine `FUN_8005c1c8`, class 10,
+subtype `0x29`): the blow less the rock's armour (`+0xCF`; at least 1
+(`r2-0x6804`) when the armour swallows it; none at all with armour
+`0xFF`) comes off its hit points (`+0xD0`, rounded half away from zero,
+not below 0), then `0x80063d9c` restages it. Missiles reach rocks through
+the flight's item test (every kind of missile has the items flag); the
+filter (`FUN_8009682c`, class 10) lets magic (`0x200`) pass every rock,
+and a broken rock (armour `0xFF`) pass everything but an explosion
+(`0x400`) — so standing rocks stop the heroes', the monsters' and the
+bosses' missiles alike. Blasts with the items flag reach them the same
+way (a boss's death sweep breaks every rock). The heroes' melee search
+leaves rocks out.
+
+Here: the stage models (`ContentModels` builds `<name>0`–`<name>3`), the
+touch rule, I5's hidden start, and blows on rocks: `LevelItems::
+rock_in_way` / `hit_rock`, missiles stopping on them (`projectiles.rs`)
+and blasts (`effects.rs`, `breakables.rs`), GENDEST as one breaks. Not
+done: the throw (kind 6) and the volley (kind 5).
 - **7 — grab** (the lich's, the yeti's and both Skornes' GRAB moves,
   move kind 0x81: blow 1 in its window — the lich 16–18, the yeti 25–30,
   the Skornes 12–15 — blow 2 once from its frame: 71, 100, 44):

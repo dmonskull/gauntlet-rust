@@ -91,6 +91,8 @@ const BREAKS_OPEN: u16 = 0x200;
 /// Blows of this kind do no damage.
 const NO_DAMAGE: u32 = 0x800;
 /// Fields before released contents can be picked up.
+/// What a safe rock leaves as it breaks (the effect table's `0x1E`).
+const ROCK_BROKEN_FX: &str = "GENDEST";
 const RELEASE_DELAY: i32 = 30;
 /// Blasts' damage (× the level's hazard scale): an exploding barrel's
 /// fireball, a poison barrel's cloud, a CHESTEXP's (`effects.rs` has their
@@ -347,6 +349,10 @@ pub struct BlastItem {
 /// some effects pass powerups or barrels by their own flags; the blasts
 /// leave those out.)
 pub fn blast_reaches(v: &ItemView, kind: u32) -> bool {
+    // A standing safe rock takes any blast but magic (a broken one none).
+    if v.rock {
+        return v.live && v.armor >= 0 && kind & MAGIC == 0;
+    }
     if !v.live || v.ty.armor >= 0 {
         return false;
     }
@@ -547,6 +553,19 @@ fn blasted_items(
         return;
     };
     for b in blasts.read() {
+        // A safe rock takes the blow and shows its new stage; broken, it
+        // leaves GENDEST (the game's effect `0x1E`).
+        if let Some(v) = items.view(b.placement).filter(|v| v.rock) {
+            let (pose, name) = (item_pose(&v, &transforms), v.ty.name.clone());
+            if let Some(stage) = items.hit_rock(b.placement, b.damage) {
+                info!("safe rock {} is now stage {stage}", b.placement);
+                swap_model(&mut items, b.placement, &format!("{name}{stage}"), pose, contents.as_deref(), &mut commands);
+                if stage == 0 {
+                    effects.write(EffectAt { name: ROCK_BROKEN_FX, bank: None, at: pose.translation, facing: 0.0, scale: 1.0 });
+                }
+            }
+            continue;
+        }
         let Some(v) = items.view(b.placement).filter(|v| blast_reaches(v, b.kind)) else { continue };
         let blow = match v.ty.class {
             ItemClass::Powerup => powerup_blow(v.ty.subtype, v.ty.hit_points, b.kind, b.damage),

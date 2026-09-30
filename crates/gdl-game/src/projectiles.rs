@@ -29,6 +29,7 @@ use gdl_formats::{LevelCollision, ModelFile, enemy};
 
 use crate::actions::Strike;
 use crate::audio::PlaySound;
+use crate::breakables::BlastItem;
 use crate::character::{self, CharacterData, CharacterModel};
 use crate::combat::{self, CritterAim, Hit, TargetKind, Targetable};
 use crate::effects::{BlastAt, PotionBurst, StrikePotion, is_floor_potion};
@@ -1214,7 +1215,7 @@ fn fly(
     mut hits: MessageWriter<Hit>,
     mut damage: MessageWriter<DamagePlayer>,
     mut potions: MessageWriter<BlastAt>,
-    (items, mut struck): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>),
+    (items, mut struck, mut rocks): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>, MessageWriter<BlastItem>),
     (mut sounds, mut ricochet): (MessageWriter<PlaySound>, Local<f64>),
 ) {
     let dt = time.delta_secs();
@@ -1336,6 +1337,16 @@ fn fly(
                     stop = Some(Stop::At(to));
                 }
             }
+        }
+        // A safe rock in the way (every missile but magic; a broken one
+        // only an explosive one) takes the blow, and the missile stops.
+        if stop.is_none()
+            && let Some((s, placement)) = items.as_deref().and_then(|i| i.rock_in_way(from.to_array(), to.to_array(), r, p.kind))
+        {
+            to = from.lerp(to, s);
+            debug!("missile strikes the safe rock at placement {placement}");
+            rocks.write(BlastItem { placement, kind: p.kind, damage: p.damage });
+            stop = Some(Stop::At(to));
         }
         // The level.
         if stop.is_none()
