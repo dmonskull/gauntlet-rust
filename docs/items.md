@@ -121,10 +121,12 @@ The power-ups on the disc: weapon — `FIREICON` 1, `ELECICON` 2,
 
 Here (`PlayerState::tick_powers`, `PowerBits`; `player.rs`
 `apply_powers`): the adding up, the tower's hold, the weapon bits on
-blows and missiles, speed, magic and the turbo fill. Not done yet: what
-the other bits do (multi-shots, reflecting, the crossbow's and hammer's
-shots, rapid fire, the shields and invulnerability, the specials but
-levitation), and their looks (the chrome, invisibility's flicker). Test
+blows and missiles, speed, magic and the turbo fill; the multi-shots,
+the crossbow's piercing bolts and reflect's bouncing
+([projectiles.md](projectiles.md)). Not done yet: the crossbow's and
+hammer's own shots, rapid fire, the shields and invulnerability, the
+specials but levitation, and their looks (the chrome, invisibility's
+flicker). Test
 with `GDL_POWERS="5:1,7:0:4:40"` (subtype:value[:amount[:seconds]]).
 
 ## Items at run time

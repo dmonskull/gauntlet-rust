@@ -122,9 +122,44 @@ fn spawn_thrower(
 pub const PLAYER_CENTRE: f32 = 2.5;
 /// A player's half height for missiles (half the class record's height).
 const PLAYER_HALF_HEIGHT: f32 = 2.5;
-/// Missiles vanish after this many seconds (two for the multi-shot spreads,
-/// not done).
+/// Missiles vanish after this many seconds (two for the multi-shot
+/// spreads).
 const LIFETIME: f32 = 3.0;
+const SPREAD_LIFETIME: f32 = 2.0;
+
+/// Weapon power bits the hero's missiles act on: three and five missiles
+/// fanned out, piercing (the crossbow), bouncing off walls (reflect).
+pub mod shot_kind {
+    pub const MULTI: u32 = 0x8_0000;
+    pub const MULTI5: u32 = 0x40_0000;
+    pub const PIERCE: u32 = 0x10_0000;
+    pub const BOUNCE: u32 = 0x20_0000;
+    /// The power throw.
+    pub const POWER: u32 = 0x200_0000;
+}
+
+/// The spread's turns (cosine, sine): straight, ±15°, ±30° (the game's
+/// tables at `0x80111580`/`0x80111594`, in docs only). Three missiles
+/// with the multi-shot, five with the five-way one.
+const SPREAD: [(f32, f32); 5] = [(1.0, 0.0), (0.966, 0.259), (0.966, -0.259), (0.866, 0.5), (0.866, -0.5)];
+
+/// How many missiles a throw of `kind` makes.
+fn spread_count(kind: u32) -> usize {
+    if kind & shot_kind::MULTI5 != 0 {
+        5
+    } else if kind & shot_kind::MULTI != 0 {
+        3
+    } else {
+        1
+    }
+}
+
+/// A crossbow power's throws fly as bolts (the game's special missile
+/// record): straight, pointing along their flight, a radius of 5, hitting
+/// heavily (`0x20`).
+const BOLT: MissileType = missile(0x20, 0.0, 0.0, 5.0, 0.0, [0.0; 3], 0.0);
+/// A bounce keeps this much of any upward speed.
+const BOUNCE_RISE: f32 = 0.4;
 /// A throw wound up for longer than this goes further, up to 0.1 s more.
 const WIND_UP: f32 = 0.27;
 const WIND_UP_MAX: f32 = 0.1;
@@ -360,6 +395,8 @@ pub struct Projectile {
     scale: f32,
     /// A thrown potion: the magic blast it becomes where it lands.
     pub potion: Option<PotionBurst>,
+    /// What a piercing missile has hit already (it hits each once).
+    pierced: Vec<Entity>,
 }
 
 /// What a missile was let go with.
@@ -777,6 +814,7 @@ fn spawn_projectile(
         lifetime: LIFETIME,
         scale,
         potion: None,
+        pierced: Vec::new(),
     };
     let transform = Transform::from_translation(launch.start).with_rotation(orientation(&p)).with_scale(Vec3::splat(scale));
     let entity = match model {
@@ -858,11 +896,17 @@ fn launch_hero(
     for shot in shots.read() {
         let Some(hero) = hero.as_deref() else { continue };
         let power = shot.strike.0 & Strike::POWER_THROW != 0;
-        let t = hero.kind;
         let (offset, mult, kind, size) =
             if power { (hero.power_offset, 2.0, 0x200_0010, POWER_SIZE) } else { (hero.throw_offset, 1.0, 0, 1.0) };
-        // The throw starts from the hero's weapon bits.
-        let kind = kind | players.get(shot.hero).map_or(0, |p| p.weapon);
+        // The throw starts from the hero's weapon bits; with the crossbow
+        // power it's a bolt.
+        let mut kind = kind | players.get(shot.hero).map_or(0, |p| p.weapon);
+        let t = if kind & shot_kind::PIERCE != 0 && kind & shot_kind::POWER == 0 {
+            kind |= BOLT.kind;
+            BOLT
+        } else {
+            hero.kind
+        };
         let launch = hero_launch(shot, missile_class(hero.class), offset, hero.speed, t.gravity);
         let radius = t.radius * size;
         let damage = hero.damage * mult;
@@ -893,7 +937,15 @@ fn launch_hero(
             launch.velocity
         );
         let scale = if power { 2.0 } else { 1.0 };
-        spawn_projectile(&mut commands, hero.model.as_deref(), Owner::Hero(shot.hero), &launch, &t, radius, damage, kind, scale);
+        let count = spread_count(kind);
+        for &(c, s) in &SPREAD[..count] {
+            let v = launch.velocity;
+            let turned = Launch { velocity: Vec3::new(v.x * c + v.z * s, v.y, -v.x * s + v.z * c), ..launch };
+            let e = spawn_projectile(&mut commands, hero.model.as_deref(), Owner::Hero(shot.hero), &turned, &t, radius, damage, kind, scale);
+            if count > 1 {
+                commands.entity(e).entry::<Projectile>().and_modify(|mut p| p.lifetime = SPREAD_LIFETIME);
+            }
+        }
     }
 }
 
@@ -1010,11 +1062,12 @@ fn fly(
             // A critter's spheres before its body.
             let met: Vec<(f32, &Body)> = bodies
                 .iter()
+                .filter(|b| !p.pierced.contains(&b.entity))
                 .filter_map(|b| cylinder_hit(from, to, b.centre, r + b.radius, r + b.half).map(|s| (s, b)))
                 .collect();
             let hit = combat::one_per_critter(met, |(_, b)| b.aim).into_iter().min_by(|a, b| a.0.total_cmp(&b.0));
             if let Some((s, b)) = hit {
-                to = from.lerp(to, s);
+                let at = from.lerp(to, s);
                 info!("missile hits {:?} {:?} for {:.1}", b.kind, b.entity, p.damage);
                 hits.write(Hit {
                     target: b.entity,
@@ -1022,25 +1075,31 @@ fn fly(
                     damage: p.damage,
                     kind: p.kind,
                     push: Vec3::ZERO,
-                    at: to,
+                    at,
                     target_kind: b.kind,
                     ranged: true,
                 });
-                stop = Some(Stop::At(to));
+                // A piercing one flies on (each thing it passes, once).
+                if p.kind & shot_kind::PIERCE != 0 {
+                    p.pierced.push(b.entity);
+                } else {
+                    to = at;
+                    stop = Some(Stop::At(to));
+                }
             }
         }
         // Generators, breakables and potions on the floor (hero missiles;
         // the monsters' pass them): the nearest along the way.
         let potion = items.as_deref().filter(|_| stop.is_none() && hero_owned).and_then(|i| potion_hit(from, to, r, i));
         if stop.is_none() && hero_owned {
-            let found = item_hit(from, to, r, targets.iter().map(|(e, g, t, _)| (e, g.translation(), t)));
+            let found = item_hit(from, to, r, targets.iter().map(|(e, g, t, _)| (e, g.translation(), t)).filter(|(e, ..)| !p.pierced.contains(e)));
             if let Some((s, placement)) = potion.filter(|(s, _)| found.is_none_or(|f| *s < f.0)) {
                 to = from.lerp(to, s);
                 info!("missile strikes a potion (placement {placement})");
                 struck.write(StrikePotion { placement, by: Some(p.owner.entity()) });
                 stop = Some(Stop::At(to));
             } else if let Some((s, target, target_kind)) = found {
-                to = from.lerp(to, s);
+                let at = from.lerp(to, s);
                 info!("missile hits {target_kind:?} {target:?} for {:.1}", p.damage);
                 hits.write(Hit {
                     target,
@@ -1048,11 +1107,16 @@ fn fly(
                     damage: p.damage,
                     kind: p.kind,
                     push: Vec3::ZERO,
-                    at: to,
+                    at,
                     target_kind,
                     ranged: true,
                 });
-                stop = Some(Stop::At(to));
+                if p.kind & shot_kind::PIERCE != 0 {
+                    p.pierced.push(target);
+                } else {
+                    to = at;
+                    stop = Some(Stop::At(to));
+                }
             }
         }
         // The level.
@@ -1060,9 +1124,21 @@ fn fly(
             && let Some(g) = ground.as_deref()
             && let Some(h) = wall(&g.0, from, to, WALL_RADIUS * r)
         {
-            to = Vec3::from(h.point);
-            debug!("missile hits the level at {to:?}");
-            stop = Some(Stop::At(to));
+            let n = Vec3::from(h.normal).normalize_or_zero();
+            if p.kind & shot_kind::BOUNCE == 0 {
+                to = Vec3::from(h.point);
+                debug!("missile hits the level at {to:?}");
+                stop = Some(Stop::At(to));
+            } else if p.velocity.dot(n) < 0.0 {
+                // Reflected off the surface, keeping less of any rise (one
+                // already leaving the surface it touches flies on).
+                to = Vec3::from(h.point);
+                p.velocity -= 2.0 * p.velocity.dot(n) * n;
+                if p.velocity.y > 0.0 {
+                    p.velocity.y *= BOUNCE_RISE;
+                }
+                debug!("missile bounces off the level at {to:?}");
+            }
         }
         let bursts = p.blast > 0.0 || p.potion.is_some();
         if stop.is_none() && bursts && p.age >= p.lifetime - BURST_EARLY {
