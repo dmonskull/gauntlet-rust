@@ -372,9 +372,13 @@ pub struct CritterSound {
     pub sound: String,
     /// `+0x30`: offset.
     pub offset: [f32; 3],
-    /// `+0x3C`, `+0x40`: effect lifetime and size.
+    /// `+0x3C`, `+0x40`: effect lifetime (0: its clip's length) and a
+    /// particle system's scale.
     pub life: f32,
     pub scale: f32,
+    /// `+0x4C`: the effect model's scale (× the critter's own, for a
+    /// critter whose model is scaled).
+    pub size: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -564,6 +568,7 @@ impl CritterSound {
             offset: vec3_at(r, 0x30),
             life: f32_at(r, 0x3C),
             scale: f32_at(r, 0x40),
+            size: f32_at(r, 0x4C),
         }
     }
 }
