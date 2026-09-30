@@ -6,6 +6,9 @@
 //! are atrees with their own actions (the Pojo's follow the hero's). A
 //! right-wrist model hides the held weapon; the Pojo hides the hero; the
 //! body's model fades out over its power's last second.
+//!
+//! The x-ray glasses' sight is here too: the nearest container the hero
+//! can see into goes see-through, with what it holds shown inside.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,22 +18,34 @@ use gdl_formats::ModelFile;
 use gdl_formats::anim::AnimFile;
 use gdl_formats::texmod::TexMod;
 
+use gdl_formats::population::{ItemClass, ItemType, PlacementParams};
+
 use crate::actions::Action;
+use crate::audio::PlaySound;
+use crate::billboard::Billboard;
 use crate::character::{self, Animator, CharacterData, CharacterModel, clip_end, clip_fps, loop_length};
 use crate::combat::Hit;
 use crate::fade::Fade;
+use crate::items::{ItemTick, LevelItems};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::model_mesh::{self, TextureCache};
+use crate::monsters;
+use crate::play_camera::PlayCamera;
 use crate::player::Player;
 use crate::player_state::{PlayerState, Power, PowerBits, PowersTick, power};
+use crate::population::{ContentModels, LevelPopulation, XRAY_KEYS, XRAY_MONSTER, XRAY_SPRITE};
 use crate::projectiles::HeroShot;
+use crate::world::LevelEntity;
 
 pub struct PowerLooksPlugin;
 
 impl Plugin for PowerLooksPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<LookModels>().add_systems(FixedUpdate, wear_looks.after(PowersTick));
+        app.init_resource::<LookModels>()
+            .init_resource::<Xray>()
+            .add_systems(FixedUpdate, (wear_looks.after(PowersTick), xray.after(PowersTick).after(ItemTick)))
+            .add_systems(Update, forget_xray.run_if(resource_exists_and_changed::<LevelPopulation>));
     }
 }
 
@@ -109,6 +124,10 @@ enum On {
 
 const POJO: u32 = 0x400;
 const FIRE_WALL: u32 = 0x20_0000;
+/// Levitation (special `0x1`) lifts the hero's model this far above its
+/// feet.
+const LEVITATE: u32 = power::LEVITATE;
+const LEVITATE_LIFT: f32 = 1.5;
 
 /// The body's atrees, the first that applies riding the hero; the fire
 /// wall's only while the hero runs with its shield up.
@@ -152,6 +171,17 @@ const WRISTS: [(&str, &str); 16] = [
     ("LEFTHAND", "RHEND"),
 ];
 const HEAD_NODE: &str = "HEAD";
+
+/// The class's wrist nodes (by the game's class index; unknown classes
+/// get the first class's).
+fn wrists(class: Option<usize>) -> (&'static str, &'static str) {
+    class.and_then(|c| WRISTS.get(c)).copied().unwrap_or(WRISTS[0])
+}
+
+/// The class's left wrist node (`L_WRIST` or `LEFTHAND`).
+pub fn left_wrist(class: Option<usize>) -> &'static str {
+    wrists(class).0
+}
 
 fn first_on<const N: usize>(table: &[(Bits, Look); N], bits: &PowerBits) -> Option<Look> {
     table.iter().find(|(b, _)| b.on(bits)).map(|(_, l)| *l)
@@ -338,7 +368,7 @@ fn wear_looks(
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<LookModels>,
     (mut shots, mut hits): (MessageReader<HeroShot>, MessageReader<Hit>),
-    mut heroes: Query<(Entity, &Player, &Animator, Option<&mut Worn>)>,
+    mut heroes: Query<(Entity, &Player, &mut Animator, Option<&mut Worn>)>,
     mut bodies: Query<(&mut Animator, &mut Fade), Without<Player>>,
     mut visibility: Query<&mut Visibility>,
     (mut meshes, mut materials, mut images): (ResMut<Assets<Mesh>>, ResMut<Assets<LevelMaterial>>, ResMut<Assets<Image>>),
@@ -347,11 +377,15 @@ fn wear_looks(
     let pecked: Vec<Entity> = hits.read().filter(|h| !h.ranged).map(|h| h.attacker).collect();
     let Some(state) = state else { return };
     let bits = state.bits;
-    let (left_node, right_node) = character::class_index(&state.class)
-        .and_then(|c| WRISTS.get(c))
-        .copied()
-        .unwrap_or(WRISTS[0]);
-    for (hero, player, animator, worn) in &mut heroes {
+    let class = character::class_index(&state.class);
+    let (left_node, right_node) = (left_wrist(class), wrists(class).1);
+    for (hero, player, mut animator, worn) in &mut heroes {
+        // Levitation lifts the hero's model off its feet.
+        let lift = if bits.special & LEVITATE != 0 { LEVITATE_LIFT } else { 0.0 };
+        if animator.lift != lift {
+            animator.lift = lift;
+        }
+        let animator = &*animator;
         let Some(mut worn) = worn else {
             commands.entity(hero).insert(Worn::default());
             continue;
@@ -453,6 +487,164 @@ fn wear_looks(
     }
 }
 
+/// The x-ray glasses (special `0x2`, `docs/powers.md`).
+const XRAY: u32 = 0x2;
+/// How near a container has to be.
+const XRAY_RANGE: f32 = 10.0;
+/// The on-screen test's radius, × the container type's first extent.
+const XRAY_SCREEN: f32 = 2.0;
+/// The container's transparency (192 of 255).
+const XRAY_FADE: f32 = 192.0 / 255.0;
+/// What's inside is shown at this scale.
+const XRAY_SCALE: f32 = 0.65;
+const XRAY_SOUND: &str = "S_XRAY";
+/// The key powerup's subtype.
+const KEY: i32 = 2;
+
+/// What the x-ray shows inside a container holding `contents` (`keys`:
+/// the container's count): the Death icon for a monster, the key ring for
+/// more than one key, else the contents' own model; `None` for anything
+/// else, which it doesn't see.
+fn xray_model(contents: &ItemType, keys: i16) -> Option<&str> {
+    match contents.class {
+        ItemClass::EnemyInfo => Some(XRAY_MONSTER),
+        ItemClass::Powerup if contents.subtype == KEY && keys > 1 => Some(XRAY_KEYS),
+        ItemClass::Powerup => Some(contents.name.as_str()),
+        _ => None,
+    }
+}
+
+/// What the x-ray has on: the container (placement) and its model, the
+/// model shown inside, and the holder at the container carrying it and
+/// the see-through sprite.
+#[derive(Resource, Default)]
+struct Xray {
+    container: Option<(usize, Option<Entity>)>,
+    shown: Option<String>,
+    holder: Option<Entity>,
+}
+
+/// A container the x-ray could see into: how far, which, its centre and
+/// on-screen radius, its model and the model to show inside.
+struct Seen<'a> {
+    distance: f32,
+    placement: usize,
+    centre: [f32; 3],
+    radius: f32,
+    model: Option<Entity>,
+    shown: &'a str,
+}
+
+/// A new level: what the x-ray had on went with the old one.
+fn forget_xray(mut xray: ResMut<Xray>) {
+    *xray = Xray::default();
+}
+
+/// Each tick, the nearest container within 10 of the hero that is still
+/// shut and holds a powerup or a monster, if it's on screen: drawn
+/// see-through, with the contents' model inside at 0.65 and the
+/// see-through sprite over it; `S_XRAY` when the container or what's shown
+/// changes. With nothing found, or the power off, it's put back.
+#[allow(clippy::too_many_arguments)]
+fn xray(
+    mut commands: Commands,
+    mut xray: ResMut<Xray>,
+    state: Option<Res<PlayerState>>,
+    items: Res<LevelItems>,
+    models: Option<Res<ContentModels>>,
+    camera: Option<Res<PlayCamera>>,
+    players: Query<&Player>,
+    transforms: Query<&Transform>,
+    mut fades: Query<&mut Fade>,
+    mut sounds: MessageWriter<PlaySound>,
+) {
+    let on = state.is_some_and(|s| s.bits.special & XRAY != 0);
+    let hero = players.iter().next().map(|p| Vec3::from(p.mover.position));
+    // The nearest container it could see into.
+    let mut found: Option<Seen> = None;
+    if let (true, Some(hero)) = (on, hero) {
+        for v in items.views() {
+            if v.ty.class != ItemClass::Container || !v.live || v.state != 0 {
+                continue;
+            }
+            let keys = match v.params {
+                PlacementParams::Container { param, .. } => *param,
+                _ => 0,
+            };
+            let Some(model) = v.contents.and_then(|c| xray_model(c, keys)) else { continue };
+            let distance = hero.distance(Vec3::from(v.shape.centre));
+            if distance < found.as_ref().map_or(XRAY_RANGE, |f| f.distance) {
+                let (placement, centre, model, shown) = (v.placement, v.shape.centre, v.model, model);
+                found = Some(Seen { distance, placement, centre, radius: XRAY_SCREEN * v.ty.extent[0], model, shown });
+            }
+        }
+    }
+    let view = monsters::game_view(camera.as_deref());
+    let target = found
+        .filter(|f| monsters::on_screen(view.as_ref(), f.centre, f.radius))
+        .map(|f| (f.placement, f.centre, f.model, f.shown.to_string()));
+
+    let xray = &mut *xray;
+    let mut fade = |entity: Option<Entity>, amount: f32, commands: &mut Commands| {
+        let Some(e) = entity else { return };
+        match fades.get_mut(e) {
+            Ok(mut f) => f.amount = amount,
+            Err(_) if amount > 0.0 => {
+                commands.entity(e).try_insert(Fade::new(amount));
+            }
+            Err(_) => {}
+        }
+    };
+    let Some((placement, centre, model, shown)) = target else {
+        // Nothing to see: everything back as it was.
+        if let Some((_, old)) = xray.container.take() {
+            fade(old, 0.0, &mut commands);
+        }
+        if let Some(h) = xray.holder.take() {
+            commands.entity(h).try_despawn();
+        }
+        xray.shown = None;
+        return;
+    };
+    let mut changed = false;
+    if xray.container.map(|(p, _)| p) != Some(placement) {
+        if let Some((_, old)) = xray.container.take() {
+            fade(old, 0.0, &mut commands);
+        }
+        fade(model, XRAY_FADE, &mut commands);
+        xray.container = Some((placement, model));
+        changed = true;
+    }
+    if changed || xray.shown.as_deref() != Some(shown.as_str()) {
+        if let Some(h) = xray.holder.take() {
+            commands.entity(h).try_despawn();
+        }
+        // The holder stands where the container's model does.
+        let at = model.and_then(|m| transforms.get(m).ok()).copied().unwrap_or(Transform::from_translation(Vec3::from(centre)));
+        let holder = commands.spawn((at, Visibility::default(), LevelEntity)).id();
+        if let Some(models) = models.as_deref() {
+            let inside = models.spawn_still(&shown, Transform::from_scale(Vec3::splat(XRAY_SCALE)), &mut commands);
+            let sprite = models.spawn_still(XRAY_SPRITE, Transform::default(), &mut commands);
+            for e in inside.into_iter().chain(sprite) {
+                commands.entity(e).insert(ChildOf(holder));
+            }
+            if let Some(e) = sprite {
+                commands.entity(e).insert(Billboard::Sprite);
+            }
+            if inside.is_none() {
+                debug!("x-ray: no model {shown} to show in container {placement}");
+            }
+        }
+        xray.holder = Some(holder);
+        xray.shown = Some(shown);
+        changed = true;
+    }
+    if changed {
+        sounds.write(PlaySound(XRAY_SOUND.into()));
+        debug!("x-ray: container {placement} shows {:?}", xray.shown);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,6 +694,31 @@ mod tests {
         assert_eq!(pojo_action(Action(0x85), false), (4, true));
         assert_eq!(pojo_action(Action(0x7E), false), (5, true));
         assert_eq!(pojo_action(Action(0x13), true), (2, true));
+    }
+
+    #[test]
+    fn what_the_xray_shows() {
+        let ty = |class, subtype, name: &str| ItemType {
+            class,
+            subtype,
+            name: name.to_string(),
+            choices: Vec::new(),
+            extent: [1.0; 4],
+            center_offset: [0.0; 3],
+            value: 0,
+            amount: 0,
+            armor: 0,
+            hit_points: 0,
+            flags: 0,
+            duration: 0,
+            raw: [0; 0x50],
+        };
+        let key = ty(ItemClass::Powerup, KEY, "KEY");
+        assert_eq!(xray_model(&key, 1), Some("KEY"));
+        assert_eq!(xray_model(&key, 3), Some(XRAY_KEYS));
+        assert_eq!(xray_model(&ty(ItemClass::Powerup, 3, "APPLE"), 2), Some("APPLE"));
+        assert_eq!(xray_model(&ty(ItemClass::EnemyInfo, 0, "DEATH"), 0), Some(XRAY_MONSTER));
+        assert_eq!(xray_model(&ty(ItemClass::Container, 0, "BAROBJ"), 0), None);
     }
 
     #[test]
