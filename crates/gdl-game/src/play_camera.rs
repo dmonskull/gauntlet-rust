@@ -337,11 +337,12 @@ fn place(
         return;
     }
     let Ok(mut transform) = camera.single_mut() else { return };
-    // `GDL_LOOK_AT="x,y,z[,distance]"` pins the camera on a point, from
-    // behind and above it (testing: frame what's being checked).
-    if let Some((at, distance)) = look_at() {
-        let eye = at + Vec3::new(0.0, 0.6, -1.0).normalize() * distance;
-        *transform = Transform::from_translation(eye).looking_at(at, Vec3::Y);
+    // `GDL_LOOK_AT="x,y,z[,distance[,yaw]]"` pins the camera on a point,
+    // from above and behind it (−Z; `yaw` degrees turns the camera round
+    // it) — testing: frame what's being checked.
+    if let Some((at, distance, yaw)) = look_at() {
+        let from = Quat::from_rotation_y(yaw.to_radians()) * Vec3::new(0.0, 0.6, -1.0).normalize();
+        *transform = Transform::from_translation(at + from * distance).looking_at(at, Vec3::Y);
         return;
     }
     let t = fixed.overstep_fraction();
@@ -375,11 +376,12 @@ fn show_bars(camera: Option<Res<PlayCamera>>, mut bars: Query<&mut Visibility, W
     }
 }
 
-/// The `GDL_LOOK_AT` point and distance, if set.
-fn look_at() -> Option<(Vec3, f32)> {
-    static LOOK: std::sync::OnceLock<Option<(Vec3, f32)>> = std::sync::OnceLock::new();
+/// The `GDL_LOOK_AT` point, distance and yaw (degrees), if set.
+fn look_at() -> Option<(Vec3, f32, f32)> {
+    static LOOK: std::sync::OnceLock<Option<(Vec3, f32, f32)>> = std::sync::OnceLock::new();
     *LOOK.get_or_init(|| {
         let v: Vec<f32> = std::env::var("GDL_LOOK_AT").ok()?.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-        (v.len() >= 3).then(|| (Vec3::new(v[0], v[1], v[2]), v.get(3).copied().unwrap_or(12.0)))
+        let at = Vec3::new(*v.first()?, *v.get(1)?, *v.get(2)?);
+        Some((at, v.get(3).copied().unwrap_or(12.0), v.get(4).copied().unwrap_or(0.0)))
     })
 }

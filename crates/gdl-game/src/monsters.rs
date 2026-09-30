@@ -20,11 +20,14 @@ use bevy::prelude::*;
 use gdl_formats::anim::AnimFile;
 use gdl_formats::collision::{node_flags, push_out};
 use gdl_formats::enemy::{self, ACTION_NAMES, EnemyInstance, EnemyScales, FIELDS_PER_TICK, LevelEnemies};
+use gdl_formats::texmod::TexMod;
 use gdl_formats::{LevelCollision, LevelTuning, ModelFile, WorldData};
 use gdl_install::GameInstall;
 
 use crate::combat::{TargetKind, Targetable};
 use crate::character::{Animator, CharacterData, CharacterModel};
+use crate::deaths::{self, DeathSet, DeathTextures, Dissolve};
+use crate::effects::EffectAt;
 use crate::generators::{self, Generator};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
@@ -267,6 +270,21 @@ pub struct Monster {
     throw_rate: f32,
     /// A kiting thrower backing away from a player that came too close.
     retreat: bool,
+    /// Killed: playing out its death (`deaths.rs`).
+    pub dying: Option<Dying>,
+}
+
+/// A killed monster's death under way.
+#[derive(Clone, Copy, Debug)]
+pub struct Dying {
+    /// The death texture its body goes through; none: it goes at once.
+    pub set: Option<DeathSet>,
+    /// The killing blow's kind (its element picks the die effect).
+    pub kind: u32,
+    /// The death texture's counter (`deaths::DEATH_START`, a step a tick).
+    pub step: f32,
+    /// The die effect and the texture are on.
+    started: bool,
 }
 
 impl Monster {
@@ -277,6 +295,17 @@ impl Monster {
         self.pending.0 += damage;
         self.pending.1 |= kind;
         self.pending.2 = add(self.pending.2, push);
+    }
+
+    /// The killing blow (of `kind`): it starts dying.
+    pub fn die(&mut self, kind: u32) {
+        let set = deaths::death_set(self.enemy, self.stats.step, kind);
+        self.dying = Some(Dying { set, kind, step: deaths::DEATH_START, started: false });
+    }
+
+    /// The death texture frame a dying body shows, once it's started.
+    pub fn death_frame(&self) -> Option<usize> {
+        self.dying.filter(|d| d.step >= 0.0).map(|d| d.step as usize)
     }
 }
 
@@ -296,9 +325,15 @@ const KNOCK_MAX: f32 = 40.0;
 const KNOCK_DECAY: f32 = 0.8;
 const KNOCK_STOP: f32 = 0.01;
 const KNOCK_FALL: f32 = 100.0;
-/// Stand-in for the game's "big monster" test (a per-monster value above 2
-/// that isn't traced): monsters this wide take half the knockdown push.
-const BIG_RADIUS: f32 = 2.0;
+/// Monsters whose floor step (`+0x23C`) is above this are big: they take
+/// half the knockdown push, hit heroes harder and dissolve when they die.
+pub const BIG_STEP: f32 = 2.0;
+/// The knockdown push of the golem (`0x1D`) and the acid blob (`0x15`).
+const KNOCKDOWN_PUSH_GOLEM: f32 = 2.0;
+const GOLEM: i32 = 0x1D;
+const ACID_BLOB: i32 = 0x15;
+const KNIGHT: i32 = 5;
+const TREE: i32 = 0xB;
 
 const HIT1: u8 = 0x1C;
 const HIT2: u8 = 0x1D;
@@ -306,16 +341,7 @@ const HIT2: u8 = 0x1D;
 /// Turns the blows a monster took into its reaction: the action it plays
 /// and the push added to its knockback.
 fn react(m: &mut Monster, animator: &mut Animator) {
-    let (damage, kind, push) = std::mem::take(&mut m.pending);
-    if damage < 1.0 {
-        return;
-    }
-    let (action, factor) = reaction(damage, kind, m.stats.radius);
-    m.knock = add(m.knock, scale(push, factor));
-    let speed = (m.knock[0] * m.knock[0] + m.knock[1] * m.knock[1] + m.knock[2] * m.knock[2]).sqrt();
-    if speed > KNOCK_MAX {
-        m.knock = scale(m.knock, KNOCK_MAX / speed);
-    }
+    let Some(action) = take_blows(m) else { return };
     let action = if m.model.has(action) { action } else if m.model.has(HIT1) { HIT1 } else { return };
     m.action = action;
     if let Some(a) = m.model.actions[action as usize] {
@@ -324,12 +350,87 @@ fn react(m: &mut Monster, animator: &mut Animator) {
     debug!("monster {} reacts: {} with push {:?} ({:.1} hp left)", m.number, ACTION_NAMES[action as usize], m.knock, m.hit_points);
 }
 
-/// The reaction to `damage` of `kind` on a monster this wide: the action
-/// and how much of the blow's push it takes.
-fn reaction(damage: f32, kind: u32, radius: f32) -> (u8, f32) {
+/// Adds the blows taken since the last tick to the knockback (capped) and
+/// says which reaction they call for (none for less than a point).
+fn take_blows(m: &mut Monster) -> Option<u8> {
+    let (damage, kind, push) = std::mem::take(&mut m.pending);
+    if damage < 1.0 {
+        return None;
+    }
+    let (action, factor) = reaction(damage, kind, m.stats.step, m.enemy);
+    m.knock = add(m.knock, scale(push, factor));
+    let speed = (m.knock[0] * m.knock[0] + m.knock[1] * m.knock[1] + m.knock[2] * m.knock[2]).sqrt();
+    if speed > KNOCK_MAX {
+        m.knock = scale(m.knock, KNOCK_MAX / speed);
+    }
+    Some(action)
+}
+
+/// A killed monster's death begins: its die effect where it stands, and
+/// its body onto its death texture (none: it's gone next).
+fn start_death(
+    entity: Entity,
+    m: &Monster,
+    textures: Option<&DeathTextures>,
+    commands: &mut Commands,
+    effects: &mut MessageWriter<EffectAt>,
+) {
+    let Some(d) = m.dying else { return };
+    if let Some(name) = deaths::die_effect(m.enemy, d.kind) {
+        let scale = deaths::die_effect_scale(m.enemy, m.stats.step);
+        effects.write(EffectAt { name, at: Vec3::from(m.position), facing: m.facing, scale });
+    }
+    let frames = d.set.and_then(|s| textures.and_then(|t| t.frames(s)));
+    if let Some(frames) = frames {
+        commands.entity(entity).try_insert(Dissolve::new(frames));
+    }
+    debug!("monster {} dies: {:?}", m.number, d.set);
+}
+
+/// A dying monster's tick (the game's monster state 8): the killing blow's
+/// push, the slide on its knockback, DEATH — or its HIT2 knock-down, or
+/// READY's animation, when the body has none — and the death texture's
+/// counter. True once it's gone: when the counter runs out, at once with
+/// no death texture, or when it falls off the level.
+fn die_tick(m: &mut Monster, animator: &mut Animator, collision: &LevelCollision, dt: f32) -> bool {
+    let Some(d) = m.dying.as_mut() else { return true };
+    if d.set.is_none() {
+        return true;
+    }
+    d.step += deaths::DEATH_STEP * FIELDS_PER_TICK / 2.0;
+    if d.step >= deaths::DEATH_STEPS {
+        return true;
+    }
+    take_blows(m);
+    let knock = scale(m.knock, dt);
+    settle_knock(m, dt);
+    let moved = monster_move(collision, m, knock, MAX_DROP_PER_SECOND * dt);
+    m.position = add(m.position, moved.delta);
+    if m.action != DEATH {
+        m.action = DEATH;
+        let model = &m.model;
+        let clip = model.actions[DEATH as usize].or(model.actions[HIT2 as usize]).or(model.actions[READY as usize]);
+        if let Some(a) = clip
+            && animator.action != a
+        {
+            animator.play(a);
+        }
+    }
+    moved.fell
+}
+
+/// The reaction to `damage` of `kind` on a monster of type `enemy` with
+/// this floor step: the action and how much of the blow's push it takes.
+fn reaction(damage: f32, kind: u32, step: f32, enemy: i32) -> (u8, f32) {
     let knockdown = kind & KNOCKDOWN_KINDS != 0 || (damage > BIG_HIT_DAMAGE && kind & BIG_HIT_KIND != 0);
     if knockdown {
-        (HIT2, if radius > BIG_RADIUS { KNOCKDOWN_PUSH_BIG } else { KNOCKDOWN_PUSH })
+        let push = match enemy {
+            GOLEM => KNOCKDOWN_PUSH_GOLEM,
+            ACID_BLOB => 0.0,
+            _ if step > BIG_STEP => KNOCKDOWN_PUSH_BIG,
+            _ => KNOCKDOWN_PUSH,
+        };
+        (HIT2, push)
     } else if kind & STRONG_KIND != 0 {
         (HIT1, FLINCH_PUSH)
     } else {
@@ -366,6 +467,7 @@ const THROW1: u8 = 0x18;
 const THROW2: u8 = 0x19;
 const THROWF: u8 = 0x1A;
 const ATTTOREADY: u8 = 0x1B;
+const DEATH: u8 = 0x20;
 
 /// Everything needed to create a monster.
 pub struct NewMonster {
@@ -441,10 +543,11 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         throw_carry: 0.0,
         throw_rate: new.throw_rate,
         retreat: false,
+        dying: None,
     };
     // Hittable: its radius, and (a stand-in for the game's height test)
     // twice its centre height.
-    let target = Targetable::new(TargetKind::Monster, instance.radius, 2.0 * stats.center_height);
+    let target = Targetable::new(TargetKind::Monster, instance.radius, 2.0 * stats.center_height).with_size(stats.step());
     commands.entity(root).insert((monster, target, LevelEntity));
     Some(root)
 }
@@ -460,6 +563,7 @@ fn setup_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut deaths: ResMut<DeathTextures>,
 ) {
     let Some(ground) = ground else { return };
     let entry = tunings.and_then(|t| t.0.get(&population.level.to_ascii_lowercase()).cloned());
@@ -503,6 +607,16 @@ fn setup_level(
         };
         models.insert((id, tier), model);
     }
+    // Death textures: WEAPONS' (once), and the level's DEATHALT from the
+    // trees' folders, else the knights'.
+    deaths.load_shared(&mut game.install, &mut images);
+    let alt: Vec<Arc<MonsterFolder>> = [TREE, KNIGHT]
+        .iter()
+        .filter(|&&e| wanted.iter().any(|w| w.0 == e))
+        .flat_map(|&e| enemies.folders(e))
+        .filter_map(|f| folders.get(&mut game.install, &f))
+        .collect();
+    deaths.set_alt(alt.iter().map(|f| (&f.model, f.textures.as_slice(), f.texmods.as_slice())), &mut images);
 
     info!(
         "monsters: {} generators, {} placed, {} slots, types {:?} from {:?} (tuning {:?})",
@@ -584,11 +698,12 @@ fn level_tuning(raw: Option<LevelTuning>) -> LevelTuning {
     t
 }
 
-/// A monster folder's model, texture bytes and atrees.
+/// A monster folder's model, texture bytes, atrees and texture modifiers.
 struct MonsterFolder {
     model: ModelFile,
     textures: Vec<u8>,
     anim: AnimFile,
+    texmods: Vec<TexMod>,
 }
 
 /// Monster folders read so far (`None`: missing or unreadable).
@@ -603,8 +718,10 @@ impl FolderCache {
                 let dir = format!("MONSTERS/{folder}");
                 let model = ModelFile::parse(&install.read(&format!("{dir}/objects.ngc")).ok()?).ok()?;
                 let textures = install.read(&format!("{dir}/textures.ngc")).ok()?;
-                let anim = AnimFile::parse(&install.read(&format!("{dir}/ANIM.PS2")).ok()?).ok()?;
-                Some(Arc::new(MonsterFolder { model, textures, anim }))
+                let bytes = install.read(&format!("{dir}/ANIM.PS2")).ok()?;
+                let anim = AnimFile::parse(&bytes).ok()?;
+                let texmods = TexMod::parse_all(&bytes).unwrap_or_default();
+                Some(Arc::new(MonsterFolder { model, textures, anim, texmods }))
             })
             .clone()
     }
@@ -715,6 +832,8 @@ fn tick_monsters(
     mut generators: Query<&mut Generator>,
     mut hits: MessageWriter<MonsterHit>,
     mut shots: MessageWriter<MonsterShot>,
+    death_textures: Option<Res<DeathTextures>>,
+    mut effects: MessageWriter<EffectAt>,
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     level.tick = level.tick.wrapping_add(1);
@@ -723,14 +842,28 @@ fn tick_monsters(
     let view = game_view(camera.as_deref());
     let frustum = view.as_ref();
     let targets: Vec<Target> = players.iter().map(|(e, p)| Target { entity: e, feet: p.mover.position }).collect();
+    // The dying don't get in anyone's way.
     let bodies: Vec<Body> = monsters
         .iter()
+        .filter(|(_, m, _)| m.dying.is_none())
         .map(|(e, m, _)| Body { entity: e, feet: m.position, radius: m.stats.radius, step: m.stats.step })
         .collect();
 
     for (entity, mut m, mut animator) in &mut monsters {
         let m = &mut *m;
         m.previous = (m.position, m.facing);
+        if let Some(d) = m.dying {
+            if !d.started {
+                if let Some(d) = m.dying.as_mut() {
+                    d.started = true;
+                }
+                start_death(entity, m, death_textures.as_deref(), &mut commands, &mut effects);
+            }
+            if die_tick(m, &mut animator, collision, dt) {
+                commands.entity(entity).try_despawn();
+            }
+            continue;
+        }
         let r = m.stats.radius;
         m.near_screen = on_screen(frustum, m.position, 2.0 * r + 15.0);
         select_target(m, &targets, level.tick);
@@ -1169,8 +1302,7 @@ fn animate(m: &mut Monster, animator: &mut Animator, timing: f32) -> Option<Even
         if model.loops[m.action as usize] || animator.action != a {
             return animator.action != a;
         }
-        let frames = animator.clips.actions.get(a).map_or(1, |x| x.frames) as f32;
-        animator.frame >= frames - 1.0
+        animator.finished()
     };
     // A body without the throw asked for doesn't throw (stand-in: the game
     // would play READY's animation in its place).
@@ -1391,12 +1523,14 @@ mod tests {
 
     #[test]
     fn blows_flinch_or_knock_down_like_the_game() {
-        assert_eq!(reaction(5.0, 0, 1.0), (HIT1, 0.0));
-        assert_eq!(reaction(5.0, 0x10, 1.0), (HIT1, 8.0), "strong: flinch with a push");
-        assert_eq!(reaction(5.0, 0x20, 1.0), (HIT2, 40.0), "heavy: knocked down");
-        assert_eq!(reaction(5.0, 0x20, 3.0), (HIT2, 20.0), "big monsters half as far");
-        assert_eq!(reaction(12.0, 0x200, 1.0).0, HIT2);
-        assert_eq!(reaction(8.0, 0x200, 1.0).0, HIT1);
+        assert_eq!(reaction(5.0, 0, 1.5, 4), (HIT1, 0.0));
+        assert_eq!(reaction(5.0, 0x10, 1.5, 4), (HIT1, 8.0), "strong: flinch with a push");
+        assert_eq!(reaction(5.0, 0x20, 1.5, 3), (HIT2, 40.0), "heavy: a small monster is knocked down");
+        assert_eq!(reaction(5.0, 0x20, 3.0, 4), (HIT2, 20.0), "big monsters (step above 2) half as far");
+        assert_eq!(reaction(5.0, 0x20, 3.0, GOLEM), (HIT2, 2.0));
+        assert_eq!(reaction(5.0, 0x20, 1.5, ACID_BLOB), (HIT2, 0.0));
+        assert_eq!(reaction(12.0, 0x200, 1.5, 4).0, HIT2);
+        assert_eq!(reaction(8.0, 0x200, 1.5, 4).0, HIT1);
     }
 
     #[test]

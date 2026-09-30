@@ -15,6 +15,7 @@ mod collision_debug;
 mod combat;
 mod critters;
 mod damage;
+mod deaths;
 mod effects;
 mod exits;
 mod font;
@@ -149,7 +150,7 @@ fn main() {
         app.insert_resource(game)
             .insert_resource(choice)
             .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
-            .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin))
+            .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin, deaths::DeathsPlugin))
             .add_plugins((
                 player_state::PlayerStatePlugin,
                 items::ItemsPlugin,

@@ -80,6 +80,9 @@ pub struct LevelMaterial {
     /// The game's per-instance depth switches (render flags 0x40, 0x80).
     pub depth_test: bool,
     pub depth_write: bool,
+    /// Blended, but still writing depth (a dissolving body, so it hides
+    /// its own far side as the game's z-buffered blend does).
+    pub blend_depth_write: bool,
 }
 
 /// Pipeline variant: depth test and depth write on or off.
@@ -88,11 +91,12 @@ pub struct LevelMaterial {
 pub struct LevelMaterialKey {
     depth_test: bool,
     depth_write: bool,
+    blend_depth_write: bool,
 }
 
 impl From<&LevelMaterial> for LevelMaterialKey {
     fn from(m: &LevelMaterial) -> Self {
-        Self { depth_test: m.depth_test, depth_write: m.depth_write }
+        Self { depth_test: m.depth_test, depth_write: m.depth_write, blend_depth_write: m.blend_depth_write }
     }
 }
 
@@ -116,7 +120,23 @@ impl LevelMaterial {
             alpha_mode,
             depth_test: true,
             depth_write: true,
+            blend_depth_write: false,
         }
+    }
+
+    /// This material on a dying monster: its death texture's frame
+    /// multiplies the body's colour (× 2) and alpha (`docs/monsters.md`).
+    /// Fully clear texels are dropped, as the game drops alpha ≤ 2.
+    pub fn dissolving(&self, frame: Handle<Image>) -> Self {
+        let mut m = self.clone();
+        m.lightmap = Some(frame);
+        m.params.x = 2.0;
+        m.params.y = m.params.y.max(3.0 / 255.0);
+        if matches!(m.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+            m.alpha_mode = AlphaMode::Blend;
+        }
+        m.blend_depth_write = true;
+        m
     }
 
     /// Lit by the level light rather than prelit vertex colours.
@@ -152,6 +172,9 @@ impl Material for LevelMaterial {
         key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            if key.bind_group_data.blend_depth_write {
+                depth.depth_write_enabled = true;
+            }
             if !key.bind_group_data.depth_write {
                 depth.depth_write_enabled = false;
             }

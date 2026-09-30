@@ -439,7 +439,10 @@ tool text. Nothing else named.
   (`r13-0x73b8`), `WALKTOREADY`/`READYTOWALK` transitions and the critter
   system aren't done.
 - Animations advance on the frame clock at the action's rate, as for
-  players.
+  players: each frame lasts rate / 900 s (`docs/animation-format.md`), so
+  the many 60-rate attacks (grunts, knights, ghosts, imps…) play at 15
+  frames a second, and the 60-rate walks (rats, imps, plague, skeletons)
+  likewise.
 
 ## Hit reactions and knockback
 
@@ -459,5 +462,95 @@ The knockback speed is capped at 40 (`r2-0x6d40` = 40², `r2-0x6d38`).
 Every update it keeps 0.8 of itself (`r2-0x6de0`), components under 0.01
 stop (`r2-0x6ea8`), and upward speed falls at 100/s (`r2-28000`). While
 HIT1, HIT2 or DEATH plays the monster skips its AI and only slides
-(`FUN_8005a3b4`). Implemented in `monsters.rs` (`react`, `settle_knock`);
-stand-in: `+0x23C` isn't traced, so "big" is a radius over 2.
+(`FUN_8005a3b4`). Implemented in `monsters.rs` (`react`, `settle_knock`).
+`+0x23C` is the floor step (half the step table: 1.5 for the small types,
+3 and up for the rest), so "big" (above 2) is every type but sco, rat, sna,
+spi, mag, wol, dog, aci and han; the same test gives big monsters' strong
+blows the hero-knocking `0x10` (`docs/combat.md`), makes a monster a low
+target for the hero at 2 or less, and decides whether it dissolves when it
+dies (below).
+
+## Deaths
+
+The killing blow (`FUN_8004e660`, hit points at or below 0) plays the
+death sound, sets the monster's state `+0xB4` to 8 and `+0x1FE` to the
+attacker, frees its generator slot (`FUN_8004f240`), counts the kill, and
+unless the attacker was −2:
+
+- starts a timed texture effect on the body (`+0x1E4`, `FUN_80090a00(0.5,
+  fx, texture, end, 0)`: counter −0.5, step 0.5, end 10): the golem (`0x1D`)
+  hit plainly (`kind & 0xF` = 0) DEATHGOLEM with end 15; a tree (`0xB`) or
+  knight (`5`) hit plainly DEATHALT; any other monster with a floor step
+  (`+0x23C`) above 2 the texture for the blow's element (`0x80289198[kind &
+  0xF]`); small monsters none;
+- sets the body's draw priority to 999 (`FUN_800ba7c0`: object `+0x6A`,
+  added to its sort key in `FUN_800c67a0`), so it draws last;
+- spawns the kill's effect model (`FUN_80093e08`, below).
+
+**The dying state** (state 8 in `FUN_8004cfe0`): the reaction and the move
+run as usual (`FUN_8004db94`, `FUN_800445cc`: the killing blow's push, the
+slide), the request is DEATH (`0x20`, priority 999) and the chooser
+(`FUN_800ab110`) plays it — a body without DEATH gets the clip in its
+action map's HIT2 slot (`+0x1BC`), its knock-down, and without that READY's.
+The effect steps (`FUN_80090a48`: counter += 0.5 × fields / 2; at the end
+it stops). While the action is HIT1, HIT2 or DEATH and the effect runs the
+body stays; otherwise it's freed (`FUN_8004ef4c`). So a monster with a
+death texture lasts 20 ticks after the kill, showing frame (int) counter:
+frames 0–9 two ticks each; a small monster is gone at once.
+
+**Drawing it** (`FUN_80090aec`): the texture override on the whole object
+tree (`FUN_800ba85c`: `+0x5C` mode, `+0x58` texture): mode −4 with texture
+first + (int) counter (−3 for the CHROMESILVER/CHROMEGOLD textures). The
+draw (`FUN_800c3d60`) keeps each submesh's own texture and sets `0x8000000`,
+which binds the override as a second texture stage (`FUN_800c6040`, in
+`FUN_800c5894`). When the effect ends the mode goes back to −1.
+
+**The textures** (set up with the effect list by `FUN_800972dc`):
+texture-modifier records (`FUN_80010ab0`
+looks one up by name in a bank's `ANIM.PS2` modifiers, 0x58-byte records,
+and returns `+0x48`, the first frame's binding), ten frames each:
+
+| index | name | frames (`WEAPONS`) |
+| --- | --- | --- |
+| 0 | DEATHBLOOD (DEATHMAGIC when `r13-0x72cc` is set; not traced) | DTH_BLOOD00–09 (DTH_YMAGIC) |
+| 1 | DEATHFIRE | DTH_FIRE00–09 |
+| 2 | DEATHELEC | DTH_PLASMA00–09 |
+| 3 | DEATHLIGHT | DTH_LIGHT00–09 |
+| 4 | DEATHACID | DTH_ACID00–09 |
+
+DEATHALT comes from the tree's bank (`0x80250d34 + 4 × type`), else the
+knight's (`MONSTERS/TRE` and `KNI` both have one); DEATHGOLEM from the
+golem's. Each set runs from nearly white and solid to its colour (blood
+red; fire yellow → orange → red; green; cyan; gold) and fully clear.
+
+**The kill effect** (`FUN_80093e08(step, pos, parent, kind, 1, type)`;
+the same call with 0 on every blow that doesn't kill): the effect by
+element from `0x801225b0` (hits `0x8012259c`), knights and the golem
+`0x80122588` (`0x80122574`), trees and acid blobs `0x801225d8`
+(`0x801225c4`), indexing the effect list (`0x801218e0`, 0x28-byte entries:
+name, depth bias, transparency; models from `WEAPONS`):
+
+| element | hit | kill | knight/golem kill |
+| --- | --- | --- | --- |
+| 0 | BLOODFX1 | BLOODFX2 | HITDIE (hit: HITCOL) |
+| 1 fire | FIREHIT | FIREDIE | FIREDIE |
+| 2 electric | HITCOL | ELECDIE | ELECDIE |
+| 3 light | HITCOL | LIGHTDIE | LIGHTDIE |
+| 4 acid | HITCOL | ACIDDIE | ACIDDIE |
+
+(BLOODHIT/BLOODDIE, list entries 4 and 5, are swapped for entries 6/7 and
+8/9 in turn: BLOODFX1, BLOODFX2. Trees and acid blobs use entries 84/85 for
+plain blows, which the list doesn't fill: nothing.) Scale: 0.5 × the step
+(knights, the golem, or with `r13-0x72cc` set: 1); transparency 96
+(`FUN_800ba9b0`: object `+0x53` = 255 − 96); depth bias −128 × scale
+(`FUN_800baa74`, `+0x68`).
+
+**In this rewrite** (`deaths.rs`, the dying branch of `monsters.rs`,
+`EffectAt` in `effects.rs`): all of the above for regular monsters (the
+golem is a critter here). Stand-ins: the second stage's blend isn't
+decoded — the frame multiplies the body's colour × 2 and its alpha, which
+fits the textures (frame 0 is ~(180, 205, 170): white at × 2) — and it's
+sampled with the body's own UVs; BLOODFX1/2 aren't drawn (their nodes are
+the texture-animation kind, `FUN_80018304`, not decoded), nor any hit
+effect; the depth bias isn't applied; the DEATHMAGIC switch isn't traced.
+
