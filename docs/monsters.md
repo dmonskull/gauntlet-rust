@@ -321,7 +321,14 @@ near the screen (+ 15). Then for each active monster:
    `FUN_80078560`), and hits landed + 1.
 3. **AI** (`FUN_8004d8c0`): only when the target is within awareness or
    the monster is near the screen — otherwise it's asleep this frame.
-   `FUN_800467bc` clears the velocity and switches on the AI:
+   **The AI is the frame's**: the loop saves `+0x310` into `+0x312` before
+   the monster's update and puts it back after (`+0x314` keeps the one
+   that ran, and an AI that differs from last frame's is set up again,
+   `FUN_800502fc`), so an AI that switches to another mid-frame (and runs
+   it at once through `FUN_800467bc`) is back the next frame, unless it
+   wrote `+0x312` too (the wanderers' 2 ↔ 4 swap, AI `0xD`'s chain
+   breaking to 7). `FUN_800467bc` clears the velocity and switches on the
+   AI:
    - **7** (`FUN_80047f04`, the chasers): no target or not aware → AI 5/6
      (by slot parity). Else, when no avoid timer runs: heading = angle to
      the player (`FUN_8002c780`: `atan2(dx, dz)`), or when a wall stopped
@@ -342,8 +349,32 @@ near the screen (+ 15). Then for each active monster:
      touching a player turns it at them.
    - **0** (`FUN_80046abc`): like 7, but searches nine offsets
      (`0x8011bb24`) for a free heading.
-   - Others: 3 Death, 5/6 unaware, 8, 10, 12–31 special movers (thrower,
-     bomber, suicide, ranged, fleeing…) — not traced.
+   - **5 / 6** (`FUN_800477ac`, `FUN_80047b58`, the unaware): walk the
+     heading (`FUN_8004cc84(1.0, …)`). While the avoid timer runs it counts
+     down, and when it runs out the heading turns a quarter (π/2,
+     `r2-0x6e08`: 5 subtracts, 6 adds) and a turn is counted (to 4, round).
+     A wall within radius + 0.5 ahead at 0.1 + radius above the feet
+     (`FUN_8000d308`, any-hit walls, radius 0.1) or a next step that's
+     blocked (`FUN_8004c834`) turns the heading a quarter at once and, if
+     the timer is out, sets it to 20. **Most AIs hand an unaware frame
+     over to them**: with no target or not `aware` (`+0x2DE`), AIs 0, 1,
+     3, 7, 8, 10, `0xD`, `0xE`, the throwers `0x13`–`0x16` and the running
+     suicide runner switch to 5 or 6 by slot parity for the frame — so a
+     chaser near the screen that hasn't noticed a player walks about, and
+     chases once it has.
+   - **Running from a charging runner**: the frame loop names a leader
+     (`r13-0x73b8`): the first slot that is active, AI `0x12`, near the
+     screen and running (action or request RUN), kept until it blows up.
+     AIs 0, 1, 2, 4–8, 10, `0xC`–`0x10` and `0x16` first check it: when it
+     is active, its player's distance is within their own awareness, and
+     they aren't it, aren't placed (`+0x2D8`), have no avoid timer and are
+     within 10 of it (distance² < 100, `r2-0x6e48`), they take AI `0x18`
+     for the frame (`FUN_8004bbc4`): heading = the angle to the leader + π
+     (straight away), `FUN_8004cc84(2.0, …)` — a RUN at twice their speed
+     (with a blocked frame's heading nudged ±5°…±20° in turn,
+     `0x8011b9c0`).
+   - Others: 3 Death, 8, 10, 12–31 special movers (thrower, bomber,
+     suicide, ranged…) — not traced.
 4. **Move** (`FUN_800445cc`): add knockback; walls and floor
    (`FUN_800453f0` → `FUN_80045b98`, below); position += velocity; then the
    bump tests along the move — the nearest player (`FUN_800465e8`: its
@@ -432,13 +463,15 @@ tool text. Nothing else named.
   blows) uses the chase too, and variants without a WALK or RUN animation
   stand still instead of gliding. The crowd penalty in target choice isn't
   applied (one player).
-- **Unaware** monsters (AI 5/6) stand still.
+- **Unaware** monsters walk and turn as the game's AI 5/6 do, and the AIs
+  above hand them unaware frames; the throwers (`0x13`–`0x16`) don't yet
+  (they face and throw or stand). Monsters run from a charging suicide
+  runner (the blocked-frame nudges aren't done).
 - Zero level scales are read as 1 (above).
 - Spot tests skip items (`FUN_8005ef98`); the placed-monster distance is
   from the player.
-- Knockback, getting hit, dying, `+0x21C`, the leader monster
-  (`r13-0x73b8`), `WALKTOREADY`/`READYTOWALK` transitions and the critter
-  system aren't done.
+- Knockback, getting hit, dying, `+0x21C`, `WALKTOREADY`/`READYTOWALK`
+  transitions and the critter system aren't done.
 - Animations advance on the frame clock at the action's rate, as for
   players: each frame lasts rate / 900 s (`docs/animation-format.md`), so
   the many 60-rate attacks (grunts, knights, ghosts, imps…) play at 15
@@ -624,8 +657,8 @@ hits each target once (players through their guard).
 explosions' lights aren't cast; the blast hits each target once per stage
 (the game spares monsters 3 s and heroes 0.25 s between hits); a fireball
 throws heroes back as a barrel's blast does (the gas doesn't); SUICIDEEXP's
-`+0xB4` (0.5) isn't used; losing its player turns a runner into AI 5/6,
-which only stands here; the leader runner (`r13-0x73b8`: throwers follow
-it as AI `0x18`) isn't done. Test: `GDL_THROWER=15,0x12,6` on levelA1 with
+`+0xB4` (0.5) isn't used. A running runner that loses its player walks
+unaware for the frame (AI 5/6), and a charging one is the level's leader
+that other monsters run from (AI `0x18`, "The frame update"). Test: `GDL_THROWER=15,0x12,6` on levelA1 with
 `GDL_SHOT_CLOCK=ticks GDL_LOOK_AT="0,0,-9,18,90" GDL_SHOT_AT=96
 GDL_SHOTS=12 GDL_SHOT_EVERY=3` films one running at the hero and going off.

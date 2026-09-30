@@ -12,7 +12,7 @@
 //! is a [`MonsterShot`] for `projectiles.rs` (`docs/projectiles.md`).
 
 use std::collections::HashMap;
-use std::f32::consts::{FRAC_PI_6, PI};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_6, PI};
 use std::sync::Arc;
 
 use bevy::camera::primitives::{Frustum, Sphere};
@@ -57,6 +57,30 @@ const AVOID_OFFSETS: [f32; 8] =
 
 /// The suicide runners' AI (`docs/monsters.md`, "Suicide runners").
 const SUICIDE: i16 = 0x12;
+/// The unaware AIs, 5 and 6 (`docs/monsters.md`, "Unaware monsters"):
+/// they walk their heading and turn a quarter away from what blocks them,
+/// 5 one way and 6 the other, then again after 20 fields.
+const UNAWARE: i16 = 5;
+const UNAWARE_TURN: f32 = FRAC_PI_2;
+const UNAWARE_HOLD: f32 = 20.0;
+/// Their look ahead for walls: this far past their radius.
+const UNAWARE_LOOK: f32 = 0.5;
+/// The AIs that hand a tick with no aware target over to the unaware ones
+/// (5 or 6 by the monster's slot); the game puts each monster's own AI
+/// back after its tick. (The suicide runner does once it runs; the
+/// throwers `0x13`–`0x16` also do in the game, not here yet.)
+const GOES_UNAWARE: [i16; 8] = [0, 1, 3, 7, 8, 10, 0xD, 0xE];
+/// The AIs that run from a charging suicide runner near them (the level's
+/// "leader"): within 10 units of it, while its player is within their
+/// awareness.
+const FLEES_RUNNER: [i16; 15] = [0, 1, 2, 4, 5, 6, 7, 8, 10, 0xC, 0xD, 0xE, 0xF, 0x10, 0x16];
+const FLEE_REACH_SQ: f32 = 100.0;
+/// They run (RUN at twice their speed) straight away from it.
+const FLEE_SPEED: f32 = 2.0;
+/// The AI a fleeing monster runs for the tick.
+const FLEE: i16 = 0x18;
+/// The wanderers (AI 2/4) chase a player within this distance.
+const WANDER_CHASE: f32 = 8.0;
 /// Once a player is within its awareness a runner waits this many video
 /// fields, then gets up (READYTOWALK) and runs.
 const SUICIDE_WAIT: f32 = 60.0;
@@ -212,6 +236,9 @@ pub struct MonsterLevel {
     /// Monsters created so far (each gets the next number: it staggers
     /// their target searches like the game's slot index does).
     created: u32,
+    /// The leader (`r13-0x73b8`): the first suicide runner seen charging
+    /// near the screen, kept until it's gone.
+    leader: Option<Entity>,
 }
 
 impl MonsterLevel {
@@ -293,6 +320,9 @@ pub struct Monster {
     last_heading: f32,
     /// Turns a wanderer has made since it last swapped direction.
     wander_turns: u8,
+    /// This tick's AI (the record's `+0x310`): its own, or one it hands
+    /// the tick over to — unaware, or fleeing a charging runner.
+    frame_ai: i16,
     number: u32,
     /// Blows taken since the last tick: damage, kind bits, push.
     pending: (f32, u32, [f32; 3]),
@@ -604,6 +634,7 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         stuck: 0,
         last_heading: new.facing,
         wander_turns: 0,
+        frame_ai: new.ai,
         number: level.created,
         pending: (0.0, 0, [0.0; 3]),
         knock: [0.0; 3],
@@ -742,6 +773,7 @@ fn setup_level(
         tick: 0,
         rng: 0x1234_5678,
         created: 0,
+        leader: None,
     });
 }
 
@@ -945,6 +977,24 @@ fn tick_monsters(
         .filter(|(_, m, _)| m.dying.is_none())
         .map(|(e, m, _)| Body { entity: e, feet: m.position, radius: m.stats.radius, step: m.stats.step })
         .collect();
+    // The leader: the first suicide runner charging near the screen takes
+    // over; the last one stays until it's gone. Its place and its
+    // player's distance, for the monsters that run from it.
+    let charging = monsters
+        .iter()
+        .filter(|(_, m, _)| m.dying.is_none() && m.ai == SUICIDE && m.near_screen && (m.action == RUN || m.request == RUN))
+        .min_by_key(|(_, m, _)| m.number)
+        .map(|(e, _, _)| e);
+    if charging.is_some() {
+        level.leader = charging;
+    }
+    let leader = level.leader.and_then(|e| {
+        let (_, m, _) = monsters.get(e).ok().filter(|(_, m, _)| m.dying.is_none())?;
+        Some((e, m.position, m.target_distance))
+    });
+    if leader.is_none() {
+        level.leader = None;
+    }
 
     for (entity, mut m, mut animator) in &mut monsters {
         let m = &mut *m;
@@ -1008,19 +1058,58 @@ fn tick_monsters(
         let moving = |m: &Monster| matches!(m.action, WALK | RUN | RUNATTACK1 | RUNATTACK2) && m.model.has(m.action);
         // A suicide runner's bump wait as its AI finds it (the last move's).
         let bumping_before = m.avoid_timer;
-        let turn_to = if m.ai == SUICIDE {
+        // This tick's AI: its own, unless it runs from a charging runner
+        // or, with no aware target, walks unaware (the game switches for the
+        // tick and puts the monster's own AI back after it).
+        m.frame_ai = m.ai;
+        let flee_from = leader.and_then(|(runner, at, player)| {
+            let d = [at[0] - m.position[0], at[1] - m.position[1], at[2] - m.position[2]];
+            let near = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < FLEE_REACH_SQ;
+            let flees = FLEES_RUNNER.contains(&m.ai) && runner != entity && !m.placed && m.avoid_timer < 1.0;
+            (flees && near && player <= m.stats.awareness).then_some(at)
+        });
+        if flee_from.is_some() {
+            m.frame_ai = FLEE;
+        } else if GOES_UNAWARE.contains(&m.ai) && !(m.aware && target.is_some()) {
+            m.frame_ai = unaware_ai(m.number);
+        }
+        if m.frame_ai != m.ai || matches!(m.ai, 5 | 6) {
+            trace!("monster {} AI {:#x} ticks as {:#x} at {:?}, heading {:.2}", m.number, m.ai, m.frame_ai, m.position, m.heading);
+        }
+        let turn_to = if let Some(at) = flee_from {
+            // Straight away from the runner, at a run.
+            let h = locomotion::wrap(heading_to(m.position, at) + PI);
+            m.heading = h;
+            m.request = RUN;
+            if moving(m) {
+                let s = FLEE_SPEED * m.stats.speed_per_tick;
+                velocity = [h.sin() * s, 0.0, h.cos() * s];
+            }
+            Some(h)
+        } else if m.ai == SUICIDE {
             let (heading, run, yell) = suicide_ai(m, target);
             if yell {
                 sounds.write(PlaySound(SUICIDE_YELL.into()));
             }
-            if run {
-                m.request = RUN;
+            if m.frame_ai != SUICIDE {
+                // It lost its player: an unaware walk this tick.
+                let h = unaware(m, collision, &bodies, entity);
+                m.request = WALK;
                 if moving(m) {
-                    let s = SUICIDE_SPEED * m.stats.speed_per_tick;
-                    velocity = [heading.sin() * s, 0.0, heading.cos() * s];
+                    let s = m.stats.speed_per_tick;
+                    velocity = [h.sin() * s, 0.0, h.cos() * s];
                 }
+                Some(h)
+            } else {
+                if run {
+                    m.request = RUN;
+                    if moving(m) {
+                        let s = SUICIDE_SPEED * m.stats.speed_per_tick;
+                        velocity = [heading.sin() * s, 0.0, heading.cos() * s];
+                    }
+                }
+                Some(heading)
             }
-            Some(heading)
         } else if projectiles::throws(m.ai) {
             // The throwers face the player and throw; the kiting ones back
             // off while they throw.
@@ -1033,7 +1122,13 @@ fn tick_monsters(
             }
             Some(face)
         } else {
-            let turn_to = match (m.ai, direct) {
+            // The wanderers chase a player within 8 for the tick (AI 0),
+            // or walk unaware if they haven't noticed it.
+            if matches!(m.frame_ai, 2 | 4) && direct.is_some() && m.target_distance <= WANDER_CHASE {
+                m.frame_ai = if m.aware { 0 } else { unaware_ai(m.number) };
+            }
+            let turn_to = match (m.frame_ai, direct) {
+                (5 | 6, _) => Some(unaware(m, collision, &bodies, entity)),
                 // The wanderers go their own way until a player comes close.
                 (2 | 4, _) => Some(wander(m, direct)),
                 (_, Some(direct)) if m.aware => {
@@ -1255,7 +1350,7 @@ fn suicide_ai(m: &mut Monster, target: Option<Target>) -> (f32, bool, bool) {
     }
     m.suicide.running += FIELDS_PER_TICK;
     if target.is_none() || !m.aware {
-        m.ai = 5 + (m.number & 1) as i16;
+        m.frame_ai = unaware_ai(m.number);
         return (m.heading, false, yell);
     }
     // Held up by another monster it counts the wait down itself; while
@@ -1377,14 +1472,10 @@ fn steer(
 
 /// The wanderers (AIs 2 and 4, the small monsters): walk straight on; when
 /// a wall or monster held them up, turn 45° (AI 2 left, AI 4 right) once
-/// the 20-field wait is over, swapping the turn after four turns. A player
-/// within 8 units makes them chase (AI 0; our chase is AI 7's). Walking
-/// into a player turns them at it.
+/// the 20-field wait is over, swapping the turn after four turns. Walking
+/// into a player turns them at it. (A player within 8 units makes them
+/// chase for the tick: `tick_monsters`.)
 fn wander(m: &mut Monster, direct: Option<f32>) -> f32 {
-    if direct.is_some() && m.target_distance <= 8.0 {
-        m.ai = 0;
-        return m.heading;
-    }
     if m.avoid_timer > 0.0 {
         m.avoid_timer -= FIELDS_PER_TICK;
         if m.avoid_timer < 1.0 {
@@ -1399,6 +1490,40 @@ fn wander(m: &mut Monster, direct: Option<f32>) -> f32 {
     }
     if let (Block::Player, Some(d)) = (m.blocked, direct) {
         m.heading = d;
+    }
+    m.heading
+}
+
+/// The unaware AI a monster hands a tick over to: 5 or 6 by its slot.
+fn unaware_ai(number: u32) -> i16 {
+    UNAWARE + (number & 1) as i16
+}
+
+/// An unaware monster (`docs/monsters.md`, "Unaware monsters"): it walks
+/// its heading, turning a quarter — AI 5 one way, 6 the other — when a
+/// wall is within its radius + 0.5 ahead or its next step is blocked, and
+/// again when the 20 fields it then waits run out.
+fn unaware(m: &mut Monster, collision: &LevelCollision, bodies: &[Body], me: Entity) -> f32 {
+    let turn = if m.frame_ai == UNAWARE { -UNAWARE_TURN } else { UNAWARE_TURN };
+    if m.avoid_timer > 0.0 {
+        m.avoid_timer -= FIELDS_PER_TICK;
+        if m.avoid_timer < 1.0 {
+            m.heading = locomotion::wrap(m.heading + turn);
+            m.wander_turns = (m.wander_turns + 1) % 4;
+        }
+    }
+    let (sin, cos) = m.heading.sin_cos();
+    let r = m.stats.radius;
+    let eye = [m.position[0], m.position[1] + 0.1 + r, m.position[2]];
+    let reach = r + UNAWARE_LOOK;
+    let wall = collision.wall(eye, [eye[0] + reach * sin, eye[1], eye[2] + reach * cos], 0.1).is_some();
+    let step = m.stats.speed_per_tick;
+    let ahead = [m.position[0] + step * sin, m.position[1], m.position[2] + step * cos];
+    if wall || look_ahead_blocked(m, ahead, collision, bodies, me) {
+        m.heading = locomotion::wrap(m.heading + turn);
+        if m.avoid_timer < 1.0 {
+            m.avoid_timer = UNAWARE_HOLD;
+        }
     }
     m.heading
 }
@@ -1450,9 +1575,9 @@ fn blocked(m: &mut Monster, other: Option<[f32; 3]>, target: Option<[f32; 3]>) {
         m.avoid_side = side_of(m.position, o);
         m.avoid_step = 0;
     }
-    let Some((hold, give_up, limit)) = avoid_rule(m.ai, other.is_none()) else {
+    let Some((hold, give_up, limit)) = avoid_rule(m.frame_ai, other.is_none()) else {
         if m.avoid_timer < 1.0 {
-            m.avoid_timer = if m.ai == 0 && other.is_some() { 60.0 } else { 20.0 };
+            m.avoid_timer = if m.frame_ai == 0 && other.is_some() { 60.0 } else { 20.0 };
         }
         return;
     };
