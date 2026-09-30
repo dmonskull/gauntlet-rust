@@ -21,6 +21,7 @@ mod exits;
 mod font;
 mod frontend;
 mod game_hud;
+mod gamma;
 mod generators;
 mod hazards;
 mod hints;
@@ -97,6 +98,7 @@ fn main() {
     .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.03)))
     .add_plugins((
         level_material::LevelMaterialPlugin,
+        gamma::GammaBlendPlugin,
         camera::CameraPlugin,
         character::CharacterPlugin,
         billboard::BillboardPlugin,

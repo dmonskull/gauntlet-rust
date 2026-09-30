@@ -28,7 +28,10 @@ vertex colours), not by dynamic lights.
      (`GX_CC_CPREV × GX_CC_TEXA`, texture map 1 on texture coordinate 1).
    The rasterized colour of lightmapped geometry is its prelit vertex colour
    (every lightmapped submesh on the disc has one). In gamma space like the
-   hardware, converted to linear at the end; textures upload as plain
+   hardware, and written out in gamma space: the 3D camera renders into a
+   float target, so every blend works on gamma values as the GameCube's
+   frame buffer does, and `gamma.rs` turns the finished picture linear for
+   the sRGB output (before the UI draws). Textures upload as plain
    `Rgba8Unorm`; tonemapping is off.
 4. Emit both windings of every triangle (the game doesn't cull this
    geometry).
@@ -127,9 +130,21 @@ the levels use one. Prelit vertices are multiplied by the instance colour
 instead. Point lights (the `r13-0x6a9c` list) aren't implemented yet.
 
 We light per pixel in `level.wgsl` with the same formula (`SceneLight`,
-set from the level's record when it loads). Blending happens in linear
-space here but in gamma space on the GameCube, so dark translucent layers
-(blob shadows) come out lighter than the original.
+set from the level's record when it loads).
+
+## Colour space
+
+The GameCube blends in its 8-bit frame buffer, on gamma-encoded colour.
+Blending linear light instead (an sRGB target) changes every translucent
+and additive layer: dim additive texels all but vanish — the tower's
+brazier flames (`P_TORCH`, texels at most 0.3, eight or so overlapping)
+drew as a faint glow instead of the flames the game shows — and dark
+translucent layers such as blob shadows come out too light. So the level
+shader writes gamma-space colour into a float target, blends happen on
+those values, and `gamma.rs` decodes the finished picture to linear light
+(clamped to 1 first, as the 8-bit buffer saturates). Stand-in left: the
+float target doesn't saturate between one blend and the next as 8 bits
+do. Bevy's own materials (debug markers) come out darker for it.
 
 ## Texture animation (`LEVELS/<level>/ANIM.PS2`)
 
