@@ -1397,3 +1397,11 @@ play camera.
 - Kinds 5, 6, 7 and 9, the look nodes, and breakable nodes.
 - Checking the golem against hit spheres: blows on its BALL/HANDR spheres
   run out at 0.25 × its hit points.
+
+## The boss's facing
+The boss locator (kind 6) is turned by the
+game's locator Euler builder (`FUN_800bd344`, straight from the locator's
+angles), not the placements' builder: its yaw turns +Z toward (sin, cos).
+The runtime used the placements' (the other way round), so bosses with a
+turned spot faced mirror-wise: the djinn (C5, 90°) had his back to the
+heroes' entrance, D5's boss (53°) and the dragon (B6, −11°) were off too.

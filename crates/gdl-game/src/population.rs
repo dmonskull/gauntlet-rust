@@ -151,12 +151,18 @@ pub fn start_transform(start: &PlayerStart) -> Transform {
 /// yaw turns +Z toward (sin, cos) — the other way round from placements'
 /// (`docs/level-population.md`, "Locators").
 pub fn lookout_transform(l: &gdl_formats::population::Locator) -> Transform {
-    let r = [-l.rotation[0], l.rotation[1] + std::f32::consts::PI, l.rotation[2]];
+    let m = locator_matrix([-l.rotation[0], l.rotation[1] + std::f32::consts::PI, l.rotation[2]]);
+    Transform { translation: Vec3::from(l.position), rotation: Quat::from_mat3(&Mat3::from_cols_array(&m)), ..default() }
+}
+
+/// The game's Euler builder for locators (lookouts, the boss's spot):
+/// row-major for row vectors, so read as columns it's the column-vector
+/// matrix. Its yaw turns +Z toward (sin, cos): row 2 is where +Z goes.
+pub fn locator_matrix(r: [f32; 3]) -> [f32; 9] {
     let (cx, sx) = (r[0].cos(), -r[0].sin());
     let (cy, sy) = (r[1].cos(), -r[1].sin());
     let (cz, sz) = (r[2].cos(), -r[2].sin());
-    // Row-major for row vectors; read as columns, the column-vector matrix.
-    let m = [
+    [
         cy * cz - (sy * sx) * sz,
         cx * sz,
         sy * cz + (cy * sx) * sz,
@@ -166,8 +172,7 @@ pub fn lookout_transform(l: &gdl_formats::population::Locator) -> Transform {
         -sy * cx,
         -sx,
         cy * cx,
-    ];
-    Transform { translation: Vec3::from(l.position), rotation: Quat::from_mat3(&Mat3::from_cols_array(&m)), ..default() }
+    ]
 }
 
 fn game_rotation(euler: [f32; 3]) -> Quat {
@@ -755,4 +760,23 @@ pub fn spawn(
         out.models,
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locators_turn_the_other_way_from_placements() {
+        // A yaw of 90°: the locator builder sends +Z to +X, the placement
+        // builder to −X.
+        let y = std::f32::consts::FRAC_PI_2;
+        let l = locator_matrix([0.0, y, 0.0]);
+        assert!((l[6] - 1.0).abs() < 1e-5 && l[8].abs() < 1e-5);
+        let p = gdl_formats::population::rotation_matrix([0.0, y, 0.0]);
+        assert!((p[6] + 1.0).abs() < 1e-5 && p[8].abs() < 1e-5);
+        // Proper rotations (no mirror).
+        let det = Mat3::from_cols_array(&locator_matrix([0.3, 1.2, -0.7])).determinant();
+        assert!((det - 1.0).abs() < 1e-4);
+    }
 }

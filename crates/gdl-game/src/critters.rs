@@ -1202,7 +1202,9 @@ fn setup_level(
         && let Some(kind) = level.kinds.get(&monsters.boss).cloned()
         && let Some(spot) = pop.locators.iter().find(|l| l.kind == LocatorKind::Boss)
     {
-        let m = rotation_matrix(spot.rotation);
+        // The boss's spot is turned by the game's locator builder (not
+        // the placements'): its yaw is the stored one.
+        let m = crate::population::locator_matrix(spot.rotation);
         let yaw = m[6].atan2(m[8]);
         let mut at = spot.position;
         if let Some(h) = ground.0.floor_probe(at, 4.0, -1000.0, 5.0, 2) {
