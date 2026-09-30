@@ -384,8 +384,11 @@ no damage (−2 when above 2.0, `r2-0x67f0`).
   Every BAREXP and BARPOI placement on the disc overrides its subtype to
   0x2B, but these paths read the type's, so they still explode or gas.
 - **Triggers** 0x1F: switched (above).
-- The hit also shows `FUN_8002f400` (effect) and hint `0x14` for
-  obstacles.
+- A hero's melee blow (`FUN_8008615c`, from the player update; missiles
+  call `FUN_8005c1c8` directly) that did damage (the routine returns the
+  hit points left, ≥ 0) also shows `FUN_8002f400` (effect) and, on an
+  obstacle whose type has no name (type `+0x28` = 0: the secret walls),
+  hint `0x14`.
 
 A barrel broken: the used flag steps its atree (`IDLE`, `ACTIVE` 24
 frames, `DONE`) through; at state 2 it is walked through (touch test).
@@ -490,7 +493,7 @@ and damaging walls:
   field: 11.5 damage each time it comes on.
 
 Stand-ins: active phases last their animation (the game's own timer for
-them isn't confirmed); hint 0x15 isn't shown; walls that only hurt while
+them isn't confirmed); walls that only hurt while
 animating (0x2000000) never do, as nothing animates them yet.
 
 [`breakables.rs`](../crates/gdl-game/src/breakables.rs): each hittable
@@ -519,7 +522,7 @@ tier 1 (its model is loaded with the level; on levelA2
 `GDL_WARP="9.69,2.5,-50.8"` + attack breaks one open).
 
 Stand-ins: blasts and gas hurt once, at once (no effect or lingering
-cloud); no hints 0x14 / 0x1B; a released monster starts
+cloud); the hit effect `FUN_8002f400` isn't played; a released monster starts
 right away (the game wakes a placed-monster item); a shootable wall's in-between hits are silent;
 safe rocks aren't hittable; walls' own collision (item shape 4) isn't
 ported, so shootable walls never blocked the hero in the first place.

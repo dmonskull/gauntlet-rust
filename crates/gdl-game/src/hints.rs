@@ -44,6 +44,12 @@ pub enum Hint {
     EatFruit,
     /// 0x11: more than 24 gold at once.
     CollectGold,
+    /// 0x14: a hero's blow damages a secret wall (a nameless obstacle).
+    SecretWalls,
+    /// 0x15: a damage tile hurts the hero.
+    AvoidObjects,
+    /// 0x1B: a wooden barrel breaks open.
+    SomeBarrels,
     /// 0x1C: poisoned food.
     PoisonedFood,
     /// 0x85: food at full health.
@@ -89,6 +95,9 @@ impl Hint {
             Self::EatMeat => ("EATMEAT", "S_MEATGIVES", true),
             Self::EatFruit => ("EATFRUIT", "S_FRUITGIVES", true),
             Self::CollectGold => ("COLLECTGOLD", "S_COLLECTGOLD", true),
+            Self::SecretWalls => ("FOUNDSECRETWALLS", "S_MULTIPLEHITS", true),
+            Self::AvoidObjects => ("AVOIDOBJECTS", "S_AVOID", true),
+            Self::SomeBarrels => ("WOODBARREL", "S_SOMEBARRELS", true),
             Self::PoisonedFood => ("POISONEDFOOD", "S_POISONEDFOOD", true),
             Self::HealthFull => ("HEALTHFULL", "S_HEALTHFULL", true),
             Self::Legendary(_) => unreachable!(),
