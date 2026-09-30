@@ -200,6 +200,9 @@ pub struct Animator {
     flipbooks: Vec<(usize, Flipbook)>,
     pub action: usize,
     pub frame: f32,
+    /// Held: the clip's frame doesn't advance, so the pose, any blend and
+    /// the flipbooks stay as they are (a monster frozen by the time stop).
+    pub hold: bool,
     tracks: Vec<Option<Track>>,
     blend: Blend,
     mods: Option<InstanceMods>,
@@ -632,6 +635,7 @@ impl CharacterModel {
             flipbooks,
             action: 0,
             frame: 0.0,
+            hold: false,
             tracks: Vec::new(),
             blend: Blend::None,
             mods,
@@ -669,6 +673,9 @@ fn animate(
     mut materials: ResMut<Assets<LevelMaterial>>,
 ) {
     for mut a in &mut animators {
+        if a.hold {
+            continue;
+        }
         let Some(action) = a.clips.actions.get(a.action) else { continue };
         let (frames, rate, loops) = (action.frames, action.rate, action.loops());
         advance_clip(&mut a.frame, time.delta_secs(), frames, rate, loops);
