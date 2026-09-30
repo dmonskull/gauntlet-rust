@@ -650,6 +650,8 @@ const XRAY_SPRITE_BIAS: i16 = -800;
 const KEY: i32 = 2;
 /// The gargoyle pieces' powerup subtype (`GARG<kind>`).
 const GARGOYLE_PIECE: i32 = 16;
+/// What a dying boss may throw (`loot.rs`).
+const LOOT_ITEMS: [&str; 7] = ["COIN_BRONZE", "COIN_SILVER", "COIN_GOLD", "BGNTR_IC", "BMASK_IC", "BHORN_IC", "BGNTL_IC"];
 
 /// The models a blast can bring (`breakables.rs`, `docs/mechanics.md`
 /// "Blows on items"), and the items they come from: treasure's junk, the
@@ -872,6 +874,15 @@ pub fn spawn(
             if !contents.models.contains_key(&ty.name) {
                 let model = build_model(&sources, &mut caches, &ty.name, None, meshes, level_materials, images);
                 contents.models.insert(ty.name.clone(), model);
+            }
+        }
+    }
+    // A boss's loot (`loot.rs`): its realm's coins or Skorne's pieces.
+    if pop.locators.iter().any(|l| l.kind == LocatorKind::Boss) {
+        for name in LOOT_ITEMS {
+            if pop.item_types.iter().any(|t| t.name == name) && !contents.models.contains_key(name) {
+                let model = build_model(&sources, &mut caches, name, None, meshes, level_materials, images);
+                contents.models.insert(name.to_string(), model);
             }
         }
     }
