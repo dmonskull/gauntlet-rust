@@ -1343,7 +1343,7 @@ fn load_end_models(
     let mut build = |name: &str| -> Option<(Arc<CharacterModel>, f32)> {
         let data = load_atree(game, &folder, name)?;
         // A clip without frames plays 30.
-        let life = data.clips.actions.first().map_or(1.0, |a| effect_life(if a.frames == 0 { 30 } else { a.frames }, a.rate));
+        let life = data.clips.actions.first().map_or(1.0, |a| effect_life(a.frames, a.rate));
         debug!(
             "{folder}/{name}: {} actions {:?}",
             data.clips.actions.len(),

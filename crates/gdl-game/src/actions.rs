@@ -110,6 +110,9 @@ impl Action {
     pub const THROW2R: Self = Self(0x62);
     pub const ATTPWRATHROW: Self = Self(0x63);
     pub const ATTPWRATHROWR: Self = Self(0x64);
+    /// A breath (or Skorne's horns or mask) and its recovery.
+    pub const ATTBREATHE: Self = Self(0x6E);
+    pub const ATTBREATHER: Self = Self(0x6F);
     pub const MAGICS: Self = Self(0x73);
     pub const MAGICR: Self = Self(0x74);
     pub const THROWPOTIONS: Self = Self(0x75);
@@ -635,6 +638,13 @@ impl ActionState {
                 }
             }
             0x75 => next = Action::THROWPOTIONR,
+            // The breath hands over to its recovery.
+            0x6E => {
+                if knocked == 0 {
+                    switch = Switch::AtEnd;
+                }
+                next = Action::ATTBREATHER;
+            }
             _ => {}
         }
 
@@ -723,6 +733,7 @@ impl ActionState {
         match next.0 {
             0x74 => strike.0 |= Strike::MAGIC,
             0x76 => strike.0 |= Strike::THROW_POTION,
+            0x6E => strike.0 |= Strike::BREATH,
             _ => {}
         }
         self.action = next;
@@ -773,6 +784,8 @@ impl Strike {
     pub const MAGIC: u32 = 0x20000;
     /// THROWPOTIONR starts: the potion is thrown.
     pub const THROW_POTION: u32 = 0x40000;
+    /// ATTBREATHE starts: the breath goes out (the game's `0x1000000`).
+    pub const BREATH: u32 = 0x100_0000;
 
     /// A melee blow is resolved now.
     pub fn melee(self) -> bool {
