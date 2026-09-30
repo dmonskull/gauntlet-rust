@@ -154,7 +154,13 @@ Sounds (skipped while the sound byte is negative): bridges of kinds 0x14 /
   row 2 `S_QUAKEC` / `S_ELVCNNK`, rows 3/4 `S_BRIDOP<l>` / `S_BRIDCL<l>`.
 
 On the disc nearly all parameters are −1..4. `mechanics.rs` plays all of
-these (the node-flag check for 11 is left out) through `audio::LoopSound`.
+these (the node-flag check for 11 is left out) where the game does, at
+0xE0 ([audio-format.md](audio-format.md), "Positional sounds"): the
+one-shots panned at the mover's node as it is that tick
+(`audio::PlaySoundAt`), the loop following the first mover moving
+(`audio::LoopSoundAt`), the rotators' grinding following the last one
+grinding on. Not done: the game plays a mover's stop sound only if its
+set's loop was playing.
 
 ## Trigger touch and update
 

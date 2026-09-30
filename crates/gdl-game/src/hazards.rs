@@ -13,7 +13,7 @@
 use bevy::prelude::*;
 use gdl_formats::population::{ItemClass, PlacementParams};
 
-use crate::audio::PlaySound;
+use crate::audio::{CALL_VOLUME, PlaySoundAt};
 use crate::hints::{Hint, ShowHint};
 use crate::items::{self, LevelItems};
 use crate::mechanics::LevelNodes;
@@ -49,6 +49,19 @@ const TILE_SOUNDS: [[&str; 7]; 12] = [
     ["", "S_FIREHOLEJ", "", "", "", "", ""],
     ["", "S_FIREHOLEK", "", "", "", "", ""],
 ];
+
+/// The tentacles' sounds play louder than their calls' own.
+fn tile_volume(name: &str) -> u8 {
+    if matches!(name, "S_TENTACLES" | "S_TENTACLESD") { TENTACLES_VOLUME } else { CALL_VOLUME }
+}
+const TENTACLES_VOLUME: u8 = 0xB4;
+
+/// On the dragon's level the fire holes have their own sound.
+fn tile_sound(name: &'static str, boss: i32) -> &'static str {
+    if name == "S_FIREHOLE" && boss == DRAGON_BOSS { "S_FIREHOLE2" } else { name }
+}
+/// The dragon, as a level's boss type.
+const DRAGON_BOSS: i32 = 0x22;
 
 /// Type flags: hurts (1) and cycles its actions (4).
 const TILE_HURTS: u16 = 0x1;
@@ -158,7 +171,7 @@ fn tiles(
     state: Option<Res<PlayerState>>,
     mut players: Query<&mut Player>,
     mut hurt: MessageWriter<DamagePlayer>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
     mut hints: MessageWriter<ShowHint>,
     stop: Res<crate::player_state::TimeStop>,
 ) {
@@ -253,7 +266,9 @@ fn tiles(
         if let Some(name) = TILE_SOUNDS.get(realm).and_then(|row| row.get(t.subtype.clamp(0, 6) as usize))
             && !name.is_empty()
         {
-            sounds.write(PlaySound((*name).into()));
+            // Panned at the hero's feet.
+            let boss = level.as_ref().map_or(-1, |l| l.boss);
+            sounds.write(PlaySoundAt::panned(tile_sound(name, boss), Vec3::from(feet), tile_volume(name)));
         }
         hints.write(ShowHint(Hint::AvoidObjects));
         debug!("damage tile {} hurts the hero for {amount:.1}", t.placement);
@@ -326,6 +341,16 @@ fn walls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_sounds_as_the_game_plays_them() {
+        assert_eq!(tile_volume("S_TENTACLES"), 0xB4);
+        assert_eq!(tile_volume("S_TENTACLESD"), 0xB4);
+        assert_eq!(tile_volume("S_SPIKEA"), CALL_VOLUME);
+        assert_eq!(tile_sound("S_FIREHOLE", DRAGON_BOSS), "S_FIREHOLE2");
+        assert_eq!(tile_sound("S_FIREHOLE", -1), "S_FIREHOLE");
+        assert_eq!(tile_sound("S_FIREHOLEC", DRAGON_BOSS), "S_FIREHOLEC");
+    }
 
     #[test]
     fn off_times() {

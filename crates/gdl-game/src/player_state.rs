@@ -10,7 +10,7 @@
 use bevy::prelude::*;
 use gdl_formats::pdata::PlayerStats;
 
-use crate::audio::PlaySound;
+use crate::audio::PlaySoundAt;
 use crate::level::LoadedGame;
 use crate::player::{PlayerChoice, PlayerSpawn, PlayerTick};
 use crate::population::LevelPopulation;
@@ -595,6 +595,26 @@ pub fn power_clock(in_tower: bool, cut: bool, boss_level: bool, boss_awake: bool
 /// Powerups run down this much faster in a boss fight.
 const BOSS_POWER_CLOCK: f32 = 3.0;
 
+/// The hero's top point above its feet (`PDAT +0x50`, every class).
+const HERO_TOP: f32 = 4.4;
+/// The powers' ends play at this requested volume.
+const LAPSE_VOLUME: u8 = 0xE0;
+
+/// The low-health warning's requested volume: louder the lower the
+/// health — the call's own from 100, then 0x98, 0xB1 below 25 and 0xCA at
+/// 10 or less.
+fn warning_volume(health: f32) -> u8 {
+    if health <= 10.0 {
+        0xCA
+    } else if health < 25.0 {
+        0xB1
+    } else if health < 100.0 {
+        0x98
+    } else {
+        0x7F
+    }
+}
+
 /// Counts powerups down ([`power_clock`]) and adds them up, sets the
 /// enemies' scale and the time stop, plays the sounds of the levitation,
 /// growth, shrink and Pojo running out, and sounds the low-health warning: at 200 health or less
@@ -609,7 +629,8 @@ fn powers_and_warning(
     level: Option<Res<crate::monsters::MonsterLevel>>,
     boss: Option<Res<crate::critters::BossWatch>>,
     (mut enemies, mut stop): (ResMut<EnemyScale>, ResMut<TimeStop>),
-    mut sound: MessageWriter<PlaySound>,
+    mut sound: MessageWriter<PlaySoundAt>,
+    heroes: Query<&crate::player::Player>,
 ) {
     let in_tower = population.as_ref().and_then(|p| crate::quest::level_of(&p.level)).is_some_and(|(realm, _)| realm == TOWER_REALM);
     let cut = camera.is_some_and(|c| c.in_cut());
@@ -618,18 +639,25 @@ fn powers_and_warning(
     let before = state.bits.special;
     let now = state.tick_powers(time.delta_secs() * power_clock(in_tower, cut, boss_level, awake, dead)).special;
     let ended = before & !now;
+    // The powers' ends are heard at the hero's top point (the shrink's,
+    // centred), louder than the calls' own (`docs/audio-format.md`).
+    let top = heroes.iter().next().map(|p| Vec3::from(p.mover.position) + Vec3::Y * HERO_TOP);
+    let lapse = |name: &str| match top {
+        Some(at) => PlaySoundAt::panned(name, at, LAPSE_VOLUME),
+        None => PlaySoundAt::centred(name, LAPSE_VOLUME),
+    };
     if ended & power::LEVITATE != 0 {
-        sound.write(PlaySound("S_LEVITATEDOWN".into()));
+        sound.write(lapse("S_LEVITATEDOWN"));
     }
     if ended & power::GROW != 0 && state.level < BIG_LEVEL {
-        sound.write(PlaySound("S_UNGROW".into()));
+        sound.write(lapse("S_UNGROW"));
     }
     if ended & power::POJO != 0 {
-        sound.write(PlaySound("S_UNPOJO".into()));
+        sound.write(lapse("S_UNPOJO"));
     }
     let scale = EnemyScale(if !boss_level && now & power::SHRINK != 0 { SHRINK_SCALE } else { 1.0 });
     if scale.0 > enemies.0 {
-        sound.write(PlaySound("S_UNSHRINK".into()));
+        sound.write(PlaySoundAt::centred("S_UNSHRINK", LAPSE_VOLUME));
     }
     if *enemies != scale {
         *enemies = scale;
@@ -645,7 +673,7 @@ fn powers_and_warning(
     if state.warning_timer < 1 {
         let invulnerable = state.bits.armour & (crate::damage::resists::INVULNERABLE | crate::damage::resists::GOLD) != 0;
         if !in_tower && !invulnerable {
-            sound.write(PlaySound("S_WARN".into()));
+            sound.write(PlaySoundAt::centred("S_WARN", warning_volume(state.health)));
         }
         state.warning_timer = match state.health {
             h if h < 25.0 => 30,
@@ -658,6 +686,18 @@ fn powers_and_warning(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_warning_grows_louder() {
+        assert_eq!(warning_volume(200.0), 0x7F);
+        assert_eq!(warning_volume(100.0), 0x7F);
+        assert_eq!(warning_volume(99.0), 0x98);
+        assert_eq!(warning_volume(25.0), 0x98);
+        assert_eq!(warning_volume(24.0), 0xB1);
+        assert_eq!(warning_volume(10.5), 0xB1);
+        assert_eq!(warning_volume(10.0), 0xCA);
+        assert_eq!(warning_volume(1.0), 0xCA);
+    }
 
     #[test]
     fn health_follows_the_game() {
