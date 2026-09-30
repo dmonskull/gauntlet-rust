@@ -407,11 +407,24 @@ impl EffectModels {
         materials: &mut Assets<LevelMaterial>,
         images: &mut Assets<Image>,
     ) -> Option<EffectModel> {
-        let key = (folder.to_string(), name);
+        self.effect_from(&format!("MONSTERS/{folder}"), name, game, meshes, materials, images)
+    }
+
+    /// An effect from a bank's folder (`POWERUPS`, `MONSTERS/DEM`).
+    fn effect_from(
+        &mut self,
+        path: &str,
+        name: &'static str,
+        game: &mut LoadedGame,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<LevelMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Option<EffectModel> {
+        let key = (path.to_string(), name);
         if let Some(e) = self.banks.get(&key) {
             return e.clone();
         }
-        let e = load_effect(game, &format!("MONSTERS/{folder}"), name, meshes, materials, images);
+        let e = load_effect(game, path, name, meshes, materials, images);
         self.banks.insert(key, e.clone());
         e
     }
@@ -509,8 +522,9 @@ fn load_effect(
 /// effect, `deaths.rs`): played once, at the game's effect transparency.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct EffectAt {
-    /// Its atree in `WEAPONS`.
+    /// Its atree in `WEAPONS`, or in `bank` (a folder: `POWERUPS`).
     pub name: &'static str,
+    pub bank: Option<&'static str>,
     pub at: Vec3,
     /// Heading, radians.
     pub facing: f32,
@@ -533,7 +547,11 @@ fn spawn_one_shots(
     mut images: ResMut<Assets<Image>>,
 ) {
     for e in requests.read() {
-        let Some(effect) = models.effect(e.name, &mut game, &mut meshes, &mut materials, &mut images) else {
+        let effect = match e.bank {
+            Some(bank) => models.effect_from(bank, e.name, &mut game, &mut meshes, &mut materials, &mut images),
+            None => models.effect(e.name, &mut game, &mut meshes, &mut materials, &mut images),
+        };
+        let Some(effect) = effect else {
             debug!("effect {} has no model", e.name);
             continue;
         };

@@ -49,7 +49,8 @@ pub fn level_of(name: &str) -> Option<(u32, u32)> {
 /// one open. Testing, once at the first level: `GDL_CRYSTALS="<counter>:<n>,…"`
 /// sets crystal counts (−1: opened), `GDL_BEATEN=<bits>` the realms beaten
 /// (a bit per realm id) and `GDL_RUNES=<bits>` the runestones (a bit per
-/// stone); bits in decimal or `0x` hex.
+/// stone); bits in decimal or `0x` hex. `GDL_EXPERIENCE=<n>` gives the hero
+/// that much experience, its rank last checked at the level it had.
 pub(crate) fn enter_level(population: Res<LevelPopulation>, state: Option<ResMut<PlayerState>>, mut seeded: Local<bool>) {
     let Some(mut state) = state else { return };
     if !*seeded {
@@ -77,6 +78,12 @@ pub(crate) fn enter_level(population: Res<LevelPopulation>, state: Option<ResMut
         if let Some(runes) = bits("GDL_RUNES") {
             state.runestones = (0..32).filter(|n| runes & (1 << n) != 0).collect();
             info!("GDL_RUNES: {:?}", state.runestones);
+        }
+        if let Some(experience) = bits("GDL_EXPERIENCE") {
+            let before = state.level;
+            state.quest.rank_level.get_or_insert(before);
+            state.add_experience(experience);
+            info!("GDL_EXPERIENCE: level {before} → {}", state.level);
         }
     }
     let Some((realm, level)) = level_of(&population.level) else { return };
@@ -121,6 +128,13 @@ pub fn boss_marks(realms_beaten: u32) -> u32 {
         .enumerate()
         .filter(|&(_, &realm)| realms_beaten & (1 << realm) != 0)
         .fold(0, |bits, (i, _)| bits | (1 << i))
+}
+
+/// Whether a hero's rank is announced at the tower (`docs/items.md`, "The
+/// tower wizard's scenes"): a new ten of levels since the last check, or
+/// reaching 99.
+pub fn rank_changed(before: u32, now: u32) -> bool {
+    if now < 99 || before > 98 { before / 10 != now / 10 } else { true }
 }
 
 /// Whether the light from the tower's window shines: set as the tower
@@ -241,6 +255,10 @@ pub struct Quest {
     pub shards_announced: u32,
     #[serde(default)]
     pub runes_announced: u32,
+    /// The level the tower last checked the hero's rank at (the record
+    /// keeps the experience, `+0x7B7`); none until the first check.
+    #[serde(default)]
+    pub rank_level: Option<u32>,
 }
 
 impl Quest {

@@ -486,12 +486,35 @@ trigger `0xFF` (not snapped) and fades the citadel's exit in (136 → 36);
 36 when done announces `RUNE13YES`. Each announcement brings the wizard
 back at once (the delay is spent).
 
-Here (`tower_scenes.rs`): all of the above for one hero. Stand-ins: the
-exits aren't made clear or faded in (they show as their open state says),
-the light comes on at once; the pieces' particles aren't sprayed; the
-heroes' rank announcements (`FUN_800a3d78`, the first kind of lookout
-camera) aren't done. Test with `GDL_BEATEN`/`GDL_RUNES` on `levelL1` (a
-fresh hero gets the welcome first: `GDL_MENU="b@300,b@330,b@360,b@390,b@420"`).
+**Ranks** come first. `FUN_800a3d78` (at the load, and every tower frame
+while nothing is announced) compares each hero's level now with the one
+from its record's kept experience (`+0x7B7` by class, through
+`FUN_8007654c`): a new ten of levels — or reaching 99 from below — sets
+the hero's pending rank (`0x8028bcb4`), the timer to 0.5 s (`r2-0x51b0`)
+and keeps the new experience. The wizard then appears with the heroes'
+rank table (`0xF0` + lookout param) and, 120 fields on, for each such hero
+in turn (`r13-0x7cb4`): `NEWLEVEL` ("%s %s is now / a level %d %s!") filled
+with `PLAYER_COLOR_LC`, `PLAYER_CLASS_LC`, the level and the rank — the
+class's `CLASS_RANK` group at (level ÷ 10) ÷ 2, `LEGEND` at 99 — typed
+at 0.667 in `font32` at y 312 (`FUN_80019f5c`); his line `S_EXP<tens><class>`
+(`0x80123540`: `WAR`, `VAL`, `WIZ`, `ARC`, `DWA`, `KNI`, `SOR`, `JES`,
+`MIN`, `FAL`, `JAC`, `TIG`, `OGR`, `UNI`, `MED`, `HYE`), `S_EXP99ALL` at 99
+(`FUN_8009c5b8`); after 239 fields the hero's `LEVELUP_<colour>` flash
+(`FUN_80091ef4`, `0x80122628`, attached to the hero) and after 269 the
+`GETGEM<colour>` sparkle (`FUN_8009176c`, `0x8012454c`: yellow 6, blue 4,
+red 2, green 5 → effects `0x4B`, `0x49`, `0x47`, `0x4A` in `POWERUPS`); once
+typed, 360 fields in and his line done, the next hero. The piece's words
+(if any) then start at once, the wizard and his cut staying; with none
+he goes 0.5 s later.
+
+Here (`tower_scenes.rs`): all of the above for one hero; the rank level
+is kept as a level (`Quest::rank_level`, saved; a record without one is
+checked from its level then). Stand-ins: the exits aren't made clear or
+faded in (they show as their open state says), the light comes on at
+once; the pieces' particles aren't sprayed; the flash and sparkle play
+where the hero stands rather than riding him. Test with `GDL_BEATEN`/
+`GDL_RUNES`/`GDL_EXPERIENCE` on `levelL1` (a fresh hero gets the welcome
+first: `GDL_MENU="b@400,b@440,b@480,b@520,b@560,b@600"`).
 
 ## Quest items and the tower's gates
 

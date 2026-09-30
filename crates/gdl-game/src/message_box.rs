@@ -89,6 +89,9 @@ pub struct ShowCaption {
     pub index: Option<usize>,
     pub y: f32,
     pub stay: bool,
+    /// A caption made up by the caller (a hero's new rank) instead of the
+    /// group's: one page, at the captions' scale.
+    pub text: Option<String>,
 }
 
 /// Fields a page stays up before B can put it away.
@@ -158,6 +161,11 @@ pub struct Captions {
 }
 
 impl Captions {
+    /// `TEXT/ENGLISH.ROM`, for captions made up from its strings.
+    pub fn english(&self) -> Option<&TextRom> {
+        self.english.as_ref()
+    }
+
     /// Whether a caption is up with its last page typed.
     pub fn done(&self) -> bool {
         self.up.as_ref().is_some_and(|c| c.done)
@@ -402,6 +410,12 @@ fn run_captions(
         return;
     }
     while let Some(r) = captions.queue.pop_front() {
+        if let Some(text) = r.text {
+            info!("caption: {}", text.replace(['\n', '\r', '\t'], " "));
+            let pages = vec![text];
+            captions.up = Some(Caption { y: r.y, scale: CAPTION_SCALE, pages, page: 0, ticks: 0.0, held: 0.0, stay: r.stay, done: false });
+            break;
+        }
         let rom = match r.file {
             TextFile::Scroll => captions.scroll.as_ref(),
             TextFile::English => captions.english.as_ref(),

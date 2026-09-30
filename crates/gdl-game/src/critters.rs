@@ -317,7 +317,7 @@ fn speak(level: &CritterLevel, v: &mut Victory, n: usize, now: f32, sounds: &mut
 fn show_message(level: &CritterLevel, group: Option<&'static str>, messages: &mut MessageWriter<ShowCaption>) -> f32 {
     let Some((group, pages)) = group.and_then(|g| Some((g, level.end.texts.get(g)?))) else { return 0.0 };
     info!("the wizard's message {group}: {:?}", pages.join(" "));
-    messages.write(ShowCaption { file: TextFile::English, group: group.into(), index: None, y: SPEECH_Y, stay: false });
+    messages.write(ShowCaption { file: TextFile::English, group: group.into(), index: None, y: SPEECH_Y, stay: false, text: None });
     message_box::caption_seconds(pages)
 }
 

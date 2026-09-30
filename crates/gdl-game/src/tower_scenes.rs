@@ -1,6 +1,7 @@
-//! The tower wizard's scenes (`docs/items.md`, "The tower's wizard's
-//! scenes"): as the tower loads, the first shard or runestone won since
-//! the wizard last spoke is announced. A second after the arrival's shot,
+//! The tower wizard's scenes (`docs/items.md`, "The tower wizard's
+//! scenes"): as the tower loads, a hero's new rank (every ten levels) and
+//! the first shard or runestone won since the wizard last spoke are
+//! announced. A second after the arrival's shot,
 //! the wizard — `WIZARD`, a glowing apparition — stands at the lookout
 //! nearest the heroes and the camera cuts to that lookout's point; two
 //! seconds later his words type out in the bottom bar as he says them, and
@@ -14,8 +15,9 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use gdl_formats::population::LocatorKind;
 
-use crate::audio::PlaySound;
+use crate::audio::{EffectName, PlaySound};
 use crate::character::CharacterModel;
+use crate::effects::EffectAt;
 use crate::level_material::LevelMaterial;
 use crate::mechanics::{LevelNodes, Mechanics};
 use crate::message_box::{Captions, ShowCaption, TextFile};
@@ -95,6 +97,65 @@ impl Announce {
             _ => 2,
         }
     }
+}
+
+/// A hero's new rank to announce: the level reached, the class (the
+/// game's order) and colour (yellow, blue, red, green).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rank {
+    pub level: u32,
+    pub class: usize,
+    pub colour: usize,
+}
+
+/// The classes' codes in their rank voice lines (`S_EXP10WAR`…).
+const RANK_VOICE_CODES: [&str; 16] =
+    ["WAR", "VAL", "WIZ", "ARC", "DWA", "KNI", "SOR", "JES", "MIN", "FAL", "JAC", "TIG", "OGR", "UNI", "MED", "HYE"];
+/// The level-up flash and the gem sparkle, by colour.
+const LEVELUP_EFFECTS: [&str; 4] = ["LEVELUP_YEL", "LEVELUP_BLU", "LEVELUP_RED", "LEVELUP_GRE"];
+const RANK_SPARKLES: [&str; 4] = ["GETGEMYELLOW", "GETGEMBLUE", "GETGEMRED", "GETGEMGREEN"];
+
+impl Rank {
+    /// The line he says: `S_EXP<tens><class>`, `S_EXP99ALL` at 99.
+    pub fn voice(self) -> String {
+        if self.level >= 99 {
+            return "S_EXP99ALL".into();
+        }
+        format!("S_EXP{}{}", self.level / 10 * 10, RANK_VOICE_CODES.get(self.class).copied().unwrap_or("WAR"))
+    }
+
+    /// His words: `NEWLEVEL` ("%s %s is now / a level %d %s!") with the
+    /// colour, the class, the level and the rank — the class's list
+    /// (`CLASS_RANK`) at (level ÷ 10) ÷ 2, or `LEGEND` at 99.
+    pub fn words(self, english: &gdl_formats::text::TextRom) -> Option<String> {
+        let format = english.get("NEWLEVEL", 0)?;
+        let colour = english.get("PLAYER_COLOR_LC", self.colour)?;
+        let class = english.get("PLAYER_CLASS_LC", self.class)?;
+        let rank = if self.level >= 99 {
+            english.get("LEGEND", 0)?
+        } else {
+            let list = english.list("CLASS_RANK")?;
+            let group = english.groups.get(*list.groups.get(self.class)?)?;
+            group.strings.get((self.level / 10 / 2) as usize)?.as_str()
+        };
+        Some(printf(format, &[colour, class, &self.level.to_string(), rank]))
+    }
+}
+
+/// The game's `%s`/`%d` formatting, the arguments in turn.
+fn printf(format: &str, args: &[&str]) -> String {
+    let mut out = String::new();
+    let mut args = args.iter();
+    let mut chars = format.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' && matches!(chars.peek(), Some('s' | 'd')) {
+            chars.next();
+            out.push_str(args.next().copied().unwrap_or_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// What the tower announces as it loads: the first shard won but not
@@ -193,14 +254,42 @@ pub struct Scene {
     fade: f32,
     wizard_model: Option<Arc<CharacterModel>>,
     piece: Option<Arc<CharacterModel>>,
+    /// A hero's new rank, announced first.
+    rank: Option<Rank>,
+    /// The rank's voice line, and whether its flash and sparkle came.
+    rank_voice: Option<String>,
+    flashed: bool,
+    sparkled: bool,
 }
 
+/// After his words for a rank alone, he goes this many seconds later.
+const RANK_WAIT: f32 = 0.5;
+/// A rank's words stay at least this long (and until its voice is done).
+const RANK_FIELDS: f32 = 360.0;
+/// The flash and the sparkle come this far into them.
+const FLASH_AT: f32 = 239.0;
+const SPARKLE_AT: f32 = 269.0;
+
 impl Scene {
-    /// Arms the scene for `what`, with the wizard's model and the piece's.
-    pub fn arm(&mut self, what: Announce, wizard: Arc<CharacterModel>, piece: Option<Arc<CharacterModel>>) {
+    /// Readies the scene in the tower: the wizard's model, and what the
+    /// tower announces as it loads (a rank, then a piece with its model).
+    pub fn arm(
+        &mut self,
+        wizard: Arc<CharacterModel>,
+        rank: Option<Rank>,
+        what: Option<Announce>,
+        piece: Option<Arc<CharacterModel>>,
+    ) {
         *self = Self { wizard_model: Some(wizard), piece, ..default() };
-        self.again(what);
-        self.delay = if what == Announce::Underworld { 0.0 } else { START_DELAY };
+        if let Some(what) = what {
+            self.again(what);
+        }
+        self.rank = rank;
+        if rank.is_some() && what.is_none() {
+            self.wait = RANK_WAIT;
+        }
+        let at_once = what == Some(Announce::Underworld) && rank.is_none();
+        self.delay = if at_once { 0.0 } else { START_DELAY };
     }
 
     /// Announces `what` (the wizard comes at once).
@@ -215,7 +304,12 @@ impl Scene {
     /// Whether the heroes' pads are held: from the announcement until the
     /// piece is placed.
     pub fn holds_input(&self) -> bool {
-        self.announce.is_some()
+        self.announce.is_some() || self.rank.is_some()
+    }
+
+    /// Whether he's announcing something.
+    fn active(&self) -> bool {
+        self.announce.is_some() || self.rank.is_some()
     }
 }
 
@@ -253,18 +347,18 @@ fn run_scene(
     mut scene: ResMut<Scene>,
     camera: Option<ResMut<PlayCamera>>,
     (mut captions, mut caption_requests): (ResMut<Captions>, MessageWriter<ShowCaption>),
-    (mut cuts, mut sounds): (MessageWriter<StartCut>, MessageWriter<PlaySound>),
-    population: Option<Res<LevelPopulation>>,
-    nodes: Option<Res<LevelNodes>>,
-    players: Query<&Player>,
-    state: Option<Res<PlayerState>>,
+    (mut cuts, mut sounds, mut effects): (MessageWriter<StartCut>, MessageWriter<PlaySound>, MessageWriter<EffectAt>),
+    (population, nodes): (Option<Res<LevelPopulation>>, Option<Res<LevelNodes>>),
+    (players, playing): (Query<&Player>, Query<&EffectName>),
+    (state, choice): (Option<ResMut<PlayerState>>, Option<Res<crate::player::PlayerChoice>>),
     mut light: ResMut<ShardLight>,
     mechanics: Option<ResMut<Mechanics>>,
 ) {
-    if scene.announce.is_none() && scene.follow == 0 {
+    // Only in the tower, once it's readied (the wizard's model is built).
+    if scene.wizard_model.is_none() {
         return;
     }
-    let (Some(mut camera), Some(population), Some(nodes), Some(state)) = (camera, population, nodes, state) else {
+    let (Some(mut camera), Some(population), Some(nodes), Some(mut state)) = (camera, population, nodes, state) else {
         return;
     };
     // Nothing starts under the arrival's opening shot.
@@ -272,24 +366,95 @@ fn run_scene(
         return;
     }
     let scene = &mut *scene;
-    if let Some(what) = scene.announce {
+    // A hero who reaches a new ten of levels in the tower hears of it.
+    if !scene.active() && scene.follow == 0 {
+        let (keep, rank) = check_rank(&state, choice.as_deref());
+        if let Some(level) = keep {
+            state.quest.rank_level = Some(level);
+        }
+        if let Some(rank) = rank {
+            info!("the wizard will announce {rank:?}");
+            scene.rank = Some(rank);
+            scene.wait = RANK_WAIT;
+        }
+        if !scene.active() {
+            return;
+        }
+    }
+    if scene.active() {
         if scene.delay > 0.0 {
             scene.delay -= FIELDS;
             return;
         }
-        if what != Announce::Underworld {
+        let what = scene.announce;
+        if scene.rank.is_some() || what != Some(Announce::Underworld) {
             if scene.wizard.is_none() {
-                appear(scene, what, &population, &players, &mut commands, &mut cuts);
+                let cameras = if scene.rank.is_some() { 0 } else { what.map_or(0, Announce::cameras) };
+                appear(scene, cameras, &population, &players, &mut commands, &mut cuts);
             }
             scene.fields += FIELDS;
             if scene.fields < WORDS_DELAY {
                 return;
             }
+            let since = scene.fields - WORDS_DELAY;
+            if let Some(rank) = scene.rank {
+                let hero = players.iter().next().map_or(Vec3::ZERO, |p| Vec3::from(p.mover.position));
+                if !scene.spoken {
+                    scene.spoken = true;
+                    captions.clear();
+                    let text = captions.english().and_then(|e| rank.words(e));
+                    caption_requests.write(ShowCaption {
+                        file: TextFile::English,
+                        group: String::new(),
+                        index: None,
+                        y: WORDS_Y,
+                        stay: true,
+                        text: Some(text.unwrap_or_default()),
+                    });
+                    let voice = rank.voice();
+                    sounds.write(PlaySound(voice.clone()));
+                    scene.rank_voice = Some(voice);
+                    return;
+                }
+                let colour = rank.colour.min(3);
+                if since > FLASH_AT && !scene.flashed {
+                    scene.flashed = true;
+                    effects.write(EffectAt { name: LEVELUP_EFFECTS[colour], bank: None, at: hero, facing: 0.0, scale: 1.0 });
+                }
+                if since > SPARKLE_AT && !scene.sparkled {
+                    scene.sparkled = true;
+                    effects.write(EffectAt { name: RANK_SPARKLES[colour], bank: Some("POWERUPS"), at: hero, facing: 0.0, scale: 1.0 });
+                }
+                let voice_on = scene.rank_voice.as_ref().is_some_and(|v| playing.iter().any(|n| &n.0 == v));
+                if captions.done() && since >= RANK_FIELDS && !voice_on {
+                    // On to the piece, its words at once.
+                    scene.rank = None;
+                    scene.spoken = false;
+                    scene.fields = WORDS_DELAY;
+                    captions.clear();
+                }
+                return;
+            }
+            let Some(what) = what else {
+                // A rank alone: he goes half a second later.
+                scene.wait -= TICK;
+                if scene.wait <= 0.0 {
+                    leave(scene, &mut camera, &mut captions, &mut commands);
+                }
+                return;
+            };
             if !scene.spoken {
                 scene.spoken = true;
                 if let Some((group, index, voice)) = what.words() {
                     captions.clear();
-                    caption_requests.write(ShowCaption { file: TextFile::Scroll, group: group.into(), index, y: WORDS_Y, stay: true });
+                    caption_requests.write(ShowCaption {
+                        file: TextFile::Scroll,
+                        group: group.into(),
+                        index,
+                        y: WORDS_Y,
+                        stay: true,
+                        text: None,
+                    });
                     sounds.write(PlaySound(voice.into()));
                 }
                 return;
@@ -302,6 +467,7 @@ fn run_scene(
                 return;
             }
         }
+        let Some(what) = what else { return };
         place(scene, what, &state, &population, &nodes, &mut camera, &mut captions, &mut light, &mut commands, &mut cuts, &mut sounds);
         // The place's cut starts on the camera's tick: the steps after it
         // wait for the next.
@@ -390,7 +556,7 @@ fn run_scene(
 /// and the camera cuts to the lookout's point until he goes.
 fn appear(
     scene: &mut Scene,
-    what: Announce,
+    cameras: usize,
     population: &LevelPopulation,
     players: &Query<&Player>,
     commands: &mut Commands,
@@ -416,7 +582,7 @@ fn appear(
         commands.entity(root).insert(LevelEntity);
         scene.wizard = Some(root);
     }
-    let point = (0..=what.cameras())
+    let point = (0..=cameras)
         .rev()
         .find_map(|t| camera_point(population, LOOKOUT_CAMERAS[t] + i16::from(lookout.param)));
     match point {
@@ -427,6 +593,38 @@ fn appear(
     }
     info!("the wizard appears at lookout {} {:?}", lookout.param, lookout.position);
 }
+
+/// He goes: his model, his words and his cut.
+fn leave(scene: &mut Scene, camera: &mut PlayCamera, captions: &mut Captions, commands: &mut Commands) {
+    if let Some(w) = scene.wizard.take() {
+        commands.entity(w).try_despawn();
+    }
+    captions.clear();
+    camera.end_cut();
+    scene.announce = None;
+}
+
+/// The hero's rank check: the level to keep (when it moved since the last
+/// check; the first check only keeps it), and the rank to announce if it
+/// has reached a new ten (or 99).
+pub fn check_rank(state: &PlayerState, choice: Option<&crate::player::PlayerChoice>) -> (Option<u32>, Option<Rank>) {
+    if state.quest.rank_level == Some(state.level) {
+        return (None, None);
+    }
+    let before = state.quest.rank_level.unwrap_or(state.level);
+    if !quest::rank_changed(before, state.level) {
+        return (Some(state.level), None);
+    }
+    let rank = choice.and_then(|choice| {
+        let class = crate::character::class_index(&choice.class)?;
+        let colour = COLOURS.iter().position(|c| choice.variant.to_ascii_uppercase().starts_with(c)).unwrap_or(0);
+        Some(Rank { level: state.level, class, colour })
+    });
+    (Some(state.level), rank)
+}
+
+/// Colour codes in their order (yellow, blue, red, green).
+const COLOURS: [&str; 4] = ["YEL", "BLU", "RED", "GRE"];
 
 /// He goes, and the piece goes to its place (`docs/items.md`): its effect
 /// plays in full under a cut to it, and the steps after it are chosen by
@@ -445,12 +643,7 @@ fn place(
     cuts: &mut MessageWriter<StartCut>,
     sounds: &mut MessageWriter<PlaySound>,
 ) {
-    if let Some(w) = scene.wizard.take() {
-        commands.entity(w).try_despawn();
-    }
-    captions.clear();
-    camera.end_cut();
-    scene.announce = None;
+    leave(scene, camera, captions, commands);
     let marks = quest::boss_marks(state.realms_beaten);
     let runes = state.runestone_bits();
     let mut set_out = |place: &str| {
@@ -523,6 +716,36 @@ mod tests {
         assert_eq!(announcement(G, G, 0, 0, None), None);
         assert_eq!(announcement(G | B, G, 1 << 3, 0, None), Some(Announce::Rune(3)));
         assert_eq!(announcement(0, 0, RUNE13 | 0xFFF, 0xFFF, None), Some(Announce::Rune(12)));
+    }
+
+    #[test]
+    fn ranks_every_ten_levels_and_at_ninety_nine() {
+        assert!(!quest::rank_changed(1, 9));
+        assert!(quest::rank_changed(9, 10));
+        assert!(!quest::rank_changed(10, 19));
+        assert!(quest::rank_changed(15, 32));
+        assert!(quest::rank_changed(98, 99));
+        assert!(!quest::rank_changed(99, 99));
+        let rank = Rank { level: 20, class: 4, colour: 2 };
+        assert_eq!(rank.voice(), "S_EXP20DWA");
+        assert_eq!(Rank { level: 99, ..rank }.voice(), "S_EXP99ALL");
+        assert_eq!(printf("%s %s is now\na level %d %s!\n", &["Red", "Dwarf", "20", "Warrior"]), "Red Dwarf is now\na level 20 Warrior!\n");
+    }
+
+    /// The words come from `TEXT/ENGLISH.ROM` (real data).
+    #[test]
+    fn rank_words() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT")
+            .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let Ok(bytes) = std::fs::read(std::path::Path::new(&root).join("TEXT/ENGLISH.ROM")) else {
+            eprintln!("skipping: no ENGLISH.ROM");
+            return;
+        };
+        let rom = gdl_formats::text::TextRom::parse(&bytes).unwrap();
+        let words = |level, class, colour| Rank { level, class, colour }.words(&rom).unwrap();
+        assert_eq!(words(10, 0, 1), "Blue Warrior is now\na level 10 Fighter!\n");
+        assert_eq!(words(99, 3, 0), "Yellow Archer is now\na level 99 Legend!\n");
+        assert!(words(40, 3, 3).starts_with("Green Archer is now\na level 40 Ranger"));
     }
 
     #[test]

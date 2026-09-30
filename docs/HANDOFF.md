@@ -55,8 +55,9 @@ What plays (details in [INDEX.md](INDEX.md)):
     speeches are typed captions in the cut's top bar at the game's speed
     ([frontend.md](frontend.md) "Message box", "Captions"). The pads
     aren't read during camera cuts, as in the game.
-  - The tower wizard's scenes (`tower_scenes.rs`): the first shard or
-    stone won since he last spoke is announced — the glowing `WIZARD` at
+  - The tower wizard's scenes (`tower_scenes.rs`): a hero's new rank
+    (every ten levels: "Blue Warrior is now a level 10 Fighter!") and the
+    first shard or stone won since he last spoke are announced — the glowing `WIZARD` at
     the lookout nearest the heroes under a cut, his words typed in the
     bottom bar with his voice, then the piece's effect in full at its
     place under a cut, and the follow-ups (more shards, all eight with
@@ -158,7 +159,9 @@ Test aids:
 - `GDL_BEATEN=<realm bits>` and `GDL_RUNES=<stone bits>` (decimal or
   `0x…`): the realms beaten and runestones held, set once at the first
   level (`0xE9E` = the eight main bosses, `0x1FFF` = all thirteen stones);
-  `GDL_CRYSTALS="1:-1"` opens a counter for good.
+  `GDL_CRYSTALS="1:-1"` opens a counter for good; `GDL_EXPERIENCE=<n>`
+  gives the hero experience with its rank last checked at its old level
+  (12000 → level 10: the tower announces the new rank).
 
 Handy test spots are listed in [mechanics.md](mechanics.md) and
 [camera.md](camera.md) (levelA1 elevator switch, levelA4 lift, barrels,
@@ -300,12 +303,12 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
-0. The tower's scenes, what's left: the heroes' rank announcements
-   (`FUN_800a3d78`: every 10 levels, a composed caption, voice and
-   effects, before the wizard's), the exits' reveals (made clear, then
-   faded in), the pieces' sparkles — [items.md](items.md) "The tower
-   wizard's scenes". Done: the welcome, the announcements, the pieces set
-   out, the gates at load.
+0. The tower's scenes, what's left: the exits' reveals (made clear, then
+   faded in — needs per-instance alpha on item models), the pieces'
+   sparkles — [items.md](items.md) "The tower wizard's scenes". Done: the
+   welcome, the rank and piece announcements, the pieces set out, the
+   gates at load. A helper (worktree branch) is on the HUD's legendary-key
+   row, quest/rune-13 icons and "Wait In Tower" prompt.
    (The smoke test, `smoke.sh`: every level folder plus DEMO1,
    `GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400`, 120 s timeout,
    stop at the first panic; resume from the failing level.) Next: the
