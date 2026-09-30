@@ -206,6 +206,10 @@ pub struct Animator {
     /// The model's meshes (not its shadow's), with the node each hangs
     /// from: what a texture over the body reaches (`flash.rs`).
     meshes: Vec<(usize, Entity)>,
+    /// Its weapon's meshes (also in `meshes`).
+    weapon: Vec<Entity>,
+    /// Per skeleton node: its name and parent.
+    tree: Arc<[(String, Option<usize>)]>,
 }
 
 /// A spawned model's texture modifiers: what they have left on each node
@@ -281,6 +285,28 @@ impl Animator {
     /// node's world matrix as of the last frame).
     pub fn bone(&self, node: usize) -> Option<Entity> {
         self.bones.get(node).copied()
+    }
+
+    /// The skeleton node named `name`.
+    pub fn node(&self, name: &str) -> Option<usize> {
+        self.tree.iter().position(|(n, _)| n == name)
+    }
+
+    /// The first node under `node` in skeleton order (the game links a
+    /// node's children in that order, so it's the node's first child).
+    pub fn first_child(&self, node: usize) -> Option<usize> {
+        self.tree.iter().position(|&(_, parent)| parent == Some(node))
+    }
+
+    /// The skeleton's top nodes (those without a parent).
+    pub fn roots(&self) -> impl Iterator<Item = usize> + '_ {
+        self.tree.iter().enumerate().filter(|(_, (_, parent))| parent.is_none()).map(|(i, _)| i)
+    }
+
+    /// The meshes of the weapon in its hand (none for a character without
+    /// one).
+    pub fn weapon(&self) -> &[Entity] {
+        &self.weapon
     }
 
     /// Name of the action playing.
@@ -361,6 +387,8 @@ pub fn flipbook_frame(action: &Action, frame: f32, start: u16, count: usize) -> 
 pub struct CharacterModel {
     /// Per skeleton node: rest offset and parent.
     nodes: Vec<(Vec3, Option<usize>)>,
+    /// Per skeleton node: its name and parent, for [`Animator::node`].
+    tree: Arc<[(String, Option<usize>)]>,
     /// Per skeleton node: the meshes of its own model object, if drawn, and
     /// the camera-facing mode its render flags ask for.
     parts: Vec<(PartMeshes, Option<Billboard>)>,
@@ -507,6 +535,7 @@ impl CharacterModel {
 
         Self {
             nodes: data.skeleton.nodes.iter().map(|n| (Vec3::from(n.offset), n.parent)).collect(),
+            tree: data.skeleton.nodes.iter().map(|n| (n.name.clone(), n.parent)).collect(),
             parts,
             flipbooks,
             weapon,
@@ -577,8 +606,10 @@ impl CharacterModel {
             })
             .collect();
         let mut meshes: Vec<(usize, Entity)> = drawn.iter().map(|(e, node, _)| (*node, *e)).collect();
+        let mut weapon = Vec::new();
         if let Some((bone, parts)) = &self.weapon {
-            meshes.extend(attach(parts, bones[*bone], commands).into_iter().map(|(e, _)| (*bone, e)));
+            weapon = attach(parts, bones[*bone], commands).into_iter().map(|(e, _)| e).collect();
+            meshes.extend(weapon.iter().map(|&e| (*bone, e)));
         }
         // Lifted off the floor it lies on (the collision floor can sit a
         // little below the drawn one).
@@ -605,6 +636,8 @@ impl CharacterModel {
             blend: Blend::None,
             mods,
             meshes,
+            weapon,
+            tree: self.tree.clone(),
         };
         animator.play(0);
         commands.entity(root).insert(animator);
