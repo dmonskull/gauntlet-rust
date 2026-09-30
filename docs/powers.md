@@ -214,7 +214,8 @@ Confirmed:
 - **No reactions**: the reaction picker (`FUN_80085ca8`) does nothing with
   `0x10000` (no knockback, stun or flash, since no damage).
 - **Footsteps** (`FUN_8009e804` from `FUN_80080d3c`): `S_STEPMET1/2`
-  whatever the floor.
+  whatever the floor, except water ([player-movement.md](
+  player-movement.md), "Footsteps").
 - **No low-health warning** (`FUN_80077f50`: `S_WARN` skipped with
   `0x110000`) and no `S_<CLS>DIE1` for mode-3 damage (`FUN_8009f198`).
 - **Chrome** (`FUN_8007c4f0`): with the longest `0x10000` slot's time `t`,
@@ -241,8 +242,8 @@ texture coordinates are the normal along the camera's right and up
 0)` through its matrix and the model's, normalised); their scale and
 offset in the GX matrix aren't traced — the software path in
 `FUN_800c48c0` uses them as they are, so 1 per unit, no offset, and the
-32×32 texture repeats. Footsteps (no footstep sounds are played yet)
-and the death voice aren't done.
+32×32 texture repeats. The metal steps are `footsteps.rs`'s. The death
+voice isn't done.
 
 ### `0x20000` reflect shield
 
@@ -378,7 +379,8 @@ Here: the tiles (`hazards.rs`) and the blows (`Player::take_blow`, the
 `+0x124 & 1` test on kind `0x40000000` in `FUN_80078560`); the lift
 (`Animator::lift` on the skeleton's top nodes, set by `power_looks.rs`
 while the bit is on: the blob shadow and the hero's root stay on the
-floor). `S_LEVITATEDOWN` isn't done (footsteps aren't played at all).
+floor); no footsteps (`footsteps.rs`); `S_LEVITATEDOWN` as it ends
+(`player_state.rs`).
 
 ### `0x2` x-ray
 
