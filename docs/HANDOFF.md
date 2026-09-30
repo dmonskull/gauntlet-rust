@@ -262,16 +262,16 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
 ## Work in progress
 
-- **Helper** (worktree branch `worktree-agent-aba24fd14c15b99a9`, one at a
-  time): research only while the smoke test runs — Death's AI (for the
-  halo), the Skorne gauntlets' and the crossbow's shots and SSHOT
-  chaining, the phoenix's and familiars' shots, into monsters.md,
-  items.md, projectiles.md and powers.md. Merged from it this session:
-  blasts on chests and floor items with CHESTEXP (`6fa4fc1`); the six
-  blast models, poisoned food as a poison blow, the power-ups' looks on
-  the hero (`power_looks.rs`, `eb14650`); the x-ray, levitation's lift
-  (1.5 — a double, powers.md had 1.9375), the time stop's hourglass,
-  `Animator::hold` and `left_wrist` (merge after `d9098fd`).
+- **Helper** (worktree branch `worktree-agent-aba24fd14c15b99a9`): was
+  building the familiars and the phoenix's shots (`familiars.rs`, from
+  projectiles.md "The familiars and the phoenix") when the session's
+  usage ran out; check its branch for a commit or uncommitted work before
+  merging. Merged this session: blasts on chests and items, CHESTEXP, the
+  blast models, poisoned food as a blow, the power-up looks, x-ray, the
+  lift, the hourglass, `Animator::hold`, the pickup hints (checked on
+  `levelT2`, a test level with every power-up laid out: `GDL_WARP="26,0,50"`
+  stands on the Pojo egg), and research on Death, the gauntlets, the
+  crossbow and the familiars.
 - **Power-ups** (mine; `GDL_POWERS` grants them, e.g. `6:0x10000`,
   `9:0x10:5:-1` for five fire breaths — [items.md](items.md) "Timed
   powerups"):
@@ -286,9 +286,16 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
     lift), shrink (`EnemyScale`), grow, time stop (`TimeStop`), the
     breaths (ATTBREATHE, a cone blast riding the head, uses spent via
     `SpendPower`), the hammer's chop (ATTCHOP).
-  - Not done: the halo (needs Death's AI), the Skorne gauntlets' and the
-    crossbow's attacks (SSHOT), phoenix and familiars, the Pojo, rapid
-    fire's animation rate; footsteps (none are played at all).
+  - Also done: Hand of Death and Health Vampire, the Pojo's turbo breath
+    and knockdown, the charge's blow (bosses aren't walked into or
+    charged), the level-up flash and sparkle riding the hero
+    (`effects::EffectOn`).
+  - Next: **Death's AI and the halo** — fully decoded in monsters.md
+    "Death" (the drain, blows taking 1, magic killing it, leaving, the
+    halo's drain and run-away); the Skorne gauntlets' and the crossbow's
+    attacks (SSHOT chaining decoded in items.md/projectiles.md); rapid
+    fire's rate; footsteps (none are played at all). Open bug:
+    `LEVELUP_<colour>` never shows on screen (items.md).
 - Also fixed on the way: effects whose clip has no frames lasted 0 s
   (particle effects: the breaths, blood sprays, `L_SHLD_ACTIVE`) — they
   last 30 frames, as the game's spawner has it.
