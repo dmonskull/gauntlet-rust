@@ -379,15 +379,37 @@ Here: the tiles (`hazards.rs`) and the blows (`Player::take_blow`, the
   contents type (`+0xDC`) is a powerup (class 1), a placed monster (class
   4) or a random pick (−1, resolved with `FUN_800675e4` — whether it's the
   pick the container later releases isn't traced), and passes
-  `FUN_800bb8e4` with 2 × its type's first extent (presumably on screen);
-  one another hero x-rays is skipped.
+  `FUN_800bb8e4` with 2 × its type's first extent (`r2-0x5E7C`; the
+  on-screen sphere test monsters use, `FUN_800b4f28`) — only the nearest
+  is tested; one another hero x-rays is skipped. "Not opened" is the
+  item's `+0xC8` byte (the state its animation has reached) at 0; `+0xCD`
+  is also 0.
 - The container goes see-through (transparency 192) and is re-parented
-  under a holder with the contents' model inside it, at 0.65
+  under a holder (`0x8025E688` + hero, given the container's matrix) with
+  the contents' model inside it (an atree instance, flags `0x80`), at 0.65
   (`r2-0x5D18`): `DEATH_ICON` for a monster (`r13-0x71C0`), `KEYRING`
-  for more than one key (`r13-0x71C4`), else the contents' own model;
-  `S_XRAY` (`FUN_8009e950`) when it changes. When nothing is found or the
-  power ends, the container is put back.
+  for a key with the container's short `+0xEC` above 1 (`r13-0x71C4`),
+  else the contents' own model (type `+0x4C`); `S_XRAY` (`FUN_8009e950`)
+  when the container or the contents type changes. The holder also
+  carries `SEETHRU` (`POWERUPS`; `0x8025E648` + hero, made at level load
+  with flags `0x4200000` — camera-facing — and depth bias −800), shown
+  while something is x-rayed. When nothing is found or the power ends,
+  the container is put back (transparency 0, its own parent and matrix)
+  and `SEETHRU` hidden.
 - `HEAD_XRAY` on the head.
+
+Here: `power_looks.rs::xray` each tick after the items and powers, as
+above: the container's model faded to 192 (`fade.rs`), a holder at its
+model's transform with the contents at 0.65 and `SEETHRU` (camera-facing,
+bias −800), `S_XRAY` on a change; the models from `ContentModels`
+(`spawn_still`; `population.rs` builds `SEETHRU`, `DEATH_ICON` and
+`KEYRING` on levels with containers that need them). The key count is
+the container placement's count (what a broken container releases),
+taken for `+0xEC` — unconfirmed. Stand-ins: a random pick shows what our
+release gives (the first choice, resolved at level load) and is tested by
+the class it resolves to, where the game passes any random pick and
+resolves it with `FUN_800675e4`; what's inside is drawn in its rest pose
+(its atree's action isn't played) with the container's own depth writes.
 
 ### `0x4` invisibility
 
