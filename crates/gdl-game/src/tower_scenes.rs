@@ -17,7 +17,7 @@ use gdl_formats::population::{LocatorKind, PlacementParams};
 
 use crate::audio::{EffectName, PlaySound, QueueVoice};
 use crate::character::CharacterModel;
-use crate::effects::{EffectAt, ParticleSystems};
+use crate::effects::{EffectAt, EffectOn, ParticleSystems};
 use crate::fade::Fade;
 use crate::level_material::LevelMaterial;
 use crate::mechanics::{LevelNodes, Mechanics};
@@ -405,10 +405,15 @@ fn run_scene(
     mut scene: ResMut<Scene>,
     camera: Option<ResMut<PlayCamera>>,
     (mut captions, mut caption_requests): (ResMut<Captions>, MessageWriter<ShowCaption>),
-    (mut cuts, mut sounds, mut effects): (MessageWriter<StartCut>, MessageWriter<PlaySound>, MessageWriter<EffectAt>),
+    (mut cuts, mut sounds, mut effects, mut riding): (
+        MessageWriter<StartCut>,
+        MessageWriter<PlaySound>,
+        MessageWriter<EffectAt>,
+        MessageWriter<EffectOn>,
+    ),
     mut voices: MessageWriter<QueueVoice>,
     (population, nodes): (Option<Res<LevelPopulation>>, Option<Res<LevelNodes>>),
-    (players, playing): (Query<&Player>, Query<&EffectName>),
+    (players, playing, heroes): (Query<&Player>, Query<&EffectName>, Query<Entity, With<Player>>),
     (state, choice): (Option<ResMut<PlayerState>>, Option<Res<crate::player::PlayerChoice>>),
     (mut light, mut meshes): (ResMut<ShardLight>, ResMut<Assets<Mesh>>),
     mechanics: Option<ResMut<Mechanics>>,
@@ -475,13 +480,31 @@ fn run_scene(
                     return;
                 }
                 let colour = rank.colour.min(3);
+                // The flash and sparkle ride the hero.
+                let rider = heroes.iter().next();
                 if since > FLASH_AT && !scene.flashed {
                     scene.flashed = true;
-                    effects.write(EffectAt { name: LEVELUP_EFFECTS[colour], bank: None, at: hero, facing: 0.0, scale: 1.0 });
+                    let name = LEVELUP_EFFECTS[colour];
+                    match rider {
+                        Some(on) => {
+                            riding.write(EffectOn { name, bank: None, on, scale: 1.0 });
+                        }
+                        None => {
+                            effects.write(EffectAt { name, bank: None, at: hero, facing: 0.0, scale: 1.0 });
+                        }
+                    }
                 }
                 if since > SPARKLE_AT && !scene.sparkled {
                     scene.sparkled = true;
-                    effects.write(EffectAt { name: RANK_SPARKLES[colour], bank: Some("POWERUPS"), at: hero, facing: 0.0, scale: 1.0 });
+                    let (name, bank) = (RANK_SPARKLES[colour], Some("POWERUPS"));
+                    match rider {
+                        Some(on) => {
+                            riding.write(EffectOn { name, bank, on, scale: 1.0 });
+                        }
+                        None => {
+                            effects.write(EffectAt { name, bank, at: hero, facing: 0.0, scale: 1.0 });
+                        }
+                    }
                 }
                 let voice_on = scene.rank_voice.as_ref().is_some_and(|v| playing.iter().any(|n| &n.0 == v));
                 if captions.done() && since >= RANK_FIELDS && !voice_on {

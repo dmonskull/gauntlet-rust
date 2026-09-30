@@ -51,6 +51,7 @@ impl Plugin for EffectsPlugin {
             .add_message::<NextStage>()
             .add_message::<BreathAt>()
             .add_message::<ChopAt>()
+            .add_message::<EffectOn>()
             .init_resource::<EffectModels>()
             .init_resource::<PotionCycle>()
             .add_systems(
@@ -707,20 +708,33 @@ pub struct EffectAt {
     pub scale: f32,
 }
 
+/// A one-off effect riding something (its model a child of `on`, turning
+/// with it): the hero's level-up flash and sparkle.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct EffectOn {
+    /// Its atree in `WEAPONS`, or in `bank`.
+    pub name: &'static str,
+    pub bank: Option<&'static str>,
+    pub on: Entity,
+    pub scale: f32,
+}
+
 /// A one-off effect's seconds left.
 #[derive(Component)]
 struct OneShot(f32);
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn spawn_one_shots(
     mut commands: Commands,
     mut requests: MessageReader<EffectAt>,
+    mut riding: MessageReader<EffectOn>,
+    places: Query<&GlobalTransform>,
+    time: Res<Time>,
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
     mut seed: Local<u32>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<LevelMaterial>>,
-    mut images: ResMut<Assets<Image>>,
+    (mut meshes, mut materials, mut images): Assets3d,
 ) {
     for e in requests.read() {
         let effect = match e.bank {
@@ -732,6 +746,21 @@ fn spawn_one_shots(
             continue;
         };
         play_effect(&mut commands, &effect, e.at, e.facing, Vec3::splat(e.scale), &mut seed, &mut meshes);
+    }
+    for e in riding.read() {
+        let effect = match e.bank {
+            Some(bank) => models.effect_from(bank, e.name, &mut game, &mut meshes, &mut materials, &mut images),
+            None => models.effect(e.name, &mut game, &mut meshes, &mut materials, &mut images),
+        };
+        let (Some(effect), Ok(place)) = (effect, places.get(e.on)) else {
+            debug!("effect {} has no model or nothing to ride", e.name);
+            continue;
+        };
+        debug!("effect {} rides {:?} (tick {:.0})", e.name, e.on, time.elapsed_secs() * 30.0);
+        // Its particles burst where it starts; its model rides along.
+        spray(&effect.particles, place.translation(), e.scale, &mut seed, &mut commands, &mut meshes);
+        let model = effect.model.spawn(Transform::from_scale(Vec3::splat(e.scale)), &mut commands);
+        commands.entity(model).insert((OneShot(effect.life), ChildOf(e.on)));
     }
 }
 
