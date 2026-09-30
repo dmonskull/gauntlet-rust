@@ -126,7 +126,6 @@ impl ShowMessage {
         self
     }
 
-    #[allow(dead_code)] // for the boss victory's speeches (`critters.rs`)
     pub fn seconds(mut self, seconds: f32) -> Self {
         self.seconds = Some(seconds);
         self

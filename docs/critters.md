@@ -804,16 +804,138 @@ the dragon, chimera, P-boss and yeti, `0x6B` against the djinn and drider,
 the owner's button bits (`0x900`) meanwhile; where the strike releases the
 weapon (the event code in `0x800ab898` reads `+0x834`) isn't traced.
 
-## Boss camera (pointers)
+## Parts (the chimera's heads)
 
-`r13-0x7788` is on from the boss's wake. `0x8001c42c` (from `0x80067f50`)
-starts it (`"BossCamStartCalc called with no boss"`) and then runs
-`0x8001d704` (camera off) or `0x8001c8e0` (on) every frame; it reads
-`WDATA` `BCAM` (`r13-0x7730`) and prints `"BCAM Y %.0f P %.0f D %.2f…"`.
-`0x8001c8e0` looks at the boss (its node or position), at the key effect
-while it exists (`r13-0x776c`), then at the wizard (`0x8023dd58`).
-`0x8001bf88` → `0x8001c084` move the players in this mode.
-[camera.md](camera.md) has the play camera it replaces.
+A boss type's `TYPE +0x11C` chains more types that are made with it as
+**parts**: the chimera (0x23) has its EAGLE, LION and SNAKE heads. No
+other retail boss has parts.
+
+- **Made with the body** (`0x8003df60`): each part is an instance of its
+  own type (hit points, moves, patterns, `NODE` spheres) that shares the
+  body's model instance: it copies the body's words `+0x74`..`+0xBC`
+  and takes as its own "model" the node of the body's skeleton named by
+  its `TYPE +0x10` (`BODY1_EAGLE`, `BODY1_LION`, `BODY1_SNAKE`; found by
+  `0x80010c74`), which `0x80011628` makes a sub-instance with an
+  animation of its own. Its look nodes come from `TYPE +0x56`/`+0x58`/
+  `+0x5A`. Parts are linked from the body through `+0xAD8`, each with
+  `+0xADC` = the body; the body counts them in `+0x44E`.
+- **Each tick** (the boss update `0x800399f0`; parts aren't updated on
+  their own):
+  - Targets and anger for the body and every part (`0x80036ed4`);
+    `0x80036d18` spreads the parts over the players (per-player counts).
+  - The body's forced move, block, then its attack choice. Then, if the
+    body runs no pattern and chose nothing, each part gets its forced
+    move (`0x8003bb40`: DEATH when dying; READY for the chimera's heads
+    in intro states 3–5; else its move's follow-up; then hit
+    reactions), else its attack choice, else TAUNT (anger < 0.8) or
+    READY. A part attacking (a kind above 0x7E, or a pattern) makes the
+    body play TOGETHER (kind 1, `SYNC`). If the body runs a pattern, each
+    part takes the same pattern number and step from its own `PTRN`
+    table (the heads' patterns are flagged 0x1000: never chosen alone).
+    With nothing chosen, the body moves or idles as usual.
+  - After the body's switch, each part: a dying part plays DEATH; while
+    the body plays TOGETHER or runs a pattern (and the intro isn't in
+    states 2–3) a part with a move of its own switches like any critter
+    (`0x8003c324`); otherwise it **copies the body**: its sub-instance
+    plays the body's action at the body's frame (`0x8001101c`), its
+    current move and pattern are cleared, and while the body plays
+    TOGETHER its next move is its move 0.
+  - Parts with a move of their own do it (target, blows, sounds,
+    movement, turning); every part turns its look nodes.
+  - A part following the body's pattern doesn't step the pattern itself
+    (`0x8003c614`: only a body, or a part whose body runs none, steps).
+- **Wounds** (`0x800382c0`): a blow on a part comes off the part and,
+  unless it kills the part, off its body too; a blow on a body that it
+  survives is shared out: every living part loses 0.5 × the blow ÷ the
+  number of living parts. A body's death sets its parts' hit points to 0
+  (they die with it); a body whose parts are all dead dies
+  (`0x80038cf4`). Each part's kill earns its own experience.
+- **A head's death**: its DEATH move (`HIT2`) plays the realm sound at
+  frame 1 and the stump effect (`STUMPE`, `STUMPL`, `STUMPS`: `SFXX` 10,
+  18, 26) at frame 10.
+- **Reaching the heads.** The hero's attack search (`0x800864b0` →
+  `0x80037e9c` → `0x80038008`) scores every living `NODE` sphere by its
+  3D distance to the sphere's surface, within the facing cone and
+  weighted by `NODE +0x1C`; a melee blow lands when that distance is
+  inside the hero's reach. The heads sit about 14 above the arena floor in
+  READY, so melee reaches them only when they come down (BITE lowers a
+  head to the hero); the torso, hands and wings are what's in reach
+  otherwise. Missiles hit spheres by `0x800377e0`/`0x8002fa24`: the
+  sphere's horizontal distance within its radius plus the missile's,
+  and the sphere at most that much above the missile. The heads don't
+  come down otherwise.
+
+## Boss camera (`BCAM`)
+
+On a level with a boss (`r13-0x7760` set), the frame update (`0x80067f50`)
+drives the camera with `0x8001c42c` instead of the play camera
+(`0x80022984`); with no `BCAM` record for the level it falls back to the
+play camera. Scripted cameras (`0x8001bc3c`, `r13-0x774c`) still take
+precedence.
+
+**The record** (`WDATA` chunk `BCAM`, 0x54 bytes; the level's `LEVL
++0x8C` index, −1 for none, resolves into `LEVL +0x6C` in `0x80059cb0`;
+byte-swapped as 9 words and four vectors in `0x80058074`). Every boss
+level has one (D5 uses the third of FOREST's three):
+
+| offset | field |
+| --- | --- |
+| `+0x00` | flags: 1 look at the boss's position `+0x4C` (else its spawn `+0x418`), 2 and 4 yaw rules, 8 and 0x10 look at the players' centre (`0x8006f678`, `0x8001e298`), 0x20 the players' centre instead of the boss, 0x100/0x200 set at run time (distance in/out) |
+| `+0x04` | yaw offset (radians) kept from the boss's facing when the players are outside its cone; `+0x08` = cos of it (`0x8001e088`) |
+| `+0x0C` | near distance (the boss awake) |
+| `+0x10` | near distance before the boss wakes |
+| `+0x14` | far distance: the awake camera goes no further than 2 × it (4 × in the end sequence); also written to the camera's `+0xDC` |
+| `+0x18` | before the boss wakes the camera goes no further than 3 × it; 1.5 × it goes to `+0xDC` (0 → `+0x14`) |
+| `+0x1C`, `+0x20` | pitch (down) at the near and far distance |
+| `+0x24`, `+0x30` | look offset at the near and far distance (`+0x30` = `+0x24` when its y is ≥ 999998) |
+| `+0x3C` | look offset while the key shows |
+| `+0x48` | look offset while the wizard shows |
+
+Retail values, e.g. B6: flags 1, yaw offset 18°, distances 40/25/85/30,
+pitches 15°/9°, offsets (0, −5, 10) and (0, −20, 0).
+
+**The camera** (`r13-0x772c`: target `+0xA4`, yaw `+0xEC`, pitch
+`+0x104`, distance `+0xF4`, their speeds `+0xF0`/`+0x108`/`+0xF8`, the
+near–far fraction `+0xFC`):
+
+- **Start** (first frame, `r13-0x7758` = 0): `r13-0x7340` = 1;
+  `0x8001e088` loads the record and zeroes the state; the target is the
+  players' centre and yaw, pitch and distance come from the level's
+  starting camera point (`r13-0x71e4`) to it.
+- **Before the boss wakes** (`r13-0x7788` = 0, `0x8001d704`): it looks at
+  the players' centre (`0x8006f678` mode 2) from the nearest play camera
+  point's yaw and pitch (`0x8006fbac`), at a distance that keeps every
+  player in frame, between `+0x10` and 3 × `+0x18`. The fit
+  (`0x8001c2e0`) takes each player's margin to the view's edges; each
+  frame the distance steps out by 10 when one is outside, by 2 × (2.5 −
+  margin) when the smallest margin is under 2 (under 2.25 while already
+  moving out), and in by 2 × (margin − 2.5) above 2.5 (above 2.25 while
+  already moving in); flags 0x200/0x100 remember which.
+- **Awake** (`0x8001c8e0`): the target is, in order, the wizard
+  (`0x8023dd58` + `+0x48`) while the end sequence has him, the key effect
+  (`r13-0x776c`, + `+0x3C`) while it exists, else the boss (per the
+  flags) plus the look offset lerped by `+0xFC`. The yaw looks along
+  the way from the nearest players to the target (`0x8001e43c`: the
+  bisector of the two nearest players' directions, the boss counted
+  with flag 8), turned to the other side when that's nearer the camera
+  (unless flag 2); when that way is outside the boss's facing cone (cos
+  below `+0x08`) it's the boss's facing ± the `+0x04` offset instead.
+  The distance fits the players the same way (the in-step is just the
+  excess, and above 4) between `+0x0C` and 2 × `+0x14` (4 × in the end
+  sequence); `+0xFC` = (distance − `+0x0C`) / (`+0x14` − `+0x0C`),
+  clamped to 0..1, and the pitch goal is lerped from `+0x1C` to `+0x20`
+  by it (held while the distance is still 10 or more off).
+  Yaw, distance and pitch ease toward their goals (`0x8001e934`: speed
+  limits π/2 rad/s, 50 in and 200 out a second, π/2 rad/s;
+  accelerations 0.52, 75 and 0.26: `r13-0x7f78`..`-0x7f64`); a target
+  jump of more than 200 × dt cuts straight to the new view.
+- Then the direction is +Z turned by yaw and pitch
+  (`0x800be0fc`/`0x800be070`), the eye is the target − direction ×
+  distance, and the view is set (`0x800b501c`). A debug flag prints
+  `"BCAM Y %.0f P %.0f D %.2f…"`.
+- **Players** (`0x8001bf88` → `0x8001c084`, from the player update):
+  while the boss camera runs, a player's step is cut so it stays inside
+  the view (the `0x8001c2e0` margins).
 
 ## Record layouts
 
@@ -1123,7 +1245,9 @@ the gargoyle and the general aren't run yet.
 
 ## Bosses in this rewrite
 
-`critters.rs` also runs one-part bosses. It was checked on levelB6's dragon.
+`critters.rs` also runs the bosses: every boss level's boss loads, wakes
+and fights, the chimera with its heads. It was first checked on levelB6's
+dragon.
 
 **What runs:**
 - **Spawn.** The level's boss type (`LEVL +0x44`) loads its file and spawns
@@ -1176,11 +1300,12 @@ the gargoyle and the general aren't run yet.
   `WIZARD` appears between the boss's spot and the hero, 3 above; after
   his 64-tick fade he says `S_DEFEATVOX<L>`, then `S_RUNEVOX…` by the
   realm's runestones the hero holds, queued one after the other; his
-  messages (from `TEXT/ENGLISH.ROM`) are logged and timed as the game
-  types them (a character every 2 fields, 60 fields a page); the 2 s
-  countdown then sends the hero to `levelL1`.
-  - Stand-ins: the messages aren't drawn (the hint system only shows
-    `SCROLL_E.ROM`); the wizard doesn't fade in; the teleport-out effect,
+  messages (`TEXT/ENGLISH.ROM`) show a page at a time through
+  `hints::ShowMessage`, each for as long as the game types and holds it
+  (a character every 2 fields, then 60 fields); the 2 s countdown then
+  sends the hero to `levelL1`.
+  - Stand-ins: the message box is the hints' plain text; the wizard
+    doesn't fade in; the teleport-out effect,
     the HUD sprites and the next level's choice (`levelL1` for world
     13's first) aren't the game's; the shard doesn't drop to the floor
     (flag 0x40 only acts on moving effects, and it has no velocity).
@@ -1204,33 +1329,71 @@ the gargoyle and the general aren't run yet.
 
 **The intro** (`update_intro`, `forced`, `switch`, `intro_reactions`):
 - It runs as decoded above when the hero carries the realm's legendary
-  item (`PlayerState::treasures` holds `(13, realm)`), or with
+  item (its bit in `PlayerState::quest.legendary`), or with
   `GDL_LEGENDARY=1` (a testing aid), for bosses up to 0x2A. The level's
-  side runs at the start of each critter tick; the item is taken out of
-  `treasures` when the state reaches 2 or 3.
+  side runs at the start of each critter tick; the item's bit is cleared
+  when the state reaches 2 or 3.
 - The forced moves, the 1 → 2 and 3 → 4 steps, the waits (1 or 3 s, 29 s),
   the damage scale's gap in 1–4 and the missile reactions (the dragon
   frozen 20 s, the djinn stunned 30 s, the P-boss 300 s; the chimera
   5 → 6) follow the game. A hero's thrown weapon or missile (`Hit::ranged`)
   counts as a missile.
 - `CritterLevel::light_offset()` follows the game's darkening (−0.8 at the
-  darkest), but nothing draws it yet: the renderer would scale the level's
-  brightness by clamp(1 + offset, 0, 1).
-- Not done: the heroes' side (standing still facing the boss in 2, their
-  highlights, the legendary weapon's throw and its `+0xAC8` window), the
-  boss's highlight `+0xABE`, the see-through and eye textures, the intro
-  effects and sounds, and the chimera's heads mirroring the body.
+  darkest); `scene_light.rs` draws it (see "In this rewrite, player
+  side").
+- Not done: the heroes' highlights, the legendary weapon's throw and its
+  `+0xAC8` window, the boss's highlight `+0xABE`, the see-through and eye
+  textures, the intro effects and sounds.
 - Checked on B6 (logs): the dragon wakes at 2 s; START → READY moves 1 → 2
   at 4.7 s; 3 s later READY → ROAR (→ 3); ROAR → BREATH moves 3 → 4 → 5 at
   10.4 s and it fights. A thrown axe in state 2 froze it for 20 s (→ 4 → 5).
   On A5 the chimera wakes, waits 1 s after START, roars, and stays in
   READY in state 5.
 
+**Parts** (the chimera's heads; `spawn_critter`, `choose_parts`,
+`switch_parts`, `pose_parts`, `Critter::take_hit`):
+- Each part is a `Critter` kept inside its body's (`Critter::parts`),
+  updated with it in the game's order: its targets and anger, then its
+  choice after the body's attack choice (forced, attack, idle; the
+  body's pattern step in its own pattern), TOGETHER for the body when a
+  part attacks, and after the body's switch either its own switch or a
+  copy of the body's clock.
+- A part has no model: its `Body` holds the subtree of the body's
+  skeleton under `TYPE +0x10`'s node, the rest offsets and every action's
+  tracks for it. `pose_parts` (after `Animate`) poses that subtree with
+  the part's own clip while it plays a move of its own; copying the body
+  it leaves the body's pose.
+- Hit spheres are numbered across the body and its parts
+  (`Critter::sphere_owner`), so `damage.rs` still hits the body's entity
+  and `take_hit` routes the blow and shares the wound as the game does.
+  Moves and patterns flagged 2 need all parts alive; a body whose parts
+  are all dead dies.
+- Checked on A5: the chimera plays SYNC while its heads bite (and hit the
+  hero), their own `BITE` poses over the body's READY; killed with
+  `GDL_CRITTER_HP=0.02` it takes its heads with it and the victory runs.
+  A real-data unit test checks the shared wounds.
+- Not done: the stump effects on a dead head, the parts' look nodes and
+  turning (a part keeps its body's place and facing), spreading parts
+  over several players, a part's target falling back to its body's.
+- In this rewrite the hero's search (`player.rs`) picks the nearest
+  target by its own rules; the game's picks the living sphere by 3D
+  distance to its surface (see "Parts"), which puts a head in melee reach
+  only while it bites.
+
+**Smoke test** (each boss level once, one game at a time, 400 frames,
+`GDL_CRITTER_HP=0.02`, the hero warped 12 in front of the boss attacking,
+the camera on the boss with `GDL_LOOK_AT`): every level loads and its
+boss wakes and plays START — B6 dragon (and fights and dies in the
+run), C5 djinn (on to its FOUNTAIN attack), D5 drider, G5 lich, H4 garm
+(on to READY), I5 yeti, J5 wraith, K5 P-boss, E2 and F2 skorne. A5's
+chimera was checked separately. Most STARTs outlast 400 frames. No
+realm-L level has a boss.
+
+**The boss camera** is decoded above but not built: boss levels use the
+play camera.
+
 **Next:**
-- Parts (`TYPE +0x11C` children, the chimera's heads). The spawn is
-  `0x8003df60` with children linked by `+0xAD8`/`+0xADC`. They share the
-  body (`0x80036d18`) and patterns (`0x8003b6f0`, `0x8003bb40`).
-- The boss camera (`BCAM`, `0x8001c42c`).
+- The boss camera.
 - Kinds 5, 6, 7 and 9, the look nodes, and breakable nodes.
 - Checking the golem against hit spheres: blows on its BALL/HANDR spheres
   run out at 0.25 × its hit points.
