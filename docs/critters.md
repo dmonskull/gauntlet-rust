@@ -612,8 +612,44 @@ B6's and K5's at 3.
 
 Here: the stage models, the touch rule and I5's hidden start. Not done:
 rocks taking damage, the throw (kind 6) and the volley (kind 5).
-- **7 — grab**: bit 1 grabs the player (`0x800746c8`) into `+0x128`; bit 2
-  throws them with damage (`0x800366e4`, kind `0x8050`).
+- **7 — grab** (the lich's, the yeti's and both Skornes' GRAB moves,
+  move kind 0x81: blow 1 in its window — the lich 16–18, the yeti 25–30,
+  the Skornes 12–15 — blow 2 once from its frame: 71, 100, 44):
+  - Blow 1, while nobody's held (`+0x128` < 0): the sphere test of kind 0
+    in its finding mode (`0x8003633c(critter, DAMG, 0)`: no damage) picks
+    a player; `0x800746c8(player, the move node +0xD0, DAMG +0x20)` holds
+    them: their model (`+0x74`) is re-parented onto the node at that
+    offset (less the player's `+0x838`), their position `+0x44` saved in
+    `+0xDC` and left as it is, `+0x964 |= 0x20` (attached: the player
+    update skips its movement, floor check and attacks) and the pending
+    hit flags `+0x8D4 |= 0x4000`, which the reaction (`FUN_80085ca8`)
+    turns into class 300 every tick — intent `0x29`, GRABBED (`0x94`,
+    looping; the chooser switches to it at once). `+0x128` = the player;
+    `DAMG +0x42` ≥ 0 puts that effect on them. On blow 1's first frame the
+    blow's effect starts as kind 1's, and a looping effect at the node
+    (`+0xD4`, `0x80090cc0`) while it's held.
+  - Blow 2, with someone held: `0x800745d4` lets go — the model back at
+    `+0x44` under the world root, `+0x964 &= ~0x20`, `+0x8D4 &= ~0x4000`
+    — and `0x800366e4(0.5, player, critter, DAMG, 0x8050, throw)` throws:
+    damage `+0x2C` × level `+0xBC` (× 0.5, `r2-0x7230`, for a non-boss
+    while the enemies are shrunk), kind `DAMG +0x04 | 0x8050` (`| 0x1000000`
+    with a hit effect), push = normalise(the body's forward x, −0.1
+    (`r2-0x7238`), its z) × `DAMG +0x30` (the lich 5, the yeti and the
+    Skornes 1000), through the hurt-player routine; the player's `+0x914`
+    = 0 and critter guard `+0x8E8` = now + 0.25; `+0x128` = −1. Nothing
+    else lets go (no other writer of `+0x128`; the grab moves aren't
+    flagged uninterruptible — a DEATH forced mid-grab isn't handled that
+    we've found). While holding, the critter doesn't turn
+    (`0x8003ae64`).
+  - The thrown flag `0x8000` (in `0x8050`): the reaction keeps
+    `+0x8D4 = 0x8000` and, the first tick, sets the knockback velocity to
+    the push itself (not × a factor), class 301 → intent `0x23` → FALLDOWN;
+    the floor check (`FUN_800878a0`) lets a thrown player keep its speed
+    over no floor and clears `0x8000` once it's within 0.2
+    (`r2-0x5AA0`) of a floor; the tick after, the reaction deals the
+    stored damage (`+0x8D0`, `FUN_80078560(…, 1, 0, 0)`).
+  - Not ported yet (the held player's model on the node, the attached
+    mode and the thrown flight).
 - **8 — projectile at a point**: aimed at `+0x1FC`.
 - **9 — the boss's loot** (below).
 
