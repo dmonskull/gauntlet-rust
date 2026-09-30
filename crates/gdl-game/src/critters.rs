@@ -78,16 +78,16 @@ use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use gdl_formats::anim::{AnimFile, Track, rotation_matrix as clip_rotation};
 use gdl_formats::text::TextRom;
-use gdl_formats::collision::{node_flags, push_out};
+use gdl_formats::collision::{approx_hypot, node_flags, push_out};
 use gdl_formats::critter::{self, CritterDamage, CritterFile, CritterMove, Condition, class, kind};
 use gdl_formats::population::{ItemClass, LocatorKind, PlacementParams, REALM_LETTERS, rotation_matrix};
 use gdl_formats::texmod::TexMod;
 use gdl_formats::{LevelCollision, ModelFile, enemy};
 
-use crate::audio::{PlaySound, QueueVoice, VoiceQueues};
+use crate::audio::{PlaySoundAt, QueueVoice, VoiceQueues};
 use crate::character::{Animate, Animator, CharacterData, CharacterModel, advance_clip, clip_end};
 use crate::combat::{CritterAim, SphereAim, TargetKind, Targetable};
-use crate::effects::effect_life;
+use crate::effects::{CritterBlast, effect_life};
 use crate::exits::ChangeLevelTo;
 use crate::flash::{self, Flash, FlashColours};
 use crate::message_box::{self, ShowCaption, TextFile};
@@ -118,6 +118,7 @@ impl Plugin for CrittersPlugin {
                     touch_statues.before(tick_critters),
                     tick_critters.after(MonsterTick),
                     drop_items.after(tick_critters),
+                    rock_blows.after(tick_critters),
                     run_victory.after(tick_critters),
                     watch_boss.after(run_victory),
                 ),
@@ -189,7 +190,7 @@ fn run_victory(
     mut state: Option<ResMut<PlayerState>>,
     players: Query<&Player>,
     mut animators: Query<&mut Animator>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
     (mut voices, mut queues): (MessageWriter<QueueVoice>, ResMut<VoiceQueues>),
     mut messages: MessageWriter<ShowCaption>,
     mut change: MessageWriter<ChangeLevelTo>,
@@ -232,7 +233,8 @@ fn run_victory(
             info!("realm {} beaten", level.realm_id);
             if let Some((m, life)) = &level.end.key {
                 v.key = Some((spawn(m, v.key_at, &mut commands), now + life, false));
-                sounds.write(PlaySound(format!("S_BOSSKEY{}", level.realm)));
+                // Panned from where the key shows (the boss's spot).
+                sounds.write(PlaySoundAt::panned(format!("S_BOSSKEY{}", level.realm), Vec3::from(v.key_at), SFXX_VOLUME));
                 info!("the boss key shows at {:?} for {life:.2} s", v.key_at);
             }
             v.step = 1;
@@ -560,8 +562,11 @@ pub struct CritterKind {
     bodies: Vec<Option<Body>>,
     /// The statue a placed one stands as until it wakes.
     statue: Option<CharacterModel>,
-    /// Missile models: effect atrees named by its `SFXX` records.
+    /// Missile models: effect atrees named by its `SFXX` records; and
+    /// each one's clip (its first action's frames and rate), also for the
+    /// effects the folder lacks that the effect table's own bank holds.
     effects: HashMap<usize, Arc<CharacterModel>>,
+    effect_clips: HashMap<usize, (u16, u16)>,
 }
 
 /// A body's model and what its moves animate.
@@ -678,7 +683,44 @@ pub struct CritterLevel {
     made: Vec<usize>,
     /// A dying boss's loot, for `loot.rs`.
     loot: Vec<BossLoot>,
+    /// Blows at the safe rocks this tick (kinds 5 and 6); the rocks the
+    /// boss threw down, with the seconds till each is made; the one it
+    /// threw last, by its number among the rocks (−1 none: the round
+    /// starts at a random one as the boss gathers them).
+    rock_blows: Vec<RockBlow>,
+    rock_timers: Vec<(usize, f32)>,
+    last_rock: i32,
 }
+
+/// A blow of kind 5 (at every safe rock) or 6 (throwing one down): its
+/// effect at the rock(s), a blast hurting the heroes about it.
+struct RockBlow {
+    critter: Entity,
+    every: bool,
+    /// The feet of the blow's target, if it has one.
+    target: Option<[f32; 3]>,
+    damage: f32,
+    radius: f32,
+    kind: u32,
+    effect: Option<Arc<CharacterModel>>,
+    /// The effect's clip: its frames (a thrown rock is made as they run
+    /// out) and how long it lasts.
+    frames: u16,
+    life: f32,
+    /// Its `SFXX` record's sounds, played at each rock.
+    sounds: Vec<PlaySoundAt>,
+}
+
+/// A critter's effect set down somewhere: seconds left.
+#[derive(Component)]
+struct CritterFx(f32);
+
+/// The most safe rocks a boss gathers.
+const MAX_ROCKS: usize = 16;
+/// A critter's `SFXX` sounds play at this requested volume, from where it
+/// stands, faded by its distance from the heroes (panned only during its
+/// DEATH move: not done yet, `audio::PlaySoundAt`).
+const SFXX_VOLUME: u8 = 0xE0;
 
 impl CritterLevel {
     /// The offset the game adds to the scene's brightness (0 normally, down
@@ -1088,6 +1130,20 @@ impl Critter {
     }
 }
 
+/// An `SFXX` record starting (the game's effect start): its sound and
+/// those of the records chained after it, from where the critter stands
+/// at 0xE0 — faded by its distance from the heroes, panned only during its
+/// DEATH move.
+fn effect_sounds(c: &Critter, record: usize, realm: char, out: &mut Vec<PlaySoundAt>) {
+    let mut names = Vec::new();
+    sound_chain(&c.kind.file, record, realm, &mut names);
+    let at = Vec3::from(c.position);
+    let dying = c.move_kind(c.current) == Some(kind::DEATH);
+    out.extend(names.into_iter().map(|n| {
+        if dying { PlaySoundAt::panned(n, at, SFXX_VOLUME) } else { PlaySoundAt::faded(n, at, SFXX_VOLUME) }
+    }));
+}
+
 /// The names of an `SFXX` record's sounds and those chained after it.
 fn sound_chain(file: &CritterFile, first: usize, realm: char, out: &mut Vec<String>) {
     let mut next = Some(first);
@@ -1127,6 +1183,7 @@ fn setup_level(
     let realm_items = format!("level{}", monsters.realm);
     let mut kinds = HashMap::new();
     let mut animated = Vec::new();
+    let mut bank = None;
     let wanted = monsters.enemies.loaded.iter().map(|e| e.0).filter(|&e| matches!(e, GOLEM | GARGOYLE | GENERAL) || e >= FIRST_BOSS);
     let gargoyle = monsters.enemies.gargoyle.as_str();
     for enemy in wanted {
@@ -1217,10 +1274,12 @@ fn setup_level(
             _ => None,
         };
         // Missile models: the effect a projectile blow starts names an
-        // atree of the critter's own folder.
+        // atree of the critter's own folder (or of the effect table's bank:
+        // NULLFX, unseen).
         let mut effects = HashMap::new();
+        let mut effect_clips = HashMap::new();
         for d in &file.damage {
-            if !matches!(d.kind, 1 | 8) {
+            if !matches!(d.kind, 1 | 5 | 6 | 8) {
                 continue;
             }
             let Ok(e) = usize::try_from(d.effects[0]) else { continue };
@@ -1240,9 +1299,18 @@ fn setup_level(
                             .map(|o| (o.name.as_str(), o.submeshes.len(), o.flags))
                             .collect::<Vec<_>>()
                     );
+                    if let Some(a) = md.clips.actions.first() {
+                        effect_clips.insert(e, (a.frames, a.rate));
+                    }
                     effects.insert(e, Arc::new(build(&md)));
                 }
-                None => debug!("{folder}: no missile model {name}"),
+                None => match bank_clip(&mut game, &mut bank, &name) {
+                    Some(clip) => {
+                        debug!("{folder}: effect {name} from {EFFECT_BANK}, clip {clip:?}");
+                        effect_clips.insert(e, clip);
+                    }
+                    None => debug!("{folder}: no missile model {name}"),
+                },
             }
         }
         info!(
@@ -1252,7 +1320,7 @@ fn setup_level(
             statue.is_some(),
             effects.len()
         );
-        kinds.insert(enemy, Arc::new(CritterKind { file, bodies, statue, effects }));
+        kinds.insert(enemy, Arc::new(CritterKind { file, bodies, statue, effects, effect_clips }));
     }
     if let Some(mut texanims) = texanims {
         info!("{} texture animations on the level's critters", animated.len());
@@ -1348,6 +1416,9 @@ fn setup_level(
         made: Vec::new(),
         loot: Vec::new(),
         gargoyle_piece: format!("GARG{}", monsters.enemies.gargoyle.to_ascii_uppercase()),
+        rock_blows: Vec::new(),
+        rock_timers: Vec::new(),
+        last_rock: -1,
     };
 
     // The boss appears at the level's boss locator, dropped onto the floor
@@ -1366,6 +1437,12 @@ fn setup_level(
         }
         level.boss = spawn_critter(&level, &kind, at, yaw, &mut commands);
         level.boss_spot = spot.position;
+        // The boss gathers the level's safe rocks: the round its throws
+        // take with no target starts at a random one.
+        let rocks = items.safe_rocks().len().min(MAX_ROCKS) as i32;
+        if rocks > 0 {
+            level.last_rock = (level.random() * rocks as f32) as i32 % rocks;
+        }
         level.end = load_end_models(&mut game, &population.level, monsters.boss, monsters.realm, &mut meshes, &mut materials, &mut images);
         info!("boss {} at {at:?} facing {:.0}°", kind.file.desc.name, yaw.to_degrees());
         // The intro runs when a hero brings the realm's legendary item
@@ -1383,6 +1460,20 @@ fn setup_level(
 
 /// A critter folder's atrees, models, texture bytes and texture modifiers.
 type CritterFolder = (AnimFile, ModelFile, Vec<u8>, Vec<TexMod>);
+
+/// The effect table's own bank: its effects are there for every critter's
+/// `SFXX` records too.
+const EFFECT_BANK: &str = "WEAPONS";
+
+/// An effect's clip (its first action's frames and rate) from the effect
+/// table's bank, read once (`bank`).
+fn bank_clip(game: &mut LoadedGame, bank: &mut Option<Option<AnimFile>>, name: &str) -> Option<(u16, u16)> {
+    let anim = bank.get_or_insert_with(|| {
+        game.install.read(&format!("{EFFECT_BANK}/ANIM.PS2")).ok().and_then(|b| AnimFile::parse(&b).ok())
+    });
+    let tree = anim.as_ref()?.atrees.iter().find(|a| a.name.eq_ignore_ascii_case(name))?;
+    tree.actions.first().map(|a| (a.frames, a.rate))
+}
 
 fn read_folder(game: &mut LoadedGame, folder: &str) -> Option<CritterFolder> {
     let bytes = game.install.read(&format!("{folder}/ANIM.PS2")).ok()?;
@@ -1681,7 +1772,7 @@ fn tick_critters(
     mut spheres: Query<&mut Transform, (With<CritterSphere>, Without<Critter>)>,
     bones: Query<&GlobalTransform>,
     mut hurt: MessageWriter<DamagePlayer>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
     (mut death_shot, camera): (Local<Option<u32>>, Option<Res<PlayCamera>>),
     (colours, mut tags, enemies, stop): (Res<FlashColours>, Query<&mut MeshTag>, Res<EnemyScale>, Res<TimeStop>),
 ) {
@@ -1730,7 +1821,7 @@ fn tick_critters(
 
     let intro_before = level.intro;
     let mut blows: Vec<Blow> = Vec::new();
-    let mut to_play: Vec<String> = Vec::new();
+    let mut to_play: Vec<PlaySoundAt> = Vec::new();
     for (entity, mut c, mut animator) in &mut critters {
         let c = &mut *c;
         c.now = now;
@@ -1998,7 +2089,7 @@ fn tick_critters(
     // `GDL_CRITTER_SHOT=<png>`: a testing aid that saves a screenshot a
     // few ticks after the first critter event named by
     // `GDL_CRITTER_SHOT_ON` (`death`, the default; `missile`; `hurt`; `part`, a
-    // boss part starting an attack).
+    // boss part starting an attack; `rocks`, a blow at the safe rocks).
     let wanted = std::env::var("GDL_CRITTER_SHOT_ON").unwrap_or_else(|_| "death".into());
     if death_shot.is_none() && level.events.iter().any(|e| *e == wanted) {
         let delay = std::env::var("GDL_CRITTER_SHOT_DELAY").ok().and_then(|v| v.parse().ok());
@@ -2017,9 +2108,7 @@ fn tick_critters(
                 .observe(bevy::render::view::screenshot::save_to_disk(std::path::PathBuf::from(path)));
         }
     }
-    for s in to_play {
-        sounds.write(PlaySound(s));
-    }
+    sounds.write_batch(to_play);
 }
 
 /// Old damage is forgotten after 3 s, and during ROAR and hit reactions.
@@ -2078,7 +2167,7 @@ fn act(
     heroes: &[Hero],
     level: &mut CritterLevel,
     blows: &mut Vec<Blow>,
-    to_play: &mut Vec<String>,
+    to_play: &mut Vec<PlaySoundAt>,
     commands: &mut Commands,
 ) {
     if c.move_target.is_none() || c.switched {
@@ -2105,13 +2194,13 @@ fn act(
         c.blows_done |= bit;
         let Ok(d) = usize::try_from(mv.damage[slot]) else { continue };
         let Some(dmg) = c.kind.file.damage.get(d).cloned() else { continue };
-        deal(c, me, &dmg, first, node_matrix, heroes, level, blows, commands);
+        deal(c, me, &dmg, first, node_matrix, heroes, level, blows, to_play, commands);
     }
     for (k, (s, at)) in mv.sounds.iter().enumerate() {
         let bit = 1 << k;
         if c.sounds_done & bit == 0 && *s >= 0 && i32::from(*at) <= frame {
             c.sounds_done |= bit;
-            sound_chain(&c.kind.file, *s as usize, level.realm, to_play);
+            effect_sounds(c, *s as usize, level.realm, to_play);
         }
     }
 }
@@ -2299,6 +2388,114 @@ fn missile_reaction(state: i32, boss_type: i32) -> Option<(i32, f32, f32)> {
         (intro::WAIT | intro::ROAR, PBOSS) => Some((state, 0.0, PBOSS_STUN)),
         (intro::AFTER, CHIMERA) => Some((intro::FIGHT, 0.0, 0.0)),
         _ => None,
+    }
+}
+
+/// Blows at the safe rocks (kinds 5 and 6): the blow's effect at every
+/// rock (the P-boss's spouts) or at the one thrown down (the yeti's
+/// boulders), each a blast growing over the effect's clip that hurts the
+/// heroes about it (`effects::CritterBlast`), with the effect's sounds
+/// from the critter, once a rock. The rock thrown down is, of those not
+/// standing, the one nearest the blow's target (the game's quick distance
+/// from the target's feet); with no target, the round from the last one
+/// thrown — the game tests the rocks from the first but takes the one that
+/// many after the last, so it can pick a standing rock. It's made as the
+/// effect's frames run out (less one, 30 a second), at stage 3.
+#[allow(clippy::too_many_arguments)]
+fn rock_blows(
+    mut commands: Commands,
+    level: Option<ResMut<CritterLevel>>,
+    items: Option<ResMut<LevelItems>>,
+    contents: Option<Res<ContentModels>>,
+    transforms: Query<&Transform>,
+    mut fx: Query<(Entity, &mut CritterFx)>,
+    mut blasts: MessageWriter<CritterBlast>,
+    mut sounds: MessageWriter<PlaySoundAt>,
+) {
+    for (e, mut f) in &mut fx {
+        f.0 -= DT;
+        if f.0 <= 0.0 {
+            commands.entity(e).try_despawn();
+        }
+    }
+    let (Some(mut level), Some(mut items)) = (level, items) else { return };
+    let level = &mut *level;
+    // Where a rock stands: its model's pose (its node), else its centre.
+    let pose_of = |items: &LevelItems, placement: usize, centre: [f32; 3]| {
+        items
+            .view(placement)
+            .and_then(|v| v.model)
+            .and_then(|m| transforms.get(m).ok())
+            .copied()
+            .unwrap_or_else(|| Transform::from_translation(Vec3::from(centre)))
+    };
+    // Rocks thrown down are made as their effects end.
+    let mut made = Vec::new();
+    level.rock_timers.retain_mut(|(placement, left)| {
+        *left -= DT;
+        let done = *left <= 0.0;
+        if done {
+            made.push(*placement);
+        }
+        !done
+    });
+    for placement in made {
+        let centre = items.view(placement).map_or([0.0; 3], |v| v.shape.centre);
+        let pose = pose_of(&items, placement, centre);
+        let Some(name) = items.make_rock(placement) else { continue };
+        if let Some(old) = items.take_model(placement) {
+            commands.entity(old).try_despawn();
+        }
+        if let Some(models) = contents.as_deref() {
+            models.spawn(&format!("{name}3"), pose, placement, &mut commands);
+        }
+        info!("the boss's rock at placement {placement} is made");
+    }
+    for b in std::mem::take(&mut level.rock_blows) {
+        let mut rocks = items.safe_rocks();
+        rocks.truncate(MAX_ROCKS);
+        let n = rocks.len();
+        if n == 0 {
+            continue;
+        }
+        let spots: Vec<Vec3> = rocks.iter().map(|&(p, centre, _)| pose_of(&items, p, centre).translation).collect();
+        let at: Vec<usize> = if b.every {
+            (0..n).collect()
+        } else {
+            let fallen = |k: usize| !rocks[k].2;
+            let pick = match b.target {
+                Some(t) => (0..n).filter(|&k| fallen(k)).min_by(|&x, &y| {
+                    let d = |k: usize| approx_hypot(spots[k].x - t[0], spots[k].z - t[2]);
+                    d(x).total_cmp(&d(y))
+                }),
+                None => (0..n).find(|&k| fallen(k)).map(|k| (level.last_rock + k as i32 + 1).rem_euclid(n as i32) as usize),
+            };
+            level.last_rock = pick.map_or(-1, |k| k as i32);
+            pick.into_iter().collect()
+        };
+        for k in at {
+            let (placement, _, _) = rocks[k];
+            let spot = spots[k];
+            if let Some(model) = &b.effect {
+                let e = model.spawn(Transform::from_translation(spot), &mut commands);
+                commands.entity(e).insert((CritterFx(b.life), LevelEntity));
+            }
+            blasts.write(CritterBlast {
+                owner: b.critter,
+                at: spot,
+                kind: b.kind,
+                damage: b.damage,
+                radius: b.radius,
+                life: b.life,
+            });
+            sounds.write_batch(b.sounds.iter().cloned());
+            if !b.every {
+                let wait = (f32::from(b.frames) - 1.0).max(0.0) / 30.0;
+                level.rock_timers.retain(|(p, _)| *p != placement);
+                level.rock_timers.push((placement, wait));
+                info!("the boss throws down the rock at placement {placement}: made in {wait:.2} s");
+            }
+        }
     }
 }
 
@@ -2954,6 +3151,7 @@ fn deal(
     heroes: &[Hero],
     level: &mut CritterLevel,
     blows: &mut Vec<Blow>,
+    to_play: &mut Vec<PlaySoundAt>,
     commands: &mut Commands,
 ) {
     let mut damage = d.damage * level.damage_scale;
@@ -2971,10 +3169,45 @@ fn deal(
         }
         return;
     }
+    // The blow's effect starts on its first frame (a grab's, the safe
+    // rocks' at each rock): its sounds.
+    if first
+        && !matches!(d.kind, 5..=7)
+        && let Ok(e) = usize::try_from(d.effects[0])
+    {
+        effect_sounds(c, e, level.realm, to_play);
+    }
     if matches!(d.kind, 1 | 2 | 8) {
         if first {
             launch(c, me, d, damage, level, commands);
             level.events.push("missile");
+        }
+        return;
+    }
+    // At the safe rocks (`rock_blows`); the game makes none with no rocks
+    // gathered.
+    if matches!(d.kind, 5 | 6) {
+        if first {
+            let target = c.move_target.and_then(|p| heroes.iter().find(|h| h.entity == p)).map(|h| h.feet);
+            let e = usize::try_from(d.effects[0]).ok();
+            let (frames, rate) = e.and_then(|e| c.kind.effect_clips.get(&e)).copied().unwrap_or((0, 0));
+            let mut sounds = Vec::new();
+            if let Some(e) = e {
+                effect_sounds(c, e, level.realm, &mut sounds);
+            }
+            level.rock_blows.push(RockBlow {
+                critter: me,
+                every: d.kind == 5,
+                target,
+                damage,
+                radius: d.radius,
+                kind: d.blow,
+                effect: e.and_then(|e| c.kind.effects.get(&e)).cloned(),
+                frames,
+                life: effect_life(frames, rate),
+                sounds,
+            });
+            level.events.push("rocks");
         }
         return;
     }
@@ -3013,7 +3246,18 @@ fn deal(
         }
         let towards = Vec3::new(h.feet[0] - c.position[0], 1.0, h.feet[2] - c.position[2]).normalize_or_zero();
         let push = 0.5 * ((at - was) + towards);
-        blows.push((h.entity, damage, d.blow, push.to_array()));
+        // A sphere or a cone that does damage starts the blow's hit effect
+        // at the hero's feet (its sounds), standing in for the hero's own
+        // hit look.
+        let mut kind_bits = d.blow;
+        if matches!(d.kind, 0 | 4)
+            && damage > 0.0
+            && let Ok(e) = usize::try_from(d.effects[1])
+        {
+            effect_sounds(c, e, level.realm, to_play);
+            kind_bits |= crate::combat::hit_kind::NO_HIT_LOOK;
+        }
+        blows.push((h.entity, damage, kind_bits, push.to_array()));
         level.guard.insert(h.entity, level.now + HIT_GUARD);
         c.blows_dealt += 1;
         debug!("critter {me:?} blow kind {} lands for {damage:.1}", d.kind);
@@ -3378,6 +3622,9 @@ mod tests {
             gargoyle_piece: String::new(),
             made: Vec::new(),
             loot: Vec::new(),
+            rock_blows: Vec::new(),
+            rock_timers: Vec::new(),
+            last_rock: -1,
         }
     }
 
@@ -3492,7 +3739,7 @@ mod tests {
             return;
         };
         let file = CritterFile::parse(&bytes).unwrap();
-        let kind = Arc::new(CritterKind { file, bodies: Vec::new(), statue: None, effects: HashMap::new() });
+        let kind = Arc::new(CritterKind { file, bodies: Vec::new(), statue: None, effects: HashMap::new(), effect_clips: HashMap::new() });
         let level = level_with(CHIMERA, intro::NONE);
         let mut world = World::new();
         let root = world.spawn_empty().id();

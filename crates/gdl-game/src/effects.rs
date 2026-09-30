@@ -47,6 +47,7 @@ impl Plugin for EffectsPlugin {
             .add_message::<StrikePotion>()
             .add_message::<BlastAt>()
             .add_message::<SweepItems>()
+            .add_message::<CritterBlast>()
             .add_message::<EffectAt>()
             .add_message::<ExplosionAt>()
             .add_message::<NextStage>()
@@ -62,6 +63,7 @@ impl Plugin for EffectsPlugin {
                     set_off_potions,
                     spawn_blasts,
                     sweep_items,
+                    critter_blasts,
                     spawn_explosions,
                     spawn_breaths,
                     spawn_chops,
@@ -203,6 +205,22 @@ pub struct BlastAt {
 #[derive(Message, Clone, Copy, Debug)]
 pub struct SweepItems {
     pub at: Vec3,
+    pub damage: f32,
+    pub radius: f32,
+    pub life: f32,
+}
+
+/// A boss's effect set down where it does its damage (`DAMG` kinds 5 and
+/// 6, `critters.rs`: the P-boss's spouts at the safe rocks, the yeti's
+/// boulders): the game's missile slot in area mode from the start (flags
+/// `0x801 | 0x20`: players, not monsters or items), growing as any blast
+/// does over `life`, the effect's clip. Unseen here: the effect's model is
+/// the critter's own, set down by `critters.rs`.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct CritterBlast {
+    pub owner: Entity,
+    pub at: Vec3,
+    pub kind: u32,
     pub damage: f32,
     pub radius: f32,
     pub life: f32,
@@ -1342,6 +1360,32 @@ fn sweep_items(mut commands: Commands, mut requests: MessageReader<SweepItems>) 
             heading: None,
         };
         commands.spawn((Transform::from_translation(s.at), Visibility::Hidden, blast, BlastColour(0, true), LevelEntity));
+    }
+}
+
+fn critter_blasts(mut commands: Commands, mut requests: MessageReader<CritterBlast>) {
+    for c in requests.read() {
+        info!("a boss's blast at {:?}: {:.0} out to {:.0} over {:.2} s", c.at, c.damage, c.radius, c.life);
+        let blast = Blast {
+            owner: c.owner,
+            shape: BlastShape::Grow,
+            centre: c.at,
+            kind: c.kind,
+            damage: c.damage,
+            radius: c.radius,
+            life: c.life,
+            age: 0.0,
+            spared: HashMap::new(),
+            spared_items: HashMap::new(),
+            heroes: Heroes::Hurt,
+            items: false,
+            monsters: false,
+            then: &[],
+            scale: Vec3::ONE,
+            drop: 0.0,
+            heading: None,
+        };
+        commands.spawn((Transform::from_translation(c.at), Visibility::Hidden, blast, BlastColour(0, true), LevelEntity));
     }
 }
 
