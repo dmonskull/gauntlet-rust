@@ -45,7 +45,7 @@ impl Plugin for ItemsPlugin {
             .add_systems(FixedUpdate, tick.in_set(ItemTick))
             .add_systems(
                 Update,
-                (build_items.run_if(resource_exists_and_changed::<LevelPopulation>), attach_models, pose_items)
+                (build_items.run_if(resource_exists_and_changed::<LevelPopulation>), attach_models, pose_items, show_rocks)
                     .chain(),
             );
     }
@@ -66,6 +66,9 @@ const LEGENDARY: i32 = 13;
 const SCROLL: i32 = 14;
 const GEM: i32 = 15;
 const GARGOYLE_PIECE: i32 = 16;
+/// Obstacle subtype: a boss level's safe rock, drawn by its stage
+/// (`SAFEROCK3`…`SAFEROCK0`).
+pub const SAFE_ROCK: i32 = 0x29;
 
 /// Fields a picked-up item lingers before it's freed: 8, or 15 when a
 /// player dropped it.
@@ -277,6 +280,9 @@ struct Item {
     amount: i32,
     /// `+0xEC`: fields until a powerup can be picked up.
     delay: i32,
+    /// `+0xDE` for obstacles: the placement's count — a safe rock's stage
+    /// (3 whole … 0 broken; −1 not made yet).
+    stage: i16,
     /// Picked up or opened for good: lingering `timer` fields, then gone.
     leaving: bool,
     gone: bool,
@@ -289,6 +295,16 @@ struct Item {
 impl Item {
     fn class(&self) -> ItemClass {
         self.ty.class
+    }
+
+    /// A safe rock, by the item's own subtype (the placement's, else the
+    /// type's).
+    fn is_safe_rock(&self) -> bool {
+        let own = match self.params {
+            PlacementParams::Obstacle { subtype, .. } if subtype >= 1 => i32::from(subtype),
+            _ => self.ty.subtype,
+        };
+        self.class() == ItemClass::Obstacle && own == SAFE_ROCK
     }
 
     /// Starts `action` of the item's atree from its first frame.
@@ -463,6 +479,18 @@ impl LevelItems {
     /// count), and it can't be picked up for `delay` fields. Returns its
     /// placement number; its model, if one was built for the level, is
     /// spawned by the caller with it ([`crate::population::ItemModels`]).
+    /// A boss that makes the level's safe rocks (the yeti's boulders)
+    /// starts without them: each is hidden and walked through until it's
+    /// made (`docs/critters.md`, "Safe rocks"). Returns how many.
+    pub fn hide_safe_rocks(&mut self) -> usize {
+        let mut n = 0;
+        for item in self.items.iter_mut().filter(|i| i.is_safe_rock()) {
+            item.stage = -1;
+            n += 1;
+        }
+        n
+    }
+
     pub fn release(&mut self, ty: ItemType, position: [f32; 3], rotation: [f32; 9], amount: Option<i32>, delay: i32) -> usize {
         let placement = RELEASED_BASE + self.released;
         self.released += 1;
@@ -483,6 +511,7 @@ impl LevelItems {
             done: false,
             timer: 0,
             delay,
+            stage: 1,
             leaving: false,
             gone: false,
             atree: None,
@@ -558,6 +587,10 @@ pub(crate) fn build_items(
             _ => None,
         };
         let mut amount = ty.amount as i32;
+        let stage = match params {
+            PlacementParams::Obstacle { count, .. } => count,
+            _ => 1,
+        };
         match (ty.class, &params) {
             (ItemClass::Exit, _) => {
                 flags = (flags & !USED) | ALWAYS_ACTIVE;
@@ -589,6 +622,7 @@ pub(crate) fn build_items(
             timer: 0,
             amount,
             delay: 0,
+            stage,
             leaving: false,
             gone: false,
             atree: None,
@@ -762,6 +796,22 @@ fn action_texture(item: &Item, rig: &ItemRig) -> Option<(u16, Handle<Image>)> {
         }
     }
     shown
+}
+
+/// A safe rock not made yet (stage −1) isn't drawn: its parts are hidden
+/// (the model itself follows the population view).
+fn show_rocks(items: Res<LevelItems>, children: Query<&Children>, mut parts: Query<&mut Visibility>) {
+    for item in items.items.iter().filter(|i| i.is_safe_rock()) {
+        let Some(model) = item.model else { continue };
+        let want = if item.stage < 0 { Visibility::Hidden } else { Visibility::Inherited };
+        for part in children.iter_descendants(model) {
+            if let Ok(mut v) = parts.get_mut(part)
+                && *v != want
+            {
+                *v = want;
+            }
+        }
+    }
 }
 
 /// What touching an item did to the hero.
@@ -1043,7 +1093,8 @@ fn touch(
         ItemClass::Obstacle => match item.ty.subtype {
             // Crumbling floors and the like are walked over.
             0x28 | 0x31 | 0x33..=0x35 => Touch::Pass,
-            0x29 => Touch::Block,
+            // A safe rock only while it stands.
+            SAFE_ROCK if item.stage <= 0 => Touch::Pass,
             _ => Touch::Block,
         },
         ItemClass::Exit | ItemClass::Transporter => Touch::Stand,

@@ -59,7 +59,6 @@ struct Breakable {
 const BARREL: i32 = 0x2B;
 const EXP_BARREL: i32 = 0x2C;
 const POI_BARREL: i32 = 0x2D;
-const SAFE_ROCK: i32 = 0x29;
 const WALL: i32 = 0x2A;
 const HIT_SWITCH: i32 = 0x1F;
 /// A container of this type breaks open when its hit points run out.
@@ -87,7 +86,7 @@ fn setup(mut commands: Commands, items: Res<LevelItems>) {
             && view.ty.armor != -1
             && match class {
                 ItemClass::Container => (BARREL..=POI_BARREL).contains(&subtype) && view.state < 1,
-                ItemClass::Obstacle => subtype != SAFE_ROCK && !((BARREL..=POI_BARREL).contains(&subtype) && view.state >= 1),
+                ItemClass::Obstacle => subtype != items::SAFE_ROCK && !((BARREL..=POI_BARREL).contains(&subtype) && view.state >= 1),
                 ItemClass::Trigger => subtype == HIT_SWITCH,
                 _ => false,
             };

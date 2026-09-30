@@ -42,6 +42,10 @@ What plays (details in [INDEX.md](INDEX.md)):
     game's locator rotation (the C5 djinn faced away from the heroes)
     ([level-population.md](level-population.md), [items.md](items.md)
     "The tower's wizard").
+  - Boss levels' safe rocks were missing (no `SAFEROCK` model): they show
+    their stage, `SAFEROCK<placement count>` (A5 1, B6 and K5 3), block
+    only while standing, and I5 starts without them because the yeti
+    throws its own down ([critters.md](critters.md) "Safe rocks").
 - **Levels**
   - Drawn with lightmaps and blending. Additive glows are correct; they used
     to draw as dark discs (fixed with premultiplied output in `level.wgsl`).
