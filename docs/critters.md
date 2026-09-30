@@ -995,12 +995,24 @@ near–far fraction `+0xFC`):
   while the boss camera runs, a player's step is cut so it stays inside
   the view (the `0x8001c2e0` margins).
 
+  With `r13-0x7ea4` set (1 in the DOL) the cut is `0x8006ef98` +
+  `0x8006dc64`: the view's four sides as seen from `+0xDC` behind the
+  target (0.85, `r13-0x7f7c`, × 1.5 × the asleep far distance before the
+  boss wakes, × the far distance awake); a step whose end — the
+  collision centre `+0x64` for three sides, the feet for the fourth —
+  lies outside a side while heading out through it slides along it
+  across the ground (or stops, when the move's actor test `0x800878a0`
+  didn't return 1; a slide that then hits a wall or actor stops too), and
+  the step keeps its rise and fall. The stick turns by the view's yaw.
+
 **Here** (`boss_camera.rs`, driven from `play_camera.rs` with what
 `critters.rs` publishes as `BossWatch`): all of the above for one hero,
 from the boss's creation (the level's starting shot is the boss
-camera's). Retail records use flags 0, 1, 2, 3 and 0x10 (4, 8 and 0x20
-are ported but unused). Not done: the heroes' step cut, the `+0x888`
-offset, and the scripted cameras' precedence other than trigger cuts.
+camera's), the stick turned by its yaw, and the step cut (always sliding;
+the bottom side tests the feet). Retail records use flags 0, 1, 2, 3 and
+0x10 (4, 8 and 0x20 are ported but unused). Not done: the `+0x888`
+offset, the step cut's stop cases, and the scripted cameras' precedence
+other than trigger cuts.
 
 ## Record layouts
 

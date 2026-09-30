@@ -72,6 +72,10 @@ const GLIDE_SNAP: f32 = 0.001;
 /// A nearer camera point takes over when it's within 0.667 of the current
 /// one's distance (across the ground).
 const POINT_SWITCH: f32 = 0.667;
+/// The heroes are kept inside the view as seen from this share of the
+/// camera's far limit (`r13-0x7f7c`): 1.5 × the asleep far distance before
+/// the boss wakes, the far distance awake.
+const KEEP_IN_VIEW: f32 = 0.85;
 
 /// A hero as the camera sees it.
 #[derive(Clone, Copy, Debug)]
@@ -143,6 +147,8 @@ pub struct BossCam {
     point: Option<usize>,
     /// The boss's last facing (kept when it's gone).
     facing: f32,
+    /// How far behind the target the heroes' view limit is (`+0xDC`).
+    limit: f32,
 }
 
 impl BossCam {
@@ -168,6 +174,7 @@ impl BossCam {
             margin: 0.0,
             point: None,
             facing: 0.0,
+            limit: KEEP_IN_VIEW * ASLEEP_FAR * record.far_asleep,
         }
     }
 
@@ -227,6 +234,7 @@ impl BossCam {
     /// Before the boss wakes.
     fn asleep(&mut self, scene: &Scene, dt: f32) {
         let limit = ASLEEP_FAR * self.record.far_asleep;
+        self.limit = KEEP_IN_VIEW * limit;
         let centre = heroes_centre(scene.heroes, Some(scene.bounds)).unwrap_or(self.target);
         let point = if self.opening { scene.start } else { self.nearest_point(centre, scene.points) };
         let (goal_yaw, goal_pitch) = point.map_or((0.0, 0.0), |p| (wrap(p.yaw), -p.pitch));
@@ -246,6 +254,7 @@ impl BossCam {
     fn awake(&mut self, scene: &Scene, dt: f32) {
         self.opening = false;
         let r = self.record;
+        self.limit = KEEP_IN_VIEW * r.far;
         let look = lerp(r.look_near, r.look_far, self.fraction);
         let dying = scene.boss.is_some_and(|b| b.dying);
         // What it looks at and frames, how big that is, and how far the
@@ -444,6 +453,36 @@ impl BossCam {
             _ => {}
         }
         self.point.and_then(|i| points.get(i).copied())
+    }
+
+    /// A hero's step under the boss camera (the doc's "Players"): the four
+    /// sides of the game's view, from its limit distance behind the target;
+    /// a step ending outside one (the centre's end, the feet's for the
+    /// bottom side) and heading out through it slides along it across the
+    /// ground, keeping its rise and fall.
+    pub fn keep_in_view(&self, feet: [f32; 3], centre: [f32; 3], step: [f32; 3]) -> [f32; 3] {
+        let forward = self.direction();
+        let Some(right) = normalize(cross([0.0, 1.0, 0.0], forward)) else { return step };
+        let up = cross(forward, right);
+        let apex = sub(self.target, scale(forward, self.limit));
+        let side = |edge: [f32; 3], tan: f32| sub(edge, scale(forward, tan));
+        let sides = [
+            (side(right, TAN_ACROSS), centre),
+            (side(scale(right, -1.0), TAN_ACROSS), centre),
+            (side(up, TAN_UP), centre),
+            (side(scale(up, -1.0), TAN_UP), feet),
+        ];
+        let mut out = step;
+        for (normal, from) in sides {
+            if dot(sub(add(from, out), apex), normal) <= 0.0 || dot(out, normal) <= 0.0 {
+                continue;
+            }
+            let Some(across) = normalize([normal[0], 0.0, normal[2]]) else { continue };
+            let along = dot(out, across);
+            out = sub(out, scale(across, along));
+        }
+        out[1] = step[1];
+        out
     }
 
     /// The smallest margin of the heroes' top points.
@@ -688,6 +727,30 @@ mod tests {
         assert!(cam.distance >= 25.0 && cam.distance <= 90.0, "{}", cam.distance);
         assert!(cam.margin > 0.0, "{}", cam.margin);
         assert!((cam.pitch + 0.5).abs() < 0.05, "{}", cam.pitch);
+    }
+
+    #[test]
+    fn a_hero_can_walk_along_the_views_edge_but_not_out() {
+        let heroes = [hero([0.0, 0.0, 0.0])];
+        let boss = Boss { position: [0.0, 0.0, 30.0], spawn: [0.0, 0.0, 30.0], yaw: PI, height: 12.0, dying: false };
+        let mut cam = BossCam::new(record());
+        let s = scene(&heroes, &[], Some(boss), true);
+        for _ in 0..300 {
+            cam.tick(&s, DT);
+        }
+        // Far to the side, outside the view: a step further out is turned
+        // along the edge; a step back in is untouched.
+        let right = normalize(cross([0.0, 1.0, 0.0], cam.direction())).unwrap();
+        let far = scale(right, 400.0);
+        let feet = add(cam.target, far);
+        let centre = add(feet, [0.0, 2.5, 0.0]);
+        let out = scale(right, 1.0);
+        let kept = cam.keep_in_view(feet, centre, out);
+        assert!(length(kept) < 0.99, "{kept:?}");
+        let back = scale(right, -1.0);
+        assert_eq!(cam.keep_in_view(feet, centre, back), back);
+        // Inside the view nothing changes.
+        assert_eq!(cam.keep_in_view(cam.target, add(cam.target, [0.0, 2.5, 0.0]), out), out);
     }
 
     #[test]
