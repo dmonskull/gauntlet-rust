@@ -1,6 +1,7 @@
 //! Player options, saved beside the remembered game path
 //! (`gdl-artifacts/options.txt`, one `key=value` per line) and applied live,
-//! so a settings menu only has to change [`GameOptions`].
+//! so a settings menu only has to change [`GameOptions`]. `GDL_MUTE=1`
+//! silences one run (tests) without touching the saved volumes.
 
 use bevy::audio::{AudioSink, AudioSinkPlayback, GlobalVolume, Volume};
 use bevy::prelude::*;
@@ -12,9 +13,22 @@ pub struct OptionsPlugin;
 impl Plugin for OptionsPlugin {
     fn build(&self, app: &mut App) {
         let options = GameOptions::load();
-        app.insert_resource(GlobalVolume::new(Volume::Linear(options.master_volume)))
+        let mute = Mute(std::env::var("GDL_MUTE").is_ok_and(|v| !v.is_empty() && v != "0"));
+        app.insert_resource(GlobalVolume::new(Volume::Linear(mute.master(&options))))
             .insert_resource(options)
+            .insert_resource(mute)
             .add_systems(Update, (volume_keys, apply_options.run_if(resource_changed::<GameOptions>)).chain());
+    }
+}
+
+/// `GDL_MUTE`: this run plays at no volume; the saved options stay.
+#[derive(Resource, Clone, Copy)]
+pub struct Mute(pub bool);
+
+impl Mute {
+    /// The master volume sounds actually play at.
+    pub fn master(self, options: &GameOptions) -> f32 {
+        if self.0 { 0.0 } else { options.master_volume }
     }
 }
 
@@ -99,11 +113,17 @@ fn volume_keys(keys: Res<ButtonInput<KeyCode>>, mut options: ResMut<GameOptions>
 }
 
 /// Saves the options and turns every playing sound to the new volume.
-fn apply_options(options: Res<GameOptions>, mut global: ResMut<GlobalVolume>, mut sinks: Query<(&mut AudioSink, &SoundKind)>) {
+fn apply_options(
+    options: Res<GameOptions>,
+    mute: Res<Mute>,
+    mut global: ResMut<GlobalVolume>,
+    mut sinks: Query<(&mut AudioSink, &SoundKind)>,
+) {
     options.save();
-    global.volume = Volume::Linear(options.master_volume);
+    let master = mute.master(&options);
+    global.volume = Volume::Linear(master);
     for (mut sink, kind) in &mut sinks {
         let Volume::Linear(v) = options.category(*kind) else { continue };
-        sink.set_volume(Volume::Linear(options.master_volume * v));
+        sink.set_volume(Volume::Linear(master * v));
     }
 }
