@@ -336,6 +336,22 @@ kill value, through the same `FUN_80076144` scaling (ported). A blow on a
 potion (class 1 subtype 4) sets it off (`FUN_80076618`, the potion's magic;
 not ported).
 
+## The tower's wizard
+
+As any tower level (realm 13) loads, `FUN_80057020` calls `FUN_800a3fd8`,
+which makes the idle wizard — the atree `GWIZ` (`r2-0x51a0`) from the
+tower's items bank (`ITEMS/levelL`, `r13-0x7180`) — and stands him on the
+lookout with param 0 (`FUN_80067194(0)`): on `levelL1` the pedestal at
+(3.0, 2.0, −53.5), behind his podium, facing the heroes' start. In the
+tower's mode (`0x4010`) its update (`FUN_800a20c4`) plays his actions 0, 1
+and 2 in turn (READY, READING, THINKING), each to its end
+(`r13-0x6e68`). His other actions (WELCOME, GOAWAY, GESTLEFT…) and the
+scenes where the `WIZARD` model appears at a lookout to announce new
+shards and runestones (`FUN_800a33c4`: `NewShards`, `MoreShards`,
+`AllShards`, `NewRunes`, `Rune13No/Yes`, `All12RunesNo/Yes`; then
+`FUN_800a39c4` sets the shard in `L1WINDOWFRAME` or the stone in
+`L1RUNEPLACE` with a camera cut) aren't done yet. The runtime: `tower.rs`.
+
 ## Quest items and the tower's gates
 
 Implemented in [`quest.rs`](../crates/gdl-game/src/quest.rs) (the rules and

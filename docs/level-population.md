@@ -147,6 +147,14 @@ level but the two hub levels (`levelL1`, `levelL3`: 12 entries each) has a
 single start. `FUN_800669d4(entry)` selects a start (falling back to 0);
 `FUN_800668e4` picks the nearest one.
 
+Lookouts (kinds 8, 10) are kept in the `0x6C`-byte table at `0x80257e88`
+(`FUN_80066258`, at most 20), the locator's param at `+0x6A`;
+`FUN_80067194(param)` finds one ("CAN'T FIND LOOKPUT PARAM"). Their matrix
+(`FUN_8006703c` with its third argument set) is built from the angles
+(−x, y + π, z) by `FUN_800bd344`, an Euler builder of its own (sines
+negated) whose yaw turns +Z toward (sin y, cos y) — the opposite sense to
+placements'. The runtime's `population::lookout_transform` does the same.
+
 Which entry (`FUN_800a2ba8`): a requested one (`r13-0x7cb8`, set by
 `FUN_800a117c` to the start nearest a point), else the index of the realm
 last played outside the tower (`r13-0x7230`, set as each non-tower level
