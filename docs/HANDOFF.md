@@ -15,11 +15,18 @@ What plays (details in [INDEX.md](INDEX.md)):
   - Title, character select, pause menus with volume sliders, death flow,
     GAME OVER.
   - A bare run opens on the title; `--level` goes straight into play.
+  - Saving: Tower Menu → Manage Character → Save writes the hero's record
+    to `characters.ron` (`saves.rs`; `GDL_SAVE_DIR` moves it), and Load
+    (New/Load or Manage Character) brings it back: level, experience,
+    gold, keys, potions, runestones, realms beaten and the quest
+    ([frontend.md](frontend.md) "Saving"). Checked with scripted menus:
+    a save from the tower with 3 keys and 7 orange crystals, then a fresh
+    start → Load → the character came back with its keys and name.
 - **Levels**
   - Drawn with lightmaps and blending. Additive glows are correct; they used
     to draw as dark discs (fixed with premultiplied output in `level.wgsl`).
-  - Particle emitter nodes are hidden, because their flames and sparks
-    aren't ported yet.
+  - World particles (torch flames, smoke, fires, mist) run from the
+    level's `PSYS` nodes (see "World particles" below).
 - **The hero**
   - Movement, combat, combos, throws and turbo attacks.
   - Experience and levels, pickups, doors, exits and transporters.
@@ -70,8 +77,9 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on master `5c1f9ba` (tower progression)
-passed all 67 real levels.
+The all-levels smoke test on master `b089b35` (boss intro, the level-change
+crash fix, shared materials, saving) passed all 67 real levels (`DEMO1`
+included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
 ## Fixed from user reports (2026-09-30)
 
@@ -82,12 +90,29 @@ passed all 67 real levels.
   animated (heroes too, whose 45/60/15-rate clips were off the same way),
   with the game's end-of-clip and loop timing; see
   [animation-format.md](animation-format.md) "Playing an action". The
-  critters' own clock (`critters.rs`) still needs the same change — handed
-  to the critters helper.
+  critters use the same clock (`advance_clip`), and effect lifetimes too.
 - **Enemies vanishing in place**: see "Deaths" above.
 - Also: "big monster" is the floor step `+0x23C` > 2 (was a radius
   stand-in) — knock-down push and the hero's low-target test (kicks and
   low attacks now find small monsters).
+- **Lag / memory** (user report): the game doesn't leak within a level
+  (flat ~650 MB over 90 s of fighting) and is mostly idle between frames.
+  Across level loads memory crept up ~15 MB a load: each load built one
+  material per mesh — ~13,600 for a level's monster flipbook frames — and
+  the allocator and Metal's resource lists grew with that churn. Character
+  models now share one material per texture and draw state
+  (`TextureCache::sharing_materials`): 893 materials instead of 13,634 on
+  levelA1, ~470 MB instead of ~680 MB, and 28 reloads of the same level
+  plateau at 520–575 MB. Check with `GDL_TOUR=3 GDL_TOUR_STEP=0` +
+  `footprint -p <pid>`, and `GDL_MEMSTATS=1`.
+- **Crash on level change**: the mechanics tick could run one frame with
+  the old level's triggers against the new level's nodes (index out of
+  bounds, e.g. levelA4 → A5, or tower → a realm). The old `Mechanics` is
+  now removed as the level change starts. `GDL_TOUR=4` through 13 levels
+  runs clean.
+- The user's Mac (16 GB) sits at ~14.7 GB "wired" (kernel/driver) memory
+  after 11 days up, with heavy swapping: keep one game instance and one
+  build at a time (`cargo build -j 4`).
 
 ## Work in progress
 
@@ -145,8 +170,11 @@ passed all 67 real levels.
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
-1. **Finish bosses**: A5 chimera or B6 dragon first, then the rest. See
-   [critters.md](critters.md).
+1. **Finish bosses** (the critters helper: intro and victory merged;
+   chimera parts, all boss levels and the boss camera next). Player side,
+   mine: the intro's stand-still and darkening are done; the legendary
+   weapon's throw, the highlights and the owner's glow aren't
+   ([critters.md](critters.md), "The heroes").
 2. ~~In-game HUD~~: done (the remaining HUD details are listed above).
 3. ~~Effects system and magic potions~~: done (effects.md)
    (it knows the effect slots at `0x802855ac` and `FUN_80094418`):
@@ -162,7 +190,7 @@ waits.
 5. ~~Tower progression~~: done for one player, with the gem count above
    the panel and the legendary items' hints. Left: pickup notices, the
    tower's other messages (shards after a boss, runestones: `NEWSHARDS`,
-   `ALL12RUNES*`, `RUNE13*`), saving progress.
+   `ALL12RUNES*`, `RUNE13*`). Saving is done (a file for the card).
 6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**, **hit flashes**.
 7. ~~Hit effects~~: done — blood sprays (BLOODFX1 per blow, BLOODFX2 on
    kills) run as particle bursts from the effects' kind-4 nodes; FIREHIT,

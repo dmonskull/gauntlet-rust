@@ -40,6 +40,8 @@ mod player_state;
 mod texanim;
 mod population;
 mod quest;
+mod saves;
+mod scene_light;
 mod projectiles;
 mod status_hud;
 mod viewer;
@@ -112,6 +114,11 @@ fn main() {
         ))
         .add_systems(Last, log_slow_frames);
     }
+    // GDL_MEMSTATS=1 logs what's alive every 2 s (entities and assets), to
+    // find anything a level change leaves behind.
+    if std::env::var("GDL_MEMSTATS").is_ok_and(|v| !v.is_empty() && v != "0") {
+        app.add_systems(Last, log_memstats);
+    }
 
     if args.viewer {
         let viewer = viewer::Viewer::new(
@@ -151,7 +158,7 @@ fn main() {
         app.insert_resource(game)
             .insert_resource(choice)
             .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
-            .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin, deaths::DeathsPlugin, quest::QuestPlugin))
+            .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin, deaths::DeathsPlugin, quest::QuestPlugin, scene_light::SceneLightPlugin, saves::SavesPlugin))
             .add_plugins((
                 player_state::PlayerStatePlugin,
                 items::ItemsPlugin,
@@ -165,4 +172,36 @@ fn main() {
             .add_plugins((font::Screen2dPlugin, frontend::FrontendPlugin { skip: skip_menus }, game_hud::GameHudPlugin));
     }
     app.run();
+}
+
+/// `GDL_MEMSTATS`: counts of entities (all, and by a few markers) and of
+/// the asset kinds levels make.
+#[allow(clippy::too_many_arguments)]
+fn log_memstats(
+    time: Res<Time<Real>>,
+    mut next: Local<f32>,
+    entities: Query<Entity>,
+    level: Query<(), With<world::LevelEntity>>,
+    meshed: Query<(), With<Mesh3d>>,
+    meshes: Res<Assets<Mesh>>,
+    level_materials: Res<Assets<level_material::LevelMaterial>>,
+    standard: Res<Assets<StandardMaterial>>,
+    images: Res<Assets<Image>>,
+    audio: Res<Assets<bevy::audio::AudioSource>>,
+) {
+    if time.elapsed_secs() < *next {
+        return;
+    }
+    *next = time.elapsed_secs() + 2.0;
+    info!(
+        "memstats: {} entities ({} level, {} meshed), {} meshes, {} level materials, {} standard materials, {} images, {} audio sources",
+        entities.iter().count(),
+        level.iter().count(),
+        meshed.iter().count(),
+        meshes.len(),
+        level_materials.len(),
+        standard.len(),
+        images.len(),
+        audio.len()
+    );
 }

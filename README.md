@@ -86,7 +86,10 @@ follows the level's own camera points and distances.
 A bare run opens on the game's title screen (the game's own fonts and
 art), then character select, and the tower; `--level` or `--character`
 go straight into play. `Esc`/Start pauses (Settings → Audio has the
-volume sliders).
+volume sliders). In the tower, Manage Character → Save keeps the hero
+(level, gold, keys, potions, runestones, crystals and the realms beaten),
+and Load on the select screen brings it back; a file stands in for the
+memory card ([`docs/frontend.md`](docs/frontend.md), "Saving").
 
 Generators pour out the realm's own monsters, which chase, shoot arrows,
 lob bombs and hit the hero, crying out as they're hit and die; the hero
@@ -99,13 +102,13 @@ show bridges and run lifts that carry the hero; spikes, flame vents, force
 fields and saw blades cycle and hurt; barrels break open (dropping what
 they hold) or explode, and secret walls can be broken.
 
-Not yet: bosses and golems (the critter system is decoded and being
-built), using magic potions, the effects system (particles, flames, magic
-blasts), co-op. [`docs/INDEX.md`](docs/INDEX.md) has what's confirmed.
+Not yet: co-op, the shop and inventory, the legendary weapons, and
+multi-part bosses such as the chimera (the other bosses are untested).
+[`docs/INDEX.md`](docs/INDEX.md) has what's confirmed.
 
 Environment switches for testing: `GDL_SCREENSHOT=out.png` (with
 `GDL_SHOT_AT=<frame>`) saves a screenshot and exits, `GDL_STICK=x,y` holds
-the stick, `GDL_FREE_CAMERA=1` starts in the free camera, `GDL_WARP="x,y,z"` (start the hero there), `GDL_LIST_NEAR="x,y,z"` (log level objects near a point), `GDL_LOOK_AT="x,y,z[,distance[,yaw]]"` (pin the camera on a point; yaw in degrees turns it round from −Z), `GDL_PARTICLE_TEST=<letter>` (that particle record 6 units ahead of the start), `GDL_POTIONS=n` (potions at level start), `GDL_FPS=1` logs
+the stick, `GDL_FREE_CAMERA=1` starts in the free camera, `GDL_WARP="x,y,z"` (start the hero there), `GDL_LIST_NEAR="x,y,z"` (log level objects near a point), `GDL_LOOK_AT="x,y,z[,distance[,yaw]]"` (pin the camera on a point; yaw in degrees turns it round from −Z), `GDL_PARTICLE_TEST=<letter>` (that particle record 6 units ahead of the start), `GDL_POTIONS=n` (potions at level start), `GDL_TOUR=<seconds>` (move to the next level every that many seconds; `GDL_TOUR_STEP=0` reloads the same one), `GDL_MEMSTATS=1` (logs entity and asset counts every 2 s), `GDL_SAVE_DIR=<dir>` (where `characters.ron` is kept), `GDL_KEYS=n` and `GDL_CRYSTALS="<counter>:<n>,…"` (start with keys or crystals), `GDL_MENU="start@60,down@70,accept@80"` (press front-end buttons on those frames), `GDL_FPS=1` logs
 the frame rate, `GDL_BUTTONS=attack@20-21,power` holds buttons,
 `GDL_DUMMY=4` places a practice target, `GDL_DEBUG_HUD=1` shows the
 developer overlay.

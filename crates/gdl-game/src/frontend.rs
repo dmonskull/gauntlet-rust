@@ -31,6 +31,7 @@ use crate::options::GameOptions;
 use crate::player::{Player, PlayerChoice};
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
+use crate::saves::{SavedCharacter, Saves};
 
 /// Where a new game starts: the tower hub, realm 13 level 0.
 pub const TOWER: &str = "levelL1";
@@ -43,7 +44,13 @@ pub struct FrontendPlugin {
 impl Plugin for FrontendPlugin {
     fn build(&self, app: &mut App) {
         let screen = if self.skip { Screen::Playing } else { Screen::Title };
-        app.insert_resource(Frontend::new(screen))
+        let mut fe = Frontend::new(screen);
+        if self.skip {
+            // No name was entered: the first of the game's names, as a
+            // blank entry gets one of them.
+            fe.hero_name = NAMES[0].to_string();
+        }
+        app.insert_resource(fe)
             .init_resource::<Snapshot>()
             .add_systems(Startup, (load_text, spawn_backdrop))
             .add_systems(
@@ -172,6 +179,8 @@ enum Item {
     /// Character select.
     New,
     Load,
+    /// A saved character in the load list (its index in the save file).
+    Character(usize),
     Save,
     Change,
     Quit,
@@ -400,10 +409,34 @@ static CHARACTER_MENU: MenuDef = select_menu(&[
     e("Done", Item::Done),
 ]);
 static YES_NO: MenuDef = MenuDef { y: 164.0, ..select_menu(&[e("Yes", Item::Yes), e("No", Item::No)]) };
+/// The saved characters, listed smaller to fit the column (stand-in for
+/// the game's memory card screens).
+static LOAD_LIST: MenuDef = MenuDef { item_scale: 0.5, ..select_menu(&[]) };
+/// At most this many saved characters are listed.
+const LOAD_LIST_MAX: usize = 10;
+
+/// The character menu: Load only with saved characters.
+fn character_menu(has_saves: bool) -> Menu {
+    Menu::new(&CHARACTER_MENU).disabling(if has_saves { &[] } else { &[Item::Load] })
+}
+
+/// New / Load: Load only with saved characters.
+fn new_load_menu(has_saves: bool) -> Menu {
+    Menu::new(&NEW_LOAD).disabling(if has_saves { &[] } else { &[Item::Load] })
+}
+
+/// The load list: each saved character's name and level.
+fn load_list(saves: &Saves) -> Menu {
+    let lines = saves.file.characters.iter().enumerate().take(LOAD_LIST_MAX).map(|(i, c)| (c.label(), Item::Character(i))).collect();
+    Menu::with_lines(&LOAD_LIST, lines)
+}
 
 /// An open menu.
 struct Menu {
     def: &'static MenuDef,
+    /// Lines made at run time (the saved characters), in place of the
+    /// definition's items; the definition still gives the look.
+    lines: Option<Vec<(String, Item)>>,
     selected: usize,
     /// Fields since it opened.
     t: f32,
@@ -415,25 +448,54 @@ struct Menu {
 
 impl Menu {
     fn new(def: &'static MenuDef) -> Self {
-        Self { def, selected: 0, t: 0.0, disabled: Vec::new(), column: 0.0 }
+        Self { def, lines: None, selected: 0, t: 0.0, disabled: Vec::new(), column: 0.0 }
+    }
+    /// A menu of run-time lines in the style of `def`.
+    fn with_lines(def: &'static MenuDef, lines: Vec<(String, Item)>) -> Self {
+        Self { lines: Some(lines), ..Self::new(def) }
+    }
+    fn len(&self) -> usize {
+        self.lines.as_ref().map_or(self.def.items.len(), Vec::len)
+    }
+    fn item(&self, i: usize) -> Item {
+        match &self.lines {
+            Some(lines) => lines.get(i).map_or(Item::No, |l| l.1),
+            None => self.def.items.get(i).map_or(Item::No, |e| e.item),
+        }
+    }
+    fn label(&self, i: usize) -> &str {
+        match &self.lines {
+            Some(lines) => lines.get(i).map_or("", |l| l.0.as_str()),
+            None => self.def.items.get(i).map_or("", |e| e.label),
+        }
+    }
+    /// Extra space below line `i` (the volume sliders sit in it).
+    fn below(&self, i: usize) -> f32 {
+        match &self.lines {
+            Some(_) => 0.0,
+            None => self.def.items.get(i).map_or(0.0, |e| e.below),
+        }
     }
     fn disabling(mut self, items: &[Item]) -> Self {
         self.disabled = items.to_vec();
-        self.selected = self.def.items.iter().position(|e| !self.disabled.contains(&e.item)).unwrap_or(0);
+        self.selected = (0..self.len()).find(|&i| !self.disabled.contains(&self.item(i))).unwrap_or(0);
         self
     }
     fn selecting(mut self, item: Item) -> Self {
-        self.selected = self.def.items.iter().position(|e| e.item == item).unwrap_or(self.selected);
+        self.selected = (0..self.len()).find(|&i| self.item(i) == item).unwrap_or(self.selected);
         self
     }
     fn enabled(&self, i: usize) -> bool {
-        !self.disabled.contains(&self.def.items[i].item)
+        !self.disabled.contains(&self.item(i))
     }
 
     /// Moves the selection; returns the chosen item on accept, `Some(No)`
     /// on back.
     fn update(&mut self, p: &Pressed) -> Option<Item> {
-        let n = self.def.items.len();
+        let n = self.len();
+        if n == 0 {
+            return p.back.then_some(Item::No);
+        }
         let step = |from: usize, by: isize| (from as isize + by).rem_euclid(n as isize) as usize;
         for (pressed, by) in [(p.down, 1), (p.up, -1)] {
             if !pressed {
@@ -448,7 +510,7 @@ impl Menu {
         if p.back {
             return Some(Item::No);
         }
-        (p.accept && self.enabled(self.selected)).then(|| self.def.items[self.selected].item)
+        (p.accept && self.enabled(self.selected)).then(|| self.item(self.selected))
     }
 }
 
@@ -478,6 +540,8 @@ enum Step {
     Character,
     /// "Character Not Saved / Quit Anyway?" Yes / No.
     ConfirmQuit,
+    /// The saved characters (Load from New / Load or the character menu).
+    LoadList,
     /// Six initials, picked with up/down.
     Name,
     /// The name blinks for 60 fields.
@@ -655,7 +719,10 @@ fn run(
     mut choice: ResMut<PlayerChoice>,
     mut to_level: MessageWriter<ChangeLevelTo>,
     mut options: ResMut<GameOptions>,
+    state: Option<Res<PlayerState>>,
+    mut saves: ResMut<Saves>,
 ) {
+    let has_saves = !saves.file.characters.is_empty();
     let fields = real.delta_secs() * 60.0;
     fe.t += fields;
     for m in &mut fe.menus {
@@ -668,7 +735,7 @@ fn run(
 
     // A volume slider under the cursor moves while left or right is held.
     if let Some(m) = fe.menus.last()
-        && let Item::Volume(v) = m.def.items[m.selected].item
+        && let Item::Volume(v) = m.item(m.selected)
         && p.hold_left != p.hold_right
     {
         let step = fields.max(1.0) * SLIDER_PER_FIELD * if p.hold_left { -1.0 } else { 1.0 };
@@ -700,11 +767,11 @@ fn run(
             // One frame shows "Loading..." before the load stalls a frame.
             if fe.t > 2.0 {
                 to_level.write(ChangeLevelTo(TOWER.to_string()));
-                start_select(&mut fe, false);
+                start_select(&mut fe, false, has_saves);
                 fe.go(Screen::Select);
             }
         }
-        Screen::Select => select(&mut fe, &p, &mut choice),
+        Screen::Select => select(&mut fe, &p, &mut choice, state.as_deref(), &mut saves),
         Screen::LoadingGame => {
             if fe.t > 2.0 {
                 to_level.write(ChangeLevelTo(TOWER.to_string()));
@@ -738,7 +805,7 @@ fn run(
                     }
                     Item::ManageCharacter => {
                         fe.menus.clear();
-                        start_select(&mut fe, true);
+                        start_select(&mut fe, true, has_saves);
                         fe.go(Screen::Select);
                     }
                     // Stand-ins: the shop and inventory screens.
@@ -752,7 +819,7 @@ fn run(
             // to the title.
             if fe.t >= 240.0 {
                 fe.menus.clear();
-                start_select(&mut fe, false);
+                start_select(&mut fe, false, has_saves);
                 fe.go(Screen::Title);
             }
         }
@@ -778,16 +845,15 @@ fn open_submenu(menus: &mut Vec<Menu>, item: Item) {
 
 /// Starts the select screen: a new player at New / Load, or (Manage
 /// Character from the tower) the joined player at the character menu.
-fn start_select(fe: &mut Frontend, manage: bool) {
+fn start_select(fe: &mut Frontend, manage: bool, has_saves: bool) {
     let s = &mut fe.select;
     s.t = 0.0;
     if manage {
         s.step = Step::Character;
-        // No memory card: Save and Load can't be chosen.
-        s.menu = Menu::new(&CHARACTER_MENU).disabling(&[Item::Save, Item::Load]).selecting(Item::Done);
+        s.menu = character_menu(has_saves).selecting(Item::Done);
     } else {
         s.step = Step::NewOrLoad;
-        s.menu = Menu::new(&NEW_LOAD).disabling(&[Item::Load]);
+        s.menu = new_load_menu(has_saves);
         s.name.clear();
         s.class = 6;
         s.colour = 0;
@@ -795,7 +861,16 @@ fn start_select(fe: &mut Frontend, manage: bool) {
     s.menu.column = COLUMN[0];
 }
 
-fn select(fe: &mut Frontend, p: &Pressed, choice: &mut ResMut<PlayerChoice>) {
+fn select(
+    fe: &mut Frontend,
+    p: &Pressed,
+    choice: &mut ResMut<PlayerChoice>,
+    state: Option<&PlayerState>,
+    saves: &mut Saves,
+) {
+    let has_saves = !saves.file.characters.is_empty();
+    // The hero as it would be saved now.
+    let record = state.map(|st| SavedCharacter::of(&fe.hero_name, &choice.class, &choice.variant, st));
     let s = &mut fe.select;
     match s.step {
         Step::NewOrLoad => match s.menu.update(p) {
@@ -803,6 +878,12 @@ fn select(fe: &mut Frontend, p: &Pressed, choice: &mut ResMut<PlayerChoice>) {
                 s.step = Step::Name;
                 s.name.clear();
                 s.letter = b'@';
+            }
+            Some(Item::Load) => {
+                s.from_character_menu = false;
+                s.step = Step::LoadList;
+                s.menu = load_list(saves);
+                s.menu.column = COLUMN[0];
             }
             Some(Item::No) => {
                 // The only player backed out: back to the title.
@@ -815,10 +896,37 @@ fn select(fe: &mut Frontend, p: &Pressed, choice: &mut ResMut<PlayerChoice>) {
                 s.from_character_menu = true;
                 s.step = Step::Class;
             }
-            Some(Item::Quit) => {
-                s.step = Step::ConfirmQuit;
-                s.menu = Menu::new(&YES_NO).selecting(Item::No);
+            Some(Item::Save) => {
+                // Stand-in for the game's memory card screens: the record
+                // goes straight into the save file.
+                if let Some(record) = record {
+                    let name = record.name.clone();
+                    match saves.save(record) {
+                        Ok(()) => info!("saved {name} to {}", crate::saves::path().display()),
+                        Err(e) => warn!("saving {name} failed: {e}"),
+                    }
+                }
+                s.menu = character_menu(!saves.file.characters.is_empty()).selecting(Item::Done);
                 s.menu.column = COLUMN[0];
+            }
+            Some(Item::Load) => {
+                s.from_character_menu = true;
+                s.step = Step::LoadList;
+                s.menu = load_list(saves);
+                s.menu.column = COLUMN[0];
+            }
+            Some(Item::Quit) => {
+                // Only a hero with changes since its last save asks first.
+                let saved = record.as_ref().is_some_and(|r| saves.file.characters.iter().any(|c| c == r));
+                if saved {
+                    fe.menus.clear();
+                    fe.go(Screen::Title);
+                    start_select(fe, false, has_saves);
+                } else {
+                    s.step = Step::ConfirmQuit;
+                    s.menu = Menu::new(&YES_NO).selecting(Item::No);
+                    s.menu.column = COLUMN[0];
+                }
             }
             // Back into the tower with the (maybe changed) hero.
             Some(Item::Done | Item::No) => fe.go(Screen::LoadingGame),
@@ -829,11 +937,40 @@ fn select(fe: &mut Frontend, p: &Pressed, choice: &mut ResMut<PlayerChoice>) {
                 // The last player leaving ends the game.
                 fe.menus.clear();
                 fe.go(Screen::Title);
-                start_select(fe, false);
+                start_select(fe, false, has_saves);
             }
             Some(Item::No) => {
                 s.step = Step::Character;
-                s.menu = Menu::new(&CHARACTER_MENU).disabling(&[Item::Save, Item::Load]).selecting(Item::Quit);
+                s.menu = character_menu(has_saves).selecting(Item::Quit);
+                s.menu.column = COLUMN[0];
+            }
+            _ => {}
+        },
+        Step::LoadList => match s.menu.update(p) {
+            Some(Item::Character(i)) => {
+                if let Some(c) = saves.file.characters.get(i).cloned() {
+                    s.class = CLASSES.iter().position(|k| *k == c.class).unwrap_or(s.class);
+                    s.colour = COLOURS.iter().position(|k| *k == c.variant).unwrap_or(s.colour);
+                    choice.class = c.class.clone();
+                    choice.variant = c.variant.clone();
+                    // Even the same class and colour: a new record, the
+                    // saved one laid on it (`player_state::new_hero`).
+                    choice.set_changed();
+                    fe.hero_name = c.name.clone();
+                    fe.fresh_hero = true;
+                    info!("loaded {} the {} ({}), level {}", c.name, c.class, c.variant, c.level);
+                    saves.pending = Some(c);
+                    fe.go(Screen::LoadingGame);
+                }
+            }
+            Some(Item::No) => {
+                if s.from_character_menu {
+                    s.step = Step::Character;
+                    s.menu = character_menu(has_saves).selecting(Item::Load);
+                } else {
+                    s.step = Step::NewOrLoad;
+                    s.menu = new_load_menu(has_saves).selecting(Item::Load);
+                }
                 s.menu.column = COLUMN[0];
             }
             _ => {}
@@ -883,7 +1020,7 @@ fn select(fe: &mut Frontend, p: &Pressed, choice: &mut ResMut<PlayerChoice>) {
                 }
             } else if p.back {
                 s.step = Step::NewOrLoad;
-                s.menu = Menu::new(&NEW_LOAD).disabling(&[Item::Load]);
+                s.menu = new_load_menu(has_saves);
                 s.menu.column = COLUMN[0];
             }
         }
@@ -923,7 +1060,7 @@ fn select(fe: &mut Frontend, p: &Pressed, choice: &mut ResMut<PlayerChoice>) {
                 fe.hero_name = s.name.clone();
                 if s.from_character_menu {
                     s.step = Step::Character;
-                    s.menu = Menu::new(&CHARACTER_MENU).disabling(&[Item::Save, Item::Load]).selecting(Item::Done);
+                    s.menu = character_menu(has_saves).selecting(Item::Done);
                     s.menu.column = COLUMN[0];
                 } else {
                     // A new hero, ready: the game starts in the tower.
@@ -933,10 +1070,10 @@ fn select(fe: &mut Frontend, p: &Pressed, choice: &mut ResMut<PlayerChoice>) {
             } else if p.back {
                 if s.from_character_menu {
                     s.step = Step::Character;
-                    s.menu = Menu::new(&CHARACTER_MENU).disabling(&[Item::Save, Item::Load]).selecting(Item::Change);
+                    s.menu = character_menu(has_saves).selecting(Item::Change);
                 } else {
                     s.step = Step::NewOrLoad;
-                    s.menu = Menu::new(&NEW_LOAD).disabling(&[Item::Load]);
+                    s.menu = new_load_menu(has_saves);
                 }
                 s.menu.column = COLUMN[0];
             }
@@ -1140,7 +1277,7 @@ fn draw_menu(d: &mut Painter, m: &Menu, options: &GameOptions) {
         d.image_sized("LOGO_BURN1", frame, 290.0, 142.0, 224.0, 172.0, Color::WHITE.with_alpha(fade));
     }
     let line = d.fonts.line_height(FONT32, def.item_scale).trunc();
-    let total: f32 = def.items.iter().map(|e| line + e.below).sum();
+    let total: f32 = (0..m.len()).map(|i| line + m.below(i)).sum();
     let top = match def.y {
         y if y >= 0.0 => y,
         -1.0 => 192.0 - (total / 2.0).trunc(),
@@ -1150,7 +1287,8 @@ fn draw_menu(d: &mut Painter, m: &Menu, options: &GameOptions) {
     // Letters flicker through the GAR frames 10..22 fields after opening.
     let gar = (def.gar && (10.0..22.0).contains(&m.t)).then(|| ((m.t - 10.0) / 2.0) as u8);
     let mut y = top;
-    for (i, entry) in def.items.iter().enumerate() {
+    for i in 0..m.len() {
+        let (label, item) = (m.label(i), m.item(i));
         let alpha = fade * if m.enabled(i) { 1.0 } else { 0.5 };
         let selected = i == m.selected;
         if selected {
@@ -1158,8 +1296,8 @@ fn draw_menu(d: &mut Painter, m: &Menu, options: &GameOptions) {
             let glow = TextStyle::new(FONT32, def.item_scale, rgb(def.glow).with_alpha(alpha * pulse(m.t)))
                 .with_texture(FontTexture::Glow)
                 .glowing();
-            let width = d.draw.text(d.fonts, &glow, x, y, entry.label);
-            d.draw.text(d.fonts, &TextStyle::new(FONT32, def.item_scale, Color::WHITE.with_alpha(alpha)), x, y, entry.label);
+            let width = d.draw.text(d.fonts, &glow, x, y, label);
+            d.draw.text(d.fonts, &TextStyle::new(FONT32, def.item_scale, Color::WHITE.with_alpha(alpha)), x, y, label);
             if def.arrow {
                 // Stand-in for the game's spinning 3D arrow (`ICON_ARROW`),
                 // which sits 16 left of the items.
@@ -1176,12 +1314,12 @@ fn draw_menu(d: &mut Painter, m: &Menu, options: &GameOptions) {
                 None => (rgb(def.normal), FontTexture::Own),
             };
             let style = TextStyle::new(FONT32, def.item_scale, colour.with_alpha(alpha)).with_texture(tex);
-            d.draw.text(d.fonts, &style, x, y, entry.label);
+            d.draw.text(d.fonts, &style, x, y, label);
         }
-        if let Item::Volume(v) = entry.item {
+        if let Item::Volume(v) = item {
             slider(d, x, y + line, v.get(options), if selected { fade } else { 0.6 * fade });
         }
-        y += line + entry.below;
+        y += line + m.below(i);
     }
     if def.hints {
         // Two hints: Back (B) centred at 512/3, Select (A) at 2 × 512/3.
@@ -1242,11 +1380,14 @@ fn select_screen(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassSt
         }
     };
     match s.step {
-        Step::NewOrLoad | Step::Character | Step::ConfirmQuit => {
+        Step::NewOrLoad | Step::Character | Step::ConfirmQuit | Step::LoadList => {
             if s.step == Step::ConfirmQuit {
                 for (k, line) in ["Character", "Not Saved", "Quit Anyway?"].into_iter().enumerate() {
                     d.draw.text(d.fonts, &small, -(col + 64.0), 100.0 + 10.0 * k as f32, line);
                 }
+            }
+            if s.step == Step::LoadList {
+                d.draw.text(d.fonts, &small, -(col + 64.0), 60.0, "Load Character");
             }
             draw_menu(d, &s.menu, &GameOptions::default());
             select_back(d, true, true);

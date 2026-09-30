@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use gdl_formats::pdata::PlayerStats;
 
 use crate::audio::PlaySound;
-use crate::character::{CharacterData, CharacterModel};
+use crate::character::{CharacterData, CharacterModel, clip_fps};
 use crate::deaths;
 use crate::combat::{Hit, TargetKind, Targetable, button};
 use crate::level::LoadedGame;
@@ -224,9 +224,10 @@ pub fn potion_effect(kind: u32, mode: u8, slot: usize, power: f32, level: u32) -
     PotionEffect { kind, damage, radius }
 }
 
-/// How long an effect lasts: its clip's frames × its rate / 900 seconds.
+/// How long an effect lasts: its clip's frames at the clip's frame rate
+/// (rate / 900 s a frame; rate 0 plays at 30).
 pub fn effect_life(frames: u16, rate: u16) -> f32 {
-    frames as f32 * rate as f32 / 900.0
+    f32::from(frames) / clip_fps(rate)
 }
 
 /// A growing blast's reach and damage share at `left` of `life` seconds
@@ -745,7 +746,8 @@ mod tests {
         let (r1, s1) = blast_front(1.0, life, 30.0).unwrap();
         assert!(r1 > r0 && s1 < s0);
         assert!(blast_front(0.6, life, 30.0).is_none());
-        assert_eq!(effect_life(37, 60), 37.0 * 60.0 / 900.0);
+        assert!((effect_life(37, 60) - 37.0 * 60.0 / 900.0).abs() < 1e-5);
+        assert!((effect_life(30, 0) - 1.0).abs() < 1e-5);
     }
 
     #[test]
