@@ -16,6 +16,7 @@ use crate::camera_rig::{CameraPoint, CameraRig};
 use crate::level::LoadedGame;
 use crate::level_material::SceneLight;
 use crate::player::{Player, PlayerTick};
+use crate::player_state::{DEFAULT_HEAD, PlayerState};
 use crate::population::LevelPopulation;
 use crate::world::LevelGround;
 
@@ -215,6 +216,7 @@ fn start(
     population: Res<LevelPopulation>,
     ground: Option<Res<LevelGround>>,
     cameras: Option<Res<LevelCameras>>,
+    state: Option<Res<PlayerState>>,
     mut scene_light: ResMut<SceneLight>,
 ) {
     let Some(ground) = ground else { return };
@@ -235,17 +237,25 @@ fn start(
         .collect();
     let [lo, hi] = ground.0.bounds;
     let bounds = record.target_bounds(lo, hi);
-    let focus = population.player_start().map_or([0.0; 3], |s| s.position);
-    let rig = CameraRig::new(points, bounds, record.near, focus);
-    let intro = intro_shot(&population.population, population.entry, focus);
+    let feet = population.player_start().map_or([0.0; 3], |s| s.position);
+    let rig = CameraRig::new(points, bounds, record.near, top_point(feet, state.as_deref()), feet);
+    let intro = intro_shot(&population.population, population.entry, feet);
     let previous = intro.map_or((rig.eye(), rig.target), |i| (i.eye, i.target));
     commands.insert_resource(PlayCamera { rig, previous, intro, cut: None, shake: None, shake_offset: ([0.0; 3], [0.0; 3]) });
+}
+
+/// A hero's top point, which the camera looks at: the class's head height
+/// above the feet (player `+0x54`, from `PDAT +0x50`; `docs/camera.md`).
+fn top_point(feet: [f32; 3], state: Option<&PlayerState>) -> [f32; 3] {
+    let head = state.map_or(DEFAULT_HEAD, |s| s.head_height);
+    [feet[0], feet[1] + head, feet[2]]
 }
 
 #[allow(clippy::too_many_arguments)]
 fn tick(
     camera: Option<ResMut<PlayCamera>>,
     players: Query<&Player>,
+    state: Option<Res<PlayerState>>,
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     mut cuts: MessageReader<StartCut>,
@@ -256,7 +266,8 @@ fn tick(
     let (Some(mut camera), Ok(player)) = (camera, players.single()) else { return };
     let camera = &mut *camera;
     camera.previous = camera.view();
-    camera.rig.tick(player.mover.position);
+    let feet = player.mover.position;
+    camera.rig.tick(top_point(feet, state.as_deref()), feet);
     for s in shakes.read() {
         if camera.shake.is_none_or(|old| s.priority >= old.priority) {
             camera.shake = Some(*s);

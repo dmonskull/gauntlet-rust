@@ -37,6 +37,8 @@ const DEATH_BELOW: f32 = 1.0;
 /// every class record on the disc holds).
 const DEFAULT_HEIGHT: f32 = 5.0;
 const DEFAULT_RADIUS: f32 = 1.5;
+/// Every class's top point is this high (`PDAT +0x50`).
+pub const DEFAULT_HEAD: f32 = 4.4;
 
 /// Hurts the hero by `amount` health. The game runs damage through armour
 /// and the level's difficulty factor before it lands; senders pass the
@@ -99,6 +101,9 @@ pub struct PlayerState {
     /// The hero's radius and half height against items (class record).
     pub radius: f32,
     pub half_height: f32,
+    /// How far the hero's top point is above the feet (class record
+    /// `+0x50`): what the camera looks at.
+    pub head_height: f32,
     /// The class's powerup duration factor.
     pub powerup_time: f32,
     /// Fields until the next low-health warning.
@@ -131,6 +136,7 @@ impl PlayerState {
             class: class.to_ascii_uppercase(),
             radius: stats.map_or(DEFAULT_RADIUS, |s| s.body.radius),
             half_height: 0.5 * stats.map_or(DEFAULT_HEIGHT, |s| s.body.height),
+            head_height: stats.map_or(DEFAULT_HEAD, |s| s.body.head_height),
             powerup_time: stats.map_or(1.0, |s| s.powerup_time),
             warning_timer: 0,
         }
