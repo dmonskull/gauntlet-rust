@@ -159,8 +159,13 @@ builds it from the atree, or else finds a plain object by name, then name
 objects `GEN_<code><n>L1` in `MONSTERS/<code>/objects.ngc`.
 
 The runtime uses `ITEMS/level<realm letter>` — every realm WAD names the
-folder of its own letter — and shows atrees at their rest pose (item
-animation isn't played yet).
+folder of its own letter — and shows atrees at their rest pose until the
+item's actions play (`items.rs`). Flipbook nodes (the barrels `BAROBJ`,
+`BAREXP`, `BARPOI`: idle, breaking and broken frames, `BAROBJIDLE15F`,
+`BAROBJACTI16F`…) draw their action's frame, the frame objects in a row
+from each action's first. Only placements the player count allows are
+made (`+0x02`, `FUN_80065d84`): on levelA1 233 of 486 are for 2–4
+players — extra barrels and pickups that a one-player game doesn't have.
 
 ## Not decoded yet
 

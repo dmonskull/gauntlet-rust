@@ -94,7 +94,14 @@ pub struct PlacementIndex(pub usize);
 pub struct ItemRig {
     pub atree: Arc<Atree>,
     pub bones: Vec<Entity>,
+    /// Flipbook nodes: the entity holding the frame shown, the frames and
+    /// how they face the camera.
+    pub flipbooks: Vec<(Entity, FlipbookFrames, Option<Billboard>)>,
 }
+
+/// A flipbook node's frames (a barrel's idle, breaking and broken looks):
+/// the meshes of each frame of each action.
+pub type FlipbookFrames = Arc<Vec<Vec<Vec<model_mesh::BuiltMesh>>>>;
 
 /// The current level's population, and where its players start — for
 /// whatever spawns the playable characters.
@@ -310,7 +317,12 @@ impl<'a> Sources<'a> {
             let Some(atree) = self.list[s].2.iter().find(|a| a.name == name) else { continue };
             let parts: Vec<(usize, usize)> = (0..atree.nodes.len())
                 .filter_map(|i| {
-                    let object = format!("{}{}", atree.name, atree.nodes[i].name);
+                    // A flipbook node (a barrel's) shows its first action's
+                    // first frame — the idle look — until it's animated.
+                    let object = match atree.flipbook_entry(i, 0) {
+                        Some(entry) => entry.first.clone(),
+                        None => format!("{}{}", atree.name, atree.nodes[i].name),
+                    };
                     self.objects[s].get(object.as_str()).map(|&o| (i, o))
                 })
                 .collect();
@@ -345,6 +357,9 @@ struct Resolved {
 struct BuiltModel {
     atree: Option<Arc<Atree>>,
     parts: Vec<(usize, Vec<model_mesh::BuiltMesh>, Option<Billboard>)>,
+    /// Flipbook nodes and their frames by action (action 0's first frame
+    /// is the node's part).
+    flipbooks: Vec<(usize, FlipbookFrames)>,
 }
 
 /// A generator model's meshes for each strength level (index = level − 1),
@@ -363,7 +378,9 @@ fn build_model(
     level_materials: &mut Assets<LevelMaterial>,
     images: &mut Assets<Image>,
 ) -> BuiltModel {
-    let Some(r) = sources.resolve(name, monster) else { return BuiltModel { atree: None, parts: Vec::new() } };
+    let Some(r) = sources.resolve(name, monster) else {
+        return BuiltModel { atree: None, parts: Vec::new(), flipbooks: Vec::new() };
+    };
     let mut bounds = (Vec3::MAX, Vec3::MIN);
     let (file, _, _) = sources.list[r.source];
     let parts = r
@@ -389,7 +406,32 @@ fn build_model(
         })
         .filter(|(_, m, _)| !m.is_empty())
         .collect();
-    BuiltModel { atree: r.atree, parts }
+    // Flipbook nodes: every frame of every action, the frame objects in a
+    // row from each action's first.
+    let mut flipbooks = Vec::new();
+    if let Some(atree) = &r.atree {
+        for node in 0..atree.nodes.len() {
+            if atree.flipbook_entry(node, 0).is_none() {
+                continue;
+            }
+            let flags = atree.nodes[node].render_flags;
+            let frames: Vec<Vec<Vec<model_mesh::BuiltMesh>>> = (0..atree.actions.len())
+                .map(|a| {
+                    let Some(entry) = atree.flipbook_entry(node, a) else { return Vec::new() };
+                    let Some(&first) = sources.objects[r.source].get(entry.first.as_str()) else { return Vec::new() };
+                    (0..usize::from(entry.frames.max(1)))
+                        .filter(|k| first + k < file.objects.len())
+                        .map(|k| {
+                            let at = [(first + k, Vec3::ZERO, flags)];
+                            model_mesh::build_flagged(file, &mut caches[r.source], at, meshes, level_materials, images, &mut bounds)
+                        })
+                        .collect()
+                })
+                .collect();
+            flipbooks.push((node, Arc::new(frames)));
+        }
+    }
+    BuiltModel { atree: r.atree, parts, flipbooks }
 }
 
 /// Spawns a built model at `transform` for placement `index`: the root,
@@ -415,10 +457,27 @@ fn spawn_built(model: &BuiltModel, transform: Transform, index: usize, view: Pop
                 let at = Transform::from_translation(Vec3::from(node.offset));
                 bones.push(commands.spawn((at, Visibility::default(), ChildOf(parent))).id());
             }
+            // A flipbook node's frame hangs from a holder of its own, so
+            // the frame can be swapped (`items.rs`).
+            let holders: Vec<(usize, Entity, FlipbookFrames)> = model
+                .flipbooks
+                .iter()
+                .map(|(node, frames)| {
+                    let holder = commands.spawn((Transform::default(), Visibility::default(), ChildOf(bones[*node]))).id();
+                    (*node, holder, frames.clone())
+                })
+                .collect();
+            let mut flipbooks = Vec::new();
             for (node, parts, facing) in &model.parts {
-                attach(commands, bones[*node], parts, *facing);
+                match holders.iter().find(|(n, _, _)| n == node) {
+                    Some((_, holder, frames)) => {
+                        attach(commands, *holder, parts, *facing);
+                        flipbooks.push((*holder, frames.clone(), *facing));
+                    }
+                    None => attach(commands, bones[*node], parts, *facing),
+                }
             }
-            commands.entity(root).insert(ItemRig { atree: atree.clone(), bones });
+            commands.entity(root).insert(ItemRig { atree: atree.clone(), bones, flipbooks });
         }
         None => {
             for (_, parts, facing) in &model.parts {
@@ -531,6 +590,12 @@ pub fn spawn(
 
     let mut counts: HashMap<Category, usize> = HashMap::new();
     for (index, placement) in pop.placements.iter().enumerate() {
+        // Placements for more players (a second key, barrels for a bigger
+        // party…) aren't made in a one-player game (`items.rs` doesn't
+        // make their items either).
+        if !placement.active_for(1) {
+            continue;
+        }
         let ty = pop.resolved_type(placement);
         let category = Category::of(ty);
         *counts.entry(category).or_default() += 1;
@@ -573,6 +638,7 @@ pub fn spawn(
             .entry(key)
             .or_insert_with(|| build_model(&sources, &mut caches, &name, monster, meshes, level_materials, images));
         if model.parts.is_empty() {
+            debug!("placement {index}: no model {name:?} ({:?} {})", ty.class, ty.name);
             continue;
         }
         let root = spawn_built(model, transform, index, view, commands);
