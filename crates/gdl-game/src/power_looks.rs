@@ -153,6 +153,17 @@ const WRISTS: [(&str, &str); 16] = [
 ];
 const HEAD_NODE: &str = "HEAD";
 
+/// The class's wrist nodes (by the game's class index; unknown classes
+/// get the first class's).
+fn wrists(class: Option<usize>) -> (&'static str, &'static str) {
+    class.and_then(|c| WRISTS.get(c)).copied().unwrap_or(WRISTS[0])
+}
+
+/// The class's left wrist node (`L_WRIST` or `LEFTHAND`).
+pub fn left_wrist(class: Option<usize>) -> &'static str {
+    wrists(class).0
+}
+
 fn first_on<const N: usize>(table: &[(Bits, Look); N], bits: &PowerBits) -> Option<Look> {
     table.iter().find(|(b, _)| b.on(bits)).map(|(_, l)| *l)
 }
@@ -347,10 +358,8 @@ fn wear_looks(
     let pecked: Vec<Entity> = hits.read().filter(|h| !h.ranged).map(|h| h.attacker).collect();
     let Some(state) = state else { return };
     let bits = state.bits;
-    let (left_node, right_node) = character::class_index(&state.class)
-        .and_then(|c| WRISTS.get(c))
-        .copied()
-        .unwrap_or(WRISTS[0]);
+    let class = character::class_index(&state.class);
+    let (left_node, right_node) = (left_wrist(class), wrists(class).1);
     for (hero, player, animator, worn) in &mut heroes {
         let Some(mut worn) = worn else {
             commands.entity(hero).insert(Worn::default());
