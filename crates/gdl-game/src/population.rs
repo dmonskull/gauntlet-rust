@@ -564,11 +564,19 @@ fn build_model(
 
 /// Spawns a built model at `transform` for placement `index`: the root,
 /// then an entity per atree node (at its rest offset under its parent's,
-/// so the atree's actions can pose it) or the plain parts.
-fn spawn_built(model: &BuiltModel, transform: Transform, index: usize, view: PopulationView, commands: &mut Commands) -> Entity {
-    let root = commands
-        .spawn((transform, PopulationPart::Model, PlacementIndex(index), visibility(view, PopulationPart::Model), LevelEntity))
-        .id();
+/// so the atree's actions can pose it) or the plain parts. Without an
+/// index it's bound to no item and stays in its rest pose.
+fn spawn_built(
+    model: &BuiltModel,
+    transform: Transform,
+    index: Option<usize>,
+    view: PopulationView,
+    commands: &mut Commands,
+) -> Entity {
+    let root = commands.spawn((transform, PopulationPart::Model, visibility(view, PopulationPart::Model), LevelEntity)).id();
+    if let Some(index) = index {
+        commands.entity(root).insert(PlacementIndex(index));
+    }
     // The parts drawing a texture its actions change, for `items.rs` to
     // give their own copies of the materials.
     let changed = model.texmods.as_ref().map_or_else(Vec::new, |t| t.bindings());
@@ -612,13 +620,15 @@ fn spawn_built(model: &BuiltModel, transform: Transform, index: usize, view: Pop
                     None => attach(commands, bones[*node], parts, *facing),
                 }
             }
-            commands.entity(root).insert(ItemRig {
-                atree: atree.clone(),
-                bones,
-                flipbooks,
-                texmods: model.texmods.clone(),
-                texmod_parts,
-            });
+            if index.is_some() {
+                commands.entity(root).insert(ItemRig {
+                    atree: atree.clone(),
+                    bones,
+                    flipbooks,
+                    texmods: model.texmods.clone(),
+                    texmod_parts,
+                });
+            }
         }
         None => {
             for (_, parts, facing) in &model.parts {
@@ -628,6 +638,16 @@ fn spawn_built(model: &BuiltModel, transform: Transform, index: usize, view: Pop
     }
     root
 }
+
+/// The x-ray's models (`POWERUPS`): the see-through sprite drawn over the
+/// container (camera-facing, drawn 800 depth units nearer), and what shows
+/// inside for a monster and for more than one key.
+pub const XRAY_SPRITE: &str = "SEETHRU";
+pub const XRAY_MONSTER: &str = "DEATH_ICON";
+pub const XRAY_KEYS: &str = "KEYRING";
+const XRAY_SPRITE_BIAS: i16 = -800;
+/// The key powerup's subtype.
+const KEY: i32 = 2;
 
 /// The models a blast can bring (`breakables.rs`, `docs/mechanics.md`
 /// "Blows on items"), and the items they come from: treasure's junk, the
@@ -657,7 +677,14 @@ impl ContentModels {
     /// `index`; `None` if it has none.
     pub fn spawn(&self, name: &str, transform: Transform, index: usize, commands: &mut Commands) -> Option<Entity> {
         let model = self.models.get(name).filter(|m| !m.parts.is_empty())?;
-        Some(spawn_built(model, transform, index, self.view, commands))
+        Some(spawn_built(model, transform, Some(index), self.view, commands))
+    }
+
+    /// Spawns item type `name`'s model in its rest pose, bound to no item
+    /// (what the x-ray shows inside a container, `power_looks.rs`).
+    pub fn spawn_still(&self, name: &str, transform: Transform, commands: &mut Commands) -> Option<Entity> {
+        let model = self.models.get(name).filter(|m| !m.parts.is_empty())?;
+        Some(spawn_built(model, transform, None, self.view, commands))
     }
 }
 
@@ -808,7 +835,7 @@ pub fn spawn(
             debug!("placement {index}: no model {name:?} ({:?} {})", ty.class, ty.name);
             continue;
         }
-        let root = spawn_built(model, transform, index, view, commands);
+        let root = spawn_built(model, transform, Some(index), view, commands);
         if model.atree.is_none()
             && let Some(looks) = tier_looks
         {
@@ -867,6 +894,42 @@ pub fn spawn(
     let ready: Vec<&str> =
         BLAST_MODELS.iter().map(|(n, _)| *n).filter(|n| contents.models.get(*n).is_some_and(|m| !m.parts.is_empty())).collect();
     info!("blast models {ready:?} ({blast_models:?} built for them: {blast_triangles} triangles)");
+    // What the x-ray shows (`power_looks.rs`): the see-through sprite over
+    // any container it can look into, the Death icon for a monster inside,
+    // the key ring for more than one key — each only where a container
+    // holds such a thing.
+    let held: Vec<(ItemType, i16)> = pop
+        .placements
+        .iter()
+        .filter_map(|p| match p.params(pop.resolved_type(p).class) {
+            PlacementParams::Container { contents: Some(c), param } if c < pop.item_types.len() => {
+                Some((pop.resolve(c).clone(), param))
+            }
+            _ => None,
+        })
+        .collect();
+    let seen = |(t, _): &(ItemType, i16)| matches!(t.class, ItemClass::Powerup | ItemClass::EnemyInfo);
+    let xray_wanted = [
+        (XRAY_SPRITE, held.iter().any(seen)),
+        (XRAY_MONSTER, held.iter().any(|(t, _)| t.class == ItemClass::EnemyInfo)),
+        (XRAY_KEYS, held.iter().any(|(t, keys)| t.class == ItemClass::Powerup && t.subtype == KEY && *keys > 1)),
+    ];
+    let near = PerspectiveProjection::default().near;
+    for (name, wanted) in xray_wanted {
+        if !wanted || contents.models.contains_key(name) {
+            continue;
+        }
+        let model = build_model(&sources, &mut caches, name, None, meshes, level_materials, images);
+        if name == XRAY_SPRITE {
+            for b in model.meshes() {
+                if let Some(m) = level_materials.get_mut(&b.material) {
+                    m.set_depth_bias(XRAY_SPRITE_BIAS, near);
+                }
+            }
+        }
+        debug!("x-ray model {name}: {} parts", model.parts.len());
+        contents.models.insert(name.to_string(), model);
+    }
     // Each bank's texture modifiers on the models drawn from it: the
     // item banks', the level's own and the generators' monster banks'.
     let mut drawn: Vec<HashMap<u16, Vec<Handle<LevelMaterial>>>> = vec![HashMap::new(); sources.list.len()];

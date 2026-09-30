@@ -358,16 +358,22 @@ Confirmed:
 - no damage from blows of kind `0x40000000` (`FUN_80078560`): small
   monsters' blows, and every monster's blow while the enemies are shrunk
   (below);
-- the hero's model is lifted 1.9375 (`r2-0x5C28`) above its feet
-  (`FUN_80080d3c`: the animation object `+0x7C`'s height);
+- the hero's model is lifted 1.5 above its feet (`FUN_80080d3c`): the
+  root node of its atree (`**(+0x7C)`) gets `+0x34` (y) = the clip's root
+  height (`((+0x7C)[7]) + 100`) + `r2-0x5C28` — a double (`lfd`, checked
+  in the machine code), 1.5; read as a float the same address gives
+  1.9375. The hero model `+0x74` itself (its root, where the Pojo and the
+  phoenix hang) isn't lifted;
 - no footsteps (`FUN_8009e804` skipped);
 - `WINGS` on the body; when it ends, `S_LEVITATEDOWN` (`FUN_8009cd28`).
 
 No other read of the bit was found (every `+0x124 & 1` in the dump).
 
 Here: the tiles (`hazards.rs`) and the blows (`Player::take_blow`, the
-`+0x124 & 1` test on kind `0x40000000` in `FUN_80078560`). The lift and
-`S_LEVITATEDOWN` aren't done (footsteps aren't played at all).
+`+0x124 & 1` test on kind `0x40000000` in `FUN_80078560`); the lift
+(`Animator::lift` on the skeleton's top nodes, set by `power_looks.rs`
+while the bit is on: the blob shadow and the hero's root stay on the
+floor). `S_LEVITATEDOWN` isn't done (footsteps aren't played at all).
 
 ### `0x2` x-ray
 
@@ -379,15 +385,37 @@ Here: the tiles (`hazards.rs`) and the blows (`Player::take_blow`, the
   contents type (`+0xDC`) is a powerup (class 1), a placed monster (class
   4) or a random pick (−1, resolved with `FUN_800675e4` — whether it's the
   pick the container later releases isn't traced), and passes
-  `FUN_800bb8e4` with 2 × its type's first extent (presumably on screen);
-  one another hero x-rays is skipped.
+  `FUN_800bb8e4` with 2 × its type's first extent (`r2-0x5E7C`; the
+  on-screen sphere test monsters use, `FUN_800b4f28`) — only the nearest
+  is tested; one another hero x-rays is skipped. "Not opened" is the
+  item's `+0xC8` byte (the state its animation has reached) at 0; `+0xCD`
+  is also 0.
 - The container goes see-through (transparency 192) and is re-parented
-  under a holder with the contents' model inside it, at 0.65
+  under a holder (`0x8025E688` + hero, given the container's matrix) with
+  the contents' model inside it (an atree instance, flags `0x80`), at 0.65
   (`r2-0x5D18`): `DEATH_ICON` for a monster (`r13-0x71C0`), `KEYRING`
-  for more than one key (`r13-0x71C4`), else the contents' own model;
-  `S_XRAY` (`FUN_8009e950`) when it changes. When nothing is found or the
-  power ends, the container is put back.
+  for a key with the container's short `+0xEC` above 1 (`r13-0x71C4`),
+  else the contents' own model (type `+0x4C`); `S_XRAY` (`FUN_8009e950`)
+  when the container or the contents type changes. The holder also
+  carries `SEETHRU` (`POWERUPS`; `0x8025E648` + hero, made at level load
+  with flags `0x4200000` — camera-facing — and depth bias −800), shown
+  while something is x-rayed. When nothing is found or the power ends,
+  the container is put back (transparency 0, its own parent and matrix)
+  and `SEETHRU` hidden.
 - `HEAD_XRAY` on the head.
+
+Here: `power_looks.rs::xray` each tick after the items and powers, as
+above: the container's model faded to 192 (`fade.rs`), a holder at its
+model's transform with the contents at 0.65 and `SEETHRU` (camera-facing,
+bias −800), `S_XRAY` on a change; the models from `ContentModels`
+(`spawn_still`; `population.rs` builds `SEETHRU`, `DEATH_ICON` and
+`KEYRING` on levels with containers that need them). The key count is
+the container placement's count (what a broken container releases),
+taken for `+0xEC` — unconfirmed. Stand-ins: a random pick shows what our
+release gives (the first choice, resolved at level load) and is tested by
+the class it resolves to, where the game passes any random pick and
+resolves it with `FUN_800675e4`; what's inside is drawn in its rest pose
+(its atree's action isn't played) with the container's own depth writes.
 
 ### `0x4` invisibility
 
@@ -434,6 +462,29 @@ playing hero has the bit, and `FUN_8007c4f0` sets the hero's `+0x960`.
   `SAND_ANIM`, built by `FUN_800553b4`) show the time-stop slot's time left
   (`FUN_800552a4`), and `S_HOURGLASS` (`0x53`, looping) plays at that hero;
   otherwise it's stopped and the sprites hidden (except in realm 12).
+  - "Holding it" is the player in play (`+0xE8` = 1) with `+0x960` set;
+    the slot is the first whose bits (`+0x13C`) have `8` — whatever its
+    subtype, so the gas mask's `0x2008` counts too — and the time is
+    measured out of `r13-0x6FD8`, which a grant or top-up of a power with
+    bit `8` sets to the slot's new time (`FUN_8007ee10`, the grant).
+  - The sprites (`FUN_800b32bc`; textures from `POWERUPS`, sort keys
+    `r2-0x6BB0..`): `TIMER` (the frame, 128 × 128) at (1, 1), key 63913;
+    two windows on `TIMER_SAND` at x 1, 128 wide, key 63911; `SAND_ANIM`
+    (8 × 32, its bank flipbook: five bindings a tick apart) at (63, 58),
+    key 63912. With `f` = (total − left) / total, rounded half away from
+    zero (`FUN_800bec14`): the sand above shows texture rows 23 + 41`f`
+    to 64 at y 24 + round(39`f`), height 41 − round(39`f`); the sand below
+    rows 105 − 38`f` to 128 at y 106 − round(38`f`), height 23 +
+    round(38`f`) (`FUN_800b2358` sets texture coordinates, `-1` keeping
+    one; `FUN_800b2a48` the size, `FUN_800b27d4` the y, `FUN_800b2bd4` the
+    hidden bit).
+
+  Here (the hourglass only): `game_hud.rs::draw_hourglass` draws the
+  frame, the stream and the two sand windows back to front (the keys read
+  as depths, smaller nearer — unconfirmed) while special `8` is on and
+  play isn't under a menu, and loops `S_HOURGLASS` (`LoopSound`, not
+  placed at the hero) from the tick it comes on to the tick it goes off.
+  `f` is clamped to 0–1. The realm-12 level timer isn't drawn.
 
 Not traced: `FUN_800a00ec` (music) takes another value while it's on, as
 during cuts; `FUN_800a7ff8` (animated objects) holds those without flag
