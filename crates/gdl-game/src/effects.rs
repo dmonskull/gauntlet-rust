@@ -629,20 +629,32 @@ const SEE_THROUGH: [&str; 12] = [
 ];
 
 /// The effect table's depth bias for an effect: none for the breaths, the
-/// bags and the bare FX nodes; −512 for SUICIDEEXP and the pickup
-/// sparkles (`GETGEM<colour>`, `GETGARG`, `GETRUNE`); −128 for the rest.
+/// bags and the bare FX nodes; −512 for SUICIDEEXP, the level-up flashes
+/// (`LEVELUP_<colour>`), the combo and block effects (`COMBO_…`,
+/// `BLOCKFX`, `STARTFX`) and the pickup sparkles (`GETGEM<colour>`,
+/// `GETGARG`, `GETRUNE`); −128 for the rest.
 fn effect_bias(name: &str) -> i16 {
     const NONE: [&str; 9] = [
         "NULLFX", "MAGICFX", "FIREBREATHE", "ACIDBREATHE", "ELECBREATHE", "L_SHLD_ACTIVE", "BOSS_BREATHE", "BAG_THROW",
         "BAG_HIT",
     ];
+    const NEAREST: [&str; 5] = ["LEVELUP_", "COMBO_", "BLOCKFX", "STARTFX", "GETGEM"];
     if NONE.contains(&name) {
         0
-    } else if name == SUICIDE_FX || name.starts_with("GETGEM") || name == "GETGARG" || name == "GETRUNE" {
+    } else if name == SUICIDE_FX || NEAREST.iter().any(|p| name.starts_with(p)) || name == "GETGARG" || name == "GETRUNE" {
         -512
     } else {
         -128
     }
+}
+
+/// Effects the game only ever makes through a spawner that draws them
+/// additively: the level-up flashes (`LEVELUP_<colour>`), whose maker
+/// gives the instance flags `0x880800` — `0x800000` is the additive
+/// blend (`docs/effects.md`). Their texture is a dim, mostly clear sparkle: blended
+/// normally it all but vanishes.
+fn effect_additive(name: &str) -> bool {
+    name.starts_with("LEVELUP_")
 }
 
 /// Loads an effect's model, life and particle systems from `folder`. The
@@ -679,10 +691,14 @@ fn load_effect(
     let mut model = CharacterModel::build_with(&data, &mut cache, meshes, materials, images);
     model.run_texmods(&data, &texmods, &mut cache, images);
     let model = Arc::new(model);
-    let (see_through, bias) = (SEE_THROUGH.contains(&name), effect_bias(name));
+    let (see_through, bias, additive) = (SEE_THROUGH.contains(&name), effect_bias(name), effect_additive(name));
     let near = PerspectiveProjection::default().near;
     for h in model.materials() {
         if let Some(m) = materials.get_mut(h) {
+            if additive {
+                m.alpha_mode = AlphaMode::Add;
+                m.uv_offset.z = 1.0;
+            }
             if see_through {
                 m.uv_offset.w = 1.0 - deaths::EFFECT_ALPHA;
                 if matches!(m.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
