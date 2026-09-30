@@ -179,6 +179,9 @@ pub struct Targetable {
     /// A critter's body or hit sphere: its reference point is the centre
     /// of it, and the critter counts once (see [`CritterAim`]).
     pub critter: Option<CritterAim>,
+    /// A boss critter's (type class 4): the hero neither walks into nor
+    /// charges it.
+    pub boss: bool,
     /// Per attacker, until when (seconds, `Time<Fixed>` elapsed) they can't
     /// hit this again. Melee blows don't use one; the charge would.
     #[allow(dead_code)]
@@ -190,7 +193,13 @@ pub struct Targetable {
 #[allow(dead_code)]
 impl Targetable {
     pub fn new(kind: TargetKind, radius: f32, height: f32) -> Self {
-        Self { kind, radius, height, size: height, critter: None, cooldowns: Vec::new() }
+        Self { kind, radius, height, size: height, critter: None, boss: false, cooldowns: Vec::new() }
+    }
+
+    /// A boss critter's.
+    pub fn of_boss(mut self, boss: bool) -> Self {
+        self.boss = boss;
+        self
     }
 
     /// Part of a critter.

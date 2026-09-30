@@ -325,7 +325,13 @@ When `+0x900 & 0xFE` is set:
 ### Stand-ins and differences
 
 - The turbo meter fills and drains and the turbo attacks swing (below);
-  the charge's own moves and co-op combos aren't done. Magic without
+  co-op combos aren't done. The charge's blow is (`player.rs`, from
+  `FUN_80080d3c`: while SHOVE plays and no reaction was picked this tick,
+  a monster or non-boss critter the search finds within 1 of the hero
+  takes 3, heavy, once a second — in place of walking into it; grown,
+  × 2), with the cooldown kept per target on the hero. Walking into a
+  boss critter (type class 4) doesn't attack it except on the levels
+  whose boss is type `0x25` or `0x29`. Magic without
   potions just walks, as the game does for a hero with none (without the
   cue).
 - Projectiles (throws, strafe attacks, power throw) are released as the
