@@ -28,7 +28,7 @@
 use bevy::prelude::*;
 use gdl_formats::font::{FONT_8HI, INITIALS};
 
-use crate::audio::LoopSound;
+use crate::audio::{CALL_VOLUME, LoopSoundAt};
 use crate::critters::CritterLevel;
 use crate::font::{Draw2d, GameFonts, Quad, TextStyle, UiTextures};
 use crate::frontend::Frontend;
@@ -56,6 +56,9 @@ const TIME_STOP: u32 = 0x8;
 const HOURGLASS_BANK: &str = "POWERUPS";
 const HOURGLASS_SOUND: &str = "S_HOURGLASS";
 const HOURGLASS_CHANNEL: &str = "hourglass";
+/// The hero's top point above its feet (`PDAT +0x50`, every class), where
+/// the hourglass's sound is.
+const HERO_TOP: f32 = 4.4;
 /// The sand above: texture rows from 23 + 41 × the part gone to 64, drawn
 /// from y 24 + 39 × it; the sand below: rows from 105 − 38 × it to 128,
 /// from y 106 − 38 × it (each 1 texel a pixel, 128 wide at x 1).
@@ -87,7 +90,8 @@ fn draw_hourglass(
     mut game: Option<ResMut<LoadedGame>>,
     mut images: ResMut<Assets<Image>>,
     mut draw: ResMut<Draw2d>,
-    mut loops: MessageWriter<LoopSound>,
+    mut loops: MessageWriter<LoopSoundAt>,
+    players: Query<&Player>,
     mut glass: Local<Hourglass>,
     time: Res<Time<Virtual>>,
 ) {
@@ -103,11 +107,18 @@ fn draw_hourglass(
     }
     g.seen = slots;
     let on = state.bits.special & TIME_STOP != 0;
-    if on != g.on {
-        g.on = on;
-        let name = on.then(|| HOURGLASS_SOUND.to_string());
-        loops.write(LoopSound { key: HOURGLASS_CHANNEL, name });
+    // Its sound follows the hero (at its top point) while it's on.
+    let hero = players.iter().next().map(|p| Vec3::from(p.mover.position) + Vec3::Y * HERO_TOP);
+    match hero.filter(|_| on) {
+        Some(at) => {
+            loops.write(LoopSoundAt::at(HOURGLASS_CHANNEL, HOURGLASS_SOUND, at, CALL_VOLUME));
+        }
+        None if g.on => {
+            loops.write(LoopSoundAt::stop(HOURGLASS_CHANNEL));
+        }
+        None => {}
     }
+    g.on = on;
     let Some(&(_, left)) = g.seen.first() else { return };
     if !on || frontend.as_deref().is_some_and(|f| !f.playing() || f.menu_open()) {
         return;

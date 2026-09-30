@@ -24,7 +24,7 @@ use gdl_formats::texmod::TexMod;
 use gdl_formats::{LevelCollision, LevelTuning, ModelFile, WorldData};
 use gdl_install::GameInstall;
 
-use crate::audio::{LoopSound, PlaySound};
+use crate::audio::{CALL_VOLUME, LoopSoundAt, PlaySoundAt};
 use crate::combat::{TargetKind, Targetable};
 use crate::character::{Animator, CharacterData, CharacterModel};
 use crate::deaths::{self, DeathSet, DeathTextures, Dissolve};
@@ -114,6 +114,8 @@ const SUICIDE_KIND: u32 = 1;
 /// The realms whose runners leave a poison cloud instead (7 and 11).
 const POISON_REALMS: [char; 2] = ['G', 'K'];
 const SUICIDE_YELL: &str = "S_SUICIDE_YELL";
+/// The runner's yell: faded, at this requested volume.
+const RUNNER_VOLUME: u8 = 0xE0;
 /// The effect a level's runners take from the first of its (non-special)
 /// monster folders that has it.
 const SUICIDE_EFFECT: &str = "SUICIDEEXP";
@@ -426,6 +428,9 @@ const DEATH_FADE: f32 = 4.0;
 const DEATH_SUCK: &str = "S_DEATHSUCK";
 const DEATH_SUCK_LOOP: &str = "death_suck";
 const DEATH_LAUGH: &str = "S_DEATHLAUGH";
+/// Its laugh plays panned at its feet at this requested volume; the drain
+/// follows it at the call's own.
+const DEATH_LAUGH_VOLUME: u8 = 0xE0;
 /// Its drain effects (`MONSTERS/DEATH`): health, experience.
 const DEATH_BANK: &str = "MONSTERS/DEATH";
 const DEATH_ARC: &str = "DEATH_ARC";
@@ -1053,7 +1058,7 @@ pub struct Body {
 /// What Death's part of the monster tick sends and changes.
 type DeathWriters<'w, 's> = (
     MessageWriter<'w, DeathDrain>,
-    MessageWriter<'w, LoopSound>,
+    MessageWriter<'w, LoopSoundAt>,
     MessageWriter<'w, ShowHint>,
     Query<'w, 's, &'static mut Fade>,
     MessageWriter<'w, EffectOn>,
@@ -1073,13 +1078,15 @@ fn tick_monsters(
     mut shots: MessageWriter<MonsterShot>,
     death_textures: Option<Res<DeathTextures>>,
     mut effects: MessageWriter<EffectAt>,
-    (mut explosions, mut sounds): (MessageWriter<ExplosionAt>, MessageWriter<PlaySound>),
+    (mut explosions, mut sounds): (MessageWriter<ExplosionAt>, MessageWriter<PlaySoundAt>),
     (colours, mut tags, stop, enemies): (Res<FlashColours>, Query<&mut MeshTag>, Res<TimeStop>, Res<EnemyScale>),
     (mut drains, mut loops, mut hints, mut fades, mut riding): DeathWriters,
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     level.tick = level.tick.wrapping_add(1);
-    let mut sucking = false;
+    // Where the Death draining a hero this tick is (its drain's sound
+    // follows it).
+    let mut sucking: Option<Vec3> = None;
     let collision = &ground.0;
     let dt = time.delta_secs();
     let view = game_view(camera.as_deref());
@@ -1270,7 +1277,8 @@ fn tick_monsters(
         } else if m.ai == SUICIDE {
             let (heading, run, yell) = suicide_ai(m, target);
             if yell {
-                sounds.write(PlaySound(SUICIDE_YELL.into()));
+                // At its `+0x44` point: its centre here, as its effects.
+                sounds.write(PlaySoundAt::faded(SUICIDE_YELL, m.centre(), RUNNER_VOLUME));
             }
             if m.frame_ai != SUICIDE {
                 // It lost its player: an unaware walk this tick.
@@ -1363,13 +1371,17 @@ fn tick_monsters(
             m.blocked = Block::Player;
             if m.enemy == DEATH_TYPE {
                 if death_touch(m, entity, &p, &mut drains, &mut riding) {
-                    sucking = true;
-                    // It pays with its own hit points; full, it leaves.
+                    // It pays with its own hit points; full, it leaves
+                    // (laughing), else its drain's sound goes on at it —
+                    // each Death draining pans the one loop, the last's
+                    // pan holding.
                     m.hit_points -= m.stats.damage;
-                    if m.hit_points < 0.0 {
+                    if m.hit_points >= 0.0 {
+                        sucking = Some(Vec3::from(m.position));
+                    } else {
                         m.hit_points = 0.0;
                         m.death.left = true;
-                        sounds.write(PlaySound(DEATH_LAUGH.into()));
+                        sounds.write(PlaySoundAt::panned(DEATH_LAUGH, Vec3::from(m.position), DEATH_LAUGH_VOLUME));
                         if let Some(mut g) = m.generator.and_then(|g| generators.get_mut(g).ok()) {
                             g.alive = g.alive.saturating_sub(1);
                         }
@@ -1474,11 +1486,16 @@ fn tick_monsters(
         }
     }
     // The drain's sound stops on a tick no Death drained.
-    if sucking != level.death_sucking {
-        level.death_sucking = sucking;
-        let name = sucking.then(|| DEATH_SUCK.to_string());
-        loops.write(LoopSound { key: DEATH_SUCK_LOOP, name });
+    match sucking {
+        Some(at) => {
+            loops.write(LoopSoundAt::at(DEATH_SUCK_LOOP, DEATH_SUCK, at, CALL_VOLUME));
+        }
+        None if level.death_sucking => {
+            loops.write(LoopSoundAt::stop(DEATH_SUCK_LOOP));
+        }
+        None => {}
     }
+    level.death_sucking = sucking.is_some();
 }
 
 /// Death touches a hero (the game's bump routine, Death's branch): nothing
