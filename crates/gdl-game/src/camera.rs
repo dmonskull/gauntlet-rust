@@ -7,6 +7,7 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::math::Vec3A;
 use bevy::prelude::*;
+use bevy::render::view::Hdr;
 
 pub struct CameraPlugin;
 
@@ -126,9 +127,11 @@ impl CameraProjection for MirroredPerspective {
 fn spawn_camera(mut commands: Commands) {
     let mut transform = Transform::default();
     let fly = FlyCamera::looking_at_bounds(Vec3::splat(-100.0), Vec3::splat(100.0), &mut transform);
-    // No tonemapping: level colours are the game's own, already final.
+    // No tonemapping: level colours are the game's own, already final. A
+    // float target: the level draws gamma-space colour and blends it the
+    // way the game's frame buffer does (`gamma.rs`).
     let projection = Projection::custom(MirroredPerspective::default());
-    commands.spawn((Camera3d::default(), projection, Tonemapping::None, transform, fly));
+    commands.spawn((Camera3d::default(), projection, Hdr, Tonemapping::None, transform, fly));
 }
 
 fn fly(

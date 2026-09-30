@@ -1,5 +1,7 @@
 // Level geometry, combined exactly like the game's two TEV stages
-// (docs/rendering.md), in gamma space, then converted to linear:
+// (docs/rendering.md), in gamma space — written out in gamma space too, so
+// blending works on gamma values like the game's frame buffer (gamma.rs
+// turns the finished picture linear):
 //   stage 0: clamp(texture x rasterized colour x 2)
 //   stage 1 (lightmap): stage 0 x lightmap alpha
 
@@ -38,12 +40,6 @@ fn output(in: VertexOutput, color: vec4<f32>) -> FragmentOutput {
     out.depth = clamp(in.position.z + depth_offset.x, 0.0, 1.0);
 #endif
     return out;
-}
-
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let lo = c / 12.92;
-    let hi = pow((c + 0.055) / 1.055, vec3(2.4));
-    return select(hi, lo, c <= vec3(0.04045));
 }
 
 @fragment
@@ -85,7 +81,7 @@ fn fragment(in: VertexOutput) -> FragmentOutput {
     if (color.a < params.y) {
         discard;
     }
-    let rgb = srgb_to_linear(clamp(color.rgb, vec3(0.0), vec3(1.0)));
+    let rgb = clamp(color.rgb, vec3(0.0), vec3(1.0));
     color.a = color.a * (1.0 - uv_offset.w);
     if (uv_offset.z > 0.5) {
         // The game's additive blend: source x source alpha + destination.
