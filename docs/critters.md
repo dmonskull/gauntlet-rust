@@ -1548,9 +1548,23 @@ in the game) and the bosses on the 30 Hz tick, interpolated for drawing.
 - **The stomp ring** (`DAMG` kind 3, ATTACK4) hurts heroes within its
   radius at once. In the game it's a damaging effect in the projectile
   table, lasting `+0x08` s.
-- **Projectile kinds** (1, 2, 8), breath cones (4), the safe rocks' kinds
-  (5, 6) and the boss's loot (9) are done (for bosses too); grabs (7)
-  aren't.
+- **Missiles** (kind 1, `launch`, `projectiles::spawn_critter_missile`):
+  none without an effect the table holds; they hit with `DAMG +0x08` (the
+  missile's own radius, the slot's `+0x84`), are drawn at the effect
+  record's size (`SFXX +0x4C`), pass walls and items with the blow's flag
+  0x40 and the heroes with 0x1000. Where one stops (a hero, a wall, an
+  item, or its time running out) its hit record plays: the record's
+  sound there (faded, 0xE0, `0x8009d35c`), its effect for its clip, and —
+  with the effect — a blast out to `DAMG +0x0C` growing over that clip on
+  the heroes and monsters (not its own critter; items for magic), which
+  reaches a hero through its guard (so a direct hit's burst lands a
+  quarter second later, at its share then). Stand-ins: they fly the
+  missiles' 3 s (the game's end time is the effect record's life, else
+  its clip's, but a moving slot's is moved on in flight in a way not
+  traced); a glow stands in for effects whose textures the effects system
+  would supply; no trails or spin. Kinds 2 and 8 (still effects) do
+  nothing yet; breath cones (4), the safe rocks' kinds (5, 6) and the
+  boss's loot (9) are done (for bosses too); grabs (7) aren't.
 - **Timing.** Critter time starts at 0 each level. Moves that have never
   run count as long ago, so they're ready; the game's clock runs from boot.
 - **Only one target is tracked.** Condition `[6]` (distance from home) and
