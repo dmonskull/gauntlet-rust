@@ -43,6 +43,9 @@ impl Default for SceneLight {
     }
 }
 
+/// The game's near clip plane (its far one is 65536).
+const GAME_NEAR: f32 = 1.0;
+
 pub struct LevelMaterialPlugin;
 
 impl Plugin for LevelMaterialPlugin {
@@ -76,6 +79,10 @@ pub struct LevelMaterial {
     /// xy: scroll of the diffuse texture.
     #[uniform(7)]
     pub uv_offset: Vec4,
+    /// x: how much nearer the camera the depth test takes it, in our depth
+    /// buffer's units (an effect's depth bias, [`LevelMaterial::set_depth_bias`]).
+    #[uniform(8)]
+    pub depth_offset: Vec4,
     pub alpha_mode: AlphaMode,
     /// The game's per-instance depth switches (render flags 0x40, 0x80).
     pub depth_test: bool,
@@ -92,11 +99,17 @@ pub struct LevelMaterialKey {
     depth_test: bool,
     depth_write: bool,
     blend_depth_write: bool,
+    depth_bias: bool,
 }
 
 impl From<&LevelMaterial> for LevelMaterialKey {
     fn from(m: &LevelMaterial) -> Self {
-        Self { depth_test: m.depth_test, depth_write: m.depth_write, blend_depth_write: m.blend_depth_write }
+        Self {
+            depth_test: m.depth_test,
+            depth_write: m.depth_write,
+            blend_depth_write: m.blend_depth_write,
+            depth_bias: m.depth_offset.x != 0.0,
+        }
     }
 }
 
@@ -117,6 +130,7 @@ impl LevelMaterial {
             // z: additive (the shader premultiplies and leaves the
             // destination's alpha alone, which Bevy's `Add` expects).
             uv_offset: Vec4::new(0.0, 0.0, if alpha_mode == AlphaMode::Add { 1.0 } else { 0.0 }, 0.0),
+            depth_offset: Vec4::ZERO,
             alpha_mode,
             depth_test: true,
             depth_write: true,
@@ -149,6 +163,16 @@ impl LevelMaterial {
         self.params.w > 0.5
     }
 
+    /// The game's per-object depth bias (an effect's, from its table:
+    /// −128 for most, −512 for the pickup and level-up sparkles): the
+    /// object is depth-tested `bias` × −2048 of the game's 24-bit z-buffer
+    /// nearer the camera. With the game's near plane at 1 (far 65536) that
+    /// is a fixed step in 1 / distance, the same in our reverse-Z buffer
+    /// scaled by our near plane.
+    pub fn set_depth_bias(&mut self, bias: i16, near: f32) {
+        self.depth_offset.x = -f32::from(bias) * 2048.0 / 16_777_216.0 * near / GAME_NEAR;
+    }
+
     pub fn with_depth(mut self, test: bool, write: bool) -> Self {
         self.depth_test = test;
         self.depth_write = write;
@@ -171,6 +195,11 @@ impl Material for LevelMaterial {
         _layout: &MeshVertexBufferLayoutRef,
         key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        if key.bind_group_data.depth_bias
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("DEPTH_BIAS".into());
+        }
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
             if key.bind_group_data.blend_depth_write {
                 depth.depth_write_enabled = true;

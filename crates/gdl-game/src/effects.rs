@@ -13,11 +13,14 @@
 //! `actions.rs`. `GDL_POTIONS=<n>[,<kind>]` hands the hero potions at each
 //! level start.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use gdl_formats::ModelFile;
+use gdl_formats::anim::AnimFile;
 use gdl_formats::pdata::PlayerStats;
+use gdl_formats::texmod::{FirstFrame, TexMod, TexModKind};
 
 use crate::audio::PlaySound;
 use crate::character::{CharacterData, CharacterModel, clip_fps};
@@ -30,7 +33,8 @@ use crate::model_mesh::TextureCache;
 use crate::monsters::{Monster, MonsterTick};
 use crate::particles;
 use crate::player::{Player, PlayerChoice};
-use crate::player_state::PlayerState;
+use crate::damage::after_armor;
+use crate::player_state::{DamagePlayer, PlayerState};
 use crate::population::LevelPopulation;
 use crate::projectiles;
 use crate::world::{LevelEntity, LevelGround};
@@ -42,11 +46,15 @@ impl Plugin for EffectsPlugin {
         app.add_message::<UsePotion>()
             .add_message::<BlastAt>()
             .add_message::<EffectAt>()
+            .add_message::<ExplosionAt>()
+            .add_message::<NextStage>()
             .init_resource::<EffectModels>()
             .init_resource::<PotionCycle>()
             .add_systems(
                 FixedUpdate,
-                (use_potions, spawn_blasts, tick_blasts, spawn_one_shots, tick_one_shots).chain().after(MonsterTick),
+                (use_potions, spawn_blasts, spawn_explosions, tick_blasts, spawn_one_shots, tick_one_shots, step_effect_frames)
+                    .chain()
+                    .after(MonsterTick),
             )
             .add_systems(Update, (setup_level.run_if(resource_exists_and_changed::<LevelPopulation>), follow_blasts));
     }
@@ -253,7 +261,7 @@ enum BlastShape {
     Aura(Entity),
 }
 
-/// A magic effect doing damage.
+/// A magic effect or explosion doing damage.
 #[derive(Component)]
 struct Blast {
     owner: Entity,
@@ -266,20 +274,129 @@ struct Blast {
     age: f32,
     /// Until when each target is spared (fixed-clock seconds).
     spared: HashMap<Entity, f64>,
+    /// What it does to heroes, and whether it hits generators and
+    /// breakables (the game's effect flag 2: magic and gas do, a fireball
+    /// doesn't).
+    heroes: Heroes,
+    items: bool,
+    /// The stages still to come when it ends (the poison cloud's).
+    then: &'static [Stage],
+    /// Its model's scale, and how far below the centre it's drawn (kept
+    /// by the stages after it).
+    scale: Vec3,
+    drop: f32,
 }
 
-/// An effect model: its meshes, its life (seconds) and its particle
-/// systems (their values, material and direction).
+/// What a blast does to heroes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Heroes {
+    /// Nothing (the heroes' own magic).
+    Spared,
+    /// Hurts them (a gas cloud).
+    Hurt,
+    /// Hurts them and throws them back (an explosion).
+    Thrown,
+}
+
+/// A later stage of a chained effect.
+#[derive(Clone, Copy, Debug)]
+struct Stage {
+    model: &'static str,
+    /// It still hurts.
+    blast: bool,
+}
+
+/// A chained effect's next stage, where the last one ended.
+#[derive(Message, Clone, Copy, Debug)]
+struct NextStage {
+    owner: Entity,
+    centre: Vec3,
+    kind: u32,
+    damage: f32,
+    radius: f32,
+    heroes: Heroes,
+    items: bool,
+    stages: &'static [Stage],
+    scale: Vec3,
+    drop: f32,
+}
+
+/// A monster blows up (a suicide runner, `monsters.rs`): the fireball —
+/// EXPLOSION, its ring and the level's SUICIDEEXP — or, in the poison
+/// realms, the gas cloud and SUICIDEEXP; its sound; and a blast that hurts
+/// heroes as well as monsters (`docs/monsters.md`, "Suicide runners").
+#[derive(Message, Clone, Debug)]
+pub struct ExplosionAt {
+    pub owner: Entity,
+    pub at: Vec3,
+    pub damage: f32,
+    pub poison: bool,
+    /// The monster folder the level's SUICIDEEXP is in.
+    pub folder: Option<String>,
+}
+
+/// The fireball: EXPLOSION blasts out to 6 with fire (kind `0x421`), and
+/// EXPRING plays at 1.2 ×.
+const EXPLOSION_FX: &str = "EXPLOSION";
+const EXPLOSION_KIND: u32 = 0x421;
+const EXPLOSION_RADIUS: f32 = 6.0;
+const RING_FX: &str = "EXPRING";
+const RING_SCALE: f32 = 1.2;
+/// The gas cloud: POISONEXP1 then POISONEXP2 (held its 2 s) blast out to
+/// 7.5 (kind `0x800`), then POISONEXP3 plays out; drawn 2.5 × wide and 1
+/// lower.
+const POISON_FX: &str = "POISONEXP1";
+const POISON_KIND: u32 = 0x800;
+const POISON_RADIUS: f32 = 7.5;
+const POISON_SCALE: Vec3 = Vec3::new(2.5, 1.0, 2.5);
+const POISON_DROP: f32 = 1.0;
+static POISON_STAGES: [Stage; 2] = [Stage { model: "POISONEXP2", blast: true }, Stage { model: "POISONEXP3", blast: false }];
+const SUICIDE_FX: &str = "SUICIDEEXP";
+const EXPLOSION_SOUND: &str = "S_SUICIDE_BOMB";
+
+/// An effect model: its meshes, its life (seconds), its particle systems
+/// (their values, material and direction) and its own texture animations.
 #[derive(Clone)]
 struct EffectModel {
     model: Arc<CharacterModel>,
     life: f32,
     particles: Arc<[(particles::Params, Handle<LevelMaterial>, Vec3)]>,
+    flipbooks: Arc<[Flipbook]>,
 }
 
-/// Effect models, by atree name (loaded on first use from `WEAPONS`).
+/// A bank texture modifier owned by an effect's atree (the fireball's
+/// FBALL_EXP, a gas cloud's POISON_GAS): each copy of the effect runs it
+/// from its start, a frame every `period` ticks — over exactly the
+/// effect's clip.
+struct Flipbook {
+    /// The image the model's materials draw the changed texture with.
+    base: Handle<Image>,
+    frames: Vec<Handle<Image>>,
+    texmod: TexMod,
+}
+
+/// A playing effect's flipbooks: its own copies of the materials they
+/// change, and the ticks since it started.
+#[derive(Component)]
+struct EffectFrames {
+    flipbooks: Arc<[Flipbook]>,
+    copies: HashMap<AssetId<LevelMaterial>, (Handle<LevelMaterial>, usize)>,
+    ticks: u64,
+}
+
+impl EffectFrames {
+    fn of(effect: &EffectModel) -> Option<Self> {
+        (!effect.flipbooks.is_empty()).then(|| Self { flipbooks: effect.flipbooks.clone(), copies: HashMap::new(), ticks: 0 })
+    }
+}
+
+/// Effect models, loaded on first use: `WEAPONS`' by atree name, and the
+/// few that live in monster folders (SUICIDEEXP) by folder and name.
 #[derive(Resource, Default)]
-struct EffectModels(HashMap<&'static str, Option<EffectModel>>);
+struct EffectModels {
+    weapons: HashMap<&'static str, Option<EffectModel>>,
+    banks: HashMap<(String, &'static str), Option<EffectModel>>,
+}
 
 impl EffectModels {
     /// The model and its life (seconds) for `name`.
@@ -302,30 +419,174 @@ impl EffectModels {
         materials: &mut Assets<LevelMaterial>,
         images: &mut Assets<Image>,
     ) -> Option<EffectModel> {
-        self.0
-            .entry(name)
-            .or_insert_with(|| {
-                let data: CharacterData = projectiles::load_atree(game, "WEAPONS", name)?;
-                let life = data.clips.actions.first().map_or(1.0, |a| effect_life(a.frames, a.rate));
-                // Its particle systems' textures come from the same files.
-                let mut cache = TextureCache::new(&data.model, &data.textures);
-                let particles = data
-                    .skeleton
-                    .particles
-                    .iter()
-                    .map(|n| {
-                        let params = particles::Params::of(&n.record);
-                        let texture = n.record.texture();
-                        let binding = data.model.texture_names.iter().find(|t| t.name == texture).map(|t| t.binding);
-                        let image = binding.and_then(|b| cache.get(b, images)).map(|(i, _)| i);
-                        let material = params.material(image, materials);
-                        (params, material, Vec3::from(n.vector))
-                    })
-                    .collect();
-                let model = Arc::new(CharacterModel::build(&data, meshes, materials, images));
-                Some(EffectModel { model, life, particles })
-            })
-            .clone()
+        self.weapons.entry(name).or_insert_with(|| load_effect(game, "WEAPONS", name, meshes, materials, images)).clone()
+    }
+
+    /// An effect from a monster folder (`MONSTERS/<folder>`).
+    fn effect_in(
+        &mut self,
+        folder: &str,
+        name: &'static str,
+        game: &mut LoadedGame,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<LevelMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Option<EffectModel> {
+        let key = (folder.to_string(), name);
+        if let Some(e) = self.banks.get(&key) {
+            return e.clone();
+        }
+        let e = load_effect(game, &format!("MONSTERS/{folder}"), name, meshes, materials, images);
+        self.banks.insert(key, e.clone());
+        e
+    }
+}
+
+/// The effect table's entries drawn see-through (transparency 96: the
+/// sparks and the hit and die effects); every other effect is drawn as it
+/// is (transparency 0).
+const SEE_THROUGH: [&str; 12] = [
+    "SPARKS", "HITCOL", "HITDIE", "BLOODHIT", "BLOODDIE", "BLOODFX1", "BLOODFX2", "FIREHIT", "FIREDIE", "ELECDIE",
+    "LIGHTDIE", "ACIDDIE",
+];
+
+/// The effect table's depth bias for an effect: none for the breaths, the
+/// bags and the bare FX nodes; −512 for SUICIDEEXP (and the sparkles round
+/// a hero, not spawned yet: their names also have −128 entries); −128 for
+/// the rest.
+fn effect_bias(name: &str) -> i16 {
+    const NONE: [&str; 9] = [
+        "NULLFX", "MAGICFX", "FIREBREATHE", "ACIDBREATHE", "ELECBREATHE", "L_SHLD_ACTIVE", "BOSS_BREATHE", "BAG_THROW",
+        "BAG_HIT",
+    ];
+    if NONE.contains(&name) {
+        0
+    } else if name == SUICIDE_FX {
+        -512
+    } else {
+        -128
+    }
+}
+
+/// Loads an effect's model, life and particle systems from `folder`. The
+/// see-through ones get the game's transparency on their own materials
+/// (their models are only ever used as effects), and all of them its
+/// depth bias.
+fn load_effect(
+    game: &mut LoadedGame,
+    folder: &str,
+    name: &'static str,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<LevelMaterial>,
+    images: &mut Assets<Image>,
+) -> Option<EffectModel> {
+    let bytes = game.install.read(&format!("{folder}/ANIM.PS2")).ok()?;
+    let anim = AnimFile::parse(&bytes).ok()?;
+    let index = anim.atrees.iter().position(|a| a.name.eq_ignore_ascii_case(name))?;
+    let texmods: Vec<TexMod> =
+        TexMod::parse_all(&bytes).unwrap_or_default().into_iter().filter(|t| usize::try_from(t.owner) == Ok(index)).collect();
+    let tree = anim.atrees.into_iter().nth(index)?;
+    let data = CharacterData {
+        name: format!("{folder}/{name}"),
+        class: String::new(),
+        colour: String::new(),
+        clips: Arc::new(tree.clone()),
+        skeleton: tree,
+        model: ModelFile::parse(&game.install.read(&format!("{folder}/objects.ngc")).ok()?).ok()?,
+        textures: game.install.read(&format!("{folder}/textures.ngc")).ok()?,
+    };
+    let life = data.clips.actions.first().map_or(1.0, |a| effect_life(a.frames, a.rate));
+    // Its particle systems' textures and flipbook frames come from the same
+    // files, through the cache its model is built with.
+    let mut cache = TextureCache::new(&data.model, &data.textures).sharing_materials();
+    let particles = data
+        .skeleton
+        .particles
+        .iter()
+        .map(|n| {
+            let params = particles::Params::of(&n.record);
+            let texture = n.record.texture();
+            let binding = data.model.texture_names.iter().find(|t| t.name == texture).map(|t| t.binding);
+            let image = binding.and_then(|b| cache.get(b, images)).map(|(i, _)| i);
+            let material = params.material(image, materials);
+            (params, material, Vec3::from(n.vector))
+        })
+        .collect();
+    let model = Arc::new(CharacterModel::build_with(&data, &mut cache, meshes, materials, images));
+    let flipbooks = texmods
+        .into_iter()
+        .filter_map(|texmod| {
+            let TexModKind::Frames(FirstFrame::Binding(first)) = texmod.kind else { return None };
+            let (base, _) = cache.get(texmod.binding, images)?;
+            let frames = (0..texmod.count.max(1) as u16).filter_map(|k| cache.get(first + k, images).map(|(i, _)| i)).collect();
+            Some(Flipbook { base, frames, texmod })
+        })
+        .collect();
+    let (see_through, bias) = (SEE_THROUGH.contains(&name), effect_bias(name));
+    let near = PerspectiveProjection::default().near;
+    for h in model.materials() {
+        if let Some(m) = materials.get_mut(h) {
+            if see_through {
+                m.uv_offset.w = 1.0 - deaths::EFFECT_ALPHA;
+                if matches!(m.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+                    m.alpha_mode = AlphaMode::Blend;
+                }
+            }
+            m.set_depth_bias(bias, near);
+        }
+    }
+    Some(EffectModel { model, life, particles, flipbooks })
+}
+
+/// Steps each playing effect's flipbooks on the 30 Hz tick: its meshes
+/// move onto its own copies of the materials drawing a changed texture,
+/// and the copies show the frame for the ticks since it started.
+fn step_effect_frames(
+    mut effects: Query<(Entity, &mut EffectFrames)>,
+    children: Query<&Children>,
+    mut drawn: Query<&mut MeshMaterial3d<LevelMaterial>>,
+    mut materials: ResMut<Assets<LevelMaterial>>,
+) {
+    for (root, mut fx) in &mut effects {
+        let fx = &mut *fx;
+        for e in children.iter_descendants(root) {
+            let Ok(mut mat) = drawn.get_mut(e) else { continue };
+            let id = mat.0.id();
+            if fx.copies.values().any(|(c, _)| c.id() == id) {
+                continue;
+            }
+            let copy = match fx.copies.get(&id) {
+                Some((c, _)) => Some(c.clone()),
+                None => {
+                    let own = materials.get(id).cloned();
+                    let book = own.as_ref().and_then(|m| {
+                        let diffuse = m.diffuse.as_ref()?.id();
+                        fx.flipbooks.iter().position(|b| b.base.id() == diffuse)
+                    });
+                    match (own, book) {
+                        (Some(own), Some(book)) => {
+                            let c = materials.add(own);
+                            fx.copies.insert(id, (c.clone(), book));
+                            Some(c)
+                        }
+                        _ => None,
+                    }
+                }
+            };
+            if let Some(copy) = copy {
+                mat.0 = copy;
+            }
+        }
+        for (copy, book) in fx.copies.values() {
+            let b = &fx.flipbooks[*book];
+            let frame = b.texmod.frame(fx.ticks) as usize;
+            if let (Some(image), Some(m)) = (b.frames.get(frame), materials.get_mut(copy))
+                && m.diffuse.as_ref() != Some(image)
+            {
+                m.diffuse = Some(image.clone());
+            }
+        }
+        fx.ticks += 1;
     }
 }
 
@@ -351,7 +612,6 @@ fn spawn_one_shots(
     mut requests: MessageReader<EffectAt>,
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
-    mut faded: Local<HashSet<&'static str>>,
     mut seed: Local<u32>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
@@ -362,30 +622,31 @@ fn spawn_one_shots(
             debug!("effect {} has no model", e.name);
             continue;
         };
-        // Its particle systems: bursts where it happens, at its scale.
-        for (k, (params, material, direction)) in effect.particles.iter().enumerate() {
-            *seed = seed.wrapping_add(0x9E37_79B9);
-            let seed = *seed ^ k as u32;
-            particles::spawn_burst(params.clone().scaled(e.scale), material.clone(), e.at, *direction, seed, &mut commands, &mut meshes);
-        }
-        let (model, life) = (effect.model, effect.life);
-        // The game draws effects part see-through (its models are only
-        // ever used as effects, so their own materials change).
-        if faded.insert(e.name) {
-            for h in model.materials() {
-                if let Some(m) = materials.get_mut(h) {
-                    m.uv_offset.w = 1.0 - deaths::EFFECT_ALPHA;
-                    if matches!(m.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
-                        m.alpha_mode = AlphaMode::Blend;
-                    }
-                }
-            }
-        }
-        let transform = Transform::from_translation(e.at)
-            .with_rotation(Quat::from_rotation_y(e.facing))
-            .with_scale(Vec3::splat(e.scale));
-        let entity = model.spawn(transform, &mut commands);
-        commands.entity(entity).insert((OneShot(life), LevelEntity));
+        play_effect(&mut commands, &effect, e.at, e.facing, Vec3::splat(e.scale), &mut seed, &mut meshes);
+    }
+}
+
+/// Plays an effect once where something happened: its particle systems
+/// burst there at its scale, and its model plays out its life.
+fn play_effect(
+    commands: &mut Commands,
+    effect: &EffectModel,
+    at: Vec3,
+    facing: f32,
+    scale: Vec3,
+    seed: &mut u32,
+    meshes: &mut Assets<Mesh>,
+) {
+    for (k, (params, material, direction)) in effect.particles.iter().enumerate() {
+        *seed = seed.wrapping_add(0x9E37_79B9);
+        let seed = *seed ^ k as u32;
+        particles::spawn_burst(params.clone().scaled(scale.x), material.clone(), at, *direction, seed, commands, meshes);
+    }
+    let transform = Transform::from_translation(at).with_rotation(Quat::from_rotation_y(facing)).with_scale(scale);
+    let entity = effect.model.spawn(transform, commands);
+    commands.entity(entity).insert((OneShot(effect.life), LevelEntity));
+    if let Some(frames) = EffectFrames::of(effect) {
+        commands.entity(entity).insert(frames);
     }
 }
 
@@ -481,12 +742,11 @@ fn use_potions(
             }
             1 => {
                 sounds.write(PlaySound(SHIELD_SOUND[c].into()));
-                let model = models.get(SHIELD_FX[c], &mut game, &mut meshes, &mut materials, &mut images);
+                let effect = models.effect(SHIELD_FX[c], &mut game, &mut meshes, &mut materials, &mut images);
                 let scale = (e.radius / 12.0).clamp(0.33, 1.0);
                 spawn_blast(
                     &mut commands,
-                    model.as_ref().map(|m| &*m.0),
-                    Vec3::new(scale, 1.0, scale),
+                    effect.as_ref(),
                     Blast {
                         owner: u.hero,
                         shape: BlastShape::Aura(u.hero),
@@ -497,6 +757,11 @@ fn use_potions(
                         life: SHIELD_LIFE,
                         age: 0.0,
                         spared: HashMap::new(),
+                        heroes: Heroes::Spared,
+                        items: true,
+                        then: &[],
+                        scale: Vec3::new(scale, 1.0, scale),
+                        drop: 0.0,
                     },
                     c,
                 );
@@ -537,18 +802,17 @@ fn spawn_blasts(
 ) {
     for b in requests.read() {
         let c = colour_index(b.kind);
-        let model = models.get(BLAST_FX[c], &mut game, &mut meshes, &mut materials, &mut images);
+        let effect = models.effect(BLAST_FX[c], &mut game, &mut meshes, &mut materials, &mut images);
         // Set on the floor under it; the model is drawn for a 32-unit blast.
         let mut at = b.at;
         if let Some(y) = ground.as_ref().and_then(|g| g.0.floor_height(at.to_array())) {
             at.y = y;
         }
-        let life = model.as_ref().map_or(1.5, |m| m.1);
+        let life = effect.as_ref().map_or(1.5, |e| e.life);
         info!("magic blast at {at:?}: {:.1} damage out to {:.1} over {life:.2} s", b.damage, b.radius);
         spawn_blast(
             &mut commands,
-            model.as_ref().map(|m| &*m.0),
-            Vec3::splat((b.radius / 32.0).min(1.0)),
+            effect.as_ref(),
             Blast {
                 owner: b.owner,
                 shape: BlastShape::Grow,
@@ -559,21 +823,107 @@ fn spawn_blasts(
                 life,
                 age: 0.0,
                 spared: HashMap::new(),
+                heroes: Heroes::Spared,
+                items: true,
+                then: &[],
+                scale: Vec3::splat((b.radius / 32.0).min(1.0)),
+                drop: 0.0,
             },
             c,
         );
     }
 }
 
+/// A monster's explosion goes off (and a chained one's next stage
+/// starts): its sound, its blast with its effect model, and the effects
+/// that only show.
+#[allow(clippy::too_many_arguments)]
+fn spawn_explosions(
+    mut commands: Commands,
+    mut requests: MessageReader<ExplosionAt>,
+    mut next: MessageReader<NextStage>,
+    mut game: ResMut<LoadedGame>,
+    mut models: ResMut<EffectModels>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut seed: Local<u32>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<LevelMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    for e in requests.read() {
+        sounds.write(PlaySound(EXPLOSION_SOUND.into()));
+        let (fx, kind, radius, heroes, then, scale, drop) = if e.poison {
+            (POISON_FX, POISON_KIND, POISON_RADIUS, Heroes::Hurt, &POISON_STAGES[..], POISON_SCALE, POISON_DROP)
+        } else {
+            (EXPLOSION_FX, EXPLOSION_KIND, EXPLOSION_RADIUS, Heroes::Thrown, &[][..], Vec3::ONE, 0.0)
+        };
+        let effect = models.effect(fx, &mut game, &mut meshes, &mut materials, &mut images);
+        let life = effect.as_ref().map_or(1.0, |e| e.life);
+        info!("{fx} at {:?}: {:.1} damage out to {radius:.1} over {life:.2} s", e.at, e.damage);
+        let blast = Blast {
+            owner: e.owner,
+            shape: BlastShape::Grow,
+            centre: e.at,
+            kind,
+            damage: e.damage,
+            radius,
+            life,
+            age: 0.0,
+            spared: HashMap::new(),
+            heroes,
+            items: e.poison,
+            then,
+            scale,
+            drop,
+        };
+        spawn_blast(&mut commands, effect.as_ref(), blast, colour_index(kind));
+        if !e.poison
+            && let Some(ring) = models.effect(RING_FX, &mut game, &mut meshes, &mut materials, &mut images)
+        {
+            play_effect(&mut commands, &ring, e.at, 0.0, Vec3::splat(RING_SCALE), &mut seed, &mut meshes);
+        }
+        if let Some(folder) = &e.folder
+            && let Some(fx) = models.effect_in(folder, SUICIDE_FX, &mut game, &mut meshes, &mut materials, &mut images)
+        {
+            play_effect(&mut commands, &fx, e.at, 0.0, Vec3::ONE, &mut seed, &mut meshes);
+        }
+    }
+    for s in next.read() {
+        let Some((stage, rest)) = s.stages.split_first() else { continue };
+        let effect = models.effect(stage.model, &mut game, &mut meshes, &mut materials, &mut images);
+        let life = effect.as_ref().map_or(1.0, |e| e.life);
+        let blast = Blast {
+            owner: s.owner,
+            shape: BlastShape::Grow,
+            centre: s.centre,
+            kind: s.kind,
+            damage: s.damage,
+            radius: if stage.blast { s.radius } else { 0.0 },
+            life,
+            age: 0.0,
+            spared: HashMap::new(),
+            heroes: s.heroes,
+            items: s.items,
+            then: rest,
+            scale: s.scale,
+            drop: s.drop,
+        };
+        spawn_blast(&mut commands, effect.as_ref(), blast, colour_index(s.kind));
+    }
+}
+
 /// The effect's model; without one, a stand-in: a translucent sphere in
 /// the potion's light colour showing the blast's reach.
-fn spawn_blast(commands: &mut Commands, model: Option<&CharacterModel>, scale: Vec3, blast: Blast, colour: usize) {
-    let transform = Transform::from_translation(blast.centre).with_scale(scale);
-    let entity = match model {
-        Some(m) => m.spawn(transform, commands),
+fn spawn_blast(commands: &mut Commands, effect: Option<&EffectModel>, blast: Blast, colour: usize) {
+    let transform = Transform::from_translation(blast.centre - Vec3::Y * blast.drop).with_scale(blast.scale);
+    let entity = match effect {
+        Some(e) => e.model.spawn(transform, commands),
         None => commands.spawn((transform, Visibility::default())).id(),
     };
-    commands.entity(entity).insert((blast, BlastColour(colour, model.is_some()), LevelEntity));
+    commands.entity(entity).insert((blast, BlastColour(colour, effect.is_some()), LevelEntity));
+    if let Some(frames) = effect.and_then(EffectFrames::of) {
+        commands.entity(entity).insert(frames);
+    }
 }
 
 #[derive(Component)]
@@ -590,9 +940,10 @@ fn tick_blasts(
     mut commands: Commands,
     time: Res<Time>,
     mut blasts: Query<(Entity, &mut Blast)>,
-    players: Query<&Player>,
+    mut players: Query<(Entity, &mut Player)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable, Option<&Monster>)>,
     mut hits: MessageWriter<Hit>,
+    (mut hurt, mut stages): (MessageWriter<DamagePlayer>, MessageWriter<NextStage>),
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -602,11 +953,29 @@ fn tick_blasts(
         b.age += dt;
         let left = b.life - b.age;
         if left <= 0.0 {
+            if let Some((_, rest)) = b.then.split_first() {
+                stages.write(NextStage {
+                    owner: b.owner,
+                    centre: b.centre,
+                    kind: b.kind,
+                    damage: b.damage,
+                    radius: b.radius,
+                    heroes: b.heroes,
+                    items: b.items,
+                    stages: b.then,
+                    scale: b.scale,
+                    drop: b.drop,
+                });
+                debug!("blast stage over; {} to come", rest.len() + 1);
+            }
             commands.entity(entity).despawn();
             continue;
         }
+        if b.radius <= 0.0 {
+            continue;
+        }
         if let BlastShape::Aura(hero) = b.shape
-            && let Ok(p) = players.get(hero)
+            && let Ok((_, p)) = players.get(hero)
         {
             b.centre = Vec3::from(p.mover.position);
         }
@@ -645,7 +1014,7 @@ fn tick_blasts(
             }
         }
         for (e, g, t, _) in &targets {
-            if !matches!(t.kind, TargetKind::Generator | TargetKind::Breakable) {
+            if !b.items || !matches!(t.kind, TargetKind::Generator | TargetKind::Breakable) {
                 continue;
             }
             let feet = g.translation();
@@ -654,6 +1023,31 @@ fn tick_blasts(
             if across <= t.radius + reach && dy.abs() <= 0.5 * t.height + reach {
                 hit(e, t.kind, b);
             }
+        }
+        // A monster's explosion hurts heroes too: through their armour, and
+        // a fireball throws them back (as a barrel's blast does).
+        if b.heroes == Heroes::Spared {
+            continue;
+        }
+        for (e, mut p) in &mut players {
+            let feet = Vec3::from(p.mover.position);
+            let centre = feet + Vec3::Y * projectiles::PLAYER_CENTRE;
+            if (centre - b.centre).length() > reach + p.radius || b.spared.get(&e).is_some_and(|&until| until > now) {
+                continue;
+            }
+            if damage > 2.0 {
+                b.spared.insert(e, now + spare as f64);
+            }
+            let amount = after_armor(damage, p.armor);
+            if amount <= 0.0 {
+                continue;
+            }
+            if b.heroes == Heroes::Thrown {
+                let away = (feet - b.centre).with_y(0.0).normalize_or_zero();
+                p.queue_hit(amount, 0x10, away);
+            }
+            hurt.write(DamagePlayer { amount });
+            info!("the blast hurts the hero for {amount:.1}");
         }
     }
 }
@@ -688,7 +1082,7 @@ fn follow_blasts(
         })
         .clone();
     for (entity, b, colour, mut transform, children) in &mut blasts {
-        transform.translation = b.centre;
+        transform.translation = b.centre - Vec3::Y * b.drop;
         let reach = match b.shape {
             BlastShape::Grow => blast_front(b.life - b.age, b.life, b.radius).map_or(0.0, |(r, _)| r),
             BlastShape::Aura(_) => b.radius,

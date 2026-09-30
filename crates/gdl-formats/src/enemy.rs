@@ -455,18 +455,18 @@ impl LevelEnemies {
     /// the special variants' subtype, `<name><n>` for subtypes 11+, else
     /// `<name>`.
     pub fn folders(&self, enemy: i32) -> Vec<String> {
-        let Some(name) = enemy_name(enemy) else { return Vec::new() };
-        let name = name.to_ascii_uppercase();
-        self.loaded
-            .iter()
-            .filter(|(t, _)| *t == enemy)
-            .map(|&(_, s)| match s {
-                4 => format!("{name}AUX"),
-                s if s >= 11 => format!("{name}{}", s - 10),
-                _ => name.clone(),
-            })
-            .collect()
+        self.loaded.iter().filter(|(t, _)| *t == enemy).filter_map(|&(t, s)| folder(t, s)).collect()
     }
+}
+
+/// The `MONSTERS/` folder an enemy type loads from in a slot of `subtype`.
+pub fn folder(enemy: i32, subtype: i32) -> Option<String> {
+    let name = enemy_name(enemy)?.to_ascii_uppercase();
+    Some(match subtype {
+        4 => format!("{name}AUX"),
+        s if s >= 11 => format!("{name}{}", s - 10),
+        _ => name,
+    })
 }
 
 /// Generator settings the placement leaves at 0, by strength (1–3):

@@ -337,12 +337,24 @@ impl CharacterModel {
         images: &mut Assets<Image>,
     ) -> Self {
         let mut cache = TextureCache::new(&data.model, &data.textures).sharing_materials();
+        Self::build_with(data, &mut cache, meshes, materials, images)
+    }
+
+    /// Builds with the caller's texture cache (for data's own files), so
+    /// the caller can find which images its materials draw with.
+    pub fn build_with(
+        data: &CharacterData,
+        cache: &mut TextureCache,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<LevelMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Self {
         let mut bounds = (Vec3::MAX, Vec3::MIN);
         let object_index = |name: &str| data.model.objects.iter().position(|o| o.name == name);
         let mut build = |object: Option<usize>, flags: u32| -> PartMeshes {
             let Some(object) = object else { return Vec::new() };
             let instance = [(object, Vec3::ZERO, flags)];
-            model_mesh::build_flagged(&data.model, &mut cache, instance, meshes, materials, images, &mut bounds)
+            model_mesh::build_flagged(&data.model, cache, instance, meshes, materials, images, &mut bounds)
                 .into_iter()
                 .map(|b| (b.mesh, b.material))
                 .collect()

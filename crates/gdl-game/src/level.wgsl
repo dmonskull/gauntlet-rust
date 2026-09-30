@@ -20,6 +20,25 @@
 // xy: diffuse texture scroll (texture modifiers); z: additive; w: how far
 // faded out (vanishing bridges)
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var<uniform> uv_offset: vec4<f32>;
+// x: depth-test this much nearer the camera (an effect's depth bias)
+@group(#{MATERIAL_BIND_GROUP}) @binding(8) var<uniform> depth_offset: vec4<f32>;
+
+struct FragmentOutput {
+    @location(0) color: vec4<f32>,
+#ifdef DEPTH_BIAS
+    // Reverse Z: nearer is larger.
+    @builtin(frag_depth) depth: f32,
+#endif
+}
+
+fn output(in: VertexOutput, color: vec4<f32>) -> FragmentOutput {
+    var out: FragmentOutput;
+    out.color = color;
+#ifdef DEPTH_BIAS
+    out.depth = clamp(in.position.z + depth_offset.x, 0.0, 1.0);
+#endif
+    return out;
+}
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
@@ -28,7 +47,7 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 }
 
 @fragment
-fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fragment(in: VertexOutput) -> FragmentOutput {
 #ifdef VERTEX_UVS_A
     var color = textureSample(diffuse_texture, diffuse_sampler, in.uv + uv_offset.xy);
 #else
@@ -72,7 +91,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         // The game's additive blend: source x source alpha + destination.
         // Bevy draws `Add` as premultiplied alpha, so alpha 0 keeps all of
         // the destination.
-        return vec4(rgb * color.a, 0.0);
+        return output(in, vec4(rgb * color.a, 0.0));
     }
-    return vec4(rgb, color.a);
+    return output(in, vec4(rgb, color.a));
 }

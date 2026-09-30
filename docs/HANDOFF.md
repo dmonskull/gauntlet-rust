@@ -55,6 +55,16 @@ What plays (details in [INDEX.md](INDEX.md)):
   - Exploding and poison barrels, secret walls, hit switches.
 - **Golems** (`critters.rs`): statues woken by their trigger fight, block,
   take hits and die.
+- **Suicide runners** (AI `0x12`, placed on 40 levels): wait, yell, run at
+  the hero and blow up on contact or after 4 s (or when killed): a
+  fireball (poison cloud in realms G and K) that hurts the hero and nearby
+  monsters, chaining into other runners ([monsters.md](monsters.md)
+  "Suicide runners"). Before this they walked up and "hit" every couple of
+  ticks (no attack clips).
+- **Effects**: each effect runs its own texture flipbook (the fireball,
+  gas clouds, rings, hit sparks) and has the game's depth bias, so
+  camera-facing sprites aren't cut by the floor ([effects.md](effects.md)).
+  Only heroes' blows earn experience (a monster's bomb or blast doesn't).
 - **Tower progression** (`quest.rs`): gems count toward their colour's
   realm, gargoyle pieces toward the tower's wings; the tower's realm gates
   stay shut ("You need 15 Orange Crystals…") until the crystals are there,
@@ -69,13 +79,18 @@ Test aids:
 - `GDL_FPS=1`: frame rate, plus a line for every frame over 20 ms.
 - `GDL_WAKE_STATUES`, `GDL_CRITTER_HP`: critter testing.
 - `GDL_MENU`, `GDL_BUTTONS`, `GDL_STICK`, `GDL_SHOT_AT` + `GDL_SCREENSHOT`:
-  scripted input and screenshots.
+  scripted input and screenshots. `GDL_SHOT_CLOCK=ticks` counts shots in
+  game ticks, so a burst lands on the same moment of play every run (frame
+  counts drift with shader warm-up).
 
 Handy test spots are listed in [mechanics.md](mechanics.md) and
 [camera.md](camera.md) (levelA1 elevator switch, levelA4 lift, barrels,
 the levelA2 Death barrel).
 
 ## Latest check
+
+The suicide runners, effect flipbooks and depth bias (after `b089b35`)
+were checked on levelA1 but not smoke-tested on every level yet.
 
 The all-levels smoke test on master `b089b35` (boss intro, the level-change
 crash fix, shared materials, saving) passed all 67 real levels (`DEMO1`
@@ -115,6 +130,24 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
   build at a time (`cargo build -j 4`).
 
 ## Work in progress
+
+- **Helper branch `worktree-agent-abe3330002fa1838d` at `827a9a5`: not
+  merged yet — review and merge first.** It has master `8ae673f` merged
+  in (no conflicts), the chimera's heads (each head animates its own part
+  of the body's skeleton; wounds shared as the game does; a unit test on
+  the real data), and docs/critters.md with the heads, the **boss camera
+  decode** (`BCAM` records, 0x54 bytes from `LEVL +0x8C`; before the boss
+  wakes: the heroes' centre from the nearest play-camera point; after:
+  wizard → shard → boss with near/far distance and pitch easing) and a
+  smoke test of every boss level (B6 fights and dies; C5, H4 and the rest
+  wake; A5 chimera fights and dies; nothing panicked). Boss levels: A5 B6
+  C5 D5 E2 F2 G5 H4 I5 J5 K5 (none in the tower). Left from it: build the
+  boss camera; head-stump effects; heads' look nodes; longer boss runs.
+  - Finding for `player.rs` (mine): the game's attack search measures 3D
+    distance to each living hit sphere in the facing cone, so melee only
+    reaches a chimera head while it's down biting; missiles and magic hit
+    a sphere only within its radius sideways and at most that much above
+    the missile. Our search uses its own rules.
 
 - **In-game HUD**: merged (`46a1365`). Player 1's bottom panel draws with
   the game's art (frame, class portrait, keys, potions, gold, health,
@@ -169,6 +202,14 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
+
+0. Merge the helper branch (above), run the smoke test (`smoke.sh`: every
+   level folder plus DEMO1, `GDL_BUTTONS=attack GDL_STICK="0.4,1"
+   GDL_SHOT_AT=400`, 120 s timeout, stop at the first panic; resume from
+   the failing level) and commit. Then: the hero's attack search against
+   critter spheres in 3D (above); the boss camera; free-running bank
+   texture modifiers on characters/weapons; AI 5/6 (unaware: follow the
+   leader, wander) and the leader runner.
 
 1. **Finish bosses** (the critters helper: intro and victory merged;
    chimera parts, all boss levels and the boss camera next). Player side,
