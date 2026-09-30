@@ -73,7 +73,7 @@ use gdl_formats::population::{ItemClass, LocatorKind, PlacementParams, REALM_LET
 use gdl_formats::{LevelCollision, ModelFile};
 
 use crate::audio::PlaySound;
-use crate::character::{Animator, CharacterData, CharacterModel};
+use crate::character::{Animator, CharacterData, CharacterModel, advance_clip, clip_end};
 use crate::combat::{TargetKind, Targetable};
 use crate::damage::after_armor;
 use crate::level::LoadedGame;
@@ -444,19 +444,12 @@ impl Clock {
         *self = Clock { action, frame: 0.0, frames: clip.0, rate: clip.1, loops: clip.2, ended: false };
     }
 
+    /// Moves the clip on at its rate (900 / rate frames a second): a loop
+    /// has ended on the tick it starts over, any other clip once it's past
+    /// its last frame.
     fn advance(&mut self, dt: f32) {
-        let last = self.frames.saturating_sub(1) as f32;
-        if last <= 0.0 {
-            self.ended = true;
-            return;
-        }
-        self.frame += dt * self.rate.max(1) as f32;
-        if self.frame >= last {
-            self.ended = true;
-            self.frame = if self.loops { self.frame % last } else { last };
-        } else if self.loops {
-            self.ended = false;
-        }
+        let wrapped = advance_clip(&mut self.frame, dt, self.frames, self.rate, self.loops);
+        self.ended = if self.loops { wrapped } else { self.frame >= clip_end(self.frames) };
     }
 }
 
@@ -2199,20 +2192,35 @@ mod tests {
 
     #[test]
     fn the_clock_ends_clips_and_loops_them() {
+        // Four frames at rate 30 (30 a second): over half a frame after the
+        // last one comes up.
         let mut c = Clock { action: 0, frame: 0.0, frames: 1, rate: 30, loops: false, ended: true };
         c.start(1, (4, 30, false));
         assert!(!c.ended);
         for _ in 0..3 {
             c.advance(DT);
         }
-        assert!(c.ended && c.frame == 3.0);
+        assert!(!c.ended && c.frame == 3.0);
+        c.advance(DT);
+        assert!(c.ended && c.frame == 3.5);
+        // Rate 60 is 15 frames a second: four frames take seven ticks.
+        c.start(1, (4, 60, false));
+        let mut ticks = 0;
+        while !c.ended {
+            c.advance(DT);
+            ticks += 1;
+        }
+        assert_eq!(ticks, 7);
+        // A loop has ended on the tick it starts over.
         c.start(2, (4, 30, true));
         for _ in 0..3 {
             c.advance(DT);
         }
-        assert!(c.ended);
+        assert!(!c.ended);
         c.advance(DT);
-        assert!(!c.ended && c.frame < 3.0);
+        assert!(c.ended && c.frame < 1.0);
+        c.advance(DT);
+        assert!(!c.ended);
     }
 
     #[test]
