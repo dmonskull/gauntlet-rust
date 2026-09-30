@@ -5,7 +5,9 @@ use bevy::asset::embedded_asset;
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, CompareFunction, RenderPipelineDescriptor, SpecializedMeshPipelineError};
+use bevy::render::render_resource::{
+    AsBindGroup, CompareFunction, FrontFace, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+};
 use bevy::shader::ShaderRef;
 
 /// TEV stage 0 scales texture × rasterized colour by 2 (`GX_CS_SCALE_2`),
@@ -195,6 +197,9 @@ impl Material for LevelMaterial {
         _layout: &MeshVertexBufferLayoutRef,
         key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        // The picture is mirrored (`camera::MirroredPerspective`): fronts
+        // turn clockwise on screen.
+        descriptor.primitive.front_face = FrontFace::Cw;
         if key.bind_group_data.depth_bias
             && let Some(fragment) = descriptor.fragment.as_mut()
         {
