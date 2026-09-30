@@ -11,6 +11,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use gdl_formats::ModelFile;
 use gdl_formats::anim::{AnimFile, Atree};
+use gdl_formats::texmod::{TexMod, TexModKind};
 use gdl_formats::population::{
     ENEMY_CODES, ItemClass, ItemType, LocatorKind, PlacementParams, PlayerStart, Population, rotation_matrix,
 };
@@ -20,6 +21,7 @@ use crate::level::LevelData;
 use crate::level_material::LevelMaterial;
 use crate::billboard::Billboard;
 use crate::model_mesh::{self, TextureCache};
+use crate::texanim::{self, TexAnim};
 use crate::world::LevelEntity;
 
 pub struct PopulationPlugin;
@@ -97,6 +99,37 @@ pub struct ItemRig {
     /// Flipbook nodes: the entity holding the frame shown, the frames and
     /// how they face the camera.
     pub flipbooks: Vec<(Entity, FlipbookFrames, Option<Billboard>)>,
+    /// What its actions do to its textures, and the parts drawing a
+    /// texture they change: (entity, binding, the shared material).
+    pub texmods: Option<Arc<ActionTexMods>>,
+    pub texmod_parts: Vec<(Entity, u16, Handle<LevelMaterial>)>,
+}
+
+/// The texture modifiers each of an atree's actions runs, in order (a
+/// force field's generator lighting up, a transporter's swirl), with each
+/// flipbook's frame images (`docs/rendering.md`, "Texture animation").
+pub struct ActionTexMods {
+    pub actions: Vec<Vec<ActionTexMod>>,
+}
+
+/// One modifier an action runs, and its flipbook's frames (none for a
+/// fade).
+pub type ActionTexMod = (TexMod, Vec<Option<Handle<Image>>>);
+
+impl ActionTexMods {
+    /// The textures (bindings) their flipbooks change.
+    fn bindings(&self) -> Vec<u16> {
+        let mut out: Vec<u16> = self
+            .actions
+            .iter()
+            .flatten()
+            .filter(|(m, _)| matches!(m.kind, TexModKind::Frames(_)))
+            .map(|(m, _)| m.binding)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
 }
 
 /// A flipbook node's frames (a barrel's idle, breaking and broken looks):
@@ -298,23 +331,26 @@ impl Category {
     }
 }
 
-/// A folder's models and atrees (`objects.ngc`, `textures.ngc`, `ANIM.PS2`).
+/// A folder's models, atrees and texture modifiers (`objects.ngc`,
+/// `textures.ngc`, `ANIM.PS2`).
 struct Source {
     model: ModelFile,
     textures: Vec<u8>,
     atrees: Vec<Arc<Atree>>,
+    texmods: Vec<TexMod>,
 }
 
 impl Source {
     fn load(install: &mut GameInstall, dir: &str) -> Option<Self> {
         let model = ModelFile::parse(&install.read(&format!("{dir}/objects.ngc")).ok()?).ok()?;
         let textures = install.read(&format!("{dir}/textures.ngc")).ok()?;
-        let atrees = install
-            .read(&format!("{dir}/ANIM.PS2"))
-            .ok()
-            .and_then(|a| AnimFile::parse(&a).ok())
+        let anim = install.read(&format!("{dir}/ANIM.PS2")).ok();
+        let atrees = anim
+            .as_deref()
+            .and_then(|a| AnimFile::parse(a).ok())
             .map_or_else(Vec::new, |a| a.atrees.into_iter().map(Arc::new).collect());
-        Some(Self { model, textures, atrees })
+        let texmods = anim.as_deref().and_then(|a| TexMod::parse_all(a).ok()).unwrap_or_default();
+        Some(Self { model, textures, atrees, texmods })
     }
 }
 
@@ -323,8 +359,20 @@ impl Source {
 /// (`ITEMS/level<realm letter>`, `POWERUPS`, `ITEMS/<level>`); generators
 /// also look in their monster's folder. Plain object lookups search the
 /// level's own models too.
-/// One model source: its models, textures and atrees.
-type SourceRef<'a> = (&'a ModelFile, &'a [u8], &'a [Arc<Atree>]);
+/// One model source: its models, textures, atrees and texture modifiers.
+#[derive(Clone, Copy)]
+struct SourceRef<'a> {
+    model: &'a ModelFile,
+    textures: &'a [u8],
+    atrees: &'a [Arc<Atree>],
+    texmods: &'a [TexMod],
+}
+
+impl<'a> SourceRef<'a> {
+    fn of(s: &'a Source) -> Self {
+        Self { model: &s.model, textures: &s.textures, atrees: &s.atrees, texmods: &s.texmods }
+    }
+}
 
 struct Sources<'a> {
     list: Vec<SourceRef<'a>>,
@@ -337,19 +385,18 @@ struct Sources<'a> {
 
 impl<'a> Sources<'a> {
     fn new(level: &'a LevelData, items: &'a [Source], monsters: &'a [(&'static str, Source)]) -> Self {
-        let mut list: Vec<SourceRef> =
-            items.iter().map(|s| (&s.model, s.textures.as_slice(), s.atrees.as_slice())).collect();
+        let mut list: Vec<SourceRef> = items.iter().map(SourceRef::of).collect();
         let item_indices = (0..list.len()).collect();
-        list.push((&level.model, &level.textures, &[]));
+        list.push(SourceRef { model: &level.model, textures: &level.textures, atrees: &[], texmods: &level.texmods });
         let level_index = list.len() - 1;
         let mut monster_indices = HashMap::new();
         for (code, s) in monsters {
             monster_indices.insert(*code, list.len());
-            list.push((&s.model, s.textures.as_slice(), s.atrees.as_slice()));
+            list.push(SourceRef::of(s));
         }
         let objects = list
             .iter()
-            .map(|(m, _, _)| m.objects.iter().enumerate().map(|(i, o)| (o.name.as_str(), i)).collect())
+            .map(|s| s.model.objects.iter().enumerate().map(|(i, o)| (o.name.as_str(), i)).collect())
             .collect();
         Self { list, objects, items: item_indices, level: level_index, monsters: monster_indices }
     }
@@ -363,7 +410,7 @@ impl<'a> Sources<'a> {
         }
         let atree_order: Vec<usize> = self.items.iter().copied().chain(extra).collect();
         for &s in &atree_order {
-            let Some(atree) = self.list[s].2.iter().find(|a| a.name == name) else { continue };
+            let Some(atree) = self.list[s].atrees.iter().find(|a| a.name == name) else { continue };
             let parts: Vec<(usize, usize)> = (0..atree.nodes.len())
                 .filter_map(|i| {
                     // A flipbook node (a barrel's) shows its first action's
@@ -404,11 +451,23 @@ struct Resolved {
 /// per atree node (or one entry for a plain object), with how it faces the
 /// camera.
 struct BuiltModel {
+    /// The source it came from (none when nothing was found).
+    source: Option<usize>,
     atree: Option<Arc<Atree>>,
     parts: Vec<(usize, Vec<model_mesh::BuiltMesh>, Option<Billboard>)>,
     /// Flipbook nodes and their frames by action (action 0's first frame
     /// is the node's part).
     flipbooks: Vec<(usize, FlipbookFrames)>,
+    /// What its atree's actions do to its textures.
+    texmods: Option<Arc<ActionTexMods>>,
+}
+
+impl BuiltModel {
+    /// Every mesh it can show: its parts and each flipbook frame.
+    fn meshes(&self) -> impl Iterator<Item = &model_mesh::BuiltMesh> {
+        let parts = self.parts.iter().flat_map(|(_, p, _)| p.iter());
+        parts.chain(self.flipbooks.iter().flat_map(|(_, f)| f.iter().flatten().flatten()))
+    }
 }
 
 /// A generator model's meshes for each strength level (index = level − 1),
@@ -428,10 +487,10 @@ fn build_model(
     images: &mut Assets<Image>,
 ) -> BuiltModel {
     let Some(r) = sources.resolve(name, monster) else {
-        return BuiltModel { atree: None, parts: Vec::new(), flipbooks: Vec::new() };
+        return BuiltModel { source: None, atree: None, parts: Vec::new(), flipbooks: Vec::new(), texmods: None };
     };
     let mut bounds = (Vec3::MAX, Vec3::MIN);
-    let (file, _, _) = sources.list[r.source];
+    let file = sources.list[r.source].model;
     let parts = r
         .parts
         .iter()
@@ -480,7 +539,26 @@ fn build_model(
             flipbooks.push((node, Arc::new(frames)));
         }
     }
-    BuiltModel { atree: r.atree, parts, flipbooks }
+    // The modifiers each action runs (an action's `+0x2C` onward in its
+    // bank's list).
+    let texmods = r.atree.as_ref().and_then(|atree| {
+        let list = sources.list[r.source].texmods;
+        let actions: Vec<Vec<ActionTexMod>> = atree
+            .actions
+            .iter()
+            .map(|a| {
+                a.texmods()
+                    .filter_map(|i| list.get(i))
+                    .map(|m| {
+                        let book = texanim::flipbook_images(m, file, &mut caches[r.source], None, images);
+                        (m.clone(), book.map(|b| b.frames).unwrap_or_default())
+                    })
+                    .collect()
+            })
+            .collect();
+        actions.iter().any(|l| !l.is_empty()).then(|| Arc::new(ActionTexMods { actions }))
+    });
+    BuiltModel { source: Some(r.source), atree: r.atree, parts, flipbooks, texmods }
 }
 
 /// Spawns a built model at `transform` for placement `index`: the root,
@@ -490,11 +568,18 @@ fn spawn_built(model: &BuiltModel, transform: Transform, index: usize, view: Pop
     let root = commands
         .spawn((transform, PopulationPart::Model, PlacementIndex(index), visibility(view, PopulationPart::Model), LevelEntity))
         .id();
-    let attach = |commands: &mut Commands, parent: Entity, parts: &[model_mesh::BuiltMesh], facing: Option<Billboard>| {
+    // The parts drawing a texture its actions change, for `items.rs` to
+    // give their own copies of the materials.
+    let changed = model.texmods.as_ref().map_or_else(Vec::new, |t| t.bindings());
+    let mut texmod_parts = Vec::new();
+    let mut attach = |commands: &mut Commands, parent: Entity, parts: &[model_mesh::BuiltMesh], facing: Option<Billboard>| {
         for p in parts {
             let e = commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(parent))).id();
             if let Some(b) = facing {
                 commands.entity(e).insert((b, Transform::default()));
+            }
+            if changed.contains(&p.diffuse) {
+                texmod_parts.push((e, p.diffuse, p.material.clone()));
             }
         }
     };
@@ -526,7 +611,13 @@ fn spawn_built(model: &BuiltModel, transform: Transform, index: usize, view: Pop
                     None => attach(commands, bones[*node], parts, *facing),
                 }
             }
-            commands.entity(root).insert(ItemRig { atree: atree.clone(), bones, flipbooks });
+            commands.entity(root).insert(ItemRig {
+                atree: atree.clone(),
+                bones,
+                flipbooks,
+                texmods: model.texmods.clone(),
+                texmod_parts,
+            });
         }
         None => {
             for (_, parts, facing) in &model.parts {
@@ -578,6 +669,8 @@ pub struct Spawned {
     pub markers: usize,
     pub models: usize,
     pub summary: String,
+    /// The banks' running texture animations on the models.
+    pub texanims: Vec<TexAnim>,
 }
 
 /// How far above the floor a dropped item sits.
@@ -588,6 +681,7 @@ const ITEM_FLOOR_GAP: f32 = 0.1;
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
     level: &LevelData,
+    common: Option<&(ModelFile, Vec<u8>)>,
     install: &mut GameInstall,
     view: PopulationView,
     commands: &mut Commands,
@@ -612,7 +706,7 @@ pub fn spawn(
     let monsters: Vec<(&'static str, Source)> =
         codes.into_iter().filter_map(|c| Some((c, Source::load(install, &format!("MONSTERS/{c}"))?))).collect();
     let sources = Sources::new(level, &items, &monsters);
-    let mut caches: Vec<TextureCache> = sources.list.iter().map(|(m, t, _)| TextureCache::new(m, t)).collect();
+    let mut caches: Vec<TextureCache> = sources.list.iter().map(|s| TextureCache::new(s.model, s.textures)).collect();
     let mut built: HashMap<String, BuiltModel> = HashMap::new();
 
     let mut marker_assets: HashMap<Category, (Handle<Mesh>, Handle<StandardMaterial>)> = HashMap::new();
@@ -719,6 +813,27 @@ pub fn spawn(
     if pop.placements.iter().any(|p| pop.resolved_type(p).class == ItemClass::Exit) {
         let model = build_model(&sources, &mut caches, crate::items::EXIT_OFF, None, meshes, level_materials, images);
         contents.models.insert(crate::items::EXIT_OFF.to_string(), model);
+    }
+    // Each bank's texture modifiers on the models drawn from it: the
+    // item banks', the level's own and the generators' monster banks'.
+    let mut drawn: Vec<HashMap<u16, Vec<Handle<LevelMaterial>>>> = vec![HashMap::new(); sources.list.len()];
+    for model in built.values().chain(contents.models.values()) {
+        let Some(s) = model.source else { continue };
+        for b in model.meshes() {
+            drawn[s].entry(b.diffuse).or_default().push(b.material.clone());
+        }
+    }
+    let mut shared_cache = common.map(|(model, textures)| TextureCache::new(model, textures));
+    for (s, source) in sources.list.iter().enumerate() {
+        if drawn[s].is_empty() {
+            continue;
+        }
+        let cache = &mut caches[s];
+        let frames = |m: &TexMod| {
+            let shared = common.map(|(model, _)| model).zip(shared_cache.as_mut());
+            texanim::flipbook_images(m, source.model, cache, shared, images)
+        };
+        out.texanims.extend(texanim::bank_anims(source.texmods, &drawn[s], frames, level_materials));
     }
     commands.insert_resource(contents);
 

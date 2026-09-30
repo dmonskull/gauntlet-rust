@@ -166,13 +166,77 @@ Header `{0, 0, count, offset}`, then 0x58-byte records; set up by
 | `+0x54` | starting step |
 
 A flipbook swaps the binding's texture for `first + step % frames`
-(`FUN_800ba278`); a scroll writes `±(step − phase) / |count|` into the
-scroll table at `0x802c7b08` (U at `+4`, V at `+0xC`), which the draw path
-applies as a texture-matrix offset for bindings flagged `0x40`
-(`FUN_800c6a78` → `FUN_800c68e4`). All 67 levels' files parse (623
-modifiers) and point at real bindings. Torches (`TORCHA`…) take their
-frames from `TORCH00`, which isn't in the level's own texture names — not
-resolved yet. We evaluate scrolls between ticks so they glide.
+(`FUN_800ba278`, which copies the frame's texture record into the bank's
+binding slot: every model drawing that texture changes); a scroll writes
+`±(step − phase) / |count|` into the scroll table at `0x802c7b08` (U at
+`+4`, V at `+0xC`), which the draw path applies as a texture-matrix offset
+for bindings flagged `0x40` (`FUN_800c6a78` → `FUN_800c68e4`). All 67
+levels' files parse (623 modifiers) and point at real bindings. A first
+frame given by name (`+0x48` −1: torches' `TORCH00`) is looked up through
+the loaded banks in load order (`FUN_800b82f4` → `FUN_800b8354`); here the
+bank's own names, then `WEAPONS`'. We evaluate scrolls between ticks so
+they glide.
+
+**Banks.** Model banks' `ANIM.PS2` files end in the same list. At load
+(`FUN_80010b4c` → `FUN_800185b0` on each, the bank index in the binding's
+high half) every flipbook — whoever owns it — puts its first frame on its
+texture (the last listed wins), and only the scrolls with owner −1 get a
+scroll slot. Every tick `FUN_8005b974` steps the free-running ones (owner
+`+0x00` = −1, `FUN_80010a4c`) of four banks — the level's items
+(`r13-0x7180`), the realm's items (`-0x7184`), `WEAPONS` (`-0x7188`) and
+`POWERUPS` (`-0x718c`) — and `FUN_8007ba80` three tables per loaded
+monster. In the item banks these are the torches, `RED_ARROW`, the purple
+transporters and `DESTRANS`, `GOLD_CHUNKS`; in `POWERUPS` the potions'
+glows, the gems' sheens (U and V scrolls on one texture), the glow rings,
+`SPLASH`, `SAND_ANIM`; in monster banks the generators' lava and rock,
+fuses. A force field's generator and field (`FFGEN`, `FFIELD`) have
+one-frame free modifiers: frame 47 (lit) and 49 (clear) from the first
+tick. `population.rs` gives each bank's modifiers to the materials of the
+item and generator models drawn from it (the level's own to items built
+from the level's model), merged with the level's (`texanim::bank_anims`).
+
+**Actions.** A modifier whose owner is an atree index belongs to that
+atree's actions: action `+0x28` is how many it runs and `+0x2C` the index
+of the first in the list (made a pointer at load, `FUN_8001267c`; all 346
+such links on the disc point at their own atree's). While an object plays
+an action (`FUN_80011134`), each of them in order (`FUN_80018990`) gets
+the action's frame f = ⌊frame + 0.5⌋ — counted down (frames − f − 1) when
+action `+0x2A` bit 0 is set; wrapped modulo `count × period` on a looping
+action once past it — and:
+
+- a flipbook shows frame `(f − phase) / period` of its run (none before
+  `phase`, holding the last) on **that object only** (`FUN_800ba85c`:
+  object `+0x5C` = binding, `+0x58` = texture, passed down its children).
+  An object has one such replacement, so the last modifier listed wins;
+  it stays after the action until another replaces it (objects start with
+  none, `0xFFFF`).
+- −4 fades the object in, −5 out, over `count` frames from `phase`
+  (`FUN_800ba9b0`: transparency `+0x53` = 255 − value, flag `0x200`);
+  the tower's rune displays and some `WEAPONS` effects use them.
+- action scrolls (monsters, heroes, weapons) move the object's own
+  texture matrix; −6 does nothing.
+
+Atree nodes of kind 3 carry one modifier each (node `+0x34`: the byte
+offset from the action table to its record in the list), run the same
+way on that node's object with the action's frame, not wrapped
+(`FUN_80011334`). Only the heroes' power effects, bosses, `WEAPONS` and a
+few item effects have them (the tower's rune displays, `LEGENDFX`,
+`LEGENDPRJ`, `SAFEREXP`) — none of the placed items; not run yet.
+
+So a transporter's `ACTIVE` loop swirls `NEWTRAN_` on each pad, a force
+field's `ONA` lights `FFGEN` (33…47), `ON` runs `FFIELD` (49…68) and
+`ONB` puts `FFGEN` out backwards — leaving its own generator at the clear
+frame 33 through `OFF`, while one that has never cycled shows the bank's
+lit 47. `items.rs` runs these on copies of the materials of the parts
+drawing the texture (`ItemRig::texmod_parts`).
+
+The frames a flipbook steps through can need more blending than the
+texture it starts from — `FFIELD`'s base and first frame are clear, its
+later frames soft — so a material a flipbook drives blends as its most
+demanding frame needs (`LevelMaterial::widen_alpha`; the game blends
+everything). Not done: action fades; the modifiers of `WEAPONS` and of
+the monster banks on heroes, weapons and monsters themselves (only their
+effects and generators run them).
 
 ## Particle-system nodes
 

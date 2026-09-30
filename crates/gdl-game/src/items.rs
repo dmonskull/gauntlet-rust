@@ -2,17 +2,20 @@
 //! transporters, run the way the game's item code does it
 //! (`docs/items.md`), plus the item models' own animation (powerups spin
 //! and bob through their atree's looping `ACTIVE` action; doors and chests
-//! play their open actions).
+//! play their open actions; a transporter's swirl and a force field's
+//! glow are textures its actions change).
 //!
 //! Each tick, after the player has moved: every live item the hero
 //! reaches is touched (the item type's shape and extents against the
 //! hero's radius and height), blocking items push the hero back out,
 //! and at most one powerup is picked up.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::*;
 use gdl_formats::anim::{Atree, Track, rotation_matrix as pose_matrix};
+use gdl_formats::texmod::TexModKind;
 use gdl_formats::population::{
     ItemClass, ItemType, PlacementParams, REALM_LETTERS, level_for_code, rotation_matrix,
 };
@@ -22,6 +25,7 @@ use crate::audio::PlaySound;
 use crate::character;
 use crate::exits::ChangeLevelTo;
 use crate::hints::{Hint, Hints, ShowHint, ShowMessage};
+use crate::level_material::LevelMaterial;
 use crate::player::{Player, PlayerTick};
 use crate::player_state::{FIELDS_PER_TICK, Heal, PlayerState};
 use crate::quest;
@@ -497,6 +501,11 @@ struct ItemPose {
     tracks: Option<(usize, Vec<Option<Track>>)>,
     /// Each flipbook node's frame on show: (action, frame).
     shown: Vec<(usize, usize)>,
+    /// The texture its actions last put in place of one of its own (the
+    /// game keeps one per object), and its copies of the materials drawing
+    /// that texture, by part.
+    texture: Option<(u16, AssetId<Image>)>,
+    copies: HashMap<Entity, Handle<LevelMaterial>>,
 }
 
 pub(crate) fn build_items(
@@ -631,7 +640,8 @@ fn attach_models(
                 item.model = Some(entity);
                 item.atree = rig.map(|r| r.atree.clone());
                 let shown = vec![(0, 0); rig.map_or(0, |r| r.flipbooks.len())];
-                commands.entity(entity).insert(ItemPose { action: 0, frame: 0.0, tracks: None, shown });
+                let pose = ItemPose { action: 0, frame: 0.0, tracks: None, shown, texture: None, copies: HashMap::new() };
+                commands.entity(entity).insert(pose);
             }
             None => commands.entity(entity).despawn(),
         }
@@ -646,17 +656,48 @@ pub const EXIT_OFF: &str = "EXIT_OFF";
 struct ShutExitModel;
 
 /// Poses every animated item model at its item's action and frame: its
-/// bones, and the frame each flipbook node shows (a barrel breaking).
+/// bones, the frame each flipbook node shows (a barrel breaking), and the
+/// texture its action puts on it.
 fn pose_items(
     mut commands: Commands,
     items: Res<LevelItems>,
     mut models: Query<(&ItemRig, &mut ItemPose)>,
     mut bones: Query<&mut Transform>,
+    mut drawn: Query<&mut MeshMaterial3d<LevelMaterial>>,
+    mut materials: ResMut<Assets<LevelMaterial>>,
 ) {
     for item in &items.items {
         let Some((rig, mut pose)) = item.model.and_then(|m| models.get_mut(m).ok()) else { continue };
         pose.action = item.action;
         pose.frame = item.frame;
+        if let Some((binding, image)) = action_texture(item, rig)
+            && pose.texture != Some((binding, image.id()))
+        {
+            pose.texture = Some((binding, image.id()));
+            let pose = &mut *pose;
+            for (part, b, shared) in &rig.texmod_parts {
+                let Ok(mut material) = drawn.get_mut(*part) else { continue };
+                // Another of its textures is replaced now: this one is the
+                // bank's again.
+                if *b != binding {
+                    material.0 = shared.clone();
+                    continue;
+                }
+                let copy = match pose.copies.get(part) {
+                    Some(copy) => copy.clone(),
+                    None => {
+                        let Some(own) = materials.get(shared).cloned() else { continue };
+                        let copy = materials.add(own);
+                        pose.copies.insert(*part, copy.clone());
+                        copy
+                    }
+                };
+                if let Some(m) = materials.get_mut(&copy) {
+                    m.diffuse = Some(image.clone());
+                }
+                material.0 = copy;
+            }
+        }
         for (k, (holder, frames, facing)) in rig.flipbooks.iter().enumerate() {
             let action = if frames.get(pose.action).is_some_and(|f| !f.is_empty()) { pose.action } else { 0 };
             let Some(list) = frames.get(action).filter(|f| !f.is_empty()) else { continue };
@@ -693,6 +734,34 @@ fn pose_items(
             };
         }
     }
+}
+
+/// The texture an item's action puts on its model: each of the action's
+/// modifiers in turn sets the object's one replaced texture to its
+/// flipbook's frame at the action's frame (rounded; counted from the end
+/// when the action runs backwards; wrapped round a looping action), so the
+/// last one listed wins (`docs/rendering.md`, "Texture animation"). None
+/// when the action runs none: the last one stays.
+fn action_texture(item: &Item, rig: &ItemRig) -> Option<(u16, Handle<Image>)> {
+    let list = rig.texmods.as_ref()?.actions.get(item.action)?;
+    let action = rig.atree.actions.get(item.action)?;
+    let mut f = (item.frame + 0.5) as i32;
+    if action.backwards() {
+        f = i32::from(action.frames) - f - 1;
+    }
+    let mut shown = None;
+    for (m, frames) in list {
+        let length = i32::from(m.count) * m.period as i32;
+        if length < f && action.params[0] != 0 && length > 1 {
+            f %= length;
+        }
+        if let TexModKind::Frames(_) = m.kind
+            && let Some(Some(image)) = frames.get(m.action_frame(f) as usize)
+        {
+            shown = Some((m.binding, image.clone()));
+        }
+    }
+    shown
 }
 
 /// What touching an item did to the hero.

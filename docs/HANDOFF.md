@@ -45,6 +45,13 @@ What plays (details in [INDEX.md](INDEX.md)):
 - **Levels**
   - Drawn with lightmaps and blending. Additive glows are correct; they used
     to draw as dark discs (fixed with premultiplied output in `level.wgsl`).
+  - Item and generator models run their banks' texture animations the way
+    the level's do: potions' glows, gems' sheens, torches, arrows, the
+    generators' lava; transporters swirl and force fields light up, run
+    and fade through their actions' own modifiers (per model, on copies of
+    its materials). An animated texture blends as its most demanding frame
+    needs: force fields were drawn as hard-edged opaque blotches
+    ([rendering.md](rendering.md) "Texture animation").
   - World particles (torch flames, smoke, fires, mist) run from the
     level's `PSYS` nodes (see "World particles" below).
 - **The hero**
@@ -273,19 +280,11 @@ waits.
 
 ### Notes for the next jobs
 
-- **Free-running bank texture modifiers** (owner −1 in a bank's
-  `ANIM.PS2`, stepped by the game's frame counter like a level's): ITEMS
-  banks (torches `TORCHA–C`, force fields `FFGEN`/`FFIELD`, `RED_ARROW`,
-  transporters), POWERUPS (gem sheens, glow rings), monsters (bomb `FUSE`,
-  `LAVA`, `FLAME`, head glows, boss attack textures), WEAPONS (weapon
-  glows). Only level textures animate here. Plan: after building a bank
-  model with a shared-material `TextureCache` (`CharacterModel::
-  build_with`; items in `population.rs` build per source cache), collect
-  that bank's owner −1 modifiers whose binding the model uses (the
-  cache's shared materials by binding, frames by `cache.get`), keep them
-  in an `Arc` owned by the model and register a `Weak` in a resource that
-  steps them like `texanim.rs` and prunes dead ones (no leaks across
-  levels).
+- **Texture modifiers still to run**: `WEAPONS`' and the monster banks'
+  on heroes, weapons and monsters themselves (`CharacterModel::build_with`
+  — use `texanim::bank_anims` with the shared-material cache's materials by
+  binding, kept per level), action fades (−4/−5) and kind-3 modifier nodes
+  (the tower's rune displays, legendary weapon effects), action scrolls.
 - **Critter hit spheres in the attack search**: ours already uses the 3D
   surface distance and the game's cone (spheres are `TargetKind::Object`).
   Left: the game's per-critter pick (surface ÷ (sphere weight `+0x1C` ×

@@ -41,7 +41,7 @@ Atrees"`). Little-endian.
 | --- | --- |
 | +0x00 | name[0x20] |
 | +0x20 | rest offset from the parent (3 × f32) |
-| +0x2C (u16) | kind: 0 static, **1 skeletal**, **2 flipbook**, 3 (indexes the action table), **4 particle system** (below) |
+| +0x2C (u16) | kind: 0 static, **1 skeletal**, **2 flipbook**, 3 (a texture modifier: `+0x34` is the byte offset from the action table to its record in the file's list; see `docs/rendering.md`), **4 particle system** (below) |
 | +0x2E (u16) | bit 0: no model of its own |
 | +0x30 (u32) | render flags set on the node's instance (bit 0 = hidden; glows use `0x4c01880`) |
 | +0x34 (i32) | **byte offset**: skeletal → from the clips header to this bone's run of track entries; flipbook → from the list header to its first entry |
@@ -76,9 +76,12 @@ flipbook nodes on the disc have an entry for every action.
 **Action**: name[0x20], frame count (u16 `+0x20`), rate (u16 `+0x22`: time
 per frame, see below; 30 almost everywhere, 60/45/40/15… for some), params
 (`+0x24` bit 0 = loops; `+0x26` bit 0 = move the object by the root's offset
-when the action ends; `+0x28` = the flipbook nodes' count; `+0x2A` bit 0 =
-flipbook frames play backwards), link (`+0x2C`, at run time the flipbook
-entries). No monster action sets the `+0x26` or `+0x2A` bits.
+when the action ends; `+0x28` = how many texture modifiers the action runs;
+`+0x2A` bit 0 = its flipbook frames and texture modifiers play backwards),
+and `+0x2C` the index of its first texture modifier in the file's list (−1
+none; a pointer after `FUN_8001267c` loads the atree — see
+`docs/rendering.md`, "Texture animation"). No monster action sets the
+`+0x26` or `+0x2A` bits.
 
 ## Playing an action (`FUN_8000ed70`, `FUN_8000ef18`)
 
@@ -155,7 +158,7 @@ polynomial over [−π, π], cosine is sine shifted by π/2.
 
 ## Not decoded yet
 
-- The action link field and params 2–4; the `0x58`/`0x138` records; the
+- Action param 2 (`+0x26`) beyond bit 0; the `0x138` records; the
   object-animation list.
 - Blending between actions (the state machine around `FUN_8000eb70`).
 - Hand-glow effects (nodes with glow render flags are hidden for now).
