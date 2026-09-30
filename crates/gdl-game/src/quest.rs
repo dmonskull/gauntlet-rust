@@ -169,7 +169,7 @@ pub fn realm_counter(realm: u32) -> usize {
 }
 
 /// One hero's quest progress.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Quest {
     /// Crystals by counter; −1 once the counter's realm has opened.
     pub crystals: [i16; 9],

@@ -495,8 +495,18 @@ fn tick(
     mut hints: MessageWriter<ShowHint>,
     state: Option<Res<PlayerState>>,
     monster_level: Option<Res<crate::monsters::MonsterLevel>>,
+    boss: (Option<Res<crate::critters::CritterLevel>>, Query<&GlobalTransform>),
 ) {
     let boss_level = monster_level.as_ref().is_some_and(|l| l.boss >= 0);
+    // The boss intro's first wait (its state 2): the heroes stand still
+    // and turn to face the boss (`docs/critters.md`).
+    let (critters, bodies) = boss;
+    let face_boss = critters
+        .as_ref()
+        .filter(|c| c.intro == 2)
+        .and_then(|c| c.boss)
+        .and_then(|b| bodies.get(b).ok())
+        .map(|t| t.translation());
     // A dead hero lies still until it's revived.
     if state.as_ref().is_some_and(|s| !s.alive) {
         return;
@@ -528,7 +538,7 @@ fn tick(
 
         // What the controls ask for. The action playing may hold the stick
         // back (magic, defending); lunges drift on without it.
-        let magnitude = stick.magnitude * actions::stick_scale(current);
+        let magnitude = if face_boss.is_some() { 0.0 } else { stick.magnitude * actions::stick_scale(current) };
         // Magic is ignored until let go after a use; while MAGICS or
         // THROWPOTIONS plays, it's watched for the double tap and the
         // throw's wind-up.
@@ -731,6 +741,9 @@ fn tick(
         }
         if reaction_face.is_some() {
             face = reaction_face;
+        }
+        if let Some(b) = face_boss {
+            face = Some((b.x - position.x).atan2(b.z - position.z));
         }
 
         // Movement: this tick's step uses the movement factor from the last

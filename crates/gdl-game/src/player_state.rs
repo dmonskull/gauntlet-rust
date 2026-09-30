@@ -281,8 +281,14 @@ impl Plugin for PlayerStatePlugin {
     }
 }
 
-/// Sets up the chosen class's hero with its class record.
-fn new_hero(mut commands: Commands, mut game: ResMut<LoadedGame>, choice: Option<Res<PlayerChoice>>) {
+/// Sets up the chosen class's hero with its class record, and a loaded
+/// character's saved record on top (`saves.rs`).
+fn new_hero(
+    mut commands: Commands,
+    mut game: ResMut<LoadedGame>,
+    choice: Option<Res<PlayerChoice>>,
+    saves: Option<ResMut<crate::saves::Saves>>,
+) {
     let class = choice.map_or_else(|| "WAR".to_string(), |c| c.class.clone());
     let stats = game
         .install
@@ -296,6 +302,9 @@ fn new_hero(mut commands: Commands, mut game: ResMut<LoadedGame>, choice: Option
     // Debugging aid: `GDL_KEYS=n` starts the hero with n keys.
     if let Some(keys) = std::env::var("GDL_KEYS").ok().and_then(|k| k.parse().ok()) {
         state.take_keys(keys);
+    }
+    if let Some(saved) = saves.and_then(|mut s| s.pending.take()) {
+        saved.apply(&mut state);
     }
     commands.insert_resource(state);
 }

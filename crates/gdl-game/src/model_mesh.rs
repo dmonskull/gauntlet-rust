@@ -18,11 +18,27 @@ pub struct TextureCache<'a> {
     model: &'a ModelFile,
     textures: &'a [u8],
     decoded: HashMap<u16, Option<(Handle<Image>, AlphaMode)>>,
+    /// The materials made so far, by what they draw, when meshes may share
+    /// them (see [`TextureCache::sharing_materials`]).
+    shared: Option<HashMap<MaterialKey, Handle<LevelMaterial>>>,
 }
+
+/// What a material draws with: diffuse and lightmap bindings, draw state,
+/// lit by the level light.
+type MaterialKey = (u16, u16, DrawState, bool);
 
 impl<'a> TextureCache<'a> {
     pub fn new(model: &'a ModelFile, textures: &'a [u8]) -> Self {
-        Self { model, textures, decoded: HashMap::new() }
+        Self { model, textures, decoded: HashMap::new(), shared: None }
+    }
+
+    /// Meshes built with this cache share one material per texture and draw
+    /// state — for models whose parts are never tinted or faded one by one
+    /// (characters: a monster's hundreds of flipbook frames then draw with a
+    /// handful of materials instead of one each).
+    pub fn sharing_materials(mut self) -> Self {
+        self.shared = Some(HashMap::new());
+        self
     }
 
     pub fn get(&mut self, binding: u16, images: &mut Assets<Image>) -> Option<(Handle<Image>, AlphaMode)> {
@@ -169,12 +185,22 @@ pub fn build_flagged(
         if lightmap_image.is_some() {
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, buf.lightmap_uvs);
         }
-        out.push(BuiltMesh {
-            diffuse,
-            mesh: meshes.add(mesh),
-            material: materials.add(LevelMaterial::new(diffuse_image, lightmap_image, alpha_mode).with_depth(state.depth_test, state.depth_write).dynamic(lit)),
-            triangles,
-        });
+        let key = (diffuse, lightmap, state, lit);
+        let material = match cache.shared.as_ref().and_then(|m| m.get(&key)) {
+            Some(shared) => shared.clone(),
+            None => {
+                let made = materials.add(
+                    LevelMaterial::new(diffuse_image, lightmap_image, alpha_mode)
+                        .with_depth(state.depth_test, state.depth_write)
+                        .dynamic(lit),
+                );
+                if let Some(m) = cache.shared.as_mut() {
+                    m.insert(key, made.clone());
+                }
+                made
+            }
+        };
+        out.push(BuiltMesh { diffuse, mesh: meshes.add(mesh), material, triangles });
     }
     out
 }
