@@ -579,6 +579,10 @@ Confirmed:
   the mouth offsets, the aim and lob, the shot — are in
   [projectiles.md](projectiles.md), "The familiars and the phoenix".
 
+Here: `familiars.rs` (the familiars, and the phoenix's fireball in the
+spit's place while the power is on; the phoenix's look is
+`power_looks.rs`).
+
 ### `0x100` grow
 
 `GROWPOT` (hint GROWTHMSG "LIMITED GROWTH", `S_GROWTHVOX`; pickup
@@ -635,7 +639,10 @@ flags aren't done. A shrunk monster's blow (`FUN_8004dec0`) is its damage
   Pojo's `POJOBODY1_HE_1` node, `S_POJOTURBO`. `FUN_8008872c` (a move
   choice needing turbo; not traced) gives nothing for the Pojo.
 - **Throws**: `PHOENIX_FBALL` from (0, −0.5, −1.25) (`0x80119BE8`) instead
-  of the class's missile (`FUN_80030094`).
+  of the class's missile (`FUN_80030094`) — only the model and the hand
+  change: the missile record stays the class's (its radius, fall, spin,
+  blast) and so do the damage and kind. Here: `projectiles.rs`
+  (`launch_hero`, for every throw while special `0x400` is on).
 - Its lines are the Pojo's: `S_POJOPAIN`, `S_POJOEATSFX`, `S_POJOPOISON`,
   `S_POJO1/2` in the announcer's sentences ([frontend.md](frontend.md),
   "The voice queues").
