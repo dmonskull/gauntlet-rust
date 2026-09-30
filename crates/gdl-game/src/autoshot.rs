@@ -3,6 +3,9 @@
 //! changes without a person looking at the window. `GDL_SHOT_AT=<frame>`
 //! shoots later (default 30); `GDL_SHOTS=<n>` with `GDL_SHOT_EVERY=<k>`
 //! takes n shots k frames apart (`out.png`, `out_1.png`, …).
+//! `GDL_SHOT_CLOCK=ticks` counts both in 30 Hz game ticks instead of drawn
+//! frames, so the shots land on the same moment of play however fast the
+//! frames come (the game runs on its tick).
 
 use std::path::PathBuf;
 
@@ -30,8 +33,12 @@ impl Plugin for AutoShotPlugin {
             let at = std::env::var("GDL_SHOT_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(SHOOT_AT_FRAME);
             let env = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
             let (count, every) = (env("GDL_SHOTS", 1).max(1), env("GDL_SHOT_EVERY", 10).max(1));
-            app.insert_resource(AutoShot { path: path.into(), frame: 0, at, count, every })
-                .add_systems(Update, tick);
+            app.insert_resource(AutoShot { path: path.into(), frame: 0, at, count, every });
+            if std::env::var("GDL_SHOT_CLOCK").is_ok_and(|v| v.eq_ignore_ascii_case("ticks")) {
+                app.add_systems(FixedUpdate, tick);
+            } else {
+                app.add_systems(Update, tick);
+            }
         }
     }
 }

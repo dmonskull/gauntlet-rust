@@ -63,8 +63,12 @@ pub(crate) fn apply_hits(
     critter_level: Option<Res<CritterLevel>>,
     mut sounds: MessageWriter<PlaySound>,
     mut effects: MessageWriter<EffectAt>,
+    heroes: Query<(), With<Player>>,
 ) {
     for hit in hits.read() {
+        // Only a hero's blows earn experience (a monster's bomb or blast
+        // earns nobody any).
+        let by_hero = heroes.contains(hit.attacker);
         match hit.target_kind {
             TargetKind::Monster => {
                 let Ok(mut m) = monsters.get_mut(hit.target) else { continue };
@@ -82,7 +86,7 @@ pub(crate) fn apply_hits(
                 }
                 // Every blow earns experience; the killing one earns the
                 // kill's.
-                if let (Some(state), Some(level)) = (state.as_mut(), level.as_ref()) {
+                if by_hero && let (Some(state), Some(level)) = (state.as_mut(), level.as_ref()) {
                     let (at, scale) = level.experience;
                     let xp = enemy::experience(m.enemy, m.hit_points <= 0.0, state.level, at, scale);
                     let gained = state.add_experience(xp);
@@ -133,7 +137,7 @@ pub(crate) fn apply_hits(
                 let at = level.as_ref().map_or(0.0, |l| l.experience.0);
                 g.hit_points -= enemy::item_damage(hit.damage, g.armor, hero_level, at) as f32;
                 // Five times a blow on one of its monsters.
-                if let (Some(state), Some(level)) = (state.as_mut(), level.as_ref()) {
+                if by_hero && let (Some(state), Some(level)) = (state.as_mut(), level.as_ref()) {
                     let (at, scale) = level.experience;
                     let xp = enemy::generator_experience(g.enemy, g.hit_points <= 0.0, state.level, at, scale);
                     if state.add_experience(xp) > 0 {

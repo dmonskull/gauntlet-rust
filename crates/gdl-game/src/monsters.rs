@@ -24,10 +24,11 @@ use gdl_formats::texmod::TexMod;
 use gdl_formats::{LevelCollision, LevelTuning, ModelFile, WorldData};
 use gdl_install::GameInstall;
 
+use crate::audio::PlaySound;
 use crate::combat::{TargetKind, Targetable};
 use crate::character::{Animator, CharacterData, CharacterModel};
 use crate::deaths::{self, DeathSet, DeathTextures, Dissolve};
-use crate::effects::EffectAt;
+use crate::effects::{EffectAt, ExplosionAt};
 use crate::generators::{self, Generator};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
@@ -52,6 +53,41 @@ const FALL_LIMIT: f32 = 5.0;
 /// way: 0, π/8 … 7π/8.
 const AVOID_OFFSETS: [f32; 8] =
     [0.0, PI / 8.0, PI / 4.0, 3.0 * PI / 8.0, PI / 2.0, 5.0 * PI / 8.0, 3.0 * PI / 4.0, 7.0 * PI / 8.0];
+
+/// The suicide runners' AI (`docs/monsters.md`, "Suicide runners").
+const SUICIDE: i16 = 0x12;
+/// Once a player is within its awareness a runner waits this many video
+/// fields, then gets up (READYTOWALK) and runs.
+const SUICIDE_WAIT: f32 = 60.0;
+/// Fields it runs before it blows up anyway.
+const SUICIDE_RUN: f32 = 240.0;
+/// Its run: RUN at 1.5 × its speed.
+const SUICIDE_SPEED: f32 = 1.5;
+/// While it keeps running into things it tries these heading offsets in
+/// turn: ±5°, ±10° … ±40°.
+const SUICIDE_OFFSETS: [f32; 16] = {
+    let mut o = [0.0; 16];
+    let mut i = 0;
+    while i < 16 {
+        let a = (i / 2 + 1) as f32 * 5.0 * PI / 180.0;
+        o[i] = if i % 2 == 0 { a } else { -a };
+        i += 1;
+    }
+    o
+};
+/// Out of offsets, it only runs on while its heading is at least 6° off
+/// the one it had when the bumping began.
+const SUICIDE_TURN: f32 = 6.0 * PI / 180.0;
+/// Its blast: 50 × the level's damage scale.
+const SUICIDE_DAMAGE: f32 = 50.0;
+/// Blowing itself up is a fire blow.
+const SUICIDE_KIND: u32 = 1;
+/// The realms whose runners leave a poison cloud instead (7 and 11).
+const POISON_REALMS: [char; 2] = ['G', 'K'];
+const SUICIDE_YELL: &str = "S_SUICIDE_YELL";
+/// The effect a level's runners take from the first of its (non-special)
+/// monster folders that has it.
+const SUICIDE_EFFECT: &str = "SUICIDEEXP";
 
 pub struct MonstersPlugin;
 
@@ -165,6 +201,8 @@ pub struct MonsterLevel {
     pub realm: char,
     /// The level's boss type, or -1.
     pub boss: i32,
+    /// The monster folder holding the level's SUICIDEEXP effect.
+    pub suicide_folder: Option<String>,
     /// Per (enemy type, tier): the model, if one could be found.
     models: HashMap<(i32, i32), Option<Arc<MonsterModel>>>,
     /// 30 Hz ticks since the level started.
@@ -270,8 +308,25 @@ pub struct Monster {
     throw_rate: f32,
     /// A kiting thrower backing away from a player that came too close.
     retreat: bool,
+    /// A suicide runner's progress (AI 0x12).
+    suicide: Suicide,
     /// Killed: playing out its death (`deaths.rs`).
     pub dying: Option<Dying>,
+}
+
+/// A suicide runner's progress toward blowing up.
+#[derive(Clone, Copy, Debug, Default)]
+struct Suicide {
+    /// 0 waiting for a player, 1 about to get up, 2 running.
+    stage: u8,
+    /// Video fields left before it gets up.
+    wait: f32,
+    /// Video fields it has run.
+    running: f32,
+    /// The next heading offset to try while it keeps bumping into things,
+    /// and its heading when the bumping began.
+    step: usize,
+    saved: f32,
 }
 
 /// A killed monster's death under way.
@@ -287,6 +342,9 @@ pub struct Dying {
     pub step: f32,
     /// The die effect and the texture are on.
     started: bool,
+    /// Nobody killed it (a suicide runner blowing itself up): no die
+    /// effect.
+    quiet: bool,
 }
 
 impl Monster {
@@ -302,7 +360,7 @@ impl Monster {
     /// The killing blow (of `kind`, landing at `blow`): it starts dying.
     pub fn die(&mut self, kind: u32, blow: [f32; 3]) {
         let set = deaths::death_set(self.enemy, self.stats.step, kind);
-        self.dying = Some(Dying { set, kind, blow, step: deaths::DEATH_START, started: false });
+        self.dying = Some(Dying { set, kind, blow, step: deaths::DEATH_START, started: false, quiet: false });
     }
 
     /// Its centre: feet plus its type's centre height.
@@ -383,7 +441,9 @@ fn start_death(
     effects: &mut MessageWriter<EffectAt>,
 ) {
     let Some(d) = m.dying else { return };
-    if let Some(name) = deaths::die_effect(m.enemy, d.kind) {
+    if !d.quiet
+        && let Some(name) = deaths::die_effect(m.enemy, d.kind)
+    {
         let scale = deaths::die_effect_scale(m.enemy, m.stats.step);
         let at = deaths::effect_origin(m.stats.step, m.centre(), Vec3::from(d.blow));
         effects.write(EffectAt { name, at, facing: 0.0, scale });
@@ -476,6 +536,7 @@ const THROW2: u8 = 0x19;
 const THROWF: u8 = 0x1A;
 const ATTTOREADY: u8 = 0x1B;
 const DEATH: u8 = 0x20;
+const READYTOWALK: u8 = 9;
 
 /// Everything needed to create a monster.
 pub struct NewMonster {
@@ -551,6 +612,7 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         throw_carry: 0.0,
         throw_rate: new.throw_rate,
         retreat: false,
+        suicide: Suicide::default(),
         dying: None,
     };
     // Hittable: its radius, and (a stand-in for the game's height test)
@@ -625,6 +687,16 @@ fn setup_level(
         .filter_map(|f| folders.get(&mut game.install, &f))
         .collect();
     deaths.set_alt(alt.iter().map(|f| (&f.model, f.textures.as_slice(), f.texmods.as_slice())), &mut images);
+    // The runners' SUICIDEEXP: from the first of the level's monster
+    // folders that has one, the special variants' excepted.
+    let runners = gens.iter().any(|g| g.ai == SUICIDE) || placed.iter().any(|p| p.ai == SUICIDE);
+    let suicide_folder = if runners {
+        enemies.loaded.iter().filter(|&&(_, subtype)| subtype != 4).filter_map(|&(id, subtype)| enemy::folder(id, subtype)).find(
+            |f| folders.get(&mut game.install, f).is_some_and(|files| files.anim.atrees.iter().any(|a| a.name == SUICIDE_EFFECT)),
+        )
+    } else {
+        None
+    };
 
     info!(
         "monsters: {} generators, {} placed, {} slots, types {:?} from {:?} (tuning {:?})",
@@ -652,6 +724,7 @@ fn setup_level(
         sounds,
         realm: population.level.strip_prefix("level").and_then(|l| l.chars().next()).unwrap_or('?').to_ascii_uppercase(),
         boss: tuning.boss_enemy,
+        suicide_folder,
         tuning,
         enemies,
         models,
@@ -842,6 +915,7 @@ fn tick_monsters(
     mut shots: MessageWriter<MonsterShot>,
     death_textures: Option<Res<DeathTextures>>,
     mut effects: MessageWriter<EffectAt>,
+    (mut explosions, mut sounds): (MessageWriter<ExplosionAt>, MessageWriter<PlaySound>),
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     level.tick = level.tick.wrapping_add(1);
@@ -866,6 +940,16 @@ fn tick_monsters(
                     d.started = true;
                 }
                 start_death(entity, m, death_textures.as_deref(), &mut commands, &mut effects);
+                // However it died, a suicide runner goes off.
+                if m.ai == SUICIDE {
+                    explosions.write(ExplosionAt {
+                        owner: entity,
+                        at: m.centre(),
+                        damage: SUICIDE_DAMAGE * level.scales.damage,
+                        poison: POISON_REALMS.contains(&level.realm),
+                        folder: level.suicide_folder.clone(),
+                    });
+                }
             }
             if die_tick(m, &mut animator, collision, dt) {
                 commands.entity(entity).try_despawn();
@@ -907,7 +991,22 @@ fn tick_monsters(
         let mut velocity = [0.0f32; 3];
         let direct = target.map(|t| heading_to(m.position, t.feet));
         let moving = |m: &Monster| matches!(m.action, WALK | RUN | RUNATTACK1 | RUNATTACK2) && m.model.has(m.action);
-        let turn_to = if projectiles::throws(m.ai) {
+        // A suicide runner's bump wait as its AI finds it (the last move's).
+        let bumping_before = m.avoid_timer;
+        let turn_to = if m.ai == SUICIDE {
+            let (heading, run, yell) = suicide_ai(m, target);
+            if yell {
+                sounds.write(PlaySound(SUICIDE_YELL.into()));
+            }
+            if run {
+                m.request = RUN;
+                if moving(m) {
+                    let s = SUICIDE_SPEED * m.stats.speed_per_tick;
+                    velocity = [heading.sin() * s, 0.0, heading.cos() * s];
+                }
+            }
+            Some(heading)
+        } else if projectiles::throws(m.ai) {
             // The throwers face the player and throw; the kiting ones back
             // off while they throw.
             let (face, away) = throw_ai(m, target);
@@ -964,10 +1063,13 @@ fn tick_monsters(
             }
         }
         if let Some(p) = bumped_player {
-            // It stops and swings at the player it walked into.
+            // It stops and swings at the player it walked into (a suicide
+            // runner blows up instead, below).
             m.blocked = Block::Player;
-            m.strike = Some(p.entity);
-            m.request = if m.attacks & 7 == 7 { ATTACK3 } else { ATTACK1 };
+            if m.ai != SUICIDE {
+                m.strike = Some(p.entity);
+                m.request = if m.attacks & 7 == 7 { ATTACK3 } else { ATTACK1 };
+            }
             m.position[1] += delta[1];
         } else if let Some(other) = bodies
             .iter()
@@ -984,6 +1086,19 @@ fn tick_monsters(
         if moved.fell {
             despawn_monster(&mut commands, entity, m, &mut generators);
             continue;
+        }
+        // A suicide runner that reached a player, or ran out of run, blows
+        // itself up; one that has just started bumping into things notes
+        // where it was heading.
+        if m.ai == SUICIDE {
+            if m.suicide.running >= SUICIDE_RUN || bumped_player.is_some() {
+                blow_up(&mut commands, entity, m, &mut generators);
+                continue;
+            }
+            if bumping_before < 1.0 && m.avoid_timer > 0.0 {
+                m.suicide.saved = m.heading;
+                m.suicide.step = 0;
+            }
         }
 
         // A throw pause refuses attacks and throws.
@@ -1087,6 +1202,80 @@ fn throw_ai(m: &mut Monster, target: Option<Target>) -> (f32, Option<f32>) {
 }
 
 /// Removes a monster and frees its generator's slot.
+/// A suicide runner (AI 0x12): it faces the player it's after; once one is
+/// within its awareness it waits 60 fields, gets up (READYTOWALK) and, as
+/// it starts running, yells and runs at the player at 1.5 × its speed.
+/// While it keeps running into walls or monsters it tries heading offsets
+/// of ±5° … ±40° in turn. Losing its player makes it unaware (AI 5/6).
+/// Returns the heading to turn to, whether it runs along it, and whether
+/// it has just started running (the yell).
+fn suicide_ai(m: &mut Monster, target: Option<Target>) -> (f32, bool, bool) {
+    if let Some(t) = target {
+        m.heading = heading_to(m.position, t.feet);
+    }
+    let mut yell = false;
+    match m.suicide.stage {
+        0 => {
+            if target.is_some() && m.target_distance <= m.stats.awareness {
+                m.suicide = Suicide { stage: 1, wait: SUICIDE_WAIT, ..Suicide::default() };
+                debug!("suicide runner {} sees a player {:.1} away", m.number, m.target_distance);
+            }
+            return (m.heading, false, false);
+        }
+        1 => {
+            if m.action != RUN {
+                if target.is_some() {
+                    m.suicide.wait -= FIELDS_PER_TICK;
+                    if m.suicide.wait < 1.0 {
+                        m.request = READYTOWALK;
+                    }
+                }
+                return (m.heading, false, false);
+            }
+            m.suicide.stage = 2;
+            yell = true;
+            debug!("suicide runner {} runs", m.number);
+        }
+        _ => {}
+    }
+    m.suicide.running += FIELDS_PER_TICK;
+    if target.is_none() || !m.aware {
+        m.ai = 5 + (m.number & 1) as i16;
+        return (m.heading, false, yell);
+    }
+    // Held up by another monster it counts the wait down itself; while
+    // held up it tries the next offset.
+    if m.blocked == Block::Actor && m.avoid_timer > 0.0 {
+        m.avoid_timer -= FIELDS_PER_TICK;
+    }
+    if m.avoid_timer > 0.0 && m.suicide.step < SUICIDE_OFFSETS.len() {
+        m.heading = locomotion::wrap(m.heading + SUICIDE_OFFSETS[m.suicide.step]);
+        m.suicide.step += 1;
+        m.avoid_timer = 0.0;
+    }
+    let run = m.avoid_timer < 1.0 || locomotion::wrap(m.heading - m.suicide.saved).abs() >= SUICIDE_TURN;
+    if run {
+        m.avoid_timer = 0.0;
+    }
+    (m.heading, run, yell)
+}
+
+/// A suicide runner blows itself up: a fire blow of more than it has kills
+/// it with no die effect (nobody killed it), and its death sets off the
+/// explosion.
+fn blow_up(commands: &mut Commands, entity: Entity, m: &mut Monster, generators: &mut Query<&mut Generator>) {
+    m.hit_points = 0.0;
+    if let Some(mut g) = m.generator.and_then(|g| generators.get_mut(g).ok()) {
+        g.alive = g.alive.saturating_sub(1);
+    }
+    m.die(SUICIDE_KIND, m.centre().to_array());
+    if let Some(d) = m.dying.as_mut() {
+        d.quiet = true;
+    }
+    commands.entity(entity).try_remove::<Targetable>();
+    debug!("suicide runner {} blows up after {:.0} fields", m.number, m.suicide.running);
+}
+
 pub fn despawn_monster(commands: &mut Commands, entity: Entity, m: &Monster, generators: &mut Query<&mut Generator>) {
     if let Some(mut g) = m.generator.and_then(|g| generators.get_mut(g).ok()) {
         g.alive = g.alive.saturating_sub(1);
@@ -1351,6 +1540,11 @@ fn animate(m: &mut Monster, animator: &mut Animator, timing: f32) -> Option<Even
         }),
         RUNATTACK2 => finished(m, animator).then_some(request),
         ATTTOREADY => finished(m, animator).then_some(READY),
+        // Getting up plays out, then it walks (runs, with no WALK), unless
+        // a hit or its death comes first.
+        READYTOWALK if request < HIT1 => {
+            finished(m, animator).then_some(if model.has(WALK) { WALK } else { RUN })
+        }
         _ => Some(request),
     };
     if let Some(mut next) = next {

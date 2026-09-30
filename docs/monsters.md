@@ -424,13 +424,14 @@ tool text. Nothing else named.
 - **Player cylinder**: radius 1.0, height 5.0 for the bump tests (the
   player record's `+0x850`/`+0x854` aren't decoded; `player.rs` uses 1.0
   too).
-- **AIs**: 7 and 2/4 are ported, and the throwing AIs `0x10`, `0x11`,
+- **AIs**: 7 and 2/4 are ported, the throwing AIs `0x10`, `0x11`,
   `0x17`, `0x1A` ([projectiles.md](projectiles.md): facing, throwing,
-  backing off, the throw pause); 0 uses 7's chase (its nine-angle search
-  isn't); every other AI (suicide runners `0x12`, fireball casters
-  `0x1C`/`0x1D`/`0x1F`, 3, 5/6, 14…) uses the chase too, and variants
-  without a WALK or RUN animation stand still instead of gliding. The crowd
-  penalty in target choice isn't applied (one player).
+  backing off, the throw pause) and the suicide runners `0x12` (below); 0
+  uses 7's chase (its nine-angle search isn't); every other AI (3, 5/6,
+  14…; the fireball casters `0x1C`/`0x1D`/`0x1F` chase and fire on their
+  blows) uses the chase too, and variants without a WALK or RUN animation
+  stand still instead of gliding. The crowd penalty in target choice isn't
+  applied (one player).
 - **Unaware** monsters (AI 5/6) stand still.
 - Zero level scales are read as 1 (above).
 - Spot tests skip items (`FUN_8005ef98`); the placed-monster distance is
@@ -564,3 +565,67 @@ effect's scale scales its particles' sizes and speeds, and the node's
 vector is taken as the spray direction; the depth bias isn't applied; the
 DEATHMAGIC switch isn't traced.
 
+
+## Suicide runners (AI `0x12`, `FUN_8004aa88`)
+
+Placed grunts (and a few knights, lizards, a troll) at level 6 with AI 18
+— on 40 levels, 13 on levelA1 and 31 on levelH1 (`cargo run -p
+gdl-formats --example placements -- <game>/Gauntlet/LEVELS 0x12`). Their
+model is the `S` variant (`GRUS`: READY, READYTOWALK, RUN only — a grunt
+with a powder keg). Stats use tier 1 (`stat_tier`).
+
+Each frame the heading is the angle to the target player (its `+0x44`,
+or `+0x9E4` in player states ≥ 3). State `+0x316`:
+
+- **0**: a target within the awareness (`+0x27C` ≤ `+0x300`) → state 1,
+  timer `+0x31C` = 60 fields, run time `+0x320` = 0. It only turns.
+- **1**: with a target and not yet in RUN (4): timer −= fields; below 1 it
+  asks for READYTOWALK (9). The animation plays READYTOWALK out, then WALK
+  — RUN when the model has no WALK (`FUN_800ab110` case 9). Once in RUN:
+  state 2 and `S_SUICIDE_YELL` (`FUN_8009d5a4`: common sound `0x37`).
+- **2**: run time += fields. No target, or not aware → AI 5/6 (by slot
+  parity). Blocked by a monster (`+0x1FE` 2: the mover's block kind — 1
+  wall, 2 monster, 3 item) with the bump wait `+0x358` running, it counts
+  it down itself. While `+0x358` > 0 the heading gets the next offset of
+  `0x8011b9c0` (±5°, ±10° … ±40°; `+0x30C` counts, at most 16) and the
+  wait is zeroed; then, unless out of offsets and within 6° (`r2-0x6e28`)
+  of the heading when the bumping began (`+0x254`), `FUN_8004cc84(1.5,
+  heading)`: RUN (1.5 ≥ `r2-0x6d68` 1.25) at 1.5 × the speed.
+- After the move: an item bump zeroes the wait; **run time ≥ 240 fields
+  (`r2-0x6db8`) or a player bumped (`+0x284` ≥ 0) → it blows up**:
+  `FUN_8004e660(999, monster, −2, kind 1, …)` (fire; −2: nobody, so no die
+  effect, no sound, no experience). Else a bump that just began stores
+  the heading in `+0x254` and restarts the offsets.
+
+**The explosion** (`FUN_8004e660`'s kill path, for AI 18 however it died:
+`FUN_800927f8(50 × level +0xBC, monster +0x54)` and `S_SUICIDE_BOMB`,
+`FUN_8009d300`: sound `0x38`; a player's kill first stops the yell,
+`FUN_8009d580`). Effects are the effect table's (`0x801218e0`, 0x28-byte
+entries: name, `+0x20` depth bias, `+0x24` transparency):
+
+- Realms 7 (G) and 11 (K): POISONEXP1 (`0x19`) as an area effect (flags
+  `0x2B`: players, items, monsters), kind `0x800`, blast 7.5
+  (`r2-0x5678`), then POISONEXP2 (`0x1A`) held 2 s (`+0x60`,
+  `r2-0x5674`), then POISONEXP3 (`0x1B`) with no blast (the stage chain in
+  `FUN_80094418`: `+0xAC`/`+0xAE`, flag `0x4000`, `FUN_80096d78` swaps the
+  model in place); drawn 2.5 × 1 × 2.5 and 1 lower.
+- Elsewhere: EXPLOSION (`0x16`, flags `0x29`: players and monsters, not
+  items), kind `0x421`, blast 6 (`r2-0x566c`), scale 1; EXPRING (`0x1C`)
+  at 1.2 with a light of radius 20 (`0x80121868` colour).
+- Both: SUICIDEEXP (runtime entry `0x50`, depth bias −512), which
+  `FUN_800972dc` takes from the first monster slot (not the special
+  variants') whose bank has it.
+
+The blast is the effects' area mode: it grows over the effect's life and
+hits each target once (players through their guard).
+
+**In this rewrite** (`monsters.rs` `suicide_ai` / `blow_up`, the
+`ExplosionAt` handling in `effects.rs`): all of the above. Stand-ins: the
+explosions' lights aren't cast; the blast hits each target once per stage
+(the game spares monsters 3 s and heroes 0.25 s between hits); a fireball
+throws heroes back as a barrel's blast does (the gas doesn't); SUICIDEEXP's
+`+0xB4` (0.5) isn't used; losing its player turns a runner into AI 5/6,
+which only stands here; the leader runner (`r13-0x73b8`: throwers follow
+it as AI `0x18`) isn't done. Test: `GDL_THROWER=15,0x12,6` on levelA1 with
+`GDL_SHOT_CLOCK=ticks GDL_LOOK_AT="0,0,-9,18,90" GDL_SHOT_AT=96
+GDL_SHOTS=12 GDL_SHOT_EVERY=3` films one running at the hero and going off.

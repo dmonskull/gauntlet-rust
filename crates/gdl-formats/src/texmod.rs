@@ -36,6 +36,10 @@ pub enum TexModKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TexMod {
+    /// `+0x00`: in a model bank, the atree whose effect it animates (the
+    /// explosion's fireball, a gas cloud's puffs): stepped as that effect
+    /// plays. −1: stepped all the time with the game's frame counter.
+    pub owner: i16,
     /// `+0x04`: the texture being changed.
     pub name: String,
     /// `+0x44`: its binding in the level's model file.
@@ -70,6 +74,7 @@ impl TexMod {
             first => TexModKind::Frames(FirstFrame::Binding(first as u16)),
         };
         Self {
+            owner: i16::from_le_bytes([r[0x00], r[0x01]]),
             name: cstr(&r[0x04..0x24]),
             binding: le_u32(r, 0x44) as u16,
             kind,
@@ -111,6 +116,7 @@ mod tests {
     #[test]
     fn frames_and_scrolls_advance_by_period() {
         let m = TexMod {
+            owner: -1,
             name: "MOAT_WATER".into(),
             binding: 41,
             kind: TexModKind::Frames(FirstFrame::Binding(42)),

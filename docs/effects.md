@@ -62,3 +62,32 @@ and the grunts near it die.
 Stand-ins: the effects' own lights aren't cast; the blast front is
 checked against targets' centres; the shield's contact damage follows the
 decoded numbers but its timing (every tick it touches) is a guess.
+
+## The effect table, flipbooks and depth bias
+
+Effects are the table at `0x801218e0` (0x50 entries of 0x28 bytes: name,
+`+0x20` depth bias, `+0x24` transparency; runtime entries up to `0xD9`,
+e.g. `0x50` SUICIDEEXP). Transparency is 96 for entries 1–`0x15` (SPARKS,
+the hit and die effects: drawn at 159/255) and 0 for every other.
+
+**Flipbooks**: a bank's `ANIM.PS2` texture modifiers (`0x58` bytes, as a
+level's) whose `+0x00` is an atree index belong to that effect (−1: free
+running on the frame counter, `FUN_80010a4c`). Each spans its clip: the
+fireball's FBALL_EXP is 15 frames × 2 ticks for EXPLOSION's 30, the gas
+clouds' POISON_GAS 5 × 4, 15 × 4 and 10 × 2, EXPRING's SUICIDE_RING 10 × 2;
+HITCOL and HITDIE own EXPLDSML_ and EXPLBIG_. Here each copy of an effect
+runs its own from its start, on copies of the materials drawing the
+texture (`EffectFrames`).
+
+**Depth bias** (`FUN_800baa74` → object `+0x68`, used by the draw,
+`FUN_800c5894`): the object is depth-tested `bias` × −2048 (render context
+`+0x78`, `r2-0x4888`) of the 24-bit z-buffer nearer: −128 for most effects
+(1/64 of the range), −512 for SUICIDEEXP and the sparkles round a hero, 0
+for the breaths and bags. The game's clip planes are 1 and 65536
+(`FUN_800c9a18`), so the step is fixed in 1 / distance; our reverse-Z
+buffer gets the same step × our near plane (`LevelMaterial::
+set_depth_bias`, the shader's `DEPTH_BIAS` variant writes the depth). It
+keeps camera-facing fireballs from being cut by the floor they sit on.
+
+Not done: the bank modifiers that run free (50 in `WEAPONS`) aren't
+animated on characters and weapons yet.
