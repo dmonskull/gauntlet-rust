@@ -19,6 +19,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use bevy::audio::{AddAudioSource, Decodable, Source};
@@ -45,13 +46,15 @@ impl Plugin for GameAudioPlugin {
             .add_message::<PlaySoundAt>()
             .add_message::<StopSound>()
             .add_message::<LoopSound>()
+            .add_message::<LoopSoundAt>()
             .add_message::<QueueVoice>()
             .init_resource::<AudioStatus>()
             .init_resource::<VoiceQueues>()
             .add_systems(Startup, load_audio_tables)
             .add_systems(
                 Update,
-                (level_music, audio_keys, step_voices, play_sounds, play_sounds_at, stop_sounds, loop_sounds).chain(),
+                (level_music, audio_keys, step_voices, play_sounds, play_sounds_at, stop_sounds, loop_sounds, follow_loops)
+                    .chain(),
             );
     }
 }
@@ -371,6 +374,109 @@ pub struct LoopSound {
 #[derive(Component)]
 struct LoopChannel(&'static str, String);
 
+/// Starts, moves or stops the looping sound on channel `key` the way the
+/// game's loops that follow something go (`docs/audio-format.md`,
+/// "Positional sounds"): started at `volume` and panned from `at` like a
+/// positional call; then re-panned every frame from where `at` is now, the
+/// driver sliding the pan at most 8 of its 512 to the turn a game frame —
+/// and with `follow_volume`, re-volumed the same way, heading for `volume`
+/// itself (the level items' loops). Asked for again while it plays, it
+/// only moves; if it has ended (a call that doesn't loop) it starts over; a
+/// different name starts the new one; none stops it.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct LoopSoundAt {
+    pub key: &'static str,
+    pub name: Option<String>,
+    pub at: Option<Vec3>,
+    pub volume: u8,
+    pub follow_volume: bool,
+}
+
+impl LoopSoundAt {
+    /// Plays (or keeps playing and moves) `name` at `at`.
+    pub fn at(key: &'static str, name: impl Into<String>, at: Vec3, volume: u8) -> Self {
+        Self { key, name: Some(name.into()), at: Some(at), volume, follow_volume: false }
+    }
+
+    /// Stops the channel.
+    pub fn stop(key: &'static str) -> Self {
+        Self { key, name: None, at: None, volume: 0, follow_volume: false }
+    }
+}
+
+/// The driver's slide toward a new pan or volume: at most this much a
+/// game frame (30 a second).
+const SLEW_PER_FRAME: f32 = 8.0;
+const GAME_FRAMES: f32 = 30.0;
+/// The pan's turn.
+const PAN_TURN: f32 = 512.0;
+
+/// Moves a pan (an angle, 512 to the turn) toward `target` the short way
+/// round by at most `step`, kept within one turn.
+fn slew_pan(current: f32, target: f32, step: f32) -> f32 {
+    let mut d = target - current;
+    if d > PAN_TURN / 2.0 {
+        d -= PAN_TURN;
+    }
+    if d < -PAN_TURN / 2.0 {
+        d += PAN_TURN;
+    }
+    let mut next = current + d.clamp(-step, step);
+    if next >= PAN_TURN {
+        next -= PAN_TURN;
+    }
+    if next < -PAN_TURN {
+        next += PAN_TURN;
+    }
+    next
+}
+
+/// Moves a volume toward `target` by at most `step`.
+fn slew_volume(current: f32, target: f32, step: f32) -> f32 {
+    current + (target - current).clamp(-step, step)
+}
+
+/// A playing loop's left and right gains, read by its decoder as it goes.
+#[derive(Debug, Default)]
+struct LiveGains {
+    left: AtomicU32,
+    right: AtomicU32,
+}
+
+impl LiveGains {
+    fn set(&self, [left, right]: [f32; 2]) {
+        self.left.store(left.to_bits(), Ordering::Relaxed);
+        self.right.store(right.to_bits(), Ordering::Relaxed);
+    }
+
+    fn get(&self) -> [f32; 2] {
+        [f32::from_bits(self.left.load(Ordering::Relaxed)), f32::from_bits(self.right.load(Ordering::Relaxed))]
+    }
+}
+
+/// A loop following something: where it is, its driver pan and voice
+/// volume now (the voice volume in the driver's 0–255, 127 a call's own
+/// at its own volume), and the volume its owner keeps asking for.
+#[derive(Component)]
+struct FollowingLoop {
+    key: &'static str,
+    name: String,
+    at: Option<Vec3>,
+    gains: Arc<LiveGains>,
+    pan: f32,
+    volume: f32,
+    target_volume: Option<f32>,
+}
+
+impl FollowingLoop {
+    /// The gains for its pan and volume now.
+    fn gains_now(&self) -> [f32; 2] {
+        let [l, r] = stereo_gains(self.pan.round() as i32);
+        let amp = self.volume / f32::from(CALL_VOLUME);
+        [l * amp, r * amp]
+    }
+}
+
 /// What's playing, for the HUD.
 #[derive(Resource, Default)]
 pub struct AudioStatus {
@@ -562,6 +668,39 @@ impl Effects<'_, '_> {
     }
 }
 
+impl Effects<'_, '_> {
+    /// Starts a loop that follows something: its voice volume the call's
+    /// own × volume / 127, its pan the one it starts at; its decoder reads
+    /// the gains its channel sets every frame.
+    fn start_loop(&mut self, key: &'static str, name: &str, at: Option<Vec3>, volume: u8, follow_volume: bool, pan: f32) {
+        match build_sound(&mut self.game, &mut self.tables, name) {
+            Ok(mut effect) => {
+                let gains = Arc::new(LiveGains::default());
+                let lp = FollowingLoop {
+                    key,
+                    name: name.to_string(),
+                    at,
+                    gains: gains.clone(),
+                    pan,
+                    volume: f32::from(volume) * effect.gain,
+                    target_volume: follow_volume.then_some(f32::from(volume)),
+                };
+                gains.set(lp.gains_now());
+                effect.gain = 1.0;
+                effect.live = Some(gains);
+                debug!("loop {name} on {key} at {at:?}: volume {:.0}, pan {pan}", lp.volume);
+                self.commands.spawn((
+                    lp,
+                    SoundKind::Effect,
+                    AudioPlayer(self.assets.add(effect)),
+                    PlaybackSettings { volume: self.options.category(SoundKind::Effect), ..PlaybackSettings::DESPAWN },
+                ));
+            }
+            Err(e) => warn!("sound {name}: {e}"),
+        }
+    }
+}
+
 fn play_sounds(mut requests: MessageReader<PlaySound>, mut effects: Effects) {
     for PlaySound(name) in requests.read() {
         effects.start(name, None);
@@ -633,8 +772,11 @@ fn loop_sounds(
     options: Res<GameOptions>,
     playing: Query<(Entity, &LoopChannel)>,
 ) {
-    for LoopSound { key, name } in requests.read() {
-        let current = playing.iter().find(|(_, c)| c.0 == *key);
+    // The latest request for each channel this frame (two game ticks in a
+    // frame mustn't start a loop twice: a spawn shows next frame).
+    let asked = requests.read().map(|LoopSound { key, name }| (*key, name.clone()));
+    for (key, name) in latest_by_channel(asked, |(k, _)| k) {
+        let current = playing.iter().find(|(_, c)| c.0 == key);
         if current.is_some_and(|(_, c)| Some(&c.1) == name.as_ref()) {
             continue;
         }
@@ -642,7 +784,7 @@ fn loop_sounds(
             commands.entity(e).try_despawn();
         }
         let Some(name) = name else { continue };
-        match build_sound(&mut game, &mut tables, name) {
+        match build_sound(&mut game, &mut tables, &name) {
             Ok(effect) => {
                 commands.spawn((
                     LoopChannel(key, name.clone()),
@@ -653,6 +795,67 @@ fn loop_sounds(
             }
             Err(e) => warn!("sound {name}: {e}"),
         }
+    }
+}
+
+/// The last request for each channel, in the order the channels were
+/// first asked for: two game ticks in one frame mustn't start a loop twice
+/// (a spawn only shows the next frame).
+fn latest_by_channel<T>(requests: impl Iterator<Item = T>, key: impl Fn(&T) -> &'static str) -> Vec<T> {
+    let mut latest: Vec<T> = Vec::new();
+    for r in requests {
+        match latest.iter().position(|l| key(l) == key(&r)) {
+            Some(i) => latest[i] = r,
+            None => latest.push(r),
+        }
+    }
+    latest
+}
+
+/// Starts, moves and stops the loops that follow something, and slides
+/// each one's pan (and a followed volume) toward where it is now, from
+/// the camera's ear this frame.
+fn follow_loops(
+    mut requests: MessageReader<LoopSoundAt>,
+    mut effects: Effects,
+    mut playing: Query<(Entity, &mut FollowingLoop)>,
+    camera: Option<Res<PlayCamera>>,
+    time: Res<Time<Virtual>>,
+) {
+    let ear = camera.as_deref().map(ear);
+    let aim = |at: Option<Vec3>| match (at, ear) {
+        (Some(at), Some((focus, right))) => pan(at, focus, right) as f32,
+        _ => CENTRE_PAN as f32,
+    };
+    // The latest request for each channel this frame.
+    for r in latest_by_channel(requests.read().cloned(), |r| r.key) {
+        let current = playing.iter_mut().find(|(_, l)| l.key == r.key);
+        match (r.name, current) {
+            (None, Some((e, _))) => effects.commands.entity(e).try_despawn(),
+            (None, None) => {}
+            (Some(name), Some((_, mut l))) if l.name == name => {
+                l.at = r.at;
+                if r.follow_volume {
+                    l.target_volume = Some(f32::from(r.volume));
+                }
+            }
+            (Some(name), current) => {
+                if let Some((e, _)) = current {
+                    effects.commands.entity(e).try_despawn();
+                }
+                effects.start_loop(r.key, &name, r.at, r.volume, r.follow_volume, aim(r.at));
+            }
+        }
+    }
+    let step = SLEW_PER_FRAME * GAME_FRAMES * time.delta_secs();
+    for (_, mut l) in &mut playing {
+        let target = aim(l.at);
+        l.pan = slew_pan(l.pan, target, step);
+        if let Some(t) = l.target_volume {
+            l.volume = slew_volume(l.volume, t, step);
+        }
+        let gains = l.gains_now();
+        l.gains.set(gains);
     }
 }
 
@@ -687,7 +890,7 @@ fn build_sound(game: &mut LoadedGame, tables: &mut AudioTables, name: &str) -> R
     let loop_from = loop_from.filter(|&l| l < segments.len());
     // Volume is 0..127 of full scale.
     let gain = call.volume.min(127) as f32 / 127.0;
-    Ok(SoundEffect { segments: segments.into(), loop_from, gain, stereo: None })
+    Ok(SoundEffect { segments: segments.into(), loop_from, gain, stereo: None, live: None })
 }
 
 /// A level's music: its parts in order, the last one looping forever.
@@ -756,6 +959,8 @@ pub struct SoundEffect {
     loop_from: Option<usize>,
     gain: f32,
     stereo: Option<[f32; 2]>,
+    /// A loop following something: the gains its channel sets as it plays.
+    live: Option<Arc<LiveGains>>,
 }
 
 impl Decodable for SoundEffect {
@@ -768,6 +973,8 @@ impl Decodable for SoundEffect {
             loop_from: self.loop_from,
             gain: self.gain,
             stereo: self.stereo,
+            live: self.live.clone(),
+            frame: [1.0; 2],
             segment: 0,
             pos: 0,
             right_next: false,
@@ -780,6 +987,9 @@ pub struct SoundEffectDecoder {
     loop_from: Option<usize>,
     gain: f32,
     stereo: Option<[f32; 2]>,
+    live: Option<Arc<LiveGains>>,
+    /// The gains of the frame being played (read once for both channels).
+    frame: [f32; 2],
     segment: usize,
     pos: usize,
     /// Panned: the current sample's right channel comes next.
@@ -787,6 +997,11 @@ pub struct SoundEffectDecoder {
 }
 
 impl SoundEffectDecoder {
+    /// Two channels: panned, or following something.
+    fn stereo(&self) -> bool {
+        self.stereo.is_some() || self.live.is_some()
+    }
+
     fn advance(&mut self) {
         let Some(seg) = self.segments.get(self.segment) else { return };
         self.pos += 1;
@@ -808,17 +1023,20 @@ impl Iterator for SoundEffectDecoder {
     fn next(&mut self) -> Option<f32> {
         let seg = self.segments.get(self.segment)?;
         let sample = f32::from(seg.pcm[self.pos]) / 32768.0 * self.gain;
-        let out = match self.stereo {
-            Some([left, _]) if !self.right_next => {
-                self.right_next = true;
-                return Some(sample * left);
-            }
-            Some([_, right]) => {
-                self.right_next = false;
-                sample * right
-            }
-            None => sample,
-        };
+        if !self.stereo() {
+            self.advance();
+            return Some(sample);
+        }
+        if !self.right_next {
+            self.frame = match &self.live {
+                Some(live) => live.get(),
+                None => self.stereo.unwrap_or([1.0; 2]),
+            };
+            self.right_next = true;
+            return Some(sample * self.frame[0]);
+        }
+        self.right_next = false;
+        let out = sample * self.frame[1];
         self.advance();
         Some(out)
     }
@@ -827,13 +1045,10 @@ impl Iterator for SoundEffectDecoder {
 impl Source for SoundEffectDecoder {
     fn current_frame_len(&self) -> Option<usize> {
         let left = self.segments.get(self.segment).map_or(0, |s| s.pcm.len() - self.pos);
-        Some(match self.stereo {
-            Some(_) => left * 2 - usize::from(self.right_next),
-            None => left,
-        })
+        Some(if self.stereo() { left * 2 - usize::from(self.right_next) } else { left })
     }
     fn channels(&self) -> u16 {
-        if self.stereo.is_some() { 2 } else { 1 }
+        if self.stereo() { 2 } else { 1 }
     }
     fn sample_rate(&self) -> u32 {
         self.segments.get(self.segment).map_or(22050, |s| s.sample_rate)
@@ -857,7 +1072,7 @@ mod tests {
             .enumerate()
             .map(|(i, &(rate, n))| Segment { sample_rate: rate, pcm: vec![(i as i16 + 1) * 8192; n].into() })
             .collect();
-        SoundEffect { segments: segments.into(), loop_from, gain: 1.0, stereo: None }
+        SoundEffect { segments: segments.into(), loop_from, gain: 1.0, stereo: None, live: None }
     }
 
     /// Segment n's samples come out as (n + 1) / 4 of full scale.
@@ -893,6 +1108,51 @@ mod tests {
         assert_eq!(quarters(d.by_ref().take(3)), [4.0, 1.0, 4.0]);
         assert_eq!((d.sample_rate(), d.current_frame_len()), (18000, Some(2)));
         assert_eq!(quarters(d), [2.0, 8.0]);
+    }
+
+    #[test]
+    fn the_driver_slides_the_pan_the_short_way() {
+        assert_eq!(slew_pan(127.0, 255.0, 8.0), 135.0);
+        assert_eq!(slew_pan(127.0, 130.0, 8.0), 130.0);
+        // From ahead to behind, through the left.
+        assert_eq!(slew_pan(127.0, -127.0, 8.0), 119.0);
+        // Across the turn: 250 to -250 is 12 onward.
+        assert_eq!(slew_pan(250.0, -250.0, 8.0), 258.0);
+        assert_eq!(mix(258), mix(-254));
+        assert_eq!(slew_pan(0.0, 100.0, 1000.0), 100.0);
+        assert_eq!(slew_volume(100.0, 200.0, 8.0), 108.0);
+        assert_eq!(slew_volume(100.0, 95.0, 8.0), 95.0);
+    }
+
+    #[test]
+    fn a_following_loop_plays_the_gains_its_channel_sets() {
+        let gains = Arc::new(LiveGains::default());
+        gains.set([1.0, 0.5]);
+        let mut e = effect(&[(12000, 4)], Some(0));
+        e.live = Some(gains.clone());
+        let mut d = e.decoder();
+        assert_eq!(d.channels(), 2);
+        assert_eq!(quarters(d.by_ref().take(2)), [1.0, 0.5]);
+        gains.set([0.0, 2.0]);
+        assert_eq!(quarters(d.by_ref().take(2)), [0.0, 2.0]);
+        // A channel at the centre and its call's own volume plays as is.
+        let l = FollowingLoop {
+            key: "k",
+            name: String::new(),
+            at: None,
+            gains,
+            pan: CENTRE_PAN as f32,
+            volume: f32::from(CALL_VOLUME),
+            target_volume: None,
+        };
+        let [a, b] = l.gains_now();
+        assert!((a - 1.0).abs() < 1e-6 && (b - 1.0).abs() < 0.01, "{a} {b}");
+    }
+
+    #[test]
+    fn the_last_request_for_each_channel() {
+        let asked = [("a", 1), ("b", 2), ("a", 3), ("c", 4), ("b", 5)];
+        assert_eq!(latest_by_channel(asked.into_iter(), |r| r.0), [("a", 3), ("b", 5), ("c", 4)]);
     }
 
     #[test]

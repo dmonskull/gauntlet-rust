@@ -837,9 +837,10 @@ set, awareness 1000, a 30-field freeze, one contact's delay) with their
 the nearest; AI 3 chases, runs from a haloed hero (× 0.9, the nudges
 while blocked) or walks unaware; the drain on contact (20 a second:
 health through `Player::take_blow` as the negative kind-`0x1000` blow, or
-experience with `PlayerState::lose_experience`; `S_DEATHSUCK`; the drain
-effect; its hint) and Death paying for it, leaving full with
-`S_DEATHLAUGH`; blows taking 1, magic killing it (the level-75 heal), the
+experience with `PlayerState::lose_experience`; `S_DEATHSUCK` following
+the Death draining, stopped on a tick none drains; the drain effect; its
+hint) and Death paying for it, leaving full with `S_DEATHLAUGH` (panned
+at its feet, [audio-format.md](audio-format.md)); blows taking 1, magic killing it (the level-75 heal), the
 halo's share and the use-magic hint; rising and fading as it goes, then
 the leave hint; the halo's drain (the hero stands in DEATHGRABS →
 DEATHGRAB → DEATHGRABR, `S_HALO` once, `S_DEATHDIE` going on at it, the

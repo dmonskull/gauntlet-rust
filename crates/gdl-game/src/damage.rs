@@ -21,17 +21,19 @@
 //! armour, the armour powers, elements.
 //!
 //! A blow that does damage plays the monster's hit sound, the killing one
-//! its death sound (`MonsterSounds`): the far versions for thrown blows.
+//! its death sound (`MonsterSounds`): the far versions for thrown blows —
+//! faded and panned at its feet as the game plays them
+//! (`docs/audio-format.md`, "Positional sounds"), as are a generator's
+//! and a critter's; Death's dying is panned only.
 //!
 //! Stand-ins: the level-versus-player-level damage scale and blocking
-//! while defending aren't applied; there's no score yet, and sounds aren't
-//! placed in 3D. What happens when the hero dies is the front end's
-//! (`frontend.rs`).
+//! while defending aren't applied; there's no score yet. What happens when
+//! the hero dies is the front end's (`frontend.rs`).
 
 use bevy::prelude::*;
 use gdl_formats::enemy;
 
-use crate::audio::PlaySound;
+use crate::audio::{CALL_VOLUME, PlaySoundAt};
 use crate::combat::{Hit, TargetKind, Targetable, hit_kind};
 use crate::critters::{Critter, CritterLevel, CritterSphere};
 use crate::deaths;
@@ -64,7 +66,7 @@ pub(crate) fn apply_hits(
     mut critters: Query<&mut Critter>,
     spheres: Query<&CritterSphere>,
     critter_level: Option<Res<CritterLevel>>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
     mut effects: MessageWriter<EffectAt>,
     heroes: Query<&Player>,
     (enemies, mut hints): (Res<EnemyScale>, MessageWriter<ShowHint>),
@@ -83,7 +85,7 @@ pub(crate) fn apply_hits(
                 if m.enemy == monsters::DEATH_TYPE {
                     let hero = heroes.get(hit.attacker).ok();
                     if blow_on_death(&mut m, hit, hero, state.as_deref_mut(), &mut hints) {
-                        sounds.write(PlaySound(DEATH_DIES.into()));
+                        sounds.write(PlaySoundAt::panned(DEATH_DIES, Vec3::from(m.position), CALL_VOLUME));
                         if let Some(mut g) = m.generator.and_then(|g| generators.get_mut(g).ok()) {
                             g.alive = g.alive.saturating_sub(1);
                         }
@@ -110,7 +112,7 @@ pub(crate) fn apply_hits(
                     m.hits = m.hits.saturating_add(1);
                     if let Some(s) = level.as_ref().and_then(|l| l.sounds.get(&m.enemy)) {
                         let name = if m.hit_points > 0.0 { s.hit(m.strength, m.hits, hit.ranged) } else { s.die(m.strength, hit.ranged) };
-                        sounds.write(PlaySound(name.to_string()));
+                        sounds.write(PlaySoundAt::faded(name, Vec3::from(m.position), MONSTER_VOLUME));
                     }
                 }
                 // Every blow earns experience; the killing one earns the
@@ -178,10 +180,12 @@ pub(crate) fn apply_hits(
                     && let Some((hurt, destroyed)) = enemy::generator_sounds(level.realm, g.enemy)
                     && g.hit_points < was
                 {
+                    // Above it (stand-in: its place, not its centre, raised).
+                    let at = Vec3::from(g.position) + Vec3::Y * GENERATOR_SOUND_RISE;
                     if g.hit_points > 0.0 {
-                        sounds.write(PlaySound(hurt));
+                        sounds.write(PlaySoundAt::faded(hurt, at, GENERATOR_HURT_VOLUME));
                     } else if level.boss < 0 {
-                        sounds.write(PlaySound(destroyed));
+                        sounds.write(PlaySoundAt::faded(destroyed, at, CALL_VOLUME));
                     }
                 }
                 if g.hit_points <= 0.0 {
@@ -223,8 +227,10 @@ pub(crate) fn apply_hits(
                 let level = critter_level.as_deref();
                 let xp = c.take_hit(hit.damage, hit.kind, hit.push.to_array(), sphere, part, hit.ranged, level, &mut hit_sounds);
                 info!("the hero hits a critter for {:.1}: {:.0} hit points left", hit.damage, c.hit_points);
+                // At its root, faded.
+                let at = Vec3::from(c.position);
                 for s in hit_sounds {
-                    sounds.write(PlaySound(s));
+                    sounds.write(PlaySoundAt::faded(s, at, CRITTER_VOLUME));
                 }
                 if let Some(state) = state.as_mut()
                     && state.add_experience(xp) > 0
@@ -351,6 +357,13 @@ const DEATH_HEAL_PER_LEVEL: f32 = 0.032;
 const HALO: u32 = 0x8_0000;
 /// The sound of Death dying.
 const DEATH_DIES: &str = "S_DEATHDIE";
+/// Requested volumes: a monster's hit and death sounds, a generator hurt
+/// (destroyed: the call's own), a critter's sounds; the generators' play
+/// this far above their place.
+const MONSTER_VOLUME: u8 = 0xE0;
+const GENERATOR_HURT_VOLUME: u8 = 0xB4;
+const CRITTER_VOLUME: u8 = 0xE0;
+const GENERATOR_SOUND_RISE: f32 = 2.0;
 
 /// A blow on Death (the game's blow routine, Death's branch; no reaction
 /// or experience): magic kills it outright — healing a hero above level 75
