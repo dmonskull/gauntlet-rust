@@ -453,7 +453,10 @@ throw every two seconds.
   targets use their own extent.
 - Generators and breakables are hit as an upright cylinder of their
   target radius and height (not the item touch test); monster missiles
-  pass every item, and skip the item check at release.
+  pass every item but the safe rocks (the game's filter lets them past
+  the rest), and skip the item check at release. Every missile but
+  magic stops at a standing safe rock and hits it ([critters.md](
+  critters.md), "Safe rocks").
 - Hits go to the nearest target along the segment, not the first in slot
   order; per-attacker cooldowns aren't kept (only piercing needs them).
 - No wall/hit/burst effects, sparks or hit sounds (the release's sound

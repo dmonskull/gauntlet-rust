@@ -57,6 +57,8 @@ impl Plugin for ItemsPlugin {
 // Item flags (the record's `+0xC4`, starting from the type's `+0x46`).
 /// Activated: a door or chest opened, an exit in use.
 pub const USED: u16 = 0x1;
+/// A blow on a safe rock its armour swallows still takes this off.
+const ROCK_LEAST_BLOW: f32 = 1.0;
 /// Powerups flagged so (`+0xC4 & 0x8100`) are never held by a critter.
 const HOLD_REFUSED: u16 = 0x8100;
 /// How near a placed critter's spot a powerup must be for it to hold it:
@@ -177,6 +179,23 @@ impl Shape {
     fn local(&self, p: [f32; 3]) -> [f32; 2] {
         let (dx, dz) = (p[0] - self.centre[0], p[2] - self.centre[2]);
         [dx * self.axes[0][0] + dz * self.axes[0][2], dx * self.axes[1][0] + dz * self.axes[1][2]]
+    }
+
+    /// Whether a sphere of radius `r` at `p` touches the shape (a
+    /// missile, `LevelItems::rock_in_way`).
+    fn touches(&self, p: [f32; 3], r: f32) -> bool {
+        let reach = self.radius + r;
+        let (dx, dy, dz) = (p[0] - self.centre[0], p[1] - self.centre[1], p[2] - self.centre[2]);
+        let dist = dx.hypot(dz);
+        if dist > reach {
+            return false;
+        }
+        match self.kind {
+            1 => dy.abs() <= self.reach + r,
+            2 => dist.hypot(dy) <= reach,
+            3 => dy.abs() <= self.reach + r && self.in_box(p, r),
+            _ => false,
+        }
     }
 
     fn in_box(&self, p: [f32; 3], r: f32) -> bool {
@@ -304,6 +323,10 @@ struct Item {
     /// `+0xDE` for obstacles: the placement's count — a safe rock's stage
     /// (3 whole … 0 broken; −1 not made yet).
     stage: i16,
+    /// `+0xD0` hit points and `+0xCF` armour (−1: blows don't hurt it):
+    /// a safe rock's are its type's × its stage, and none once broken.
+    hit_points: i16,
+    armor: i8,
     /// Picked up or opened for good: lingering `timer` fields, then gone.
     leaving: bool,
     gone: bool,
@@ -415,6 +438,10 @@ pub struct ItemView<'a> {
     pub actions: usize,
     /// Neither picked up, opened for good nor freed.
     pub live: bool,
+    /// Its armour now (`+0xCF`: −1 blows don't hurt it).
+    pub armor: i8,
+    /// A safe rock that's been made (standing or broken).
+    pub rock: bool,
     /// What it holds (containers).
     pub contents: Option<&'a ItemType>,
     /// Its model, while it has one.
@@ -446,6 +473,8 @@ impl LevelItems {
             done: item.done,
             actions: item.action_count(),
             live: !item.gone && !item.leaving && !item.held,
+            armor: item.armor,
+            rock: item.is_safe_rock() && item.stage >= 0,
             contents: item.contents.as_ref(),
             model: item.model,
         }
@@ -564,6 +593,55 @@ impl LevelItems {
         std::mem::take(&mut self.woken)
     }
 
+    /// The nearest safe rock a missile going from `from` to `to` (its
+    /// radius `radius`, kind `kind`) runs into: how far along (0..1), and
+    /// its placement. Standing rocks stop every missile but magic
+    /// (`0x200`); a broken one (armour −1) only an explosive one (`0x400`)
+    /// — the game's item filter for missiles.
+    pub fn rock_in_way(&self, from: [f32; 3], to: [f32; 3], radius: f32, kind: u32) -> Option<(f32, usize)> {
+        if kind & 0x200 != 0 {
+            return None;
+        }
+        let (a, b) = (Vec3::from(from), Vec3::from(to));
+        let steps = ((b - a).length() / (0.5 * radius.max(0.25))).ceil().clamp(1.0, 64.0) as usize;
+        self.items
+            .iter()
+            .filter(|i| i.is_safe_rock() && i.stage >= 0 && !i.gone && (i.armor >= 0 || kind & 0x400 != 0))
+            .filter_map(|i| {
+                (0..=steps).map(|k| k as f32 / steps as f32).find(|&t| i.shape.touches(a.lerp(b, t).to_array(), radius)).map(|t| (t, i.placement))
+            })
+            .min_by(|x, y| x.0.total_cmp(&y.0))
+    }
+
+    /// A blow of `damage` on a safe rock (the game's item damage routine):
+    /// its armour comes off, leaving at least 1 (armour −1: nothing), and
+    /// that comes off its hit points; then it's restaged — 0 hit points
+    /// broken (0: walked over, no armour), up to its type's 1, up to twice
+    /// 2, more 3. Returns the new stage when it changed.
+    pub fn hit_rock(&mut self, placement: usize, damage: f32) -> Option<i16> {
+        let i = self.find_mut(placement).filter(|i| i.is_safe_rock() && i.stage >= 0)?;
+        if i.armor < 0 {
+            return None;
+        }
+        let blow = (damage - f32::from(i.armor)).max(ROCK_LEAST_BLOW);
+        i.hit_points = (i.hit_points - blow.round() as i16).max(0);
+        let per = i.ty.hit_points;
+        let stage = match i.hit_points {
+            0 => 0,
+            hp if hp <= per => 1,
+            hp if hp <= per.saturating_mul(2) => 2,
+            _ => 3,
+        };
+        if stage == i.stage {
+            return None;
+        }
+        i.stage = stage;
+        if stage == 0 {
+            i.armor = -1;
+        }
+        Some(stage)
+    }
+
     /// Frees the item at once, model and all (the game's `+0xC4 = 0xFFFF`).
     pub fn free(&mut self, placement: usize, commands: &mut Commands) {
         if let Some(i) = self.find_mut(placement) {
@@ -593,6 +671,7 @@ impl LevelItems {
     }
 
     pub fn release(&mut self, ty: ItemType, position: [f32; 3], rotation: [f32; 9], amount: Option<i32>, delay: i32) -> usize {
+        let (hit_points_of_type, armor_of_type) = (ty.hit_points, ty.armor);
         let placement = RELEASED_BASE + self.released;
         self.released += 1;
         let params = match ty.class {
@@ -613,6 +692,8 @@ impl LevelItems {
             timer: 0,
             delay,
             stage: 1,
+            hit_points: hit_points_of_type,
+            armor: armor_of_type,
             leaving: false,
             gone: false,
             held: false,
@@ -695,6 +776,9 @@ pub(crate) fn build_items(
             PlacementParams::Obstacle { count, .. } => count,
             _ => 1,
         };
+        let rock = matches!(params, PlacementParams::Obstacle { subtype, .. } if (if subtype >= 1 { i32::from(subtype) } else { ty.subtype }) == SAFE_ROCK);
+        let hit_points = if rock { ty.hit_points.saturating_mul(stage.max(0)) } else { ty.hit_points };
+        let armor = if rock && stage == 0 { -1 } else { ty.armor };
         match (ty.class, &params) {
             (ItemClass::Exit, _) => {
                 flags = (flags & !USED) | ALWAYS_ACTIVE;
@@ -730,6 +814,8 @@ pub(crate) fn build_items(
             amount,
             delay: 0,
             stage,
+            hit_points,
+            armor,
             leaving: false,
             gone: false,
             held: false,
