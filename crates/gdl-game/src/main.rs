@@ -20,6 +20,7 @@ mod deaths;
 mod effects;
 mod exits;
 mod fade;
+mod familiars;
 mod flash;
 mod font;
 mod frontend;
@@ -178,6 +179,7 @@ fn main() {
                 hints::HintsPlugin,
                 status_hud::StatusHudPlugin,
                 power_looks::PowerLooksPlugin,
+                familiars::FamiliarsPlugin,
             ))
             .add_plugins((
                 font::Screen2dPlugin,
