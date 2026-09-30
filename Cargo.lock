@@ -2539,6 +2539,8 @@ dependencies = [
  "gdl-formats",
  "gdl-install",
  "rfd",
+ "ron",
+ "serde",
 ]
 
 [[package]]
