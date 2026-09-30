@@ -30,7 +30,7 @@ use crate::hints::{Hint, Hints, ShowHint};
 use crate::message_box::ShowMessage;
 use crate::level_material::LevelMaterial;
 use crate::player::{Player, PlayerTick};
-use crate::player_state::{DamagePlayer, FIELDS_PER_TICK, Heal, PlayerState};
+use crate::player_state::{DamagePlayer, FIELDS_PER_TICK, Heal, PlayerState, power};
 use crate::quest;
 use crate::population::{ContentModels, ItemRig, LevelPopulation, PlacementIndex};
 use crate::world::LevelGround;
@@ -66,6 +66,8 @@ pub const CLOSED: u16 = 0x8000;
 
 /// The Pojo's special bit, and the food that poisons it (`CHICKEN`: 100).
 const POJO: u32 = 0x400;
+/// Skorne's horns, mask and gauntlets (special bits): one at a time.
+const SKORNE: u32 = 0xF000;
 const POJO_POISON: &str = "CHICKEN";
 const POJO_POISON_AMOUNT: f32 = -100.0;
 
@@ -1318,10 +1320,18 @@ fn pick_up(
             out.sound("S_PICKUPMAGIC");
             true
         }
-        // Weapon, armour, speed, magic and special powers.
+        // Weapon, armour, speed, magic and special powers: one of Skorne's
+        // pieces stays on the floor while the hero holds any of them.
         5..=9 => {
-            state.grant_power(subtype, value as u32, *amount as f32, duration);
-            out.sound(power_sound(subtype, value as u32));
+            let value = value as u32;
+            if subtype == power::SPECIAL && value & SKORNE != 0 && state.bits.special & SKORNE != 0 {
+                return false;
+            }
+            state.grant_power(subtype, value, *amount as f32, duration);
+            if let Some(h) = Hint::for_power(subtype, value) {
+                out.hint(h);
+            }
+            out.sound(power_sound(subtype, value));
             true
         }
         // Runestones: one of each.
