@@ -95,7 +95,7 @@ use crate::locomotion;
 use crate::mechanics::Mechanics;
 use crate::monsters::{MonsterLevel, MonsterTick};
 use crate::player::Player;
-use crate::player_state::{DamagePlayer, EnemyScale, PlayerState};
+use crate::player_state::{DamagePlayer, EnemyScale, PlayerState, TimeStop};
 use crate::population::LevelPopulation;
 use crate::projectiles::{cylinder_hit, load_atree, spawn_critter_missile};
 use crate::world::{LevelEntity, LevelGround};
@@ -597,8 +597,10 @@ pub struct CritterLevel {
     hit_point_scale: f32,
     speed_scale: f32,
     damage_scale: f32,
-    /// The enemies' scale this tick (the shrink power's, `EnemyScale`).
+    /// The enemies' scale this tick (the shrink power's, `EnemyScale`),
+    /// and whether time is stopped (`TimeStop`).
     enemy_scale: f32,
+    time_stopped: bool,
     /// Per player: until when critter blows can't hit it.
     guard: HashMap<Entity, f32>,
     /// The boss, once made; whether it has died (its DEATH has played:
@@ -1256,6 +1258,7 @@ fn setup_level(
         speed_scale: t.monster_speed,
         damage_scale: t.monster_damage,
         enemy_scale: 1.0,
+        time_stopped: false,
         guard: HashMap::new(),
         boss: None,
         boss_dead: false,
@@ -1611,12 +1614,13 @@ fn tick_critters(
     mut hurt: MessageWriter<DamagePlayer>,
     mut sounds: MessageWriter<PlaySound>,
     mut death_shot: Local<Option<u32>>,
-    (colours, mut tags, enemies): (Res<FlashColours>, Query<&mut MeshTag>, Res<EnemyScale>),
+    (colours, mut tags, enemies, stop): (Res<FlashColours>, Query<&mut MeshTag>, Res<EnemyScale>, Res<TimeStop>),
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     let level = &mut *level;
     level.now += DT;
     level.enemy_scale = enemies.0;
+    level.time_stopped = stop.0;
     let now = level.now;
     update_intro(level);
     // The hero who brought the legendary item uses it up once the level
@@ -1753,7 +1757,10 @@ fn tick_critters(
         c.pick = None;
         c.chosen_pattern = None;
         forced(c, &ty, now, level.intro, level.boss_type);
-        if c.state == CritterState::Active {
+        // Time stopped, no pattern is chosen; only a start or death move
+        // switches in, and only a death plays on.
+        let stopped = level.time_stopped;
+        if c.state == CritterState::Active && !stopped {
             if c.next.is_none() {
                 choose_block(c, now, &heroes);
             }
@@ -1775,7 +1782,8 @@ fn tick_critters(
         let was = c.current;
         let parts_were: Vec<Option<usize>> = c.parts.iter().map(|p| p.current).collect();
         // Frozen, it keeps its move and frame.
-        if c.frozen <= 0.0 {
+        let starts_or_dies = |c: &Critter, m: Option<usize>| matches!(c.move_kind(m), Some(kind::START | kind::DEATH));
+        if c.frozen <= 0.0 && (!stopped || starts_or_dies(c, c.current) || starts_or_dies(c, c.next)) {
             switch(c, now, Some(&mut animator), &mut level.intro, true);
         }
         switch_parts(c, now, &mut level.intro);
@@ -1842,6 +1850,7 @@ fn tick_critters(
         for p in &mut c.parts {
             follow_spheres(p, &bone_matrix, &mut spheres, &mut commands);
             if !p.mirrored
+                && !level.time_stopped
                 && let Some(pcur) = p.current
             {
                 let pmv = p.moves()[pcur].clone();
@@ -1853,6 +1862,9 @@ fn tick_critters(
         }
 
         let Some(cur) = c.current else { continue };
+        if stopped && c.move_kind(Some(cur)) != Some(kind::DEATH) {
+            continue;
+        }
         let mv = c.moves()[cur].clone();
         trace!(
             "critter {entity:?} {} frame {:.1}/{} ended {} next {:?} hold {:.2}",
@@ -3173,6 +3185,7 @@ mod tests {
             speed_scale: 1.0,
             damage_scale: 1.0,
             enemy_scale: 1.0,
+        time_stopped: false,
             guard: HashMap::new(),
             boss: None,
             boss_dead: false,

@@ -439,6 +439,17 @@ Not traced: `FUN_800a00ec` (music) takes another value while it's on, as
 during cuts; `FUN_800a7ff8` (animated objects) holds those without flag
 `0x100` in their `+0x0C`.
 
+Here: `player_state::TimeStop`. Monsters (`monsters.rs`): active ones
+skip everything but turning blows into reactions — which the monster
+update (`FUN_8004cfe0`) still runs (`FUN_8004db94`), with `+0x90` moved on
+by the frame's time (their animation clock, presumably, so they hold
+their pose); critters (`critters.rs`): no pattern chosen, only START or
+DEATH switches in, only DEATH plays on; generators make nothing
+(`generators.rs`); cycling tiles are held off, their wait at 30 fields
+(`hazards.rs`). Not yet: the held animation (the monsters' and critters'
+clips still play), dying monsters as targets, the music, animated
+objects.
+
 `r13-0x7788`, mentioned with the damage halving elsewhere, is the boss
 being awake (the slots' × 3, above); the halving of monster damage is the
 shrink power's (`r13-0x7320`, below).

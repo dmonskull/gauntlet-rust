@@ -342,8 +342,13 @@ pub fn tick_generators(
     camera: Option<Res<PlayCamera>>,
     monsters: Query<(Entity, &Monster)>,
     mut generators: Query<(Entity, &mut Generator)>,
+    stop: Res<crate::player_state::TimeStop>,
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
+    // Time stopped, they make nothing.
+    if stop.0 {
+        return;
+    }
     let view = game_view(camera.as_deref());
     let frustum = view.as_ref();
     let feet: Vec<[f32; 3]> = players.iter().map(|p| p.mover.position).collect();

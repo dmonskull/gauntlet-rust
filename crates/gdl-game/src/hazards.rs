@@ -53,6 +53,9 @@ const TILE_SOUNDS: [[&str; 7]; 12] = [
 /// Type flags: hurts (1) and cycles its actions (4).
 const TILE_HURTS: u16 = 0x1;
 const TILE_CYCLES: u16 = 0x4;
+/// A tile held off by the time stop waits this many fields once time
+/// runs again.
+const STOPPED_WAIT: f32 = 30.0;
 /// Kind bits in a tile's value that push the hero out along the tile.
 const TILE_PUSH: u32 = 0x30;
 /// Added to every tile blow's flags.
@@ -157,11 +160,26 @@ fn tiles(
     mut hurt: MessageWriter<DamagePlayer>,
     mut sounds: MessageWriter<PlaySound>,
     mut hints: MessageWriter<ShowHint>,
+    stop: Res<crate::player_state::TimeStop>,
 ) {
     let (Some(mut h), Some(mut items), Some(state)) = (hazards, items, state) else { return };
     let h = &mut *h;
     let (damage_scale, time_scale) = level.as_ref().map_or((1.0, 1.0), |l| (l.tuning.hazard_damage, l.tuning.tile_time));
     let realm = items.realm();
+
+    // Time stopped: every cycling tile is held off, its wait at 30 fields.
+    if stop.0 {
+        for t in h.tiles.iter_mut().filter(|t| t.flags & TILE_CYCLES != 0) {
+            if t.action != 0 || items.view(t.placement).is_some_and(|v| v.state != 0) {
+                items.play(t.placement, 0);
+                items.set_state(t.placement, 0);
+            }
+            t.started = true;
+            t.action = 0;
+            t.timer = STOPPED_WAIT;
+        }
+        return;
+    }
 
     // Cycle: OFF waits its time, the other actions play through.
     for i in 0..h.tiles.len() {
