@@ -149,10 +149,12 @@ impl PlayCamera {
 
 }
 
-/// The starting camera for entry 0: a kind-1 locator, looking along its yaw
-/// and pitch at the players' distance.
-fn intro_shot(population: &gdl_formats::Population, focus: [f32; 3]) -> Option<Intro> {
-    let l = population.locators.iter().find(|l| l.kind == LocatorKind::Transmitter(1) && l.index == 0)?;
+/// The starting camera for the entry the heroes arrive at: the kind-1
+/// locator with its index (entry 0's when there's none), looking along its
+/// yaw and pitch at the players' distance.
+fn intro_shot(population: &gdl_formats::Population, entry: i16, focus: [f32; 3]) -> Option<Intro> {
+    let starting = |index: i16| population.locators.iter().find(|l| l.kind == LocatorKind::Transmitter(1) && l.index == index);
+    let l = starting(entry).or_else(|| starting(0))?;
     let (eye, target) = locator_view(l, focus);
     Some(Intro { eye, target, fields_left: INTRO_FIELDS })
 }
@@ -229,7 +231,7 @@ fn start(
     let bounds = record.target_bounds(lo, hi);
     let focus = population.player_start().map_or([0.0; 3], |s| s.position);
     let rig = CameraRig::new(points, bounds, record.near, focus);
-    let intro = intro_shot(&population.population, focus);
+    let intro = intro_shot(&population.population, population.entry, focus);
     let previous = intro.map_or((rig.eye(), rig.target), |i| (i.eye, i.target));
     commands.insert_resource(PlayCamera { rig, previous, intro, cut: None, shake: None, shake_offset: ([0.0; 3], [0.0; 3]) });
 }

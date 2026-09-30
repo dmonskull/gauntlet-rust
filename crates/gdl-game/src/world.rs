@@ -124,6 +124,8 @@ fn change_level(
     overlay: Res<CollisionOverlay>,
     mut camera: Query<(&mut Transform, &mut FlyCamera)>,
     mut windows: Query<&mut Window>,
+    // The realm last played outside the tower (where the heroes come back).
+    mut last_realm: Local<Option<u32>>,
 ) {
     let Some(step) = requests.read().map(|r| r.0).reduce(|a, b| a + b) else {
         return;
@@ -168,7 +170,13 @@ fn change_level(
                 &mut images,
             );
             stats.population = spawned.summary;
-            let start = level.population.player_start(0);
+            let entry = population::start_entry(&level.name, *last_realm);
+            if let Some((realm, _)) = crate::quest::level_of(&level.name)
+                && realm != 13
+            {
+                *last_realm = Some(realm);
+            }
+            let start = level.population.player_start(entry);
             if let Ok((mut transform, mut fly)) = camera.single_mut() {
                 *fly = match start {
                     Some(start) if camera_at_start() => {
@@ -178,7 +186,10 @@ fn change_level(
                 };
             }
             commands.insert_resource(LevelGround(std::sync::Arc::new(level.collision)));
-            commands.insert_resource(LevelPopulation { level: level.name.clone(), population: level.population });
+            if entry != 0 {
+                info!("{}: arriving at start {entry}", level.name);
+            }
+            commands.insert_resource(LevelPopulation { level: level.name.clone(), population: level.population, entry });
         }
         Err(why) => stats.error = Some(why),
     }

@@ -147,6 +147,15 @@ level but the two hub levels (`levelL1`, `levelL3`: 12 entries each) has a
 single start. `FUN_800669d4(entry)` selects a start (falling back to 0);
 `FUN_800668e4` picks the nearest one.
 
+Which entry (`FUN_800a2ba8`): a requested one (`r13-0x7cb8`, set by
+`FUN_800a117c` to the start nearest a point), else the index of the realm
+last played outside the tower (`r13-0x7230`, set as each non-tower level
+loads, `0xD` at boot) in `0x801244dc`: 13, 7, 2, 1, 11, 4, 3, 9, 10, 5, 6,
+8 — the tower's centre for a new game, then the starts beside the G, B,
+A, K, D, C, I, J, E, F and H gates. Each entry has its starting camera
+(kind-1 transmitter with that index) for the arrival shot. The runtime
+does both (`population::start_entry`, `play_camera.rs`).
+
 ## Item models
 
 `FUN_8006776c` loads `"items/%s"` (the realm's folder — named in its WAD,

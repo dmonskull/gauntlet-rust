@@ -109,12 +109,31 @@ pub type FlipbookFrames = Arc<Vec<Vec<Vec<model_mesh::BuiltMesh>>>>;
 pub struct LevelPopulation {
     pub level: String,
     pub population: Population,
+    /// The start the heroes arrive at ([`start_entry`]).
+    pub entry: i16,
+}
+
+/// Where the heroes arrive in the tower: its start `i` is for coming back
+/// from realm `TOWER_ARRIVALS[i]` — the tower itself (a new game) at the
+/// centre, then G, B, A, K, D, C, I, J, E, F, H beside their gates. The
+/// realm is the last one played outside the tower.
+const TOWER_ARRIVALS: [u32; 12] = [13, 7, 2, 1, 11, 4, 3, 9, 10, 5, 6, 8];
+const TOWER_REALM: u32 = 13;
+
+/// The start entry for arriving in `level` after last playing in realm
+/// `last_realm`: in the tower, the one for that realm; elsewhere 0.
+pub fn start_entry(level: &str, last_realm: Option<u32>) -> i16 {
+    if crate::quest::level_of(level).is_none_or(|(realm, _)| realm != TOWER_REALM) {
+        return 0;
+    }
+    let realm = last_realm.unwrap_or(TOWER_REALM);
+    TOWER_ARRIVALS.iter().position(|&r| r == realm).map_or(0, |i| i as i16)
 }
 
 impl LevelPopulation {
-    /// The start for entry 0 (every level has one).
+    /// The start the heroes arrive at (entry 0 when that one's missing).
     pub fn player_start(&self) -> Option<PlayerStart> {
-        self.population.player_start(0)
+        self.population.player_start(self.entry)
     }
 }
 
