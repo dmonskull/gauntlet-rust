@@ -302,15 +302,33 @@ re-panned by its owner every frame: it finds its voices by their priority
 — each such loop has its own (`FUN_8001630c`) — and sets their pan
 (`FUN_800160a8`, driver command `0x55AC`); the level items' ambient loops
 (`FUN_800a00ec`) also set their volume that way every frame
-(`FUN_800161fc`, `0x55AB`) from their own distance factor. The driver moves
-a playing voice's pan and volume toward the new value at most 8 a step
-(`FUN_800d22f4`, `FUN_800d24ac`). Such loops: the exit's flame
-(`S_EXITFLAME`, `FUN_8009ce48`, at a hero standing in an exit, `+0x54`),
-the movers' (`FUN_8009cecc`: the level's table `0x8028AFF0` by mover, and
-its stop sound; `FUN_8009d01c`: the realm's `0x801232E4`, stop sound
-`0x8012331C`, at a node), the hourglass (`S_HOURGLASS`, `FUN_8009fee8`, at
-the hero's `+0x54`), Death's drain (`S_DEATHSUCK`, `FUN_800a045c`), the
-items' ambient sounds (`FUN_800a00ec`).
+(`FUN_800161fc`, `0x55AB`) from their own distance factor — and that new
+volume is taken as it is (× the effects volume / 256, less the ducking),
+not × the call's own / 127 as the voice's start was. Each such command
+moves the voice's pan or volume toward the new value by at most 8
+(`FUN_800d22f4`, `FUN_800d24ac`): with the owners sending one every game
+tick, 8 a tick (30 a second). Such loops — each but the items' started,
+panned by its position (`FUN_80015694`), whenever it isn't playing
+(`FUN_800163c4`), and stopped by its sound (`FUN_80016558`):
+
+- the exit's flame (`S_EXITFLAME`, `FUN_8009ce48`, 0xE0): at the first
+  hero standing in an exit, its `+0x54` (`FUN_8007692c`);
+- the movers' (`FUN_8009cecc`, 0xE0): the level's table `0x8028AFF0` by the
+  mover's set, at the mover's node (its matrix's `+0x30`). Only the first
+  mover moving each tick calls it (`FUN_800629ec`); a mover stopping stops
+  it and, if it was playing, plays the set's stop sound, panned at 0xE0;
+- the rotators' (`FUN_8009d01c`, 0xE0): the realm's `0x801232E4`, at the
+  node. Every rotator grinding calls it each tick, so the last one's pan
+  holds; one reaching its end stops it and plays the realm's
+  `0x8012331C`, panned at 0xE0 (`FUN_800606e8`);
+- the hourglass (`S_HOURGLASS`, `FUN_8009fee8`, 0x7F): at the first hero
+  holding it (in play with `+0x960` set, [powers.md](powers.md)), its
+  `+0x54`;
+- Death's drain (`S_DEATHSUCK`, `FUN_800a045c`, 0x7F): at the draining
+  Death's feet `+0x34` (its AI, `FUN_800460a8`), and at the hero's feet
+  `+0x44` while its halo drains a Death (`FUN_8007c4f0`) — one voice for
+  both (priority 0x6F);
+- the items' ambient sounds (`FUN_800a00ec`), re-volumed as well.
 
 **The volume.** The driver sets a voice's volume to requested × the call's
 own (the bank's `vol`, 0–127) / 127, less the ducking (`FUN_800d2698`),
@@ -346,13 +364,14 @@ items' `+0x34` the place, `+0x54` the centre, the blows on items taking it
 | a blow on the hero: `S_PLYRDMG`, `S_PLYRDMG2`, `S_PLYRDMG3` by its kind | `FUN_8009eb14` | pan | the hero's feet | 0x7F |
 | the class's death line `S_<CLS>DIE1` | `FUN_8009f198` | pan | the hero's feet | 0xE0 |
 | potions `S_POTION1`–`4`, shields `S_SHIELD1`–`4` | `FUN_8009e860` | pan | the hero's feet | 0x7F |
-| damage tiles (`0x80122FF4` by realm and tile) | `FUN_8009e8a4` | pan | the hero's feet | 0x7F (two of them 0xB4) |
+| damage tiles (`0x80122FF4` by realm and tile; `S_FIREHOLE2` for `S_FIREHOLE` on the dragon's level, boss 0x22) | `FUN_8009e8a4` | pan | the hero's feet | 0x7F (`S_TENTACLES`, `S_TENTACLESD` 0xB4) |
 | `S_TUNNEL` (going out through an exit) | `FUN_8009ca90` | pan | the hero's feet | 0x7F |
 | `S_HALO`, `S_THUNDERHAMMER`, `S_MASK`, `S_HORNS`, `S_GAUNTLET1`/`2`, the breaths (`FUN_8009ed08`) | `FUN_8009e990`, `FUN_8009cce8`, `FUN_8009ec88`, `FUN_8009ecc8`, `FUN_8009ec48`, `FUN_8009ec08` | pan | the hero's top | 0xE0 |
-| `S_XRAY`, `S_DEATHDIE` (the halo's drain) | `FUN_8009e950`, `FUN_800a035c` | pan | the hero's top | 0x7F |
+| `S_XRAY` | `FUN_8009e950` | pan | the hero's top | 0x7F |
+| `S_DEATHDIE` while the halo drains a Death, started again whenever it isn't playing | `FUN_800a035c` from `FUN_80080d3c` | pan | the Death's `+0x54` | 0x7F |
 | `S_LEVITATEDOWN`, `S_UNGROW`, `S_UNPOJO` | `FUN_8009cd28`, `FUN_8009cd98`, `FUN_8009cdd8` | pan | the hero's top | 0xE0 |
 | `S_UNSHRINK` | `FUN_8009cd68` | centred | — | 0xE0 |
-| `S_WARN` | `FUN_8009e9d0` | centred | — | 0x7F, 0x98, 0xB1, 0xCA by health |
+| `S_WARN` | `FUN_8009e9d0` | centred | — | by health: 0xCA at 10 or less, 0xB1 below 25, 0x98 below 100, else 0x7F |
 | `S_TURBODEFENSE` | `FUN_8009ebc8` | pan | the hero's `+0x64` | 0x7F |
 | pickups | `FUN_8009c630`, `FUN_8009c670`, `FUN_8009c718`, `FUN_8009c7e0`, `FUN_8009c870` | centred | — | 0x7F (powers by value) |
 | `S_CHEST`, the doors' sounds | `FUN_8009c8b0`, `FUN_8009c8e0` | fade | the item's centre | 0x7F |
@@ -388,17 +407,39 @@ clipped by the decoder). The pan becomes left and right gains from the
 side pan through the mixer's table, relative to the centre's (a centred
 sound plays exactly as a `PlaySound`): stereo here, so the surround pan —
 in front of the focus or behind it — isn't applied, and a sound behind
-pans by its side pan like one in front. There's no mono option. Used by
-the footsteps, the x-ray and the tower's chimes. Not done: re-panning the
-loops that follow something (`LoopSound` plays centred), the voice
-queues' pans.
+pans by its side pan like one in front. There's no mono option.
+
+`LoopSoundAt { key, name, at, volume, follow_volume }` is a loop that
+follows something: one per channel `key`, sent by its owner every tick
+with where the thing is now (`LoopSoundAt::at`; `stop` ends it). It starts
+panned from `at` at the call's volume × `volume` / 127; while it plays,
+each frame its pan slides toward the one for where `at` is now by at most
+8 a game tick (240 a second, the short way round the 512 to the turn), and
+with `follow_volume` its volume toward `volume` itself the same way (the
+items' quirk above). A call that doesn't loop and has ended is started
+again by the next request, as the game's owners do. Only the last request
+for a channel in a frame counts (two ticks in one frame don't start a
+loop twice; the same for `LoopSound`, which still plays centred).
+
+Placed so far: the footsteps; the x-ray; the tower's chimes (centred, at
+0xFF); the powers' ends and `S_WARN` (`player_state.rs`); the damage tiles
+(`hazards.rs`); the bridges', movers' and rotators' one-shots and their two
+loops (`mechanics.rs`); a monster's hit and death sounds, a generator's
+hurt and destroyed, a critter's hit sounds, `S_DEATHDIE` when Death is
+killed (`damage.rs`); the runner's yell, Death's laugh and Death's drain
+loop (`monsters.rs`); the hourglass's loop (`game_hud.rs`). Stand-ins: the
+runner's yell is at its centre (the game's `+0x44` point, which the port
+also uses for its effects), a generator's sounds at its place raised 2
+(the game's are at its centre raised 2). Not done: the voice queues' pans;
+`S_EXITFLAME` and `S_TUNNEL` aren't played; nor are the hero's own cries
+(`S_PLYRDMG*`, `S_PLAYERDIES`, the death lines) and the items' ambient
+loops.
 
 ## Not done / unconfirmed
 
 - Track switching during gameplay, ducking and priorities: the runtime
   plays a level's track 0; effects at their call volume, or as a
-  positional call asks ("Positional sounds": the loops that follow
-  something aren't re-panned).
+  positional call asks ("Positional sounds").
 - Bank version 0x100 and the byte-swapped variants (`VBNK`, `pGAV`,
   `SShd`) exist in the loader but not on the disc, so aren't implemented.
 - PCM16 streams (codec ≠ 0x20): same.

@@ -30,7 +30,7 @@ use gdl_formats::collision::NodePose;
 use gdl_formats::population::{LocatorKind, PlacementParams, Population};
 use gdl_formats::WorldNode;
 
-use crate::audio::{LoopSound, PlaySound};
+use crate::audio::{LoopSoundAt, PlaySoundAt};
 use crate::items::{self, LevelItems};
 use crate::level_material::LevelMaterial;
 use crate::monsters::MonsterLevel;
@@ -261,6 +261,10 @@ struct Mover {
     /// How faded out a bridge is (0 shown, 255 gone).
     alpha: i32,
 }
+
+/// The movers', bridges' and rotators' sounds play at this requested
+/// volume.
+const MECHANISM_VOLUME: u8 = 0xE0;
 
 /// Mover loop sets (`S_ELV<set><realm>` while moving, `S_ELV<set>STP<realm>`
 /// when it stops, `B` added on boss levels; `*` marks a plain name,
@@ -553,8 +557,8 @@ fn tick(
     mut models: Query<&mut Transform, Without<Player>>,
     mut cuts: MessageWriter<StartCut>,
     mut shakes: MessageWriter<Shake>,
-    mut sounds: MessageWriter<PlaySound>,
-    mut loops: MessageWriter<LoopSound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
+    mut loops: MessageWriter<LoopSoundAt>,
     level: Option<Res<MonsterLevel>>,
     mut messages: MessageWriter<ShowMessage>,
 ) {
@@ -749,6 +753,8 @@ fn tick(
     let (letter, boss_level) = level.as_ref().map_or(('A', false), |l| (l.realm, l.boss >= 0));
     let realm = items.realm();
     let mut looping = None;
+    // Sounds to play at a node, once the nodes' poses are known.
+    let mut shots: Vec<(usize, String)> = Vec::new();
     for mv in &mut mech.movers {
         let carrying = standing == Some(mv.node);
         let mut st = mv.state;
@@ -761,23 +767,23 @@ fn tick(
                 if (st ^ prev) & ON != 0 {
                     let row = if st & ON == 0 { 4 } else { 3 };
                     if let Some(name) = shot(row) {
-                        sounds.write(PlaySound((*name).into()));
+                        shots.push((mv.node, (*name).into()));
                     }
                 }
             } else if mv.sound < 10 {
                 if let Some((run, stop)) = mover_loop(mv.sound, letter, boss_level) {
                     if st & MOVING != 0 {
-                        looping.get_or_insert(run);
+                        looping.get_or_insert((run, mv.node));
                     } else if prev & MOVING != 0 {
-                        sounds.write(PlaySound(stop));
+                        shots.push((mv.node, stop));
                     }
                 }
             } else if mv.sound == 11 {
                 if st & ON != 0 && prev & ON == 0 && let Some(name) = shot(1) {
-                    sounds.write(PlaySound((*name).into()));
+                    shots.push((mv.node, (*name).into()));
                 }
             } else if (st ^ prev) & MOVING != 0 && let Some(name) = shot(mv.sound - 10) {
-                sounds.write(PlaySound((*name).into()));
+                shots.push((mv.node, (*name).into()));
             }
         }
         let mut disable = 0u8;
@@ -837,7 +843,6 @@ fn tick(
     }
     mech.hidden = hidden;
     mech.fades = fades;
-    loops.write(LoopSound { key: "mover", name: looping });
 
     // Rotators; a touched one grinds round (its realm's sound) until it
     // reaches its limit.
@@ -846,26 +851,28 @@ fn tick(
         9 => Some(("S_METLROTATE", "S_METLROTATESTO")),
         _ => None,
     };
-    let mut grinding = false;
+    let mut grinding = None;
     for r in &mut mech.rotators {
         match r.subtype {
             0 => r.total += r.angle * FIELDS,
             2 if r.touched && !r.done => {
                 r.total += r.angle * FIELDS;
-                grinding = true;
                 if r.total.abs() >= r.limit.abs() {
                     r.total = r.limit.abs().copysign(r.total);
                     r.done = true;
                     if let Some((_, stop)) = rotator_sound {
-                        sounds.write(PlaySound(stop.into()));
+                        shots.push((r.node, stop.into()));
                     }
+                } else {
+                    // Each one grinding on pans the one loop: the last's
+                    // pan holds.
+                    grinding = Some(r.node);
                 }
             }
             _ => {}
         }
     }
-    let grind = rotator_sound.filter(|_| grinding).map(|(run, _)| run.to_string());
-    loops.write(LoopSound { key: "rotator", name: grind });
+    let grind = rotator_sound.zip(grinding).map(|((run, _), node)| (run.to_string(), node));
 
     // World poses, parents first: a node's own move, then its parent's.
     let mut world: HashMap<usize, NodePose> = HashMap::new();
@@ -887,6 +894,24 @@ fn tick(
     for (&root, &pose) in &world {
         let entry = mech.poses.entry(root).or_insert((pose, pose));
         *entry = (entry.1, pose);
+    }
+
+    // The movers' and rotators' sounds, where their nodes are now: the
+    // one-shots panned; one loop for all the movers, following the first
+    // that moves, one for the rotators, following the last grinding on
+    // (`docs/audio-format.md`, "Positional sounds").
+    let place = |node: usize| {
+        let origin = nodes.origin.get(node).copied().unwrap_or_default();
+        Vec3::from(world.get(&node).map_or(origin, |pose| pose.apply(origin)))
+    };
+    for (node, name) in shots {
+        sounds.write(PlaySoundAt::panned(name, place(node), MECHANISM_VOLUME));
+    }
+    for (key, sound) in [("mover", looping), ("rotator", grind)] {
+        loops.write(match sound {
+            Some((name, node)) => LoopSoundAt::at(key, name, place(node), MECHANISM_VOLUME),
+            None => LoopSoundAt::stop(key),
+        });
     }
     if let Some(c) = collision {
         for (root, members) in &mech.members {
