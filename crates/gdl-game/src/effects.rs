@@ -391,7 +391,42 @@ const EXPLOSION_SOUND: &str = "S_SUICIDE_BOMB";
 struct EffectModel {
     model: Arc<CharacterModel>,
     life: f32,
-    particles: Arc<[(particles::Params, Handle<LevelMaterial>, Vec3)]>,
+    particles: ParticleSystems,
+}
+
+/// An effect's particle systems (its atree's kind-4 nodes): their values,
+/// material and direction.
+pub type ParticleSystems = Arc<[(particles::Params, Handle<LevelMaterial>, Vec3)]>;
+
+/// The particle systems of an atree, their textures from the model file
+/// the atree's model is built from (through the same cache).
+pub fn particle_systems(
+    data: &CharacterData,
+    cache: &mut TextureCache,
+    images: &mut Assets<Image>,
+    materials: &mut Assets<LevelMaterial>,
+) -> ParticleSystems {
+    data.skeleton
+        .particles
+        .iter()
+        .map(|n| {
+            let params = particles::Params::of(&n.record);
+            let texture = n.record.texture();
+            let binding = data.model.texture_names.iter().find(|t| t.name == texture).map(|t| t.binding);
+            let image = binding.and_then(|b| cache.get(b, images)).map(|(i, _)| i);
+            let material = params.material(image, materials);
+            (params, material, Vec3::from(n.vector))
+        })
+        .collect()
+}
+
+/// Sprays an effect's particle systems once at `at` (scaled).
+pub fn spray(systems: &ParticleSystems, at: Vec3, scale: f32, seed: &mut u32, commands: &mut Commands, meshes: &mut Assets<Mesh>) {
+    for (k, (params, material, direction)) in systems.iter().enumerate() {
+        *seed = seed.wrapping_add(0x9E37_79B9);
+        let seed = *seed ^ k as u32;
+        particles::spawn_burst(params.clone().scaled(scale), material.clone(), at, *direction, seed, commands, meshes);
+    }
 }
 
 /// Effect models, loaded on first use: `WEAPONS`' by atree name, and the
@@ -514,19 +549,7 @@ fn load_effect(
     // Its particle systems' textures and flipbook frames come from the same
     // files, through the cache its model is built with.
     let mut cache = TextureCache::new(&data.model, &data.textures).sharing_materials();
-    let particles = data
-        .skeleton
-        .particles
-        .iter()
-        .map(|n| {
-            let params = particles::Params::of(&n.record);
-            let texture = n.record.texture();
-            let binding = data.model.texture_names.iter().find(|t| t.name == texture).map(|t| t.binding);
-            let image = binding.and_then(|b| cache.get(b, images)).map(|(i, _)| i);
-            let material = params.material(image, materials);
-            (params, material, Vec3::from(n.vector))
-        })
-        .collect();
+    let particles = particle_systems(&data, &mut cache, images, materials);
     let mut model = CharacterModel::build_with(&data, &mut cache, meshes, materials, images);
     model.run_texmods(&data, &texmods, &mut cache, images);
     let model = Arc::new(model);
@@ -598,11 +621,7 @@ fn play_effect(
     seed: &mut u32,
     meshes: &mut Assets<Mesh>,
 ) {
-    for (k, (params, material, direction)) in effect.particles.iter().enumerate() {
-        *seed = seed.wrapping_add(0x9E37_79B9);
-        let seed = *seed ^ k as u32;
-        particles::spawn_burst(params.clone().scaled(scale.x), material.clone(), at, *direction, seed, commands, meshes);
-    }
+    spray(&effect.particles, at, scale.x, seed, commands, meshes);
     let transform = Transform::from_translation(at).with_rotation(Quat::from_rotation_y(facing)).with_scale(scale);
     let entity = effect.model.spawn(transform, commands);
     commands.entity(entity).insert((OneShot(effect.life), LevelEntity));

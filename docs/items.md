@@ -606,7 +606,9 @@ copies of the models' materials while they're see-through; a texture
 animation on a fading part holds its frame until it's whole). Test the
 temple's with `GDL_BEATEN=0xE9E GDL_ANNOUNCED="0xFE:0"` (seven shards
 announced before; `GDL_ANNOUNCED="<shard marks>:<stone bits>"`). Stand-ins:
-the pieces' particles aren't sprayed; the flash and sparkle play
+a placed shard sprays its particle systems once from its place (the
+effects' bursts; the game runs them along the effect's nodes); the flash
+and sparkle play
 where the hero stands rather than riding him. Test with `GDL_BEATEN`/
 `GDL_RUNES`/`GDL_EXPERIENCE` on `levelL1` (a fresh hero gets the welcome
 first: `GDL_MENU="b@400,b@440,b@480,b@520,b@560,b@600"`).

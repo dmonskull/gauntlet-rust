@@ -17,7 +17,7 @@ use gdl_formats::population::{LocatorKind, PlacementParams};
 
 use crate::audio::{EffectName, PlaySound, QueueVoice};
 use crate::character::CharacterModel;
-use crate::effects::EffectAt;
+use crate::effects::{EffectAt, ParticleSystems};
 use crate::fade::Fade;
 use crate::level_material::LevelMaterial;
 use crate::mechanics::{LevelNodes, Mechanics};
@@ -255,6 +255,9 @@ const REVEAL_FIELDS: f32 = 180.0;
 const FIELDS: f32 = 2.0;
 const TICK: f32 = 1.0 / 30.0;
 
+/// The seed a placed piece's particles are sprayed with.
+const PIECE_SEED: u32 = 0x5EED;
+
 /// The exits' destination codes the reveals work on: the Desecrated
 /// Temple's, the Underworld's, Garm's Citadel's.
 const TEMPLE_EXIT: i32 = 0x500;
@@ -308,7 +311,7 @@ pub struct Scene {
     /// A reveal's fields left.
     fade: f32,
     wizard_model: Option<Arc<CharacterModel>>,
-    piece: Option<Arc<CharacterModel>>,
+    piece: Option<(Arc<CharacterModel>, ParticleSystems)>,
     /// A hero's new rank, announced first.
     rank: Option<Rank>,
     /// The rank's voice line, and whether its flash and sparkle came.
@@ -333,7 +336,7 @@ impl Scene {
         wizard: Arc<CharacterModel>,
         rank: Option<Rank>,
         what: Option<Announce>,
-        piece: Option<Arc<CharacterModel>>,
+        piece: Option<(Arc<CharacterModel>, ParticleSystems)>,
     ) {
         *self = Self { wizard_model: Some(wizard), piece, ..default() };
         if let Some(what) = what {
@@ -407,7 +410,7 @@ fn run_scene(
     (population, nodes): (Option<Res<LevelPopulation>>, Option<Res<LevelNodes>>),
     (players, playing): (Query<&Player>, Query<&EffectName>),
     (state, choice): (Option<ResMut<PlayerState>>, Option<Res<crate::player::PlayerChoice>>),
-    mut light: ResMut<ShardLight>,
+    (mut light, mut meshes): (ResMut<ShardLight>, ResMut<Assets<Mesh>>),
     mechanics: Option<ResMut<Mechanics>>,
 ) {
     // Only in the tower, once it's readied (the wizard's model is built).
@@ -523,7 +526,7 @@ fn run_scene(
             }
         }
         let Some(what) = what else { return };
-        place(scene, what, &state, &population, &nodes, &mut camera, &mut captions, &mut light, &mut commands, &mut cuts, &mut sounds);
+        place(scene, what, &state, &population, &nodes, &mut camera, &mut captions, &mut light, &mut commands, &mut cuts, &mut sounds, &mut meshes);
         // The place's cut starts on the camera's tick: the steps after it
         // wait for the next.
         return;
@@ -727,14 +730,19 @@ fn place(
     commands: &mut Commands,
     cuts: &mut MessageWriter<StartCut>,
     sounds: &mut MessageWriter<PlaySound>,
+    meshes: &mut Assets<Mesh>,
 ) {
     leave(scene, camera, captions, commands);
     let marks = quest::boss_marks(state.realms_beaten);
     let runes = state.runestone_bits();
+    // The piece's effect in full: its model, and its particles sprayed
+    // there (a shard's; the stones have none).
     let mut set_out = |place: &str| {
-        if let (Some(at), Some(model)) = (tower::node_at(nodes, place), scene.piece.take()) {
+        if let (Some(at), Some((model, particles))) = (tower::node_at(nodes, place), scene.piece.take()) {
             let root = model.spawn(Transform::from_translation(at), commands);
             commands.entity(root).insert(LevelEntity);
+            let mut seed = PIECE_SEED;
+            crate::effects::spray(&particles, at, 1.0, &mut seed, commands, meshes);
         }
     };
     let sound = |name: &str, sounds: &mut MessageWriter<PlaySound>| {
