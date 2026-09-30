@@ -42,6 +42,7 @@ mod particles;
 mod play_camera;
 mod player;
 mod player_state;
+mod power_looks;
 mod texanim;
 mod tower;
 mod tower_scenes;
@@ -176,6 +177,7 @@ fn main() {
                 exits::ExitsPlugin,
                 hints::HintsPlugin,
                 status_hud::StatusHudPlugin,
+                power_looks::PowerLooksPlugin,
             ))
             .add_plugins((
                 font::Screen2dPlugin,
