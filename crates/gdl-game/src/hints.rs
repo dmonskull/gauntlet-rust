@@ -2,6 +2,11 @@
 //! group in `TEXT/ENGLISH.ROM` spoken by the announcer from the `VOICE1`
 //! bank. Pickups, doors and transporters raise them by number through
 //! [`ShowHint`]; `docs/items.md` has the table they come from.
+//!
+//! Messages ([`ShowMessage`]) are the longer texts in `TEXT/SCROLL_E.ROM`:
+//! scrolls, the tower's "you need 15 Orange Crystals…" and unlock notices.
+//! They queue, and show before any hint. Stand-in: both are drawn as plain
+//! centred text for a fixed time; the game's message box isn't built.
 
 use bevy::prelude::*;
 use gdl_formats::text::TextRom;
@@ -11,6 +16,8 @@ use crate::level::LoadedGame;
 
 /// How long a hint stays up. Stand-in: the game's hint timing isn't traced.
 const HINT_SECONDS: f32 = 3.0;
+/// How long a message stays up (stand-in, as for hints).
+const MESSAGE_SECONDS: f32 = 5.0;
 
 /// The hints items raise, by the game's hint number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -74,13 +81,26 @@ impl Hint {
 #[derive(Message, Clone, Copy, Debug)]
 pub struct ShowHint(pub Hint);
 
-/// The hint on screen, for the status overlay.
+/// Asks for a message: string `index` of a `TEXT/SCROLL_E.ROM` group
+/// (`NEEDCRYSTALS`, `SCROLLSA1`…), with an announcer line.
+#[derive(Message, Clone, Debug)]
+pub struct ShowMessage {
+    pub group: String,
+    pub index: usize,
+    pub voice: Option<&'static str>,
+}
+
+/// The hint or message on screen, for the status overlay.
 #[derive(Resource, Default)]
 pub struct Hints {
     pub text: Option<String>,
     left: f32,
     shown: Vec<Hint>,
     rom: Option<TextRom>,
+    messages: Option<TextRom>,
+    queued: std::collections::VecDeque<ShowMessage>,
+    /// What's up is a message (hints wait for it).
+    message_up: bool,
 }
 
 impl Hints {
@@ -95,18 +115,58 @@ pub struct HintsPlugin;
 impl Plugin for HintsPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<ShowHint>()
+            .add_message::<ShowMessage>()
             .init_resource::<Hints>()
             .add_systems(Startup, load_text)
-            .add_systems(Update, show_hints);
+            .add_systems(Update, (show_messages, show_hints).chain());
     }
 }
 
 fn load_text(mut hints: ResMut<Hints>, mut game: ResMut<LoadedGame>) {
-    match game.install.read("TEXT/ENGLISH.ROM").map_err(|e| e.to_string()).and_then(|b| {
-        TextRom::parse(&b).map_err(|e| e.to_string())
-    }) {
+    let mut read = |path: &str| {
+        game.install.read(path).map_err(|e| e.to_string()).and_then(|b| TextRom::parse(&b).map_err(|e| e.to_string()))
+    };
+    match read("TEXT/ENGLISH.ROM") {
         Ok(rom) => hints.rom = Some(rom),
         Err(e) => warn!("no game text, hints disabled: {e}"),
+    }
+    match read("TEXT/SCROLL_E.ROM") {
+        Ok(rom) => hints.messages = Some(rom),
+        Err(e) => warn!("no message text: {e}"),
+    }
+}
+
+/// Shows queued messages one after another, each for its time.
+fn show_messages(
+    time: Res<Time>,
+    mut hints: ResMut<Hints>,
+    mut requests: MessageReader<ShowMessage>,
+    mut voice: MessageWriter<PlaySound>,
+) {
+    hints.queued.extend(requests.read().cloned());
+    if hints.message_up {
+        hints.left -= time.delta_secs();
+        if hints.left > 0.0 {
+            return;
+        }
+        hints.message_up = false;
+        hints.text = None;
+    }
+    while let Some(m) = hints.queued.pop_front() {
+        let text = hints.messages.as_ref().and_then(|r| r.group(&m.group)).and_then(|g| g.strings.get(m.index));
+        let Some(text) = text else {
+            warn!("no message {} {}", m.group, m.index);
+            continue;
+        };
+        // The font is ASCII-only; the game's line breaks stay.
+        hints.text = Some(text.replace('\r', "").chars().filter(|c| c.is_ascii()).collect());
+        info!("message: {}", hints.text.as_deref().unwrap_or_default().replace('\n', " "));
+        hints.left = MESSAGE_SECONDS;
+        hints.message_up = true;
+        if let Some(line) = m.voice {
+            voice.write(PlaySound(line.into()));
+        }
+        break;
     }
 }
 
@@ -116,6 +176,10 @@ fn show_hints(
     mut requests: MessageReader<ShowHint>,
     mut voice: MessageWriter<PlaySound>,
 ) {
+    if hints.message_up {
+        requests.clear();
+        return;
+    }
     if hints.text.is_some() {
         hints.left -= time.delta_secs();
         if hints.left <= 0.0 {
