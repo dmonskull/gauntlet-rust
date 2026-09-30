@@ -23,6 +23,7 @@ mod fade;
 mod familiars;
 mod flash;
 mod font;
+mod footsteps;
 mod frontend;
 mod game_hud;
 mod gamma;
@@ -182,6 +183,7 @@ fn main() {
                 power_looks::PowerLooksPlugin,
                 familiars::FamiliarsPlugin,
                 levelup::LevelUpPlugin,
+                footsteps::FootstepsPlugin,
             ))
             .add_plugins((
                 font::Screen2dPlugin,

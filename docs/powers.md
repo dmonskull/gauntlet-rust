@@ -153,8 +153,8 @@ action takes over"; the peck is a landed hand blow (`combat::Hit` from
 the hero, not ranged), not the blow event itself. Not done: the attach
 flags (no environment map; drawn with the objects' own materials), the
 class 1/5/7 `+0x60` bits, the weapon glows, the head 2 pickup sparkle, the
-model scales. `FW_SHLD_ACTIVE` waits for SHIELD_RUN, which the action
-machine doesn't produce yet (the shields' actions, below).
+model scales. `FW_SHLD_ACTIVE` shows while SHIELD_RUN plays (the
+shields' actions, below).
 
 ## The resistance routine (`FUN_8002f58c`)
 

@@ -312,7 +312,9 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
   - Next: rapid fire's rate (items.md "Attack overrides": how the 0.75
     reaches the clip isn't pinned down); the hero missiles' streaks
     (`WEP_STREAK`, the crossbow's white one) and the magic classes'
-    element models; footsteps (none are played at all).
+    element models. Footsteps are in (the helper's `footsteps.rs`: a step
+    as each stepping action ends, by the floor — player-movement.md);
+    not their pan, nor the shadow on water.
 - Also fixed on the way: effects whose clip has no frames lasted 0 s
   (particle effects: the breaths, blood sprays, `L_SHLD_ACTIVE`) — they
   last 30 frames, as the game's spawner has it.
@@ -331,7 +333,7 @@ Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
 0. Power-ups, what's left: the head-2 sparkle, rapid fire's rate, the
-   missile streaks, footsteps (above; the helper has footsteps). The heroes' step cut under the boss
+   missile streaks (above). The heroes' step cut under the boss
    camera; the hand glows (and their banks' running modifiers); the
    node spheres' flashes (which model node a `NODE` names, `+0x500`).
    (The smoke test, `smoke.sh`: every level folder plus DEMO1,

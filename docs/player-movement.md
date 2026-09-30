@@ -190,9 +190,10 @@ the hero's feet after its move rather than at the move's destination
 before the floor check; stairs are the standing node's
 (`PlayerGround::node`) flag `0x8`; metal and levitation are the hero's
 armour and special bits. Not modelled: the `+0x834` and attached checks
-(nothing attaches a hero here). SHIELD_RUN steps only once the port
-loops it as the game does (the shield swap's loop flag; its clip's own
-loop bit is off).
+(nothing attaches a hero here). SHIELD_RUN loops as the game has it —
+the shield swap sets the chooser's loop flag (`Next::again`; its clip's
+own loop bit is off) and, already running, takes over from itself at
+the clip's end — so it steps once a loop.
 
 ## Not yet
 
