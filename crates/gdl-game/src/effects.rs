@@ -33,7 +33,6 @@ use crate::model_mesh::TextureCache;
 use crate::monsters::{Monster, MonsterTick};
 use crate::particles;
 use crate::player::{Player, PlayerChoice};
-use crate::damage::after_armor;
 use crate::player_state::{DamagePlayer, PlayerState};
 use crate::population::LevelPopulation;
 use crate::projectiles;
@@ -321,10 +320,25 @@ struct Blast {
 enum Heroes {
     /// Nothing (the heroes' own magic).
     Spared,
-    /// Hurts them (a gas cloud).
+    /// Hurts them, as its kind does (a gas cloud; an explosion knocks them
+    /// down).
     Hurt,
-    /// Hurts them and throws them back (an explosion).
-    Thrown,
+}
+
+/// A blast doing less than this to a hero drops its knockback kinds and
+/// shows no hit look; one pushes by this much of the way from its centre.
+const WEAK_BLAST: f32 = 5.0;
+const WEAK_BLAST_LOSES: u32 = 0x170;
+const BLAST_PUSH: f32 = 0.25;
+
+/// How a blast's blow lands on a hero whose feet are at `hero` (the
+/// effects update): with the blast's own kind — a fireball's knocks the
+/// hero down — less its knockback, and with no hit look, when it does
+/// under 5; pushing by a quarter of the way out from its centre, across
+/// the floor.
+pub fn blast_on_hero(damage: f32, kind: u32, centre: Vec3, hero: Vec3) -> (u32, Vec3) {
+    let kind = if damage < WEAK_BLAST { kind & !WEAK_BLAST_LOSES | combat::hit_kind::NO_HIT_LOOK } else { kind };
+    (kind, (hero - centre).with_y(0.0) * BLAST_PUSH)
 }
 
 /// A later stage of a chained effect.
@@ -897,7 +911,7 @@ fn spawn_explosions(
         }
         let (fx, kind, radius, heroes, then, scale, drop) = match (e.poison, e.barrel) {
             (true, false) => (POISON_FX, POISON_KIND, POISON_RADIUS, Heroes::Hurt, &POISON_STAGES[..], POISON_SCALE, POISON_DROP),
-            (false, false) => (EXPLOSION_FX, EXPLOSION_KIND, EXPLOSION_RADIUS, Heroes::Thrown, &[][..], Vec3::ONE, 0.0),
+            (false, false) => (EXPLOSION_FX, EXPLOSION_KIND, EXPLOSION_RADIUS, Heroes::Hurt, &[][..], Vec3::ONE, 0.0),
             (true, true) => {
                 (POISON_FX, POISON_KIND, BARREL_POISON_RADIUS, Heroes::Hurt, &BARREL_POISON_STAGES[..], BARREL_POISON_SCALE, 0.0)
             }
@@ -905,7 +919,7 @@ fn spawn_explosions(
                 EXPLOSION_FX,
                 EXPLOSION_KIND,
                 BARREL_EXPLOSION_RADIUS,
-                Heroes::Thrown,
+                Heroes::Hurt,
                 &[][..],
                 BARREL_EXPLOSION_SCALE,
                 -BARREL_EXPLOSION_LIFT,
@@ -1091,8 +1105,8 @@ fn tick_blasts(
                 }
             }
         }
-        // A monster's explosion hurts heroes too: through their armour, and
-        // a fireball throws them back (as a barrel's blast does).
+        // A monster's explosion or a barrel's hurts heroes too
+        // (`Player::take_blow`).
         if b.heroes == Heroes::Spared {
             continue;
         }
@@ -1105,13 +1119,10 @@ fn tick_blasts(
             if damage > 2.0 {
                 b.spared.insert(e, now + spare as f64);
             }
-            let amount = after_armor(damage, p.armor);
-            if amount <= 0.0 {
+            let (kind, push) = blast_on_hero(damage, b.kind, b.centre, feet);
+            let amount = p.take_blow(damage, kind, push);
+            if amount == 0.0 {
                 continue;
-            }
-            if b.heroes == Heroes::Thrown {
-                let away = (feet - b.centre).with_y(0.0).normalize_or_zero();
-                p.queue_hit(amount, 0x10, away);
             }
             hurt.write(DamagePlayer { amount });
             info!("the blast hurts the hero for {amount:.1}");

@@ -16,21 +16,23 @@
 //! The flinch/knockdown and push the blow causes play out in the monster's
 //! next tick (`monsters.rs`).
 //!
-//! Monster blows lose the hero's armour first (weak ones do nothing).
+//! Every blow — on a hero (`Player::take_blow`), a monster or a critter —
+//! goes through the game's armour and resistance routine ([`resist`]):
+//! armour, the armour powers, elements.
 //!
 //! A blow that does damage plays the monster's hit sound, the killing one
 //! its death sound (`MonsterSounds`): the far versions for thrown blows.
 //!
-//! Stand-ins: the level-versus-player-level damage scale, the monster
-//! resistances, elements and blocking while defending aren't applied; there are no
-//! hit effects (the blood sprays) or score yet, and sounds aren't placed in 3D. What happens when
-//! the hero dies is the front end's (`frontend.rs`).
+//! Stand-ins: the level-versus-player-level damage scale and blocking
+//! while defending aren't applied; there's no score yet, and sounds aren't
+//! placed in 3D. What happens when the hero dies is the front end's
+//! (`frontend.rs`).
 
 use bevy::prelude::*;
 use gdl_formats::enemy;
 
 use crate::audio::PlaySound;
-use crate::combat::{Hit, TargetKind, Targetable};
+use crate::combat::{Hit, TargetKind, Targetable, hit_kind};
 use crate::critters::{Critter, CritterLevel, CritterSphere};
 use crate::deaths;
 use crate::effects::EffectAt;
@@ -76,8 +78,17 @@ pub(crate) fn apply_hits(
                 if m.hit_points <= 0.0 {
                     continue;
                 }
-                m.take_hit(hit.damage, hit.kind, hit.push.to_array());
-                if hit.damage > 0.0 {
+                // Through its armour (only Death has any) and its
+                // elements' factors; a hero's blow does at least a point.
+                let boss_level = level.as_ref().is_some_and(|l| l.boss >= 0);
+                let armour = if m.enemy == DEATH { DEATH_ARMOUR } else { 0.0 };
+                let mut kind = hit.kind;
+                let mut damage = resist(hit.damage, &mut kind, armour, 0, boss_level);
+                if by_hero && damage < HERO_BLOW_LEAST {
+                    damage = HERO_BLOW_LEAST;
+                }
+                m.take_hit(damage, kind, hit.push.to_array());
+                if damage > 0.0 {
                     m.hits = m.hits.saturating_add(1);
                     if let Some(s) = level.as_ref().and_then(|l| l.sounds.get(&m.enemy)) {
                         let name = if m.hit_points > 0.0 { s.hit(m.strength, m.hits, hit.ranged) } else { s.die(m.strength, hit.ranged) };
@@ -108,14 +119,14 @@ pub(crate) fn apply_hits(
                         };
                     }
                     // The blow's effect: a blood spray, or the element's.
-                    if hit.damage > 0.0
-                        && let Some(name) = deaths::hit_effect(m.enemy, hit.kind)
+                    if damage > 0.0
+                        && let Some(name) = deaths::hit_effect(m.enemy, kind)
                     {
                         let at = deaths::effect_origin(m.stats.step, m.centre(), hit.at);
                         let scale = deaths::die_effect_scale(m.enemy, m.stats.step);
                         effects.write(EffectAt { name, bank: None, at, facing: 0.0, scale });
                     }
-                    debug!("monster {:?} hit for {:.1}: {:.1} left", hit.target, hit.damage, m.hit_points);
+                    debug!("monster {:?} hit for {:.1}: {:.1} left", hit.target, damage, m.hit_points);
                     continue;
                 }
                 // Dead: its slot is free now, it can't be targeted, and the
@@ -123,7 +134,7 @@ pub(crate) fn apply_hits(
                 if let Some(mut g) = m.generator.and_then(|g| generators.get_mut(g).ok()) {
                     g.alive = g.alive.saturating_sub(1);
                 }
-                m.die(hit.kind, hit.at.to_array());
+                m.die(kind, hit.at.to_array());
                 commands.entity(hit.target).try_remove::<Targetable>();
                 debug!("monster {:?} dies", hit.target);
             }
@@ -208,17 +219,109 @@ pub(crate) fn apply_hits(
     }
 }
 
-/// The game's armour rule: a blow armour stops loses the armour value, and
-/// one no stronger than the armour does nothing.
-pub fn after_armor(damage: f32, armor: f32) -> f32 {
-    if damage < 0.0 {
-        -damage
-    } else if damage > armor {
-        damage - armor
-    } else {
-        0.0
-    }
+/// Armour and resistance bits, as the resistance routine reads them: a
+/// hero's armour powers (`PowerBits::armour`), a critter type's
+/// resistances. The element bits are in [`ELEMENTS`].
+pub mod resists {
+    /// Blows of more than a point heal a tenth of themselves instead (the
+    /// gold invulnerability).
+    pub const GOLD: u32 = 0x10_0000;
+    /// No blow does anything.
+    pub const INVULNERABLE: u32 = 0x1_0000;
+    /// Magic does nothing.
+    pub const MAGIC_PROOF: u32 = 0x1000;
+    /// Poison does nothing (the gas mask).
+    pub const POISON_PROOF: u32 = 0x2000;
+    /// Blows lose their knockback kinds.
+    pub const STEADY: u32 = 0x4_0000;
+    /// Magic is resisted.
+    pub const MAGIC_RESIST: u32 = 0x10;
 }
+
+/// By a blow's element (fire, lightning, light, acid: its kind's low four
+/// bits, 1–4): the bit that resists it, the one that stops it, and the
+/// ones that leave the target weak to it.
+pub const ELEMENTS: [(u32, u32, u32); 4] = [
+    (0x1, 0x100, 0x2 | 0x200),
+    (0x2, 0x200, 0x1 | 0x100),
+    (0x4, 0x400, 0x8 | 0x800),
+    (0x8, 0x800, 0x4 | 0x400),
+];
+
+/// An elemental blow's factors, resisted / neither / weak: outside boss
+/// levels, and on them.
+const FACTORS: [f32; 3] = [0.5, 1.5, 2.0];
+const BOSS_FACTORS: [f32; 3] = [0.75, 1.25, 1.5];
+
+/// A gold-armoured target shrugs off blows of this or less.
+const GOLD_SHRUGS: f32 = 1.0;
+/// … and a bigger one heals it by this much of the blow.
+const GOLD_HEAL: f32 = 0.1;
+
+/// The game's armour and resistance routine (`docs/powers.md`, "The
+/// resistance routine"), for heroes, monsters and critters alike: `bits`
+/// are the target's [`resists`] and element bits, `armour` its armour
+/// value. Returns what the blow takes — negative for the gold armour's
+/// heal — and drops the knockback kinds from `kind` for a steady target.
+///
+/// In order: gold turns a blow of more than a point into a tenth of it
+/// healed; invulnerability, or proof against the blow's magic or poison,
+/// stops it; resisted magic is scaled; armour comes off anything but magic
+/// and poison (a blow no stronger than it does nothing); what's left is
+/// scaled by its element — every elemental blow the target neither
+/// resists, is immune to nor is weak to does 1.5 times (1.25 on a boss
+/// level).
+pub fn resist(damage: f32, kind: &mut u32, armour: f32, bits: u32, boss_level: bool) -> f32 {
+    use resists::*;
+    if bits & GOLD != 0 {
+        return if damage <= GOLD_SHRUGS { 0.0 } else { -GOLD_HEAL * damage };
+    }
+    let k = *kind;
+    if bits & INVULNERABLE != 0
+        || (bits & MAGIC_PROOF != 0 && k & hit_kind::MAGIC != 0)
+        || (bits & POISON_PROOF != 0 && k & hit_kind::POISON != 0)
+    {
+        return 0.0;
+    }
+    let [resisted, neutral, weak] = if boss_level { BOSS_FACTORS } else { FACTORS };
+    if bits & STEADY != 0 {
+        *kind &= !hit_kind::KNOCKS;
+    }
+    let mut d = damage;
+    if bits & MAGIC_RESIST != 0 && k & hit_kind::MAGIC != 0 {
+        d *= resisted;
+    }
+    if k & (hit_kind::MAGIC | hit_kind::POISON) == 0 {
+        d = if d < 0.0 {
+            -d
+        } else if d > armour {
+            d - armour
+        } else {
+            0.0
+        };
+    }
+    let element = ((k & hit_kind::ELEMENT) as usize).wrapping_sub(1);
+    if d > 0.0
+        && let Some(&(resist, immune, weak_to)) = ELEMENTS.get(element)
+    {
+        d = if bits & resist != 0 {
+            d * resisted
+        } else if bits & immune != 0 {
+            0.0
+        } else if bits & weak_to != 0 {
+            d * weak
+        } else {
+            d * neutral
+        };
+    }
+    d
+}
+
+/// Death (monster type `0x1E`) is the one monster with armour.
+const DEATH: i32 = 0x1E;
+const DEATH_ARMOUR: f32 = 1.0;
+/// A hero's blow on a monster takes at least this.
+const HERO_BLOW_LEAST: f32 = 1.0;
 
 /// The monster type whose blows knock heroes down.
 const KNOCKDOWN_MONSTER: i32 = 0x1D;
@@ -251,9 +354,8 @@ fn hurt_hero(
                 push = Vec3::new(d.x, 0.0, d.z).normalize_or_zero();
             }
         }
-        let amount = after_armor(hit.damage, p.armor);
-        if amount > 0.0 {
-            p.queue_hit(amount, flags, push);
+        let amount = p.take_blow(hit.damage, flags, push);
+        if amount != 0.0 {
             damage.write(DamagePlayer { amount });
         }
     }
@@ -263,10 +365,52 @@ fn hurt_hero(
 mod tests {
     use super::*;
 
+    fn plain(damage: f32, armour: f32) -> f32 {
+        resist(damage, &mut 0, armour, 0, false)
+    }
+
     #[test]
     fn armour_takes_its_value_off_or_stops_the_blow() {
-        assert_eq!(after_armor(5.0, 1.5), 3.5);
-        assert_eq!(after_armor(1.0, 1.5), 0.0);
-        assert_eq!(after_armor(-2.0, 1.5), 2.0);
+        assert_eq!(plain(5.0, 1.5), 3.5);
+        assert_eq!(plain(1.0, 1.5), 0.0);
+        assert_eq!(plain(-2.0, 1.5), 2.0);
+        // Magic and poison go straight through.
+        assert_eq!(resist(1.0, &mut hit_kind::POISON, 1.5, 0, false), 1.0);
+    }
+
+    #[test]
+    fn invulnerability_stops_everything_and_gold_heals() {
+        assert_eq!(resist(50.0, &mut 0x421, 0.0, resists::INVULNERABLE, false), 0.0);
+        let gold = resists::INVULNERABLE | resists::GOLD;
+        assert_eq!(resist(50.0, &mut 0, 3.0, gold, false), -5.0);
+        assert_eq!(resist(1.0, &mut 0, 0.0, gold, false), 0.0);
+    }
+
+    #[test]
+    fn the_gas_mask_stops_poison_and_resists_acid() {
+        let mask = 0x2008;
+        assert_eq!(resist(30.0, &mut hit_kind::POISON, 0.0, mask, false), 0.0);
+        assert_eq!(resist(30.0, &mut 4, 0.0, mask, false), 15.0);
+        // Light, which acid resistance leaves it weak to.
+        assert_eq!(resist(30.0, &mut 3, 0.0, mask, false), 60.0);
+    }
+
+    #[test]
+    fn elements_scale_by_the_level() {
+        // Fire on a target with no resistances, then after armour.
+        assert_eq!(resist(10.0, &mut 1, 0.0, 0, false), 15.0);
+        assert_eq!(resist(10.0, &mut 1, 0.0, 0, true), 12.5);
+        assert_eq!(resist(12.0, &mut 0x421, 2.0, 0, false), 15.0);
+        // Immune, resisted, weak.
+        assert_eq!(resist(10.0, &mut 2, 0.0, 0x200, false), 0.0);
+        assert_eq!(resist(10.0, &mut 2, 0.0, 0x2, true), 7.5);
+        assert_eq!(resist(10.0, &mut 2, 0.0, 0x100, false), 20.0);
+    }
+
+    #[test]
+    fn a_steady_target_loses_the_knockback() {
+        let mut kind = 0x10 | 0x100 | 0x80;
+        resist(10.0, &mut kind, 0.0, resists::STEADY, false);
+        assert_eq!(kind, 0x80);
     }
 }

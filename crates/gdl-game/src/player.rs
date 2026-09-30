@@ -38,10 +38,10 @@ use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
-use crate::player_state::PlayerState;
+use crate::player_state::{PlayerState, power};
 use crate::population::LevelPopulation;
 use crate::effects::{MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
-use crate::flash::{self, Flash, FlashColours};
+use crate::flash::{self, Flash, FlashColours, Retexture};
 use crate::hints::{Hint, ShowHint};
 use crate::projectiles::{self, HeroShot};
 use crate::world::{LevelEntity, LevelGround};
@@ -118,11 +118,19 @@ pub struct Player {
     /// Its weapon powers' bits (`PowerBits::weapon`): its blows and
     /// missiles carry them.
     pub weapon: u32,
+    /// Its armour powers' bits (`PowerBits::armour`), which blows on it
+    /// go through, and whether this is a boss level (their elements'
+    /// factors).
+    pub armour_bits: u32,
+    boss_level: bool,
     /// Blows taken since the last tick: damage, kind flags, summed push
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
-    /// Its hit flash (`flash.rs`).
+    /// Its hit flash (`flash.rs`), and the invulnerability's chrome in
+    /// the same slot ([`show_chrome`]).
     flash: Flash,
+    chrome: Flash,
+    chrome_look: Retexture,
     /// Turbo meter, 0–100.
     pub turbo: f32,
     /// What the turbo attack under way will cost when it lands.
@@ -174,13 +182,20 @@ fn level_stats(
 }
 
 /// What the hero's powerups add up to this tick (`PowerBits`), put to
-/// use: its weapon bits on its blows and missiles, speed powers on its
-/// speed (the game clamps the sum to its range), a turbo power's fill.
-fn apply_powers(state: Option<Res<PlayerState>>, mut players: Query<&mut Player>) {
+/// use: its weapon bits on its blows and missiles, its armour bits
+/// against blows, speed powers on its speed (the game clamps the sum to its range), a turbo power's fill.
+fn apply_powers(
+    state: Option<Res<PlayerState>>,
+    level: Option<Res<crate::monsters::MonsterLevel>>,
+    mut players: Query<&mut Player>,
+) {
     let Some(state) = state else { return };
     let b = state.bits;
+    let boss_level = level.is_some_and(|l| l.boss >= 0);
     for mut p in &mut players {
         p.weapon = b.weapon;
+        p.armour_bits = b.armour;
+        p.boss_level = boss_level;
         let speed = (p.base_speed + b.speed).clamp(locomotion::SPEED_MIN, locomotion::SPEED_MAX);
         if p.mover.speed != speed {
             p.mover.speed = speed;
@@ -188,6 +203,54 @@ fn apply_powers(state: Option<Res<PlayerState>>, mut players: Query<&mut Player>
         if b.turbo > 0.0 {
             p.turbo = (p.turbo + b.turbo).min(TURBO_MAX);
         }
+    }
+}
+
+/// The chrome blinks in its last this many seconds, this many times a
+/// second (on in the odd eighths).
+const CHROME_BLINKS_FROM: f32 = 3.0;
+const CHROME_BLINK_RATE: f32 = 8.0;
+
+/// The invulnerability power-ups' chrome (`docs/powers.md`): the stats
+/// routine re-arms the hero's timed texture effect with `CHROMEGOLD` (with
+/// the gold armour) or `CHROMESILVER` every tick the longest
+/// invulnerability's time is unlimited, over 3 s or in an odd eighth of a
+/// second — so it blinks in its last three seconds — and, like a flash,
+/// it shows for the tick it's armed and the next. It takes the slot from
+/// a hit flash.
+#[allow(clippy::type_complexity)]
+fn show_chrome(
+    state: Option<Res<PlayerState>>,
+    colours: Res<FlashColours>,
+    mut players: Query<(&mut Player, &Animator)>,
+    mut drawn: Query<&mut MeshMaterial3d<LevelMaterial>>,
+    mut materials: ResMut<Assets<LevelMaterial>>,
+    (mut tags, mut commands): (Query<&mut MeshTag>, Commands),
+) {
+    let Some(state) = state else { return };
+    let invulnerable = crate::damage::resists::INVULNERABLE;
+    // The longest one's time; negative for one that doesn't run out.
+    let time = state
+        .powers
+        .iter()
+        .filter(|p| p.subtype == power::ARMOUR && p.value & invulnerable != 0)
+        .map(|p| p.time)
+        .reduce(|a, b| if a < 0.0 || b < 0.0 { -1.0 } else { a.max(b) });
+    let armed = time.is_some_and(|t| t < 0.0 || t > CHROME_BLINKS_FROM || (t * CHROME_BLINK_RATE) as i32 % 2 == 1);
+    let gold = state.bits.armour & crate::damage::resists::GOLD != 0;
+    for (mut p, animator) in &mut players {
+        let p = &mut *p;
+        if armed {
+            p.chrome.start();
+        }
+        if p.chrome.step() {
+            debug!("chrome {} (time {time:?})", if p.chrome.on() { "on" } else { "off" });
+        }
+        let texture = if p.chrome.on() { colours.chrome[usize::from(gold)].as_ref() } else { None };
+        if texture.is_some() && p.flash.stop() {
+            flash::tag_body(animator, |_| true, 0, &mut tags, &mut commands);
+        }
+        p.chrome_look.show(texture, animator, &mut drawn, &mut materials);
     }
 }
 
@@ -245,12 +308,30 @@ fn reaction_action(class: u32) -> Option<Action> {
     }
 }
 
+/// Blows of this or less don't knock the hero about.
+const KNOCKLESS_DAMAGE: f32 = 2.0;
+
 impl Player {
-    /// A blow lands on the hero; the reaction follows on its next tick.
-    pub fn queue_hit(&mut self, damage: f32, flags: u32, push: Vec3) {
-        self.pending_hit.0 += damage;
-        self.pending_hit.1 |= flags;
-        self.pending_hit.2 += push;
+    /// A blow lands on the hero (the game's hurt-player routine,
+    /// `docs/combat.md`): through its armour and armour powers
+    /// (`damage::resist`), then queued for its next tick's reaction — a
+    /// blow of 2 or less without its knockback, one armour stopped still
+    /// with its stun. Returns the health it takes, for a [`DamagePlayer`]:
+    /// negative for the gold armour's heal, which draws no reaction.
+    ///
+    /// [`DamagePlayer`]: crate::player_state::DamagePlayer
+    pub fn take_blow(&mut self, damage: f32, kind: u32, push: Vec3) -> f32 {
+        let mut kind = kind;
+        let d = crate::damage::resist(damage, &mut kind, self.armor, self.armour_bits, self.boss_level);
+        if d >= 0.0 {
+            if d <= KNOCKLESS_DAMAGE {
+                kind &= !combat::hit_kind::KNOCKS;
+            }
+            self.pending_hit.0 += d;
+            self.pending_hit.1 |= kind;
+            self.pending_hit.2 += push;
+        }
+        d
     }
 
     /// Moves the hero instantly (no interpolation smear), standing on a
@@ -288,7 +369,7 @@ impl Plugin for PlayerPlugin {
             // character select); the next level spawn uses it.
             .add_systems(Update, load_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
             .add_systems(FixedUpdate, tick.in_set(PlayerTick))
-            .add_systems(FixedUpdate, apply_powers.after(crate::player_state::PowersTick))
+            .add_systems(FixedUpdate, (apply_powers, show_chrome).after(crate::player_state::PowersTick))
             .add_systems(Update, level_stats)
             .add_systems(
                 Update,
@@ -374,8 +455,12 @@ fn spawn_player(
         armor: hero.armor,
         base_speed: hero.speed,
         weapon: 0,
+        armour_bits: 0,
+        boss_level: false,
         pending_hit: (0.0, 0, Vec3::ZERO),
         flash: Flash::default(),
+        chrome: Flash::default(),
+        chrome_look: Retexture::default(),
         turbo: 0.0,
         turbo_cost: 0.0,
         radius: hero.radius,
@@ -636,7 +721,8 @@ fn tick(
         // Blows taken: flinch, knockback or knockdown. A flinch only
         // interrupts standing and moving about; the rest override.
         let (mut hit_damage, mut hit_flags, mut hit_push) = std::mem::take(&mut p.pending_hit);
-        if cut {
+        // Invulnerable: no reaction at all.
+        if cut || p.armour_bits & crate::damage::resists::INVULNERABLE != 0 {
             (hit_damage, hit_flags, hit_push) = (0.0, 0, Vec3::ZERO);
         }
         let (reaction, knock, reaction_face) = hit_reaction(hit_damage, hit_flags, hit_push, facing);

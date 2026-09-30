@@ -355,10 +355,14 @@ type's damage × the level's scale, × 0.667 below two thirds of its full
 hit points and × 0.333 below one third (`r2-0x6cf0`, `r2-0x6cf8`). At 0
 or less (`r2-0x6e88`) it dies: state `+0xB4` = 8 and its slot is released
 at once (`FUN_8004f240`), so its generator can make another; the body plays
-DEATH. Not applied yet: the scale by the player's level against the
-level's (`+0x9C` of the level record), the type resistances
-(`FUN_8002f58c`), the push accumulator (`+0x2A0`), hit effects
-(`FUN_80093e08`) and score.
+DEATH. Before that the blow goes through the resistance routine
+(`FUN_8002f58c`) with the monster's armour `+0xC0` (0, 1 for Death) and
+resistances `+0xC8` (0 for every type): `damage.rs::resist`, so an
+elemental blow does × 1.5 (× 1.25 on a boss level); a hero's blow still
+under 1 (`r2-0x6f10`) then does 1 (`r2-0x6e30`). Not applied yet: the
+scale by the player's level against the level's (`+0x9C` of the level
+record), the shrink power's × 2 (`r13-0x7320` < 1), the push accumulator
+(`+0x2A0`) and score.
 
 **Generators**: hit points are the item type's × strength × the level's
 scale; each item-type's worth lost drops a strength level (its monsters
@@ -370,9 +374,11 @@ model swap (`GEN_<code><n>`) isn't shown yet.
 `FUN_80078560` (hurt a player) runs a blow through `FUN_8002f58c` with the
 player's derived armour (`+0x108`, 0–5 = 0.001 × armour stat × 5): unless
 the blow's kind has `0x200` or `0x800` (armour-piercing), armour is taken
-off the damage, and a blow no stronger than the armour does nothing
-(`damage.rs::after_armor`). The same routine then applies elemental
-resistances by kind (`& 0xF`) and flags — not ported. Blows above 1 are
+off the damage, and a blow no stronger than the armour does nothing.
+The same routine then applies the armour powers and elemental
+resistances by kind (`& 0xF`): `damage.rs::resist`, through
+`Player::take_blow` ([powers.md](powers.md), "The resistance routine").
+Blows above 1 are
 also scaled by the level record's `+0xA4`, which is 1.0 in every retail
 level. Defending (`+0x964 & 0x600`) cuts or blocks blows from the front
 (`r2-0x5ea8`, angle limits `r2-0x5e18`/`r2-0x5e10`) — not ported yet.

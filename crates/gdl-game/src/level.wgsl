@@ -11,14 +11,16 @@
 
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_functions
+#import bevy_pbr::mesh_view_bindings::view
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var diffuse_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var diffuse_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var lightmap_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var lightmap_sampler: sampler;
 // x: lightmap enabled (2: the second texture is a dying monster's death
-// texture instead), y: alpha cutoff, z: stage 0 scale, w: lit by the level
-// light instead of prelit vertex colours
+// texture instead; 3: the texture is a chrome power-up's, its coordinates
+// from the normals), y: alpha cutoff, z: stage 0 scale, w: lit by the
+// level light instead of prelit vertex colours
 @group(#{MATERIAL_BIND_GROUP}) @binding(4) var<uniform> params: vec4<f32>;
 // xyz: unit vector toward the light, w: ambient level
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> light_dir: vec4<f32>;
@@ -60,7 +62,14 @@ fn fragment(in: VertexOutput) -> FragmentOutput {
     let tag = mesh_functions::get_tag(in.instance_index);
     let tag_color = vec4(f32((tag >> 16u) & 0xFFu), f32((tag >> 8u) & 0xFFu), f32(tag & 0xFFu), 255.0) / 255.0;
 #ifdef VERTEX_UVS_A
-    var color = textureSample(diffuse_texture, diffuse_sampler, in.uv + uv_offset.xy);
+    var uv = in.uv + uv_offset.xy;
+    if (params.x > 2.5) {
+        // The chrome (override −3, draw flag 0x80000): the texture's
+        // coordinates are the normal along the camera's right and up.
+        let n = normalize(in.world_normal);
+        uv = vec2(dot(n, view.world_from_view[0].xyz), dot(n, view.world_from_view[1].xyz));
+    }
+    var color = textureSample(diffuse_texture, diffuse_sampler, uv);
 #else
     var color = vec4(1.0);
 #endif
@@ -97,7 +106,7 @@ fn fragment(in: VertexOutput) -> FragmentOutput {
     var over = vec4(0.0);
     var has_over = false;
 #ifdef VERTEX_UVS_A
-    if (params.x > 1.5) {
+    if (params.x > 1.5 && params.x < 2.5) {
         over = textureSample(lightmap_texture, lightmap_sampler, in.uv);
         has_over = true;
     }
