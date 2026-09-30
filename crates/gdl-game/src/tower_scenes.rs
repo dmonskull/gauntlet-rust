@@ -122,8 +122,9 @@ const NAME_CLASS_CODES: [&str; 16] =
 /// seconds; a piece's line, `PIECE_MOST_WAIT`.
 const RANK_MOST_WAIT: f32 = 5.0;
 const PIECE_MOST_WAIT: f32 = 10.0;
-/// The level-up flash and the gem sparkle, by colour.
-const LEVELUP_EFFECTS: [&str; 4] = ["LEVELUP_YEL", "LEVELUP_BLU", "LEVELUP_RED", "LEVELUP_GRE"];
+/// The level-up flash (`WEAPONS`; the game's level-up puts it on the hero
+/// too, `levelup.rs`) and the gem sparkle, by colour.
+pub const LEVELUP_FLASHES: [&str; 4] = ["LEVELUP_YEL", "LEVELUP_BLU", "LEVELUP_RED", "LEVELUP_GRE"];
 const RANK_SPARKLES: [&str; 4] = ["GETGEMYELLOW", "GETGEMBLUE", "GETGEMRED", "GETGEMGREEN"];
 
 impl Rank {
@@ -484,7 +485,7 @@ fn run_scene(
                 let rider = heroes.iter().next();
                 if since > FLASH_AT && !scene.flashed {
                     scene.flashed = true;
-                    let name = LEVELUP_EFFECTS[colour];
+                    let name = LEVELUP_FLASHES[colour];
                     match rider {
                         Some(on) => {
                             riding.write(EffectOn { name, bank: None, on, scale: 1.0 });
