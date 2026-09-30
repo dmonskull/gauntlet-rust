@@ -22,6 +22,26 @@ What plays (details in [INDEX.md](INDEX.md)):
     ([frontend.md](frontend.md) "Saving"). Checked with scripted menus:
     a save from the tower with 3 keys and 7 orange crystals, then a fresh
     start → Load → the character came back with its keys and name.
+- **Picture and placement** (checked against a screenshot of the original's
+  tower start, which the user provided)
+  - The 3D view is mirrored like the game's left-handed camera
+    (`camera::MirroredPerspective`, clockwise fronts, the stick's right is
+    +X facing +Z): before, everything was the mirror image of the original
+    — the tower's orange crystals sat on the hero's right instead of his
+    left, heroes held weapons in the left hand ([rendering.md](rendering.md)
+    "Handedness").
+  - Blending happens in gamma space like the GameCube's frame buffer (a
+    float target and a decode pass, `gamma.rs`): additive fire and glows
+    show (the tower's brazier flames were faint glows), dark translucent
+    layers are as dark as the game's ("Colour space").
+  - Only the placements a one-player game makes are drawn (40% of a level's
+    placements are extra copies for 2–4 players); barrels (flipbook
+    atrees) are drawn and play their break; the tower's arrival start
+    follows the realm last played; the idle wizard (`GWIZ`) reads at his
+    podium on the tower's pedestal; lookouts and the boss's spot use the
+    game's locator rotation (the C5 djinn faced away from the heroes)
+    ([level-population.md](level-population.md), [items.md](items.md)
+    "The tower's wizard").
 - **Levels**
   - Drawn with lightmaps and blending. Additive glows are correct; they used
     to draw as dark discs (fixed with premultiplied output in `level.wgsl`).
@@ -89,7 +109,11 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on master `58d602b` (suicide runners, effect
+The all-levels smoke test on master `c2424af` (the mirrored view, gamma
+blending, one-player placements, barrels, the tower's wizard and arrival
+starts, boss facing) passed all 67 real levels.
+
+Before that, the smoke test on master `58d602b` (suicide runners, effect
 flipbooks and depth bias, the helper's chimera heads merged) passed all 67
 real levels.
 
@@ -204,7 +228,15 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
-0. (The smoke test, `smoke.sh`: every level folder plus DEMO1,
+0. The tower's wizard scenes: the `WIZARD` model appearing at a lookout to
+   announce new shards and runestones, the shard set in `L1WINDOWFRAME`, the
+   stones in `L1RUNEPLACE`, his camera cuts and speeches, and his other
+   idle actions (WELCOME, GOAWAY…) — decoded in [items.md](items.md) "The
+   tower's wizard". Then compare the tower start's camera with the
+   original's (the user's screenshot frames the wizard whole; ours looks
+   down steeper), and the HUD's four player panels (the original shows all
+   four, the empty ones waiting to join).
+   (The smoke test, `smoke.sh`: every level folder plus DEMO1,
    `GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400`, 120 s timeout,
    stop at the first panic; resume from the failing level.) Next: the
    hero's attack search against

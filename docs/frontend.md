@@ -398,7 +398,8 @@ Start, triggers.
   the start values (no per-character points or levels); changing class
   starts that class fresh (the game keeps each class's progress in the
   character record).
-- HUD: only player 1's panel; the turbo meter's flash and glow, the
+- HUD: players 2–4's panels only wait (`S3` over `S4` in the slot's dim
+  colour `0x8011f9b0`, framed: no joining yet); the turbo meter's flash and glow, the
   legendary-key row, the quest and rune-13 icons and the "Wait In Tower"
   prompt aren't drawn; the panel is hidden while a menu is up (its numbers
   would draw over the menu's parchment, text being drawn after images).

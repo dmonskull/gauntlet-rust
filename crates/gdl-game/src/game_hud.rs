@@ -44,6 +44,10 @@ const POTION_ICONS: [&str; 5] = ["POTION_ICON_RED", "POTION_ICON_RED", "POTION_I
 /// Runestone slot colours, three stones each.
 const RUNE_COLOURS: [&str; 4] = ["BLU", "RED", "YEL", "GRE"];
 const COLOURS: [&str; 4] = ["YEL", "BLU", "RED", "GRE"];
+/// A panel waiting for its player: `S4` in the slot's dim colour.
+const NOT_JOINED: [[u8; 3]; 4] = [[0x5A, 0x5A, 0x1E], [0x1E, 0x1E, 0x69], [0x64, 0x28, 0x28], [0x1E, 0x4B, 0x1E]];
+/// Each panel's width (players 2–4 follow player 1's).
+const PANEL_WIDTH: f32 = 128.0;
 
 #[allow(clippy::too_many_arguments)]
 fn draw(
@@ -75,6 +79,15 @@ fn draw(
             p.draw.image(&i, px, py, s.x, s.y, c);
         }
     };
+
+    // Players 2–4 aren't in (one player): their panels wait, `S3` over
+    // `S4` in the slot's dim colour, framed.
+    for (slot, [r, g, b]) in NOT_JOINED.iter().copied().enumerate().skip(1) {
+        let px = PANEL_X + PANEL_WIDTH * slot as f32;
+        image(&mut p, "S3", px, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
+        image(&mut p, "S4", px, 320.0, Some(Vec2::new(128.0, 64.0)), Color::srgb_u8(r, g, b));
+        image(&mut p, "S4_FRAME", px, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
+    }
 
     // The runestone bar and the class plate in its frame.
     image(&mut p, "BK_RUNE_STONE_02", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
