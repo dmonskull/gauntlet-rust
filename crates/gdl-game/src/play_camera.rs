@@ -159,6 +159,23 @@ impl PlayCamera {
         }
     }
 
+    /// The way the camera faces, which the stick is turned by: the boss
+    /// camera's on a boss level, the play camera's otherwise.
+    pub fn yaw(&self) -> f32 {
+        match self.boss.as_ref().filter(|_| self.boss_active) {
+            Some(b) => b.yaw,
+            None => self.rig.yaw,
+        }
+    }
+
+    /// A hero's step, kept inside the boss camera's view on a boss level.
+    pub fn keep_in_view(&self, feet: [f32; 3], centre: [f32; 3], step: [f32; 3]) -> [f32; 3] {
+        match self.boss.as_ref().filter(|_| self.boss_active && self.cut.is_none()) {
+            Some(b) => b.keep_in_view(feet, centre, step),
+            None => step,
+        }
+    }
+
     /// Whether a camera cut is showing (the hero can't be hurt then).
     pub fn in_cut(&self) -> bool {
         self.cut.is_some()

@@ -520,10 +520,11 @@ fn tick(
     let held = if free_look.0 { 0 } else { read_buttons(&keys, &pads, &controls) };
     let buttons = Buttons::from_held(held, controls.held);
     controls.held = held;
-    // Stick up moves the way the play camera faces; the game's heading is
+    // Stick up moves the way the camera faces (the boss camera's on a boss
+    // level); the game's heading is
     // the camera's yaw + the stick's angle, so right is +X facing +Z (on
     // the screen's right: the picture is mirrored, `camera.rs`).
-    let yaw = play_camera.map_or(0.0, |c| c.rig.yaw);
+    let yaw = play_camera.as_deref().map_or(0.0, PlayCamera::yaw);
     let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
     let right = Vec3::new(forward.z, 0.0, -forward.x);
     let dir = right * raw.x + forward * raw.y;
@@ -755,6 +756,11 @@ fn tick(
         let d = p.mover.step(Stick { heading, magnitude: drive }, face, dt);
         p.move_factor = move_factor;
         let feet = p.mover.position;
+        // Under the boss camera a step out of its view slides along it.
+        let d = match play_camera.as_deref() {
+            Some(c) => c.keep_in_view(feet, [feet[0], feet[1] + body.centre_height, feet[2]], d),
+            None => d,
+        };
         let d = match &ground {
             Some(g) => {
                 let moved = g.0.move_player(feet, d, &body, &mut p.ground);
