@@ -82,6 +82,9 @@ pub enum Hint {
     /// A timed power-up picked up: the game's hint number
     /// ([`POWER_HINTS`], [`Hint::for_power`]).
     Power(u8),
+    /// 0x22: experience raised the hero's level — "LEVEL %d EXPERIENCE"
+    /// with the level; shown every time.
+    LevelUp,
 }
 
 /// The power-up pickups' hints (`docs/powers.md`, "Pickup hints"; the
@@ -236,6 +239,7 @@ impl Hint {
             Self::ExplosionsDestroyItems => ("EXPDESTROY", "S_EXPDSTITMS", true),
             Self::GasSpoilsFood => ("GASPOISON", "S_GASFOODBAD", true),
             Self::ChestsExplode => ("CHESTSEXPL", "S_CHESTSEXPL", true),
+            Self::LevelUp => ("LEVELUP", "S_GAINEDLEVEL", false),
             Self::KillDeathWithMagic => ("USEMAGIC", "S_USEMAGIC", true),
             Self::DeathDrainsExperience => ("DEATHDRAINEXP", "S_DEATHDRAINXP", true),
             Self::DeathDrainsHealth => ("DEATHDRAINHEALTH", "S_DEATHDRAINS", true),
@@ -338,9 +342,12 @@ fn show_hints(
             continue;
         }
         let pojo = state.as_ref().is_some_and(|s| s.bits.special & POJO != 0);
+        // The game fills a hint's `%d` with the hero's level.
+        let level = state.as_ref().map_or(1, |s| s.level).to_string();
         let Some(text) = hints.rom.as_ref().and_then(|rom| {
             let lines = &rom.group(&group)?.strings;
-            let lines: Vec<String> = lines.iter().map(|l| fill_hero(l, rom, hint, choice.as_deref(), pojo)).collect();
+            let lines: Vec<String> =
+                lines.iter().map(|l| fill_hero(l, rom, hint, choice.as_deref(), pojo).replace("%d", &level)).collect();
             Some(lines.join(" "))
         }) else {
             continue;
