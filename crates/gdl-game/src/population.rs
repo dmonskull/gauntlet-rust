@@ -629,6 +629,21 @@ fn spawn_built(model: &BuiltModel, transform: Transform, index: usize, view: Pop
     root
 }
 
+/// The models a blast can bring (`breakables.rs`, `docs/mechanics.md`
+/// "Blows on items"), and the items they come from: treasure's junk, the
+/// spoiled meat and fruit, the wreck of a powerup blown up (food, timed
+/// powerups — not keys, potions or quest pieces), of the silver chest and
+/// of the other chests (not CHESTEXP, which explodes instead).
+type Wanted = fn(&ItemType) -> bool;
+const BLAST_MODELS: &[(&str, Wanted)] = &[
+    ("TREAS_JUNK", |t| t.class == ItemClass::Powerup && t.subtype == 1),
+    ("BADMEAT", |t| t.class == ItemClass::Powerup && t.subtype == 3),
+    ("GAPPLE", |t| t.class == ItemClass::Powerup && t.subtype == 3),
+    ("ITEMEXP0", |t| t.class == ItemClass::Powerup && !matches!(t.subtype, 1 | 2 | 4 | 10..=16)),
+    ("CHESTSEXP0", |t| t.class == ItemClass::Container && t.subtype == 0x30),
+    ("CHESTGEXP0", |t| t.class == ItemClass::Container && !matches!(t.subtype, 0x2C | 0x30)),
+];
+
 /// Models of what the level's containers hold, by item type name, for
 /// contents released at run time.
 #[derive(Resource)]
@@ -823,6 +838,35 @@ pub fn spawn(
         let model = build_model(&sources, &mut caches, crate::items::EXIT_OFF, None, meshes, level_materials, images);
         contents.models.insert(crate::items::EXIT_OFF.to_string(), model);
     }
+    // What blasts turn things into or leave behind (`breakables.rs`):
+    // treasure's junk and spoiled food (`POWERUPS`), and the wrecks of
+    // powerups and chests (the realm's items bank) — each only where the
+    // level has something it can come from.
+    let mut types: Vec<ItemType> = pop.placements.iter().map(|p| pop.resolved_type(p).clone()).collect();
+    for placement in &pop.placements {
+        let ty = pop.resolved_type(placement);
+        if let PlacementParams::Container { contents: Some(c), .. } = placement.params(ty.class)
+            && c < pop.item_types.len()
+        {
+            types.push(pop.resolve(c).clone());
+        }
+    }
+    let (mut blast_models, mut blast_triangles) = (Vec::new(), 0);
+    for (name, wanted) in BLAST_MODELS {
+        if contents.models.contains_key(*name) || !types.iter().any(wanted) {
+            continue;
+        }
+        let model = build_model(&sources, &mut caches, name, None, meshes, level_materials, images);
+        if model.parts.is_empty() {
+            debug!("no {name} model for this level");
+        }
+        blast_triangles += model.meshes().map(|m| m.triangles).sum::<usize>();
+        blast_models.push(*name);
+        contents.models.insert(name.to_string(), model);
+    }
+    let ready: Vec<&str> =
+        BLAST_MODELS.iter().map(|(n, _)| *n).filter(|n| contents.models.get(*n).is_some_and(|m| !m.parts.is_empty())).collect();
+    info!("blast models {ready:?} ({blast_models:?} built for them: {blast_triangles} triangles)");
     // Each bank's texture modifiers on the models drawn from it: the
     // item banks', the level's own and the generators' monster banks'.
     let mut drawn: Vec<HashMap<u16, Vec<Handle<LevelMaterial>>>> = vec![HashMap::new(); sources.list.len()];
