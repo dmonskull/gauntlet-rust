@@ -89,10 +89,11 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The suicide runners, effect flipbooks and depth bias (after `b089b35`)
-were checked on levelA1 but not smoke-tested on every level yet.
+The all-levels smoke test on master `58d602b` (suicide runners, effect
+flipbooks and depth bias, the helper's chimera heads merged) passed all 67
+real levels.
 
-The all-levels smoke test on master `b089b35` (boss intro, the level-change
+Before that, the smoke test on master `b089b35` (boss intro, the level-change
 crash fix, shared materials, saving) passed all 67 real levels (`DEMO1`
 included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
@@ -203,10 +204,10 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
-0. Run the smoke test on master (`smoke.sh`: every
-   level folder plus DEMO1, `GDL_BUTTONS=attack GDL_STICK="0.4,1"
-   GDL_SHOT_AT=400`, 120 s timeout, stop at the first panic; resume from
-   the failing level) and commit. Then: the hero's attack search against
+0. (The smoke test, `smoke.sh`: every level folder plus DEMO1,
+   `GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400`, 120 s timeout,
+   stop at the first panic; resume from the failing level.) Next: the
+   hero's attack search against
    critter spheres in 3D (above); the boss camera; free-running bank
    texture modifiers on characters/weapons; AI 5/6 (unaware: follow the
    leader, wander) and the leader runner.
