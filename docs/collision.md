@@ -96,8 +96,11 @@ when flag `1` is also set, else the instance's inverse matrix via
 Flag bits used by the queries: `0x2`, `0x100` walls only; `0x4`, `0x200`
 floors only; `0x8`, `0x10`, `0x20` both; `0x800` (particle anchors) neither.
 `0x40` skips the normal and height filters; `0x200` hits are kept apart
-from the nearest-hit result (`DAT_8023c32c`); `0x38` hits don't push movers
-out; `0x10000000` excludes a moving node.
+from the nearest-hit result: the nearest of them by the same score is kept
+beside it (node `DAT_8023c32c`, hit point `DAT_8023c318`, cleared at each
+query's start) — the levels' water nodes (`…WATER…`, [player-movement.md](
+player-movement.md), "Footsteps"); `0x38` hits don't push movers out;
+`0x10000000` excludes a moving node.
 
 ### Grid
 
@@ -253,8 +256,12 @@ clamped to ≥ 0 first):
    at `p = c + d`, from `p` (up 0.0) down `3 + h` (`r2−0x5c88`), radius
    `r`, crossing-preferring (mode `0x10`), disable mask 1; result at
    `0x80282248`. So floors up to the centre (2.5 above the feet — the
-   highest step) and down to 3 below the feet are found. With `F` the hit
-   height, `F₀` the floor being followed (`+0x8b4`) and `|dxz|` the
+   highest step) and down to 3 below the feet are found. Right after this
+   first probe the check saves its kept-apart (`0x200`) hit: node
+   `r13-0x6fc0`, height `r13-0x6fc4`. The player update puts that height
+   in `+0x8CC` (the floor followed when there's none); above the floor it
+   is water, where the blob shadow lies and the steps splash. With `F` the
+   hit height, `F₀` the floor being followed (`+0x8b4`) and `|dxz|` the
    horizontal length of `d`:
    - A standing node (`+0x8c4`, flags inherited up the parents by
      `FUN_800aacac`) with flags `0x0C000000` and `0x20000000` can't be left
@@ -336,7 +343,9 @@ sliding along a moving node's downward-facing wall pushes `d` down
   along the line — a superset, so the same nearest hit.
 - Moving nodes are tested at rest (their world position), all triangles,
   with no runtime grid. Nothing animates them yet.
-- `0x200` hits are dropped rather than reported separately.
+- `cast` leaves `0x200` hits out; `cast_apart` returns the nearest of
+  them, and `player_water` the player's floor probe's, from the feet
+  after the move (the footsteps' water).
 - `top_floor(x, z)` (a probe from the top of the level down) is ours, for
   placing things with no starting height.
 
