@@ -353,6 +353,10 @@ pub fn blast_reaches(v: &ItemView, kind: u32) -> bool {
     if v.rock {
         return v.live && v.armor >= 0 && kind & MAGIC == 0;
     }
+    // A critter's statue: any blast wakes it.
+    if v.statue {
+        return v.live;
+    }
     if !v.live || v.ty.armor >= 0 {
         return false;
     }
@@ -553,6 +557,11 @@ fn blasted_items(
         return;
     };
     for b in blasts.read() {
+        // A blow on a critter's statue wakes it.
+        if items.view(b.placement).is_some_and(|v| v.statue) {
+            items.strike_statue(b.placement);
+            continue;
+        }
         // A safe rock takes the blow and shows its new stage; broken, it
         // leaves GENDEST (the game's effect `0x1E`).
         if let Some(v) = items.view(b.placement).filter(|v| v.rock) {
@@ -739,6 +748,7 @@ mod tests {
             live,
             armor: ty.armor,
             rock: false,
+            statue: false,
             contents: None,
             model: None,
         };

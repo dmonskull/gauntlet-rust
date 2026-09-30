@@ -158,7 +158,7 @@ Test aids:
 - `GDL_WARP="x,y,z"`: start the hero at a point, on the floor below it
   that the player's floor check stands on (with none, a warning and the
   level's own start: a point over a gap would drop the hero out of the
-  level and back to the point for good). The `floors` example lists every
+  level and back to the point for good); the first level only. The `floors` example lists every
   floor down a line (`cargo run -p gdl-formats --example floors --
   <level folder> x z`).
 - `GDL_LIST_NEAR="x,y,z"`: log the level objects near a point.
@@ -320,8 +320,10 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
   items (critters.md "The boss's loot").
 - **Safe rocks** take blows (every missile but magic stops on a standing
   rock; blasts too): hit points, armour, restaging with the stage models
-  and GENDEST (critters.md "Safe rocks"). Left: the yeti's throw (kind 6)
-  and the P-boss's volley (kind 5); grabs (kind 7) are decoded, not ported.
+  and GENDEST (critters.md "Safe rocks"); the P-boss's spouts at every
+  rock (kind 5) and the yeti's boulders (kind 6, remaking a rock) as
+  growing blasts over their effects' clips (checked on K5 and I5). Grabs
+  (kind 7) are decoded, not ported.
 - **Pickup notices** (the helper's `pickup_notices.rs`, merged): each
   pickup's plate rises over the panel (checked: a key's KEY_RING plate on
   A1); a new runestone has the announcer count the stones (unit-tested;

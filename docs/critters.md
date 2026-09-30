@@ -581,14 +581,41 @@ setup-function numbers:
   Players between `+0x10` and `+0x0C` horizontally, within `+0x08` + their
   cylinder, and with a clear line (`0x8005fb34`) take the damage. The hit
   timer is as for kind 0.
-- **5 — at every safe rock**: one projectile aimed at each of the
-  level's safe rocks (`0x802409f0`, up to 16, found by `0x80063efc`;
-  `0x80063c30` gives a rock's object).
-- **6 — throw down a safe rock**: a rock that isn't standing
-  (`0x80063cf8`: hit points or stage ≤ 0) — the one nearest the target
-  (`0x80035ae0`), without one the next after the last — gets the
-  projectile thrown at its spot and a timer of (projectile `+0x18` − 1) /
-  30 s; when it runs out the rock is made (below).
+- **5 — at every safe rock**: for each of the level's safe rocks
+  (`0x802409f0`, up to 16, found by `0x80063efc`; `0x80063c30` gives a
+  rock's object), the blow's projectile (`0x8003cfbc(…, 0,
+  0x801274c8)`, a zero offset) with its model node re-parented under the
+  rock's (`0x800bb084(child, parent)`), so it sits on the rock. Its speed
+  range is 0, so it stays put; its flags `0x801` (a boss's) `| 0x20` put
+  it in area mode from the start: a blast growing over its life
+  ([projectiles.md](projectiles.md), "Blast") with the blow's damage,
+  radius `+0x0C` and kind, on players only. Its life is its clip's
+  (`0x8009423c` with `SFXX +0x3C` = 0: frames × the clip's rate / 900 s,
+  a clip of no frames counting 30); its `SFXX` sound plays from the
+  critter (`0x8009bb64(id, 0xE0, critter +0x3C, fade)`), once a rock.
+  The P-boss's SPOUT (ATCK10): blow 2 at frame 8 is `ATCK10FX` with
+  `S_PLGATTCK10` (61 frames, 2.03 s), blow 1 at frame 20 `NULLFX` —
+  the effect table's own, in `WEAPONS`, no frames: 1 s, unseen — both
+  40 damage out to 12, kind `0x20`.
+- **6 — throw down a safe rock** (the yeti's POUND and POUND2, ATTACK12
+  at frame 15: `ATTACK12_S0`, 36 frames, 100 damage out to 8): one rock
+  picked by `0x80035ae0`, then the effect on it as for kind 5, and the
+  rock's timer (`0x802409b0`) set to (the slot's clip frames `+0x18` −
+  1) × 1/30 s (`r2-0x7118`); the boss's update counts the timers down by
+  the tick and, at 0, makes the rock (below). The pick:
+  - with a target (critter `+0x124`), of the rocks not standing
+    (`0x80063cf8`: hit points or stage ≤ 0), the one nearest the
+    target's feet (player `+0x44`) across the floor by the game's quick
+    distance (`0x800bce38`, [collision.md](collision.md)); the first of
+    equals; none: −1;
+  - with none, a round from the last pick (`r13-0x74ac`): for `i` = 0…n
+    − 1 it tests rock `i` but takes rock (last + `i` + 1) mod n — so the
+    first rock not standing decides how far round it goes, and the one
+    taken can be standing (its timer then remakes it at 3× hit points);
+    none: −1.
+  The pick becomes the last. The boss's first update (`0x8003a654`)
+  gathers the rocks (hiding them for a kind 6 boss) and starts the last
+  at `rand() % n` (`0x800bcf9c(n)`); the level's start sets it to −1.
 
 ### Safe rocks
 
@@ -626,8 +653,14 @@ leaves rocks out.
 Here: the stage models (`ContentModels` builds `<name>0`–`<name>3`), the
 touch rule, I5's hidden start, and blows on rocks: `LevelItems::
 rock_in_way` / `hit_rock`, missiles stopping on them (`projectiles.rs`)
-and blasts (`effects.rs`, `breakables.rs`), GENDEST as one breaks. Not
-done: the throw (kind 6) and the volley (kind 5).
+and blasts (`effects.rs`, `breakables.rs`), GENDEST as one breaks. Kinds
+5 and 6 (`rock_blows`): the effect's model set down at each rock's node
+for its clip's life, an unseen growing blast there on the heroes
+(`effects::CritterBlast`), the `SFXX` sounds from the critter
+(`PlaySoundAt::faded`, 0xE0), the kind 6 pick as above (the random start
+from the level's generator) and its timer making the rock at stage 3
+with its model. An effect a critter's folder lacks (`NULLFX`) takes its
+clip from the `WEAPONS` bank; it has no model here.
 - **7 — grab** (the lich's, the yeti's and both Skornes' GRAB moves,
   move kind 0x81: blow 1 in its window — the lich 16–18, the yeti 25–30,
   the Skornes 12–15 — blow 2 once from its frame: 71, 100, 44):
@@ -1435,9 +1468,10 @@ in the game) and the bosses on the 30 Hz tick, interpolated for drawing.
   charges and swings, and drops its key with GENSCARRY; the gargoyle,
   woken, bites, claws, breathes and throws fireballs, and leaves
   `GARGEAGL` with DEFEATGAR; walking into a golem statue wakes it.
-  Stand-ins: the drop appears where the critter fell, with a 30-field
-  pickup delay (not tossed); a blow on a statue (a missile, a blast)
-  doesn't wake it yet.
+  A blow wakes a statue: a missile stops on it (the monsters' pass it,
+  as they pass most items; `LevelItems::statue_in_way`) and a blast
+  reaching it wakes it (`strike_statue`). Stand-ins: the drop appears
+  where the critter fell, with a 30-field pickup delay (not tossed).
 
 - **Loading.** When the level's monster state is set up, the level's golem
   slot loads its file (`golem`, `golemF` or `golemI` by realm) and builds its
@@ -1514,8 +1548,8 @@ in the game) and the bosses on the 30 Hz tick, interpolated for drawing.
 - **The stomp ring** (`DAMG` kind 3, ATTACK4) hurts heroes within its
   radius at once. In the game it's a damaging effect in the projectile
   table, lasting `+0x08` s.
-- **Projectile kinds** (1, 2, 8), breath cones (4) and the boss's loot (9)
-  are done (for bosses too); the safe rocks' kinds (5, 6) and grabs (7)
+- **Projectile kinds** (1, 2, 8), breath cones (4), the safe rocks' kinds
+  (5, 6) and the boss's loot (9) are done (for bosses too); grabs (7)
   aren't.
 - **Timing.** Critter time starts at 0 each level. Moves that have never
   run count as long ago, so they're ready; the game's clock runs from boot.
@@ -1691,7 +1725,7 @@ play camera.
 
 **Next:**
 - The boss camera.
-- Kinds 5, 6 and 7, the look nodes, and breakable nodes.
+- Kind 7 (grabs), the look nodes, and breakable nodes.
 - Checking the golem against hit spheres: blows on its BALL/HANDR spheres
   run out at 0.25 × its hit points.
 
