@@ -14,6 +14,7 @@ use crate::collision_debug::{self, CollisionOverlay};
 use crate::level::{LevelData, LoadedGame};
 use crate::level_material::LevelMaterial;
 use crate::mechanics;
+use crate::particles;
 use crate::model_mesh::{self, TextureCache};
 use crate::population::{self, LevelPopulation, PopulationView};
 
@@ -253,6 +254,7 @@ fn spawn_level(
         built.extend(parts);
     }
     let facing: Vec<_> = facing.into_iter().map(|(_, p)| p).collect();
+    let origins = nodes.origin.clone();
     commands.insert_resource(nodes);
     let mut shared: HashMap<(usize, u32), Vec<model_mesh::BuiltMesh>> = HashMap::new();
     for &&(object, at, flags) in &facing {
@@ -307,6 +309,25 @@ fn spawn_level(
         .collect();
     info!("{} of {} texture animations attached", anims.len(), level.texmods.len());
     commands.insert_resource(LevelTexAnims::new(anims));
+
+    // The particle systems its `PSYS` nodes run.
+    let emitters = level.nodes.iter().enumerate().filter(|(_, n)| {
+        n.flags & gdl_formats::collision::node_flags::PARTICLES != 0 && n.name.contains("PSYS")
+    });
+    let emitters: Vec<(String, Vec3)> = emitters.map(|(i, n)| (n.name.clone(), Vec3::from(origins[i]))).collect();
+    let find = |model: &gdl_formats::ModelFile, name: &str| {
+        model.texture_names.iter().find(|t| t.name.eq_ignore_ascii_case(name)).map(|t| t.binding)
+    };
+    let texture = |name: &str| -> Option<Handle<Image>> {
+        if let Some(b) = find(&level.model, name) {
+            return cache.get(b, images).map(|(i, _)| i);
+        }
+        let (model, _) = common?;
+        let b = find(model, name)?;
+        shared_cache.as_mut()?.get(b, images).map(|(i, _)| i)
+    };
+    let made = particles::spawn_emitters(&level.particles, emitters, texture, commands, meshes, materials);
+    info!("{made} particle systems ({} records)", level.particles.len());
 
     Built { meshes: count, triangles, min: bounds.0, max: bounds.1 }
 }

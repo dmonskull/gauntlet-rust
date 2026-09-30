@@ -68,9 +68,15 @@ fix) passed all 67 real levels; only the two empty folders fail.
   `GDL_DEBUG_HUD=1`. Not drawn yet: the turbo flash and glow, the
   legendary-key row, the quest and rune-13 icons, and the "Wait In Tower"
   prompt. See [frontend.md](frontend.md) "In-game HUD".
-- **Effects and magic potions**: handed to the projectiles helper (branch
-  `worktree-agent-a8dd539691ef57ca7`) as its current job. When it
-  reports, review, merge, test and smoke test.
+- **Effects and magic potions**: the projectiles helper (branch
+  `worktree-agent-a8dd539691ef57ca7`) was stopped mid-edit, and its work
+  is uncommitted in that worktree. Check `git status` there; commit or
+  discard it, then finish the job (the brief is in "Next jobs").
+- **World particles**: `particles.rs` runs every level's `PSYS` nodes
+  (torch flames, smoke, pool fires, mist, embers) from the decoded records
+  and presets ([rendering.md](rendering.md)). The emitter's own ring and
+  callback machinery is a stand-in (each particle is simulated directly),
+  and trigger-switched emitters always run.
 
 - **Bosses**: the B6 dragon is merged into master (`5e74b35`). It wakes,
   uses fireballs, breath, claws and stomp, hits the hero, takes hits and
@@ -111,7 +117,7 @@ waits.
      (`FUN_8009262c`, radius 40, damage = magic power `+0x10C`), mode 1 the
      shield, mode ≥ 2 the thrown potion.
    - The blast's damage falls off over time in `FUN_80094418`.
-4. **World particle systems** (torch flames, sparks):
+4. ~~World particle systems~~: done (the stand-ins are listed above). What remains is the game's exact emitter maths:
    - What's decoded so far is in [rendering.md](rendering.md) "Particle-system
      nodes": ANIM.PS2 `0x138`-byte records, selected by the letter after
      `PSYS` in the node name.
