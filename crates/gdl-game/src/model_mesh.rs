@@ -41,6 +41,16 @@ impl<'a> TextureCache<'a> {
         self
     }
 
+    /// The shared materials made so far, by the diffuse binding they draw
+    /// (none unless [`TextureCache::sharing_materials`]).
+    pub fn materials_by_binding(&self) -> HashMap<u16, Vec<Handle<LevelMaterial>>> {
+        let mut out: HashMap<u16, Vec<Handle<LevelMaterial>>> = HashMap::new();
+        for ((diffuse, ..), material) in self.shared.iter().flatten() {
+            out.entry(*diffuse).or_default().push(material.clone());
+        }
+        out
+    }
+
     pub fn get(&mut self, binding: u16, images: &mut Assets<Image>) -> Option<(Handle<Image>, AlphaMode)> {
         let (model, textures) = (self.model, self.textures);
         self.decoded

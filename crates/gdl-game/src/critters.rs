@@ -77,6 +77,7 @@ use gdl_formats::text::TextRom;
 use gdl_formats::collision::{node_flags, push_out};
 use gdl_formats::critter::{self, CritterDamage, CritterFile, CritterMove, Condition, class, kind};
 use gdl_formats::population::{ItemClass, LocatorKind, PlacementParams, REALM_LETTERS, rotation_matrix};
+use gdl_formats::texmod::TexMod;
 use gdl_formats::{LevelCollision, ModelFile};
 
 use crate::audio::PlaySound;
@@ -87,6 +88,7 @@ use crate::effects::effect_life;
 use crate::exits::ChangeLevelTo;
 use crate::hints::ShowMessage;
 use crate::items::LevelItems;
+use crate::texanim::LevelTexAnims;
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion;
@@ -1005,11 +1007,13 @@ fn setup_level(
     mut images: ResMut<Assets<Image>>,
     mut standard: ResMut<Assets<StandardMaterial>>,
     mut items: ResMut<LevelItems>,
+    texanims: Option<ResMut<LevelTexAnims>>,
 ) {
     let (Some(population), Some(ground)) = (population, ground) else { return };
     let realm_id = REALM_LETTERS.iter().find(|(l, _)| *l == monsters.realm).map_or(1, |r| r.1);
     let realm_items = format!("level{}", monsters.realm);
     let mut kinds = HashMap::new();
+    let mut animated = Vec::new();
     let wanted = monsters.enemies.loaded.iter().map(|e| e.0).filter(|&e| e == GOLEM || e >= FIRST_BOSS);
     for enemy in wanted {
         if kinds.contains_key(&enemy) {
@@ -1030,7 +1034,7 @@ fn setup_level(
             info!("{path}: the boss throws down the safe rocks; {n} hidden until then");
         }
         let folder = format!("MONSTERS/{}", critter::model_folder(&file.desc, &realm_items, ""));
-        let Some((anim, model, textures)) = read_folder(&mut game, &folder) else {
+        let Some((anim, model, textures, texmods)) = read_folder(&mut game, &folder) else {
             warn!("{folder}: can't read the critter's models");
             continue;
         };
@@ -1046,7 +1050,12 @@ fn setup_level(
                 textures: textures.clone(),
             })
         };
-        let mut build = |d: &CharacterData| CharacterModel::build(d, &mut meshes, &mut materials, &mut images);
+        // Every model from the folder runs its running texture animations.
+        let mut build = |d: &CharacterData| {
+            let (model, anims) = CharacterModel::build_animated(d, &texmods, &mut meshes, &mut materials, &mut images);
+            animated.extend(anims);
+            model
+        };
         let bodies = (0..file.types.len())
             .map(|ty| {
                 let owner = file.types[ty].parent.unwrap_or(ty);
@@ -1124,6 +1133,10 @@ fn setup_level(
             effects.len()
         );
         kinds.insert(enemy, Arc::new(CritterKind { file, bodies, statue, effects }));
+    }
+    if let Some(mut texanims) = texanims {
+        info!("{} texture animations on the level's critters", animated.len());
+        texanims.extend(animated);
     }
 
     // Placed critters stand as statues.
@@ -1236,11 +1249,16 @@ fn setup_level(
     commands.insert_resource(level);
 }
 
-fn read_folder(game: &mut LoadedGame, folder: &str) -> Option<(AnimFile, ModelFile, Vec<u8>)> {
-    let anim = AnimFile::parse(&game.install.read(&format!("{folder}/ANIM.PS2")).ok()?).ok()?;
+/// A critter folder's atrees, models, texture bytes and texture modifiers.
+type CritterFolder = (AnimFile, ModelFile, Vec<u8>, Vec<TexMod>);
+
+fn read_folder(game: &mut LoadedGame, folder: &str) -> Option<CritterFolder> {
+    let bytes = game.install.read(&format!("{folder}/ANIM.PS2")).ok()?;
+    let anim = AnimFile::parse(&bytes).ok()?;
+    let texmods = TexMod::parse_all(&bytes).unwrap_or_default();
     let model = ModelFile::parse(&game.install.read(&format!("{folder}/objects.ngc")).ok()?).ok()?;
     let textures = game.install.read(&format!("{folder}/textures.ngc")).ok()?;
-    Some((anim, model, textures))
+    Some((anim, model, textures, texmods))
 }
 
 /// Loads the models of the boss level's end from the level's own item set:

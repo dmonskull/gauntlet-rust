@@ -37,6 +37,7 @@ use crate::play_camera::PlayCamera;
 use crate::player::{Player, PlayerTick};
 use crate::population::LevelPopulation;
 use crate::projectiles::{self, MonsterShot};
+use crate::texanim::{LevelTexAnims, TexAnim};
 use crate::world::{LevelEntity, LevelGround};
 
 /// Stand-ins for the player's collision cylinder (radius and height), which
@@ -634,6 +635,7 @@ fn setup_level(
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut deaths: ResMut<DeathTextures>,
+    texanims: Option<ResMut<LevelTexAnims>>,
 ) {
     let Some(ground) = ground else { return };
     let entry = tunings.and_then(|t| t.0.get(&population.level.to_ascii_lowercase()).cloned());
@@ -667,15 +669,24 @@ fn setup_level(
     wanted.dedup();
     let mut folders = FolderCache::default();
     let mut models = HashMap::new();
+    let mut animated = Vec::new();
     for &(id, tier) in &wanted {
         let model = match load_enemy(&mut game.install, &mut folders, &enemies, id, tier) {
-            Ok(data) => Some(Arc::new(monster_model(&data, &mut meshes, &mut materials, &mut images))),
+            Ok((data, folder)) => {
+                let (model, anims) = monster_model(&data, &folder.texmods, &mut meshes, &mut materials, &mut images);
+                animated.extend(anims);
+                Some(Arc::new(model))
+            }
             Err(why) => {
                 warn!("monster {id} tier {tier}: {why}");
                 None
             }
         };
         models.insert((id, tier), model);
+    }
+    if let Some(mut texanims) = texanims {
+        info!("{} texture animations on the level's monsters", animated.len());
+        texanims.extend(animated);
     }
     // Death textures: WEAPONS' (once), and the level's DEATHALT from the
     // trees' folders, else the knights'.
@@ -819,7 +830,7 @@ fn load_enemy(
     enemies: &LevelEnemies,
     id: i32,
     tier: i32,
-) -> Result<CharacterData, String> {
+) -> Result<(CharacterData, Arc<MonsterFolder>), String> {
     let name = enemy::enemy_name(id).ok_or("unknown enemy type")?.to_ascii_uppercase();
     let mut tiers = vec![tier];
     for d in 1..=3 {
@@ -834,7 +845,7 @@ fn load_enemy(
         for folder in &search {
             let Some(files) = folders.get(install, folder) else { continue };
             let Some(tree) = files.anim.atrees.iter().find(|a| a.name == atree) else { continue };
-            return Ok(CharacterData {
+            let data = CharacterData {
                 name: format!("{folder}/{atree}"),
                 class: String::new(),
                 colour: String::new(),
@@ -842,18 +853,21 @@ fn load_enemy(
                 clips: Arc::new(tree.clone()),
                 model: files.model.clone(),
                 textures: files.textures.clone(),
-            });
+            };
+            return Ok((data, files));
         }
     }
     Err(format!("no atree for {name} tier {tier}"))
 }
 
+/// A monster's model, with its folder's running texture animations.
 fn monster_model(
     data: &CharacterData,
+    texmods: &[TexMod],
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<LevelMaterial>,
     images: &mut Assets<Image>,
-) -> MonsterModel {
+) -> (MonsterModel, Vec<TexAnim>) {
     let mut actions = [None; ACTION_NAMES.len()];
     let mut loops = [false; ACTION_NAMES.len()];
     for (i, name) in ACTION_NAMES.iter().enumerate() {
@@ -862,7 +876,8 @@ fn monster_model(
             loops[i] = data.clips.actions[a].loops();
         }
     }
-    MonsterModel { model: CharacterModel::build(data, meshes, materials, images), actions, loops }
+    let (model, anims) = CharacterModel::build_animated(data, texmods, meshes, materials, images);
+    (MonsterModel { model, actions, loops }, anims)
 }
 
 /// What the game's play camera sees: its view from eye to target with the

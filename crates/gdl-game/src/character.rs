@@ -340,6 +340,25 @@ impl CharacterModel {
         Self::build_with(data, &mut cache, meshes, materials, images)
     }
 
+    /// Builds `data`'s model with its bank's running texture modifiers
+    /// (`texmods`, the bank's `ANIM.PS2` list) on the materials it draws
+    /// with — a bomb's fuse, a demon's lava — returning the animations for
+    /// the level's list (`texanim.rs`).
+    pub fn build_animated(
+        data: &CharacterData,
+        texmods: &[gdl_formats::texmod::TexMod],
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<LevelMaterial>,
+        images: &mut Assets<Image>,
+    ) -> (Self, Vec<crate::texanim::TexAnim>) {
+        let mut cache = TextureCache::new(&data.model, &data.textures).sharing_materials();
+        let model = Self::build_with(data, &mut cache, meshes, materials, images);
+        let drawn = cache.materials_by_binding();
+        let frames = |m: &gdl_formats::texmod::TexMod| crate::texanim::flipbook_images(m, &data.model, &mut cache, None, images);
+        let anims = crate::texanim::bank_anims(texmods, &drawn, frames, materials);
+        (model, anims)
+    }
+
     /// Builds with the caller's texture cache (for data's own files), so
     /// the caller can find which images its materials draw with.
     pub fn build_with(

@@ -287,11 +287,11 @@ waits.
 
 ### Notes for the next jobs
 
-- **Texture modifiers still to run**: `WEAPONS`' and the monster banks'
-  on heroes, weapons and monsters themselves (`CharacterModel::build_with`
-  — use `texanim::bank_anims` with the shared-material cache's materials by
-  binding, kept per level), action fades (−4/−5) and kind-3 modifier nodes
-  (the tower's rune displays, legendary weapon effects), action scrolls.
+- **Texture modifiers still to run**: `WEAPONS`' and the heroes' banks'
+  (hand glows, once glows are drawn; `CharacterModel::build_animated` does
+  it for monsters and critters), action fades (−4/−5) and kind-3 modifier
+  nodes (the tower's rune displays, legendary weapon effects), action
+  scrolls.
 - **Critter hit spheres in the attack search**: ours already uses the 3D
   surface distance and the game's cone (spheres are `TargetKind::Object`).
   Left: the game's per-critter pick (surface ÷ (sphere weight `+0x1C` ×

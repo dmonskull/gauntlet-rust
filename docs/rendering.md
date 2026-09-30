@@ -185,7 +185,7 @@ scroll slot. Every tick `FUN_8005b974` steps the free-running ones (owner
 `+0x00` = −1, `FUN_80010a4c`) of four banks — the level's items
 (`r13-0x7180`), the realm's items (`-0x7184`), `WEAPONS` (`-0x7188`) and
 `POWERUPS` (`-0x718c`) — and `FUN_8007ba80` three tables per loaded
-monster. In the item banks these are the torches, `RED_ARROW`, the purple
+monster (its folders'). In the item banks these are the torches, `RED_ARROW`, the purple
 transporters and `DESTRANS`, `GOLD_CHUNKS`; in `POWERUPS` the potions'
 glows, the gems' sheens (U and V scrolls on one texture), the glow rings,
 `SPLASH`, `SAND_ANIM`; in monster banks the generators' lava and rock,
@@ -193,7 +193,11 @@ fuses. A force field's generator and field (`FFGEN`, `FFIELD`) have
 one-frame free modifiers: frame 47 (lit) and 49 (clear) from the first
 tick. `population.rs` gives each bank's modifiers to the materials of the
 item and generator models drawn from it (the level's own to items built
-from the level's model), merged with the level's (`texanim::bank_anims`).
+from the level's model), merged with the level's (`texanim::bank_anims`);
+monsters, golems and bosses run their folders' on their own models
+(`CharacterModel::build_animated`): the snakes' slithering bodies, the
+imps' flames, the ice bombs and fuses, the Skorne bosses' chest, back,
+arm and energy-body textures.
 
 **Actions.** A modifier whose owner is an atree index belongs to that
 atree's actions: action `+0x28` is how many it runs and `+0x2C` the index
@@ -234,9 +238,8 @@ The frames a flipbook steps through can need more blending than the
 texture it starts from — `FFIELD`'s base and first frame are clear, its
 later frames soft — so a material a flipbook drives blends as its most
 demanding frame needs (`LevelMaterial::widen_alpha`; the game blends
-everything). Not done: action fades; the modifiers of `WEAPONS` and of
-the monster banks on heroes, weapons and monsters themselves (only their
-effects and generators run them).
+everything). Not done: action fades; `WEAPONS`' and the heroes' banks'
+running modifiers (the hand glows, which aren't drawn yet).
 
 ## Particle-system nodes
 
