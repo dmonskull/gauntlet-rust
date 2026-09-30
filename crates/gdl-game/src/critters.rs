@@ -104,7 +104,8 @@ pub struct CrittersPlugin;
 
 impl Plugin for CrittersPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (tick_critters.after(MonsterTick), run_victory.after(tick_critters)))
+        app.init_resource::<BossWatch>()
+            .add_systems(FixedUpdate, (tick_critters.after(MonsterTick), run_victory.after(tick_critters), watch_boss.after(run_victory)))
             .add_systems(
             Update,
             (setup_level.run_if(resource_added::<MonsterLevel>).after(crate::items::build_items), interpolate).chain(),
@@ -244,6 +245,7 @@ fn run_victory(
                 at
             };
             v.wizard = level.end.wizard.as_ref().map(|m| spawn(m, at, &mut commands));
+            v.wizard_at = at;
             info!("the wizard appears at {at:?}");
             v.fade = WIZARD_FADE;
             v.step = 4;
@@ -703,11 +705,51 @@ struct Victory {
     /// The key's model, until when it shows, and whether it's the second.
     key: Option<(Entity, f32, bool)>,
     wizard: Option<Entity>,
+    /// Where the wizard stands.
+    wizard_at: [f32; 3],
     fade: i32,
     countdown: f32,
     /// The voice queue: when the speech playing ends, and one waiting.
     voice_until: f32,
     queued: Option<(String, f32)>,
+}
+
+/// What the boss camera follows (`boss_camera.rs`), refreshed each tick:
+/// the boss, its spot, whether it has woken (the game's `r13-0x7788`, kept
+/// once set), and the end's key and wizard.
+#[derive(Resource, Default, Clone)]
+pub struct BossWatch {
+    pub boss: Option<crate::boss_camera::Boss>,
+    pub spot: Option<[f32; 3]>,
+    pub awake: bool,
+    pub ending: bool,
+    pub key: Option<[f32; 3]>,
+    pub wizard: Option<[f32; 3]>,
+    /// The boss it was made for (a new level's starts over).
+    of: Option<Entity>,
+}
+
+pub(crate) fn watch_boss(level: Option<Res<CritterLevel>>, critters: Query<&Critter>, mut watch: ResMut<BossWatch>) {
+    let Some(level) = level else {
+        *watch = BossWatch::default();
+        return;
+    };
+    if watch.of != level.boss {
+        *watch = BossWatch { of: level.boss, ..BossWatch::default() };
+    }
+    let boss = level.boss.and_then(|e| critters.get(e).ok());
+    watch.spot = level.boss.map(|_| level.boss_spot);
+    watch.boss = boss.map(|c| crate::boss_camera::Boss {
+        position: c.position,
+        spawn: c.spawned_at,
+        yaw: c.yaw,
+        height: c.kind.file.types[c.ty].height,
+        dying: c.state == CritterState::Dying,
+    });
+    watch.awake |= boss.is_some_and(|c| c.state != CritterState::New);
+    watch.ending = level.victory.is_some();
+    watch.key = level.victory.as_ref().and_then(|v| v.key.map(|_| v.key_at));
+    watch.wizard = level.victory.as_ref().and_then(|v| v.wizard.map(|_| v.wizard_at));
 }
 
 /// The game's instance state (0 new, 1 dying, 3 active).
@@ -769,7 +811,7 @@ pub struct Critter {
     pub full_hit_points: f32,
     /// Root position (feet, plus its hover height), and where it was made.
     pub position: [f32; 3],
-    spawned_at: [f32; 3],
+    pub(crate) spawned_at: [f32; 3],
     pub yaw: f32,
     home_yaw: f32,
     home: [f32; 3],
@@ -1643,6 +1685,7 @@ fn tick_critters(
                     key_at,
                     key: None,
                     wizard: None,
+                    wizard_at: [0.0; 3],
                     fade: 0,
                     countdown: 0.0,
                     voice_until: 0.0,

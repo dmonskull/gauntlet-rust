@@ -45,6 +45,11 @@ What plays (details in [INDEX.md](INDEX.md)):
   - The light from the tower's window (`L1XPLIGHTRAY01`) shone in every
     game; the game shows it only once all eight shards are in
     ([items.md](items.md) "The tower's shards and runes").
+  - Boss levels now have the game's boss camera (`boss_camera.rs`): the
+    opening from the entry's starting point, the heroes framed from the
+    nearest camera point before the boss wakes, then the boss (key,
+    wizard) framed with the heroes along the way from them, eased with
+    the game's limits ([critters.md](critters.md) "Boss camera").
   - Boss levels' safe rocks were missing (no `SAFEROCK` model): they show
     their stage, `SAFEROCK<placement count>` (A5 1, B6 and K5 3), block
     only while standing, and I5 starts without them because the yeti

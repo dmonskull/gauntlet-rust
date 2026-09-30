@@ -76,7 +76,8 @@ camera faces; [player-movement.md](player-movement.md)).
 
 - Starting (kind 1), intro path (3/4) and trigger (9) cameras.
 - Several players: the fit distance and pitch limit.
-- Boss cameras (`BCAM`), camera modes other than 0.
+- Camera modes other than 0. (Boss levels use the boss camera:
+  [critters.md](critters.md) "Boss camera".)
 
 ## Level start
 
