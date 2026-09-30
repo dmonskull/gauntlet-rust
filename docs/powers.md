@@ -462,6 +462,29 @@ playing hero has the bit, and `FUN_8007c4f0` sets the hero's `+0x960`.
   `SAND_ANIM`, built by `FUN_800553b4`) show the time-stop slot's time left
   (`FUN_800552a4`), and `S_HOURGLASS` (`0x53`, looping) plays at that hero;
   otherwise it's stopped and the sprites hidden (except in realm 12).
+  - "Holding it" is the player in play (`+0xE8` = 1) with `+0x960` set;
+    the slot is the first whose bits (`+0x13C`) have `8` — whatever its
+    subtype, so the gas mask's `0x2008` counts too — and the time is
+    measured out of `r13-0x6FD8`, which a grant or top-up of a power with
+    bit `8` sets to the slot's new time (`FUN_8007ee10`, the grant).
+  - The sprites (`FUN_800b32bc`; textures from `POWERUPS`, sort keys
+    `r2-0x6BB0..`): `TIMER` (the frame, 128 × 128) at (1, 1), key 63913;
+    two windows on `TIMER_SAND` at x 1, 128 wide, key 63911; `SAND_ANIM`
+    (8 × 32, its bank flipbook: five bindings a tick apart) at (63, 58),
+    key 63912. With `f` = (total − left) / total, rounded half away from
+    zero (`FUN_800bec14`): the sand above shows texture rows 23 + 41`f`
+    to 64 at y 24 + round(39`f`), height 41 − round(39`f`); the sand below
+    rows 105 − 38`f` to 128 at y 106 − round(38`f`), height 23 +
+    round(38`f`) (`FUN_800b2358` sets texture coordinates, `-1` keeping
+    one; `FUN_800b2a48` the size, `FUN_800b27d4` the y, `FUN_800b2bd4` the
+    hidden bit).
+
+  Here (the hourglass only): `game_hud.rs::draw_hourglass` draws the
+  frame, the stream and the two sand windows back to front (the keys read
+  as depths, smaller nearer — unconfirmed) while special `8` is on and
+  play isn't under a menu, and loops `S_HOURGLASS` (`LoopSound`, not
+  placed at the hero) from the tick it comes on to the tick it goes off.
+  `f` is clamped to 0–1. The realm-12 level timer isn't drawn.
 
 Not traced: `FUN_800a00ec` (music) takes another value while it's on, as
 during cuts; `FUN_800a7ff8` (animated objects) holds those without flag
