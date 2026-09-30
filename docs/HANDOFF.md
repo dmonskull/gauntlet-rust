@@ -128,7 +128,12 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on master `c2424af` (the mirrored view, gamma
+The all-levels smoke test on master `f83e379` (item, monster and boss
+texture animations, safe rocks, the shards' light, the camera's top-point
+target, unaware monsters and running from a charging runner) passed all
+67 real levels; so did `5b4ad91` and `2bb0c8c` before it.
+
+Before that, the smoke test on master `c2424af` (the mirrored view, gamma
 blending, one-player placements, barrels, the tower's wizard and arrival
 starts, boss facing) passed all 67 real levels.
 
@@ -254,14 +259,16 @@ waits.
    tower's wizard". (The tower start's camera now frames the wizard whole
    as in the user's screenshot: the play camera looks at the hero's top
    point, 4.4 above the feet, as the game's does — [camera.md](camera.md);
-   the HUD's four panels are done.)
+   the HUD's four panels are done.) The shards and runestones in their
+   places at the tower's load need the kind-3 texture-modifier nodes and
+   action fades first (the rune displays' dust) — see "Notes" below.
    (The smoke test, `smoke.sh`: every level folder plus DEMO1,
    `GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400`, 120 s timeout,
    stop at the first panic; resume from the failing level.) Next: the
-   hero's attack search against
-   critter spheres in 3D (above); the boss camera; free-running bank
-   texture modifiers on characters/weapons; AI 5/6 (unaware: follow the
-   leader, wander) and the leader runner.
+   hero's attack search against critter spheres in 3D (above); the heroes'
+   step cut under the boss camera; the hand glows (and their banks'
+   running modifiers). Done this session: the boss camera, AI 5/6 and the
+   leader runner, the banks' texture animations on items and monsters.
 
 1. **Finish bosses** (the critters helper: intro and victory merged;
    chimera parts, all boss levels and the boss camera next). Player side,

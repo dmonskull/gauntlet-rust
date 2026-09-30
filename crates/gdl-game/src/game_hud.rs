@@ -10,10 +10,9 @@
 //! its icon and "count/needed" (the needed count once its realm or wing
 //! has opened; `docs/items.md`).
 //!
-//! Stand-ins: the turbo meter's flash and glint animations, the legendary
-//! key row shown for the first 300 fields of a level, the quest and
-//! rune-13 icons, the secret realm's coin count and the dead player's
-//! "Wait In Tower" / "Quit Game" prompt aren't drawn.
+//! Stand-ins: the legendary key row shown for the first 300 fields of a
+//! level, the quest and rune-13 icons, the secret realm's coin count and
+//! the dead player's "Wait In Tower" / "Quit Game" prompt aren't drawn.
 
 use bevy::prelude::*;
 use gdl_formats::font::{FONT_8HI, INITIALS};
@@ -49,6 +48,41 @@ const NOT_JOINED: [[u8; 3]; 4] = [[0x5A, 0x5A, 0x1E], [0x1E, 0x1E, 0x69], [0x64,
 /// Each panel's width (players 2–4 follow player 1's).
 const PANEL_WIDTH: f32 = 128.0;
 
+/// What the turbo meter plays (`docs/frontend.md`, "In-game HUD").
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum TurboState {
+    #[default]
+    Plain,
+    /// A gleam at the bar's right after it moves into another band.
+    Gleam,
+    /// The full bar's glow.
+    Glow,
+}
+
+/// The turbo meter's animation, and the bars' last look (they hold it
+/// while an animation plays).
+#[derive(Default)]
+struct TurboShow {
+    state: TurboState,
+    /// Fields since the animation began.
+    timer: f32,
+    fraction: f32,
+    fill: [u8; 3],
+    under: [u8; 3],
+}
+
+/// The meter's band: 1 below 40%, 2 below 99%, 3 full.
+fn turbo_band(shown: f32) -> u8 {
+    let f = shown * 0.01;
+    if f < 0.4 {
+        1
+    } else if f < 0.99 {
+        2
+    } else {
+        3
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw(
     frontend: Option<Res<Frontend>>,
@@ -60,6 +94,7 @@ fn draw(
     mut images: ResMut<Assets<Image>>,
     mut draw: ResMut<Draw2d>,
     mut shown_turbo: Local<f32>,
+    mut meter: Local<TurboShow>,
     real: Res<Time<Real>>,
     game_time: Res<Time<Virtual>>,
 ) {
@@ -107,25 +142,71 @@ fn draw(
     // bar grows from the middle over a black one, then red over yellow.
     let target = players.iter().next().map_or(0.0, |p| p.turbo).clamp(0.0, 100.0);
     let fields = real.delta_secs() * 60.0;
+    let before = turbo_band(*shown_turbo);
     *shown_turbo = if *shown_turbo < target {
         (*shown_turbo + fields).min(target)
     } else {
         (*shown_turbo - 2.0 * fields).max(target)
     };
-    let f = *shown_turbo * 0.01;
-    let (fraction, fill, under): (f32, fn(u8) -> Color, Color) = if f < 0.4 {
-        (f / 0.4, |v: u8| Color::srgb_u8(v, v, 0), Color::BLACK)
-    } else if f < 0.99 {
-        ((f - 0.4) / 0.6, |v: u8| Color::srgb_u8(v, 0, 0), Color::srgb_u8(255, 255, 0))
-    } else {
-        (1.0, |v: u8| Color::srgb_u8(v, 0, 0), Color::srgb_u8(255, 255, 0))
-    };
-    let v = (127.0 * fraction + 128.0) as u8;
-    if let Some(bar) = p.tex.get("TRBO_FULL_NEW", p.images) {
-        p.draw.image(&bar, x, 304.0, bar.size.x, bar.size.y, under);
-        let half = ((bar.size.x * fraction) as i32 >> 1).max(1) as f32;
-        p.draw.image(&bar, x + bar.size.x / 2.0 - half, 304.0, 2.0 * half, bar.size.y, fill(v));
+    let after = turbo_band(*shown_turbo);
+    // Moving into another band gleams; full, the bar glows, over and over.
+    let m = &mut *meter;
+    if before != after || before == 3 && after == 3 && m.state == TurboState::Plain {
+        m.state = if after == 3 { TurboState::Glow } else { TurboState::Gleam };
+        m.timer = 0.0;
     }
+    // The bars only change while neither plays; glowing, both are red.
+    if m.state == TurboState::Plain {
+        let f = *shown_turbo * 0.01;
+        let v = |fraction: f32| (127.0 * fraction + 128.0) as u8;
+        (m.fraction, m.fill, m.under) = if f < 0.4 {
+            let fr = f / 0.4;
+            (fr, [v(fr), v(fr), 0], [0, 0, 0])
+        } else if f < 0.99 {
+            let fr = (f - 0.4) / 0.6;
+            (fr, [v(fr), 0, 0], [255, 255, 0])
+        } else {
+            (1.0, [255, 0, 0], [255, 255, 0])
+        };
+    }
+    let (fill, under) = if m.state == TurboState::Glow { ([255, 0, 0], [255, 0, 0]) } else { (m.fill, m.under) };
+    let rgb = |c: [u8; 3]| Color::srgb_u8(c[0], c[1], c[2]);
+    if let Some(bar) = p.tex.get("TRBO_FULL_NEW", p.images) {
+        p.draw.image(&bar, x, 304.0, bar.size.x, bar.size.y, rgb(under));
+        let half = ((bar.size.x * m.fraction) as i32 >> 1).max(1) as f32;
+        p.draw.image(&bar, x + bar.size.x / 2.0 - half, 304.0, 2.0 * half, bar.size.y, rgb(fill));
+    }
+    // The glint streak always lies over the bar.
+    image(&mut p, "TRBO_GLINT", x, 304.0, None, Color::WHITE);
+    match m.state {
+        // The gleam: frames 1–5 and back, 4 fields each.
+        TurboState::Gleam => {
+            let mut frame = (m.timer as i32) >> 2;
+            if (5..10).contains(&frame) {
+                frame = 4 - (frame - 5);
+            }
+            if frame < 5 {
+                image(&mut p, &format!("TRBO_GLEEM{}", frame + 1), x + 80.0, 310.0, None, Color::WHITE);
+            } else {
+                m.state = TurboState::Plain;
+            }
+        }
+        // The glow fades out and back in over 120 fields.
+        TurboState::Glow => {
+            let mut fade = ((m.timer as i32) << 9) / 120;
+            if (0x100..0x200).contains(&fade) {
+                fade = 0x1FF - fade;
+            }
+            if fade < 0x100 {
+                let alpha = (0xFF - fade) as u8;
+                image(&mut p, "TURBO_GLOW_NEW", x, 304.0, None, Color::srgba_u8(255, 255, 255, alpha));
+            } else {
+                m.timer = 0.0;
+            }
+        }
+        TurboState::Plain => {}
+    }
+    m.timer += fields;
 
     // Coin and heart.
     image(&mut p, "COIN", x + 6.0, 357.0, Some(Vec2::splat(20.0)), Color::WHITE);

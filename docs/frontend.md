@@ -325,9 +325,17 @@ meter (`+0x828`, 0–100) by the fields elapsed (down twice as fast). At
 f = value × 0.01: below 0.4 the bar is `trbo_full_new` scaled to f / 0.4
 of its width about its centre, tinted (v, v, 0) over the second bar in
 black; to 0.99 it is (f − 0.4) / 0.6 wide in red (v, 0, 0) over a yellow
-bar; full, red over yellow; v = 127 × fraction + 128. Crossing a level
-plays the `trbo_glint` flash (`0x8011f488` frames) or the
-`turbo_glow_new` pulse (120 fields).
+bar; full, red over yellow; v = 127 × fraction + 128. The `trbo_glint`
+streak (128 × 16, depth 63997) always lies over the bars. When the shown
+value moves into another band (`+0x3340` = 1, timer `+0x3344` = 0) the
+`trbo_gleem1` sprite at (80, 310) steps through `TRBO_GLEEM1`…`5` and
+back (frame = fields >> 2; 5–9 count down; `0x8011f488` holds the first
+frame's texture at run time); reaching full (`+0x3340` = 2) the
+`turbo_glow_new` sprite fades from opaque to clear and back over 120
+fields (alpha 255 − x, x = fields × 512 / 120 folded at 256), over and
+over while full (a full meter with nothing playing starts it again), and
+both bars are red. While either plays the bars keep their last size and
+colours.
 
 ## Death
 
@@ -399,7 +407,7 @@ Start, triggers.
   starts that class fresh (the game keeps each class's progress in the
   character record).
 - HUD: players 2–4's panels only wait (`S3` over `S4` in the slot's dim
-  colour `0x8011f9b0`, framed: no joining yet); the turbo meter's flash and glow, the
+  colour `0x8011f9b0`, framed: no joining yet); the
   legendary-key row, the quest and rune-13 icons and the "Wait In Tower"
   prompt aren't drawn; the panel is hidden while a menu is up (its numbers
   would draw over the menu's parchment, text being drawn after images).
