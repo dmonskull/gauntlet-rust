@@ -38,9 +38,14 @@ impl Plugin for MessageBoxPlugin {
                 Update,
                 (run_box.after(frontend::read_input).before(frontend::run), run_captions),
             )
-            .add_systems(PostUpdate, (draw_box, draw_captions).before(Flush2d));
+            .add_systems(PostUpdate, (draw_box, draw_captions).in_set(DrawBox).before(Flush2d));
     }
 }
+
+/// Where the box and the captions are drawn: what goes under them draws
+/// before it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DrawBox;
 
 /// Asks for a message in the box: page `index` of a `TEXT/SCROLL_E.ROM`
 /// group (every page in turn when none), with the voice line that plays
