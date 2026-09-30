@@ -340,8 +340,9 @@ in [monsters.md](monsters.md), "Death". Confirmed:
   to stand and it plays DEATHGRABS (`+0x95C` = 2 → intent `0x1B`).
 - `HEAD_HALO` on the head.
 
-To build: Death itself (monsters.md, "Death"), then the halo's three
-checks.
+Here: all three, with Death itself ([monsters.md](monsters.md), "Death";
+`player.rs` for the drain, `monsters.rs` for the pick and the run,
+`damage.rs` for the share).
 
 ### `0x2008` gas mask
 

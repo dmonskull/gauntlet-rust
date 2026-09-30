@@ -24,13 +24,15 @@ use gdl_formats::texmod::TexMod;
 use gdl_formats::{LevelCollision, LevelTuning, ModelFile, WorldData};
 use gdl_install::GameInstall;
 
-use crate::audio::PlaySound;
+use crate::audio::{LoopSound, PlaySound};
 use crate::combat::{TargetKind, Targetable};
 use crate::character::{Animator, CharacterData, CharacterModel};
 use crate::deaths::{self, DeathSet, DeathTextures, Dissolve};
 use crate::flash::{self, Flash, FlashColours};
 use bevy::mesh::MeshTag;
-use crate::effects::{EffectAt, Exploder, ExplosionAt};
+use crate::effects::{EffectAt, EffectOn, Exploder, ExplosionAt};
+use crate::fade::Fade;
+use crate::hints::{Hint, ShowHint};
 use crate::generators::{self, Generator};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
@@ -121,6 +123,7 @@ pub struct MonstersPlugin;
 impl Plugin for MonstersPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MonsterHit>()
+            .add_message::<DeathDrain>()
             .add_systems(Startup, load_level_tunings)
             .add_systems(
                 FixedUpdate,
@@ -181,7 +184,12 @@ fn load_level_tunings(mut commands: Commands, mut game: ResMut<LoadedGame>) {
             Ok(world) => {
                 for level in &world.levels {
                     let realm_enemies = world.level_enemies(level);
-                    let loaded = realm_enemies.iter().map(|e| (e.enemy, e.subtype)).collect();
+                    let mut loaded: Vec<(i32, i32)> = realm_enemies.iter().map(|e| (e.enemy, e.subtype)).collect();
+                    // Every level without a boss loads Death too, in a
+                    // free slot.
+                    if level.tuning.boss_enemy < 0 && !loaded.iter().any(|(t, _)| *t == DEATH_TYPE) {
+                        loaded.push((DEATH_TYPE, DEATH_SLOT));
+                    }
                     let realm = level.name.chars().next().unwrap_or('A').to_ascii_uppercase();
                     let sounds = realm_enemies
                         .iter()
@@ -246,6 +254,8 @@ pub struct MonsterLevel {
     /// The leader (`r13-0x73b8`): the first suicide runner seen charging
     /// near the screen, kept until it's gone.
     leader: Option<Entity>,
+    /// A Death drained last tick (`S_DEATHSUCK` loops).
+    death_sucking: bool,
 }
 
 impl MonsterLevel {
@@ -352,7 +362,73 @@ pub struct Monster {
     pub dying: Option<Dying>,
     /// Its hit flash (`flash.rs`).
     flash: Flash,
+    /// Death's own state (type 30 only).
+    pub death: DeathState,
 }
+
+/// Death (`docs/monsters.md`, "Death"): the drain's timer and contact
+/// delay, what it drained and who it runs from, and its leaving.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DeathState {
+    /// Video fields to its next drain (`+0x208`).
+    timer: f32,
+    /// Contacts it lets pass before it drains (`+0x2D4`: 1 when placed).
+    delay: u8,
+    /// The hero it's draining or drained last (`+0x284`).
+    pub drained: Option<Entity>,
+    /// It drank its fill and leaves (`+0x320`).
+    pub left: bool,
+    /// The nearest hero with the halo, which it runs from (`+0x328`).
+    halo_hero: Option<Entity>,
+    /// Its run's nudges while blocked (`+0x324`).
+    nudge: usize,
+    /// Leaving: how see-through it is (`+0x388`, of 255).
+    fade: f32,
+    /// Its drain effect is on (`+0x1E0`).
+    drain_effect: bool,
+}
+
+/// A Death drains a hero it touches (`damage.rs` applies it): `amount`
+/// of health, or of experience steps when `experience`.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct DeathDrain {
+    pub death: Entity,
+    pub hero: Entity,
+    pub amount: f32,
+    pub experience: bool,
+}
+
+/// Marks a Death's entity (the halo's drain looks for one): whether it's
+/// a tier-2 Death, which drains (and gives up) experience.
+#[derive(Component)]
+pub struct DeathMonster {
+    pub experience: bool,
+}
+
+/// Death's type, and the armour bit of the halo that beats it.
+pub const DEATH_TYPE: i32 = enemy::DEATH;
+/// The slot subtype Death is loaded in (none of the numbered slots, which
+/// the placeholder monsters are swapped by).
+const DEATH_SLOT: i32 = 0;
+const HALO: u32 = 0x8_0000;
+/// Video fields between its drains.
+const DEATH_DRAIN_FIELDS: f32 = 3.0;
+/// Its run from a haloed hero, at its walk × this; the heading nudges it
+/// tries in turn while the run is blocked (degrees).
+const DEATH_RUN: f32 = 0.9;
+const DEATH_NUDGES: [f32; 8] = [5.0, -5.0, 10.0, -10.0, 15.0, -15.0, 20.0, -20.0];
+/// Leaving, it rises this fast (units a second) and grows see-through by
+/// this much of 255 a video field.
+const DEATH_RISE: f32 = 10.0;
+const DEATH_FADE: f32 = 4.0;
+/// Its sounds: the drain's loop, the laugh as it leaves full.
+const DEATH_SUCK: &str = "S_DEATHSUCK";
+const DEATH_SUCK_LOOP: &str = "death_suck";
+const DEATH_LAUGH: &str = "S_DEATHLAUGH";
+/// Its drain effects (`MONSTERS/DEATH`): health, experience.
+const DEATH_BANK: &str = "MONSTERS/DEATH";
+const DEATH_ARC: &str = "DEATH_ARC";
+const DEATH_EXP: &str = "DEATH_EXP";
 
 /// A suicide runner's progress toward blowing up.
 #[derive(Clone, Copy, Debug, Default)]
@@ -398,9 +474,11 @@ impl Monster {
     }
 
     /// The killing blow (of `kind`, landing at `blow`): it starts dying.
+    /// Death rises and fades instead of dissolving, with no effect.
     pub fn die(&mut self, kind: u32, blow: [f32; 3]) {
-        let set = deaths::death_set(self.enemy, self.stats.step, kind);
-        self.dying = Some(Dying { set, kind, blow, step: deaths::DEATH_START, started: false, quiet: false });
+        let death = self.enemy == DEATH_TYPE;
+        let set = if death { None } else { deaths::death_set(self.enemy, self.stats.step, kind) };
+        self.dying = Some(Dying { set, kind, blow, step: deaths::DEATH_START, started: false, quiet: death });
     }
 
     /// Its centre: feet plus its type's centre height.
@@ -659,11 +737,16 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         suicide: Suicide::default(),
         dying: None,
         flash: Flash::default(),
+        // A placed Death lets one contact pass before it drains.
+        death: DeathState { delay: u8::from(new.placed && new.enemy == DEATH_TYPE), ..DeathState::default() },
     };
     // Hittable: its radius, and (a stand-in for the game's height test)
     // twice its centre height.
     let target = Targetable::new(TargetKind::Monster, instance.radius, 2.0 * stats.center_height).with_size(stats.step());
     commands.entity(root).insert((monster, target, LevelEntity));
+    if new.enemy == DEATH_TYPE {
+        commands.entity(root).insert(DeathMonster { experience: new.tier == 2 });
+    }
     Some(root)
 }
 
@@ -787,6 +870,7 @@ fn setup_level(
         rng: 0x1234_5678,
         created: 0,
         leader: None,
+        death_sucking: false,
     });
 }
 
@@ -952,6 +1036,8 @@ pub struct Target {
     pub feet: [f32; 3],
     /// Invisible: not picked.
     pub hidden: bool,
+    /// Wears the halo: never Death's target, and Death runs from it.
+    pub halo: bool,
 }
 
 /// Monster positions at the start of the tick, for bump tests.
@@ -962,6 +1048,15 @@ pub struct Body {
     pub radius: f32,
     pub step: f32,
 }
+
+/// What Death's part of the monster tick sends and changes.
+type DeathWriters<'w, 's> = (
+    MessageWriter<'w, DeathDrain>,
+    MessageWriter<'w, LoopSound>,
+    MessageWriter<'w, ShowHint>,
+    Query<'w, 's, &'static mut Fade>,
+    MessageWriter<'w, EffectOn>,
+);
 
 #[allow(clippy::too_many_arguments)]
 fn tick_monsters(
@@ -979,16 +1074,23 @@ fn tick_monsters(
     mut effects: MessageWriter<EffectAt>,
     (mut explosions, mut sounds): (MessageWriter<ExplosionAt>, MessageWriter<PlaySound>),
     (colours, mut tags, stop, enemies): (Res<FlashColours>, Query<&mut MeshTag>, Res<TimeStop>, Res<EnemyScale>),
+    (mut drains, mut loops, mut hints, mut fades, mut riding): DeathWriters,
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     level.tick = level.tick.wrapping_add(1);
+    let mut sucking = false;
     let collision = &ground.0;
     let dt = time.delta_secs();
     let view = game_view(camera.as_deref());
     let frustum = view.as_ref();
     let targets: Vec<Target> = players
         .iter()
-        .map(|(e, p)| Target { entity: e, feet: p.mover.position, hidden: p.special_bits & power::INVISIBLE != 0 })
+        .map(|(e, p)| Target {
+            entity: e,
+            feet: p.mover.position,
+            hidden: p.special_bits & power::INVISIBLE != 0,
+            halo: p.armour_bits & HALO != 0,
+        })
         .collect();
     // The dying don't get in anyone's way.
     let bodies: Vec<Body> = monsters
@@ -1043,6 +1145,12 @@ fn tick_monsters(
                         by: Exploder::Monster,
                     });
                 }
+            }
+            if m.enemy == DEATH_TYPE {
+                if leave_tick(m, entity, &mut fades, &mut hints, &mut commands, dt) {
+                    commands.entity(entity).try_despawn();
+                }
+                continue;
             }
             if die_tick(m, &mut animator, collision, dt) {
                 commands.entity(entity).try_despawn();
@@ -1100,7 +1208,12 @@ fn tick_monsters(
         m.request = READY;
         let mut velocity = [0.0f32; 3];
         let direct = target.map(|t| heading_to(m.position, t.feet));
-        let moving = |m: &Monster| matches!(m.action, WALK | RUN | RUNATTACK1 | RUNATTACK2) && m.model.has(m.action);
+        // Death's atrees have only READY and START: every action plays
+        // READY's animation, and it moves as its AI says whatever it's
+        // playing — pressing into a hero it drains, every tick.
+        let moving = |m: &Monster| {
+            m.enemy == DEATH_TYPE || (matches!(m.action, WALK | RUN | RUNATTACK1 | RUNATTACK2) && m.model.has(m.action))
+        };
         // A suicide runner's bump wait as its AI finds it (the last move's).
         let bumping_before = m.avoid_timer;
         // This tick's AI: its own, unless it runs from a charging runner
@@ -1128,6 +1241,28 @@ fn tick_monsters(
             m.request = RUN;
             if moving(m) {
                 let s = FLEE_SPEED * m.stats.speed_per_tick;
+                velocity = [h.sin() * s, 0.0, h.cos() * s];
+            }
+            Some(h)
+        } else if let Some(from) = (m.enemy == DEATH_TYPE && !(m.aware && target.is_some()))
+            .then(|| m.death.halo_hero.and_then(|h| targets.iter().find(|t| t.entity == h)))
+            .flatten()
+        {
+            // Death runs from a haloed hero, nudged aside while blocked.
+            let nudge = if m.blocked != Block::None && m.death.nudge < DEATH_NUDGES.len() {
+                m.death.nudge += 1;
+                DEATH_NUDGES[m.death.nudge - 1].to_radians()
+            } else {
+                if m.blocked == Block::None {
+                    m.death.nudge = 0;
+                }
+                0.0
+            };
+            let h = locomotion::wrap(heading_to(m.position, from.feet) + PI + nudge);
+            m.heading = h;
+            m.request = WALK;
+            if moving(m) {
+                let s = DEATH_RUN * m.stats.speed_per_tick;
                 velocity = [h.sin() * s, 0.0, h.cos() * s];
             }
             Some(h)
@@ -1217,11 +1352,32 @@ fn tick_monsters(
                 break;
             }
         }
+        if !bumped_player.is_some_and(|p| m.enemy == DEATH_TYPE && !p.halo) {
+            // Touching no hero, Death's drain effect goes.
+            m.death.drain_effect = false;
+        }
         if let Some(p) = bumped_player {
             // It stops and swings at the player it walked into (a suicide
-            // runner blows up instead, below).
+            // runner blows up instead, below; Death drains it).
             m.blocked = Block::Player;
-            if m.ai != SUICIDE {
+            if m.enemy == DEATH_TYPE {
+                if death_touch(m, entity, &p, &mut drains, &mut riding) {
+                    sucking = true;
+                    // It pays with its own hit points; full, it leaves.
+                    m.hit_points -= m.stats.damage;
+                    if m.hit_points < 0.0 {
+                        m.hit_points = 0.0;
+                        m.death.left = true;
+                        sounds.write(PlaySound(DEATH_LAUGH.into()));
+                        if let Some(mut g) = m.generator.and_then(|g| generators.get_mut(g).ok()) {
+                            g.alive = g.alive.saturating_sub(1);
+                        }
+                        m.die(0, m.position);
+                        commands.entity(entity).try_remove::<Targetable>();
+                        info!("Death has drunk its fill and leaves");
+                    }
+                }
+            } else if m.ai != SUICIDE {
                 m.strike = Some(p.entity);
                 m.request = if m.attacks & 7 == 7 { ATTACK3 } else { ATTACK1 };
             }
@@ -1316,6 +1472,78 @@ fn tick_monsters(
             None => {}
         }
     }
+    // The drain's sound stops on a tick no Death drained.
+    if sucking != level.death_sucking {
+        level.death_sucking = sucking;
+        let name = sucking.then(|| DEATH_SUCK.to_string());
+        loops.write(LoopSound { key: DEATH_SUCK_LOOP, name });
+    }
+}
+
+/// Death touches a hero (the game's bump routine, Death's branch): nothing
+/// while it's frozen or the hero wears the halo; otherwise, after its
+/// contact delay, it drains the hero every 3 video fields — health, or
+/// experience for a tier-2 Death — its drain effect on it. True when a
+/// drain landed.
+fn death_touch(
+    m: &mut Monster,
+    entity: Entity,
+    hero: &Target,
+    drains: &mut MessageWriter<DeathDrain>,
+    riding: &mut MessageWriter<EffectOn>,
+) -> bool {
+    if m.freeze >= 1.0 || hero.halo {
+        return false;
+    }
+    if m.death.delay > 0 {
+        m.death.delay -= 1;
+        return false;
+    }
+    m.request = ATTACK1;
+    m.death.timer -= FIELDS_PER_TICK;
+    if m.death.timer > 0.0 {
+        return false;
+    }
+    m.death.timer += DEATH_DRAIN_FIELDS;
+    m.death.drained = Some(hero.entity);
+    let experience = m.strength == 2;
+    drains.write(DeathDrain { death: entity, hero: hero.entity, amount: m.stats.damage, experience });
+    if !m.death.drain_effect {
+        m.death.drain_effect = true;
+        let name = if experience { DEATH_EXP } else { DEATH_ARC };
+        riding.write(EffectOn { name, bank: Some(DEATH_BANK), on: entity, scale: 1.0 });
+    }
+    true
+}
+
+/// A Death leaving or killed (the game's dying frame for it): no death
+/// texture or effect — it rises 10 units a second and grows see-through
+/// by 4 of 255 a video field; once gone, a Death that left full tells the
+/// hero it drained. True when it's gone.
+fn leave_tick(
+    m: &mut Monster,
+    entity: Entity,
+    fades: &mut Query<&mut Fade>,
+    hints: &mut MessageWriter<ShowHint>,
+    commands: &mut Commands,
+    dt: f32,
+) -> bool {
+    m.position[1] += DEATH_RISE * dt;
+    m.death.fade = (m.death.fade + DEATH_FADE * FIELDS_PER_TICK).min(255.0);
+    let amount = m.death.fade / 255.0;
+    match fades.get_mut(entity) {
+        Ok(mut f) => f.amount = amount,
+        Err(_) => {
+            commands.entity(entity).try_insert(Fade::new(amount));
+        }
+    }
+    if m.death.fade < 255.0 {
+        return false;
+    }
+    if m.death.left && m.death.drained.is_some() {
+        hints.write(ShowHint(if m.strength == 2 { Hint::DeathLeftAfterExperience } else { Hint::DeathLeftAfterHealth }));
+    }
+    true
 }
 
 /// Backing away, a kiting thrower moves at this fraction of its speed.
@@ -1453,8 +1681,19 @@ fn select_target(m: &mut Monster, targets: &[Target], tick: u32) {
     }
     m.target = None;
     m.target_distance = f32::MAX;
+    // Death never picks a hero with the halo; it notes the nearest one.
+    let death = m.enemy == DEATH_TYPE;
+    m.death.halo_hero = None;
+    let mut halo_distance = f32::MAX;
     for p in targets.iter().filter(|p| !p.hidden) {
         let d = distance(m.position, p.feet);
+        if death && p.halo {
+            if d <= m.stats.awareness && d < halo_distance {
+                m.death.halo_hero = Some(p.entity);
+                halo_distance = d;
+            }
+            continue;
+        }
         if d <= m.stats.awareness && d < m.target_distance {
             m.target = Some(p.entity);
             m.target_distance = d;
