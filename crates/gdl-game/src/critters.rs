@@ -52,14 +52,20 @@
 //! chimera only after a missile hits it); a missile in the dark freezes
 //! the dragon or stuns the djinn and cuts the intro short.
 //!
+//! When the boss's body goes, the realm is won: its shard shows where the
+//! boss was made, the wizard appears by the heroes and speaks (his
+//! messages timed as the game types them), and a short countdown ends
+//! the level.
+//!
 //! Stand-ins (see the doc): a woken statue goes straight to its ACTIVE
 //! animation and its critter appears when that ends; ground rings (a
 //! damaging effect in the game) hurt players in their radius at once;
 //! critter missiles live the missiles' three seconds; the chimera's wake
-//! timer starts at once. The darkening isn't drawn; the heroes' side of
-//! the intro, the boss camera, the boss key, parts (the chimera's heads),
-//! breaking nodes, the health meter, effects and fading, its blows on
-//! other monsters and pushing players aside aren't done.
+//! timer starts at once; the wizard's messages are logged, not shown, and
+//! the tower's first level follows a boss. The darkening isn't drawn; the
+//! heroes' side of the intro, the boss camera, parts (the chimera's
+//! heads), breaking nodes, the health meter, effects and fading, its blows
+//! on other monsters and pushing players aside aren't done.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -68,6 +74,7 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 use gdl_formats::anim::AnimFile;
 use gdl_formats::audio::AudioCatalog;
+use gdl_formats::text::TextRom;
 use gdl_formats::collision::{node_flags, push_out};
 use gdl_formats::critter::{self, CritterDamage, CritterFile, CritterMove, Condition, class, kind};
 use gdl_formats::population::{ItemClass, LocatorKind, PlacementParams, REALM_LETTERS, rotation_matrix};
@@ -111,13 +118,16 @@ impl Plugin for CrittersPlugin {
 /// - 1–2: 5 s (10 s after the first skorne and garm);
 /// - 3–4: the wizard appears halfway between the boss's spot and the
 ///   heroes, 3 above them (at a fixed spot for the skornes), and fades in;
-/// - 5: he speaks; half a second after, 6: his second speech (how many of
-///   the realm's runestones the heroes hold), and a second after that
-/// - 8: the last countdown, 2 s, ends the level.
+/// - 5: he speaks and his first message's pages type out; half a second
+///   after them, 6: his second speech and message (how many of the realm's
+///   runestones the heroes hold), and a second after its pages
+/// - 8: the last countdown, 2 s (10 s after the first skorne when the
+///   heroes hold all twelve runestones), ends the level.
 ///
-/// Stand-ins: his messages aren't shown, so each speech's length stands in
-/// for its pages; he doesn't fade; the heroes' teleport-out effect isn't
-/// drawn; the next level is the tower's first.
+/// His speeches queue as the game's voice queue does. Stand-ins: the
+/// messages are logged, not shown (their pages are timed as the game types
+/// them); he doesn't fade; the heroes' teleport-out effect isn't drawn;
+/// the next level is the tower's first.
 #[allow(clippy::too_many_arguments)]
 fn run_victory(
     mut commands: Commands,
@@ -137,17 +147,34 @@ fn run_victory(
         commands.entity(e).insert(LevelEntity);
         e
     };
+    let runes = state.as_ref().map_or(0, |s| s.runestone_bits());
+    // The first skorne asks for the twelve runestones of the realms.
+    let all_twelve = runes & ALL_RUNESTONES == ALL_RUNESTONES;
 
-    // The key: its clip, then the second model for 30 s.
-    if let Some((e, until, second)) = v.key
-        && now >= until
-    {
-        commands.entity(e).try_despawn();
-        v.key = match (&level.end.key_after, second) {
-            (Some(m), false) => Some((spawn(m, v.key_at, &mut commands), now + KEY_AFTER, true)),
-            _ => None,
-        };
-        debug!("the boss key {}", if v.key.is_some() { "turns to its second model" } else { "goes" });
+    // The key: its clip, then the second model for 30 s (its clip over
+    // and over).
+    if let Some((e, until, second)) = v.key {
+        if now >= until {
+            commands.entity(e).try_despawn();
+            v.key = match (&level.end.key_after, second) {
+                (Some(m), false) => Some((spawn(m, v.key_at, &mut commands), now + KEY_AFTER, true)),
+                _ => None,
+            };
+            debug!("the boss key {}", if v.key.is_some() { "turns to its second model" } else { "goes" });
+        } else if second
+            && let Ok(mut a) = animators.get_mut(e)
+            && a.finished()
+        {
+            a.play(0);
+        }
+    }
+    // The voice queue.
+    if let Some((name, at)) = v.queued.take() {
+        if now >= at {
+            sounds.write(PlaySound(name));
+        } else {
+            v.queued = Some((name, at));
+        }
     }
 
     match v.step {
@@ -190,19 +217,24 @@ fn run_victory(
         4 => {
             v.fade -= WIZARD_FADE_STEP;
             if v.fade <= 0 {
-                let length = speak(level, 0, &mut sounds);
-                v.timer = now + length + AFTER_FIRST_SPEECH;
+                let speech = if level.boss_type == SKORNE && all_twelve { 1 } else { 0 };
+                speak(level, &mut v, speech, now, &mut sounds);
+                let pages = show_message(level, first_message(level.boss_type));
+                v.timer = now + pages + AFTER_FIRST_SPEECH;
                 v.step = 5;
             }
         }
         5 if now >= v.timer => {
-            let runes = state.as_ref().map_or(0, |s| runes_held(level.realm_id, &s.runestones));
-            let length = if level.boss_type < SKORNE { speak(level, runes + 1, &mut sounds) } else { 0.0 };
-            v.timer = now + length + AFTER_SECOND_SPEECH;
+            let held = runes_held(level.realm_id, runes);
+            if level.boss_type < SKORNE {
+                speak(level, &mut v, held + 1, now, &mut sounds);
+            }
+            let pages = show_message(level, second_message(level.boss_type, held, all_twelve));
+            v.timer = now + pages + if pages > 0.0 { AFTER_SECOND_SPEECH } else { 0.0 };
             v.step = 6;
         }
         6 if now >= v.timer => {
-            v.countdown = COUNTDOWN;
+            v.countdown = if level.boss_type == SKORNE && all_twelve { COUNTDOWN_LONG } else { COUNTDOWN };
             v.step = 8;
         }
         8 | 10 => {
@@ -229,15 +261,59 @@ fn run_victory(
     level.victory = Some(v);
 }
 
-/// Plays the wizard's speech `n`: its length (0 when there's none).
-fn speak(level: &CritterLevel, n: usize, sounds: &mut MessageWriter<PlaySound>) -> f32 {
-    match level.end.speeches.get(n).cloned().flatten() {
-        Some((name, length)) => {
-            info!("the wizard says {name} ({length:.1} s)");
-            sounds.write(PlaySound(name));
-            length
-        }
-        None => 0.0,
+/// Queues the wizard's speech `n`: it plays once the one before it is
+/// over.
+fn speak(level: &CritterLevel, v: &mut Victory, n: usize, now: f32, sounds: &mut MessageWriter<PlaySound>) {
+    let Some((name, length)) = level.end.speeches.get(n).cloned().flatten() else { return };
+    let at = v.voice_until.max(now);
+    info!("the wizard says {name} ({length:.1} s, from {at:.1} s)");
+    if at <= now {
+        sounds.write(PlaySound(name));
+    } else {
+        v.queued = Some((name, at));
+    }
+    v.voice_until = at + length;
+}
+
+/// Logs one of the wizard's messages (stand-in for showing it): how long
+/// its pages take to type and read, 0 without one.
+fn show_message(level: &CritterLevel, group: Option<&str>) -> f32 {
+    let Some(pages) = group.and_then(|g| level.end.texts.get(g)) else { return 0.0 };
+    info!("the wizard's message {}: {:?}", group.unwrap_or_default(), pages.join(" "));
+    pages_time(pages)
+}
+
+/// How long a message's pages show: each types out a character every 2
+/// fields and stays 60 fields once typed.
+fn pages_time(pages: &[String]) -> f32 {
+    pages.iter().map(|p| p.chars().count() as f32 / TYPE_RATE + PAGE_HOLD).sum()
+}
+
+/// The wizard's first message for the boss (a `TEXT/ENGLISH.ROM` group).
+fn first_message(boss_type: i32) -> Option<&'static str> {
+    Some(match boss_type {
+        DRAGON => "DRAGON_SPEECH",
+        CHIMERA => "CHIMERA_SPEECH",
+        DJINN => "DJINN_SPEECH",
+        DRIDER => "DRIDER_SPEECH",
+        PBOSS => "PBOSS_SPEECH",
+        YETI => "YETI_SPEECH",
+        WRAITH => "WRAITH_SPEECH",
+        LICH => "LICH_SPEECH",
+        SKORNE => "SKORNE1_SPEECH",
+        SKORNE2 => "SKORNE2_SPEECH",
+        GARM => "GARM2_SPEECH",
+        _ => return None,
+    })
+}
+
+/// His second: by how many of the realm's runestones the heroes hold
+/// ([`runes_held`]); after the first skorne, whether they hold all twelve.
+fn second_message(boss_type: i32, held: usize, all_twelve: bool) -> Option<&'static str> {
+    match boss_type {
+        DRAGON..=LICH => ["RUNE_PHRASE0", "RUNE_PHRASE1", "RUNE_PHRASE1B", "RUNE_PHRASE2"].get(held).copied(),
+        SKORNE => Some(if all_twelve { "SKORNE1_RUNE_YES" } else { "SKORNE1_RUNE_NO" }),
+        _ => None,
     }
 }
 
@@ -274,8 +350,6 @@ const SKORNE2: i32 = 0x2B;
 const GARM: i32 = 0x2C;
 /// Bosses up to this type have an intro (not the second skorne or garm).
 const LAST_INTRO_BOSS: i32 = 0x2A;
-/// The pickup kind of the realms' legendary items (its amount is the realm).
-const LEGENDARY: i32 = 13;
 
 /// The boss intro's states (the game's `r13-0x725c`, `docs/critters.md`
 /// "The boss intro").
@@ -335,6 +409,13 @@ const WIZARD_FADE_STEP: i32 = 4;
 const AFTER_FIRST_SPEECH: f32 = 0.5;
 const AFTER_SECOND_SPEECH: f32 = 1.0;
 const COUNTDOWN: f32 = 2.0;
+const COUNTDOWN_LONG: f32 = 10.0;
+/// The wizard's pages type out a character every 2 fields (30 a second)
+/// and stay 60 fields once typed.
+const TYPE_RATE: f32 = 30.0;
+const PAGE_HOLD: f32 = 1.0;
+/// Runestones 0–11 (the first skorne wants them all).
+const ALL_RUNESTONES: u32 = 0xFFF;
 const TELEPORT_LEFT: f32 = 35.0 / 60.0;
 /// A speech missing from the sound catalog counts as this long.
 const SPEECH_GUESS: f32 = 4.5;
@@ -562,6 +643,8 @@ struct EndModels {
     key_after: Option<Arc<CharacterModel>>,
     wizard: Option<Arc<CharacterModel>>,
     speeches: Vec<Option<(String, f32)>>,
+    /// The wizard's messages for this boss: pages by group.
+    texts: HashMap<&'static str, Vec<String>>,
 }
 
 /// The end of a boss level, from the boss's removal: the game's end
@@ -576,6 +659,9 @@ struct Victory {
     wizard: Option<Entity>,
     fade: i32,
     countdown: f32,
+    /// The voice queue: when the speech playing ends, and one waiting.
+    voice_until: f32,
+    queued: Option<(String, f32)>,
 }
 
 /// The game's instance state (0 new, 1 dying, 3 active).
@@ -1006,7 +1092,7 @@ fn setup_level(
         // The intro runs when a hero brings the realm's legendary item
         // (`GDL_LEGENDARY=1`, a testing aid, pretends one does); the second
         // skorne and garm have none.
-        let carried = state.as_ref().is_some_and(|s| s.treasures.contains(&(LEGENDARY, realm_id as i32)));
+        let carried = state.as_ref().is_some_and(|s| s.quest.legendary & (1 << realm_id) != 0);
         let pretend = std::env::var("GDL_LEGENDARY").is_ok_and(|v| v == "1");
         if (0..=LAST_INTRO_BOSS).contains(&monsters.boss) && (carried || pretend) {
             level.intro = intro::START;
@@ -1059,13 +1145,23 @@ fn load_end_models(
             Some((name, length))
         })
         .collect();
+    let rom = game.install.read("TEXT/ENGLISH.ROM").ok().and_then(|b| TextRom::parse(&b).ok());
+    let groups = [first_message(boss_type)]
+        .into_iter()
+        .chain((0..4).map(|n| second_message(boss_type, n, false)))
+        .chain([second_message(boss_type, 0, true)])
+        .flatten();
+    let texts: HashMap<&'static str, Vec<String>> = groups
+        .filter_map(|g| Some((g, rom.as_ref()?.group(g)?.strings.clone())))
+        .collect();
     info!(
-        "boss end from {folder}: key {}, second key {}, wizard {}",
+        "boss end from {folder}: key {}, second key {}, wizard {}, {} messages",
         key.is_some(),
         key_after.is_some(),
-        wizard.is_some()
+        wizard.is_some(),
+        texts.len()
     );
-    EndModels { key, key_after, wizard, speeches }
+    EndModels { key, key_after, wizard, speeches, texts }
 }
 
 /// The wizard's speech `n` after the boss of this type falls, in realm
@@ -1080,6 +1176,7 @@ fn wizard_speech(boss_type: i32, letter: char, n: usize) -> Option<String> {
         (DRAGON..=DRIDER, 3 | 4) => format!("S_RUNEVOX1{letter}"),
         (PBOSS..=LICH, 3 | 4) => format!("S_RUNEVOX2{letter}"),
         (SKORNE, 0) => "S_E2VOXA".into(),
+        (SKORNE, 1) => "S_E2VOXB".into(),
         (SKORNE2, 0) => "S_ENDVOX".into(),
         (GARM, 0) => "S_GRMDESTVOX".into(),
         _ => return None,
@@ -1087,10 +1184,10 @@ fn wizard_speech(boss_type: i32, letter: char, n: usize) -> Option<String> {
     Some(name)
 }
 
-/// How many of the realm's runestones the heroes hold (`held`: their stone
-/// numbers): 0 none, 1 some, 2 all, 3 all of a realm with two or more (the
+/// How many of the realm's runestones the heroes hold (`bits`: stone n →
+/// bit n): 0 none, 1 some, 2 all, 3 all of a realm with two or more (the
 /// game's realm table: which stones, how many).
-fn runes_held(realm_id: u32, held: &[i32]) -> usize {
+fn runes_held(realm_id: u32, bits: u32) -> usize {
     let (mask, count) = match realm_id {
         1 => (0x1, 1),
         2 => (0x8, 1),
@@ -1103,7 +1200,6 @@ fn runes_held(realm_id: u32, held: &[i32]) -> usize {
         11 => (0x6, 2),
         _ => (0, 0),
     };
-    let bits = held.iter().filter(|&&n| (0..32).contains(&n)).fold(0u32, |b, &n| b | 1 << n);
     if bits & mask == mask {
         if count < 2 { 2 } else { 3 }
     } else if bits & mask == 0 {
@@ -1231,11 +1327,11 @@ fn tick_critters(
     // darkens (the game clears its bit in the player's record).
     if matches!(level.intro, intro::WAIT | intro::ROAR) && !level.legendary_used {
         level.legendary_used = true;
-        let item = (LEGENDARY, level.realm_id as i32);
-        if state.as_deref().is_some_and(|s| s.treasures.contains(&item))
+        let bit = 1u16 << level.realm_id;
+        if state.as_deref().is_some_and(|s| s.quest.legendary & bit != 0)
             && let Some(s) = state.as_deref_mut()
         {
-            s.treasures.retain(|t| *t != item);
+            s.quest.legendary &= !bit;
             info!("the hero's legendary item is used up");
         }
     }
@@ -1301,7 +1397,17 @@ fn tick_critters(
             debug!("critter {entity:?} is gone");
             if level.boss == Some(entity) {
                 let key_at = add(c.spawned_at, c.kind.file.types[c.ty].key_offset);
-                level.victory = Some(Victory { step: 0, timer: 0.0, key_at, key: None, wizard: None, fade: 0, countdown: 0.0 });
+                level.victory = Some(Victory {
+                    step: 0,
+                    timer: 0.0,
+                    key_at,
+                    key: None,
+                    wizard: None,
+                    fade: 0,
+                    countdown: 0.0,
+                    voice_until: 0.0,
+                    queued: None,
+                });
                 info!("the boss is gone");
             }
             for s in &c.spheres {
@@ -2607,6 +2713,32 @@ mod tests {
         }
         // At most 0.05 a tick back up.
         assert!((16..30).contains(&ticks), "{ticks}");
+    }
+
+    #[test]
+    fn the_wizard_counts_the_realms_runestones() {
+        // Realm B has stone 3; realm G stones 7 and 8.
+        assert_eq!(runes_held(2, 0), 0);
+        assert_eq!(runes_held(2, 1 << 3), 2);
+        assert_eq!(runes_held(7, 1 << 7), 1);
+        assert_eq!(runes_held(7, (1 << 7) | (1 << 8) | 1), 3);
+        assert_eq!(second_message(DRAGON, runes_held(7, 1 << 8), false), Some("RUNE_PHRASE1"));
+        assert_eq!(second_message(SKORNE, 0, true), Some("SKORNE1_RUNE_YES"));
+        assert_eq!(second_message(GARM, 0, false), None);
+        assert_eq!(wizard_speech(DRAGON, 'B', 0).as_deref(), Some("S_DEFEATVOXB"));
+        assert_eq!(wizard_speech(DRAGON, 'B', 3).as_deref(), Some("S_RUNEVOX1B"));
+        assert_eq!(wizard_speech(PBOSS, 'K', 3).as_deref(), Some("S_RUNEVOX2K"));
+        assert_eq!(wizard_speech(GARM, 'H', 1), None);
+    }
+
+    #[test]
+    fn the_wizard_stands_between_the_boss_and_the_heroes() {
+        let at = wizard_spot([0.0, 50.0, -20.0], &[[10.0, 30.0, 0.0]]);
+        assert_eq!(at, [5.0, 30.0, -10.0]);
+        // Without heroes, at the boss's spot.
+        assert_eq!(wizard_spot([1.0, 2.0, 3.0], &[]), [1.0, 2.0, 3.0]);
+        // A page of 60 characters takes 2 s to type and stays 1 s.
+        assert!((pages_time(&["x".repeat(60)]) - 3.0).abs() < 1e-5);
     }
 
     #[test]
