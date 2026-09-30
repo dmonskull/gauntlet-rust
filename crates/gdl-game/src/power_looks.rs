@@ -124,6 +124,10 @@ enum On {
 
 const POJO: u32 = 0x400;
 const FIRE_WALL: u32 = 0x20_0000;
+/// Levitation (special `0x1`) lifts the hero's model this far above its
+/// feet.
+const LEVITATE: u32 = power::LEVITATE;
+const LEVITATE_LIFT: f32 = 1.5;
 
 /// The body's atrees, the first that applies riding the hero; the fire
 /// wall's only while the hero runs with its shield up.
@@ -364,7 +368,7 @@ fn wear_looks(
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<LookModels>,
     (mut shots, mut hits): (MessageReader<HeroShot>, MessageReader<Hit>),
-    mut heroes: Query<(Entity, &Player, &Animator, Option<&mut Worn>)>,
+    mut heroes: Query<(Entity, &Player, &mut Animator, Option<&mut Worn>)>,
     mut bodies: Query<(&mut Animator, &mut Fade), Without<Player>>,
     mut visibility: Query<&mut Visibility>,
     (mut meshes, mut materials, mut images): (ResMut<Assets<Mesh>>, ResMut<Assets<LevelMaterial>>, ResMut<Assets<Image>>),
@@ -375,7 +379,13 @@ fn wear_looks(
     let bits = state.bits;
     let class = character::class_index(&state.class);
     let (left_node, right_node) = (left_wrist(class), wrists(class).1);
-    for (hero, player, animator, worn) in &mut heroes {
+    for (hero, player, mut animator, worn) in &mut heroes {
+        // Levitation lifts the hero's model off its feet.
+        let lift = if bits.special & LEVITATE != 0 { LEVITATE_LIFT } else { 0.0 };
+        if animator.lift != lift {
+            animator.lift = lift;
+        }
+        let animator = &*animator;
         let Some(mut worn) = worn else {
             commands.entity(hero).insert(Worn::default());
             continue;

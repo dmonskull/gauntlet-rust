@@ -358,16 +358,22 @@ Confirmed:
 - no damage from blows of kind `0x40000000` (`FUN_80078560`): small
   monsters' blows, and every monster's blow while the enemies are shrunk
   (below);
-- the hero's model is lifted 1.9375 (`r2-0x5C28`) above its feet
-  (`FUN_80080d3c`: the animation object `+0x7C`'s height);
+- the hero's model is lifted 1.5 above its feet (`FUN_80080d3c`): the
+  root node of its atree (`**(+0x7C)`) gets `+0x34` (y) = the clip's root
+  height (`((+0x7C)[7]) + 100`) + `r2-0x5C28` — a double (`lfd`, checked
+  in the machine code), 1.5; read as a float the same address gives
+  1.9375. The hero model `+0x74` itself (its root, where the Pojo and the
+  phoenix hang) isn't lifted;
 - no footsteps (`FUN_8009e804` skipped);
 - `WINGS` on the body; when it ends, `S_LEVITATEDOWN` (`FUN_8009cd28`).
 
 No other read of the bit was found (every `+0x124 & 1` in the dump).
 
 Here: the tiles (`hazards.rs`) and the blows (`Player::take_blow`, the
-`+0x124 & 1` test on kind `0x40000000` in `FUN_80078560`). The lift and
-`S_LEVITATEDOWN` aren't done (footsteps aren't played at all).
+`+0x124 & 1` test on kind `0x40000000` in `FUN_80078560`); the lift
+(`Animator::lift` on the skeleton's top nodes, set by `power_looks.rs`
+while the bit is on: the blob shadow and the hero's root stay on the
+floor). `S_LEVITATEDOWN` isn't done (footsteps aren't played at all).
 
 ### `0x2` x-ray
 
