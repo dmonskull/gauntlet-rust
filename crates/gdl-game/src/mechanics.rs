@@ -327,12 +327,13 @@ pub struct Mechanics {
 }
 
 impl Mechanics {
-    /// Fires the triggers with this id the way the tower does as it loads
+    /// Fires the triggers with this id the way the tower does
     /// (`docs/items.md`, "Quest items and the tower's gates"): each — not
     /// ones that need standing on their target, or with flag `0x8000` —
     /// and those chained after it come on for good (the game also sets
-    /// their `0x400`), and their movers are already at their on heights.
-    fn fire_open(&mut self, id: u8) {
+    /// their `0x400`); `snap` puts their movers at their on heights at once
+    /// (as the tower loads), else they travel there.
+    pub fn fire(&mut self, id: u8, snap: bool) {
         for i in 0..self.triggers.len() {
             let t = &self.triggers[i];
             if t.id != id || t.flags & (STAND_ON_TARGET | 0x8000) != 0 {
@@ -347,8 +348,10 @@ impl Mechanics {
                 if let Some(&mv) = t.target.and_then(|n| self.mover_of.get(&n)) {
                     let mv = &mut self.movers[mv];
                     mv.state = ON | PLAYERS;
-                    mv.previous = mv.state;
-                    mv.offset = mv.on;
+                    if snap {
+                        mv.previous = mv.state;
+                        mv.offset = mv.on;
+                    }
                 }
                 k = t.chain;
                 steps += 1;
@@ -356,7 +359,7 @@ impl Mechanics {
                     break;
                 }
             }
-            debug!("trigger {} (id {id}) fired as the level loads", self.triggers[i].placement);
+            debug!("trigger {} (id {id}) fired{}", self.triggers[i].placement, if snap { " as the level loads" } else { "" });
         }
     }
 }
@@ -520,7 +523,7 @@ fn setup(
         && quest::level_of(&population.level).is_some_and(|(realm, _)| realm == quest::TOWER)
     {
         for id in state.quest.tower_gates(state.runestone_bits()) {
-            m.fire_open(id);
+            m.fire(id, true);
         }
     }
     info!(

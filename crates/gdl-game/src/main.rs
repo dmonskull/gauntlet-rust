@@ -42,6 +42,7 @@ mod player;
 mod player_state;
 mod texanim;
 mod tower;
+mod tower_scenes;
 mod population;
 mod quest;
 mod saves;
@@ -179,6 +180,7 @@ fn main() {
                 frontend::FrontendPlugin { skip: skip_menus },
                 game_hud::GameHudPlugin,
                 tower::TowerPlugin,
+                tower_scenes::TowerScenesPlugin,
                 message_box::MessageBoxPlugin,
             ));
     }
