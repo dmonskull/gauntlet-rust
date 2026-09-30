@@ -374,8 +374,10 @@ near the screen (+ 15). Then for each active monster:
      (straight away), `FUN_8004cc84(2.0, …)` — a RUN at twice their speed
      (with a blocked frame's heading nudged ±5°…±20° in turn,
      `0x8011b9c0`).
-   - Others: 3 Death, 8, 10, 12–31 special movers (thrower, bomber,
-     suicide, ranged…) — not traced.
+   - **3** Death's (below, "Death": chase as AI 0 with a target, run
+     from a haloed hero, else AI 5/6).
+   - Others: 8, 10, 12–31 special movers (thrower, bomber, suicide,
+     ranged…) — not traced.
 4. **Move** (`FUN_800445cc`): add knockback; walls and floor
    (`FUN_800453f0` → `FUN_80045b98`, below); position += velocity; then the
    bump tests along the move — the nearest player (`FUN_800465e8`: its
@@ -672,3 +674,158 @@ unaware for the frame (AI 5/6), and a charging one is the level's leader
 that other monsters run from (AI `0x18`, "The frame update"). Test: `GDL_THROWER=15,0x12,6` on levelA1 with
 `GDL_SHOT_CLOCK=ticks GDL_LOOK_AT="0,0,-9,18,90" GDL_SHOT_AT=96
 GDL_SHOTS=12 GDL_SHOT_EVERY=3` films one running at the hero and going off.
+
+## Death (type `0x1E`, AI 3)
+
+Death is a monster record like the others (`0x802515e8` + slot ×
+`0x394`), with its own branches in the target picker, the bump, the blow
+routine and the dying frame. Confirmed from the decompile, with the
+constants read from the DOL; the drain's sign trick also in the machine
+code (`fneg` at `0x8004617c`). Level tuning scales as for any monster
+(`+0xB0` speed, `+0xB4` awareness, `+0xBC` damage), except hit points.
+
+**Where it comes from.** A level loads Death into a free enemy slot
+unless it has a boss (`FUN_80057738`, above); it comes out of generators
+naming it, placed ENEMYINFO items and containers holding it
+([items.md](items.md), [mechanics.md](mechanics.md)). A placed one shows
+the statue `DEATHSTATUE1`/`DEATHSTATUE2` (`MONSTERS/DEATH`; the item
+update's class-4 case, `FUN_800606e8`) until its spot comes on screen
+(`FUN_80060100`, "Placed monsters"); its tier is 2 when the placement's
+count is non-zero, and it starts with a 30-field freeze (`+0x20C`), a
+one-contact delay (`+0x2D4` = 1) and awareness 1000 (`r2-0x6708`).
+
+**Stats** (the type tables, index 30): radius 1.5, centre height 3, step
+3, ground 0.125 per field (the grunt's 0.1), damage 1 × level `+0xBC`
+(not cut by the thirds), hit points **100** — not scaled by the level
+(`FUN_8004fd9c` skips `+0xAC` for Death) nor by the tier (types from 28
+on get the table value). Its strength `+0x206` is its tier (capped to 2
+above 3; 1 for AI `0x12`), not the hit-point thirds: **tier 2 drains
+experience**, any other tier health. The model is `DEATH1` / `DEATH2`
+(`"%s%d"` by tier; `DEATH3` doesn't exist, so a tier-3 Death draws
+`DEATH3L1`, also missing — not checked in play). Both atrees have only
+READY (0 frames) and START (20), so every action it asks for plays READY's
+animation (the chooser's fallback).
+
+**Choosing a target** (`FUN_80051660`): as for other monsters — the "it"
+hero (`r13-0x6FD4`, set by the tag monster type `0x1F`) when that hero is
+in play and not invisible, else the nearest hero within awareness
+(`+0x300`) with the crowd penalty — except that **a hero with the halo
+(armour `0x80000`) is never Death's target**, not even as "it". Instead
+the nearest haloed hero within awareness goes into `+0x328` (−1 when the
+search starts over, every 8th frame or with no target).
+
+**Moving** (AI 3, `FUN_80047350`, from the AI switch `FUN_800467bc`):
+
+- With a target and aware (`+0x2DE`): AI 0 for the frame — the chase that
+  tries nine offsets for a free heading (`FUN_80046abc`).
+- Else with a haloed hero in `+0x328`: **it runs away** — heading = the
+  angle to that hero (`FUN_8002c780`, from Death to the hero; the "it"
+  decoy's position `+0x9E4` when the hero's `+0xA1C` is 3 or more) + π,
+  wrapped to −π…π; `FUN_8004cc84(1.0, heading)` asks for WALK at its
+  speed; turned by `FUN_8004cb20`; the velocity × 0.9 (`r2-0x6E10`); then
+  the monster mover (`FUN_800445cc`). A blocked frame (`+0x358` > 0)
+  nudges the next heading by the table at `0x8011B9C0` (±5°, ±10°, ±15°,
+  ±20° in turn, index `+0x324`, up to 8), as the monsters fleeing a
+  runner do.
+- Else: AI 5/6 by slot parity (the unaware walk).
+
+**The grab and the drain** (`FUN_800460a8`, the bump routine's Death
+branch, run when the mover's bump test finds a hero — `+0x284` — in
+Death's way; every frame they touch). Nothing happens while Death is
+frozen (`+0x20C` ≥ 1) or the hero has the halo. Else, if the contact
+delay `+0x2D4` is above 0 it counts down by 1; otherwise:
+
+1. ATTACK1 is asked for (`FUN_800ad5ec(Death, 0xC)`; READY's clip plays).
+2. The timer `+0x208` loses the frame's fields; at 0 or below it gains 3
+   and a drain lands — **one drain per 3 fields**: 20 a second, two in
+   every three frames at 30 fps.
+3. The drain: a tier-2 Death takes experience (`FUN_80076144(hero, −1,
+   −2)`: 1 × `(int)(0.01 × step)` experience, `step` = (level − 1) × 60 +
+   1000 below level 61, else 4600 — a hundred drains are about one
+   level; a level-99 hero loses nothing; losing enough drops the level,
+   `FUN_800763d4`). Any other Death hurts: `FUN_80078560(−damage, hero,
+   1, 0x1000, 0)`. The **negative** blow is the armour-piercing form: the
+   resistance routine (`FUN_8002f58c`) takes a negative blow as its size
+   without subtracting armour (`dVar5 = −dVar6`), gold armour (`0x100000`,
+   a blow ≤ 1) and invulnerability still stop it, and kind `0x1000` has
+   no element. Kind `0x1000` also arms the hero's `+0x898` for 1/15 s
+   (`r2-0x5DF0`; poison's `0x800` arms it for 1 s): while it runs and
+   the hero's intent is to stand, the hero plays STUN2 (`0x7A`, intent
+   `0x20` from reaction class 100) standing still. **The hero isn't held**:
+   any other intent (moving, attacking) acts normally, and walking out of
+   Death's reach ends the contact.
+4. The hint: `0x80` DEATHDRAINEXP ("DEATH DRAINS EXPERIENCE",
+   `S_DEATHDRAINXP`) for tier 2, else `0x82` DEATHDRAINHEALTH ("DEATH
+   LEAVES AFTER DRAINING 100 HEALTH", `S_DEATHDRAINS`) — raised on every
+   drain; how often it shows is the hint system's (mode 3). `r13-0x7314` = 1; hits landed `+0x2CE` + 1.
+5. If the hero lived (the damage routine returns 1 only when the hero
+   died; the experience drain always 0), the drain effect goes on Death's
+   model once (`+0x1E0`: `FUN_800911c4(model, strength, 0)` — runtime
+   effect `0x60` `DEATH_EXP` for tier 2, else `0x5F` `DEATH_ARC`, both in
+   `MONSTERS/DEATH`); it's freed (`FUN_80096fc8`) on a frame Death touches
+   no hero. If the hero died, Death's hit points go to 0.
+6. **Death pays for it**: its hit points lose its damage. Below 0 it has
+   drunk its fill and **leaves**: `+0x320` = 1, `S_DEATHLAUGH` (`0x68`) at
+   Death, hit points 0, state 8 (dying), the killer `+0x1FE` = the hero,
+   unlinked from its generator (`FUN_8004f240`). So with damage 1 a
+   health Death drains 100 health over 100 drains (5 s of contact) and
+   leaves — the hint's "100 HEALTH" — and an experience Death takes about
+   a level ("DEATH LEAVES AFTER DRAINING 1 LEVEL"). Otherwise
+   `S_DEATHSUCK` (`0x66`) loops at Death (`FUN_800a045c`) and
+   `r13-0x73E8` = 1; the frame update stops `S_DEATHSUCK`
+   (`FUN_800a0438`) on a frame no Death drained.
+
+**Blows on Death** (`FUN_8004e660`, the blow routine's Death branch; for
+every blow — melee, missiles, blasts):
+
+- Dying or gone (state 7/8): nothing.
+- Dormant (state 6, the statue form — how a Death gets there isn't
+  traced; placed Deaths don't): `S_WEAPONHITWOOD` (`0x3C`), the contact
+  counter `+0x2D4` − 1, and at 0 it wakes: state 1, rebuilt
+  (`FUN_80050580`), shown, `S_DEATHSHATTER` (`0x67`).
+- **Magic** (kind `0x200`): hit points to 0 — killed outright. A hero
+  above level 75 is healed by the hit points it had × (0.2 + 0.032 ×
+  (level − 75)) (`r2-0x6D18`, `r2-0x6D10`; `FUN_80078474`, up to the
+  hero's maximum).
+- **Anything else takes exactly 1** hit point (`r2-0x6F10`), whatever its
+  damage. From a hero without the halo it also raises hint 0 USEMAGIC
+  ("USE MAGIC TO KILL DEATH", `S_USEMAGIC`) for that hero; from a haloed
+  hero the point goes to the hero — +1 health (`+0x1EB4`, uncapped here),
+  or for a tier-2 Death +1 × `(int)(0.01 × step)` experience
+  (`FUN_80076144(hero, 1, −2)`).
+- At 0 hit points: `S_DEATHDIE` (`0x65`, when the caller asks for
+  sounds), state 8, the killer `+0x1FE`, unlinked; a kill counted for
+  the hero (`+0xC10` + its weapon type `+0x0C` × `0x1C`). Returns 1.
+
+So with 100 hit points a Death takes 100 non-magic blows; one magic blow
+kills it.
+
+**The halo's drain** (the player update `FUN_80080d3c`): when the hero
+has the halo and this tick's target search (`FUN_800864b0`, the attacks'
+search, out to its range) gives a Death less than 90° (`r2-0x5B78`) off
+the hero's heading, every tick: the intent becomes 1 (stand — the hero
+stops acting on the controls), `FUN_8004e660(1.0, Death, hero, 0, 0, 0,
+1)` (the blow above: 1 hit point to the hero), `S_HALO` (`0x52`,
+`FUN_8009e990`) on the first drain of this halo (latch `+0x95E`, cleared
+when the halo ends), `S_DEATHDIE` at Death while it isn't playing,
+`+0x128` |= 1 (|= 2 for a tier-2 Death), and `+0x95C` = 2, which turns
+the intent into `0x1B` → DEATHGRABS (`0x1D`; then DEATHGRAB, DEATHGRABR
+through the action machine). `+0x128` makes the stats routine put the
+drain effect on the hero (`FUN_800911c4(hero model, 1 or 2, 0x10)`:
+`DEATH_ARC` / `DEATH_EXP`) and stop `S_DEATHSUCK` when it clears. A
+haloed hero thus empties a Death in 100 ticks (3.3 s), gaining 100
+health or experience.
+
+**Leaving and dying** (the frame update's state-8 branch for Death): no
+death effect or blood — each frame Death rises 10 units a second
+(`r2-0x6F08` × the frame's seconds) and its transparency (`+0x388`)
+grows by 4 per field (`FUN_800ba9b0(model, t, 1)`) until it reaches 255 —
+about 64 fields (1.07 s) from 0. Then, if it left after draining (`+0x320`), the hint to
+the hero it drained (`+0x284`): `0x81` DEATHDIEEXP ("DEATH LEAVES AFTER
+DRAINING 1 LEVEL", `S_DIESAFTERXP`) for tier 2, else `0x83`
+DEATHDIEHEALTH ("DEATH DRAINS HEALTH", `S_DIESAFTER`) — the hint texts as
+the game's table pairs them. The slot is freed (`FUN_8004ef4c`).
+
+Not traced: the tier of a Death from a generator or container beyond the
+usual tier rules; how a Death becomes dormant; `+0xC0` (1 for Death only,
+0 for every other type).

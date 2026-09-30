@@ -131,11 +131,30 @@ state machine (`FUN_800ab898`) then raises, as those actions hand over,
 "Hero release" (the crossbow's `0x800` spends a shot through
 `FUN_8007ed38`). The chooser (`FUN_800ab898`) runs them: ATTFIREL (0x67) → 0x69 and
 0x68 → 0x6A, ATTBREATHE (0x6E) → 0x6F, ATTCHOP (0x70) → 0x71 — each at
-its clip's end unless knocked down (switch mode 0); SSHOT1/2 (0x6B/0x6C)
-→ SSHOT2 while the crossbow shot is still asked for (with the player's
-`+0xB4` = 1, which idle loops also set — its effect on the clip isn't
-pinned down), else SSHOTR (0x6D) when a category-0 action is asked for,
-else switch mode 1. Ported: the ATTBREATHE and ATTCHOP results and their
+its clip's end (switch mode 0), or at once (mode 2) when a hit reaction,
+knockdown or GRABBED (0x83–0x94) is asked for — to the same next action,
+so a gauntlet's shot still goes. (The table's clip names run ATTFIREL,
+ATTFIRELR, ATTFIRER, ATTFIRERR for 0x67–0x6A, so the left gauntlet plays
+ATTFIREL then ATTFIRER, the right ATTFIRELR then ATTFIRERR.) The shot
+events are raised by the chooser's hand-over switch on the old action,
+which runs whenever the action (re)starts: 0x67 → 0x69 raises `0x2000`,
+0x68 → 0x6A `0x4000`, and 0x6B or 0x6C → 0x6C or 0x6D `0x800`.
+
+SSHOT1/2 (0x6B/0x6C), from the machine code: with SSHOT1 (the crossbow
+shot) still asked for, the next action is SSHOT2 and the chooser writes 1
+to the player's `+0xB4`; else, with a request of category 0 (the
+locomotion and idle actions, `FUN_800ad42c`), SSHOTR (0x6D); else the
+request itself in mode 1 (at the clip's end). `+0xB4` is the animation
+slot's loop flag (the slot at `+0x7C`, its `+0x38`): each clip start
+copies the clip's own loop flag into it (`FUN_8000ed70`), the chooser
+overwrites it every tick (1 for READY, IDLE2_LOOP, SHOVE, the shield run
+and SSHOT2 here, else 0), and at a clip's end the frame advance
+(`FUN_8000ef18`) restarts the clip when it's set (else holds the last
+frame). A restart counts as a start for the hand-over switch
+(`FUN_8000eb70` bit 4), so **SSHOT2 repeats while the button is held and
+every SSHOT1 → SSHOT2, SSHOT2 → SSHOT2 and SSHOT2 → SSHOTR raises `0x800`
+— a bolt each** (SSHOT1 → SSHOTR also fires; a hand-over to any other
+action doesn't). Ported: the ATTBREATHE and ATTCHOP results and their
 chaining (`actions.rs`; [powers.md](powers.md), "breaths"); the hammer's
 blow on event `0x2000000` as ATTCHOPR starts (`FUN_80080d3c`): effect
 `0x1C` EXPRING on the hero's model, damage 100 (`r2-0x5b60`) out to 35
@@ -143,8 +162,10 @@ blow on event `0x2000000` as ATTCHOPR starts (`FUN_80080d3c`): effect
 flags `0x2A` (monsters, items, area), a hammer use spent, a shake
 (`FUN_800277ec(0.3, 0, 0, 30, 200)`) and `S_THUNDERHAMMER` (`0x50`) —
 `effects.rs::spawn_chops`. Not ported: the gauntlets' and the crossbow's
-cases. Special `0x4000`/`0x8000` also pick the missile records
-`0x80119b88`/`0x80119b58` (no power-up on the disc has them; not traced).
+cases, decoded in [projectiles.md](projectiles.md), "Hero release":
+special `0x8000` / `0x4000` pick the missile records `0x80119b58` /
+`0x80119b88` (`BOSSG_ELEC`, lightning / `BOSSG_ACID`, acid) for every
+throw while held; the crossbow's `0x800` fires `SUPERARROW` bolts.
 Rapid fire (weapon `0x20000000`) isn't among these: the action state
 machine sets the player's `+0xA8` to 0.75 (`r2-0x4da4`) instead of 1
 (`r2-0x4da8`) while it's held and a throw-category action (9–10) plays —
