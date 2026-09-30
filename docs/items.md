@@ -84,9 +84,48 @@ duration × the class's `PDAT+0x58`. The same subtype + value again adds its
 amount and, if both times are positive, half the new time (a negative
 time replaces it); otherwise it takes a free slot or the one nearest to
 running out. Durations of −1 are powers counted by amount (crossbow shots,
-breath uses). Stand-in: the game's clock that runs the slots down wasn't
-traced — the runtime counts positive times down at one per second and
-drops a slot at zero.
+breath uses).
+
+**Each tick** the stats routine `FUN_8007c4f0` runs the eleven slots
+(`+0x130`, `0x10` each; a slot counts while its time isn't 0 and its byte
+`+0x1E0 + i` is 2): a positive time runs down by the tick (× 3 in one
+mode, `r13-0x7788`; not at all in the tower, realm 13, or while
+`r13-0x774c`/`r13-0x7340` hold) to 0, and — still counting on that tick —
+adds up:
+
+| subtype | adds |
+| --- | --- |
+| 5 weapon | its value to the weapon bits `+0x11C`; an element (value & 0xF: 1 fire, 2 lightning, 3 light, 4 acid) replaces the one there if none was set yet or it lasts longer |
+| 6 armour | its value to the armour bits `+0x120` |
+| 7 speed | its amount to the speed `+0x110`, and `0x10000` to the special bits |
+| 8 magic | its amount to the magic power `+0x10C` |
+| 9 special | its value to the special bits `+0x124`; the turbo power (`0x80000`) fills the meter by 100 (at most 100) and is spent |
+
+and afterwards clamps the derived stats (strength, armour, magic, speed,
+missile damage and speed) to their ranges ([player-movement.md](
+player-movement.md)). The weapon bits are the kind of the hero's blows
+and the start of its missiles' ([combat.md](combat.md)), so an element
+power's blows burn, shock, light or dissolve what they kill.
+
+The power-ups on the disc: weapon — `FIREICON` 1, `ELECICON` 2,
+`LIGHTICON` 3, `ACIDICON` 4 (90 s), `MULTIICON` `0x80000`, `MULTI5ICON`
+`0x400000` (45 s), `REFLECTICON` `0x200000` (60 s), `RAPIDFIRE`
+`0x20000000` (30 s), `XBOWICON` `0x100000` (5 shots), `HAMMER_ICON`
+`0x10000000` (3); armour — `INVULICON` `0x10000` (30 s), `INVULGICON`
+`0x110000` (25 s), `RF_SHLD_ICON` `0x20000`, `FW_SHLD_ICON` `0x200000`,
+`L_SHLD_ICON` `0x400000` (30 s), `HALOICON` `0x80000` (120 s), `GASMASK`
+`0x2008` (60 s); speed — `BOOSTICON` +4 (40 s); special — `LEVITICON` 1,
+`XRAYICON` 2, `INVISICON` 4, `TIMEICON` 8, `BREATHEF/A/E_ICON` `0x10` /
+`0x20` / `0x40` (5 uses), `PHOENIX_ICON` `0x80`, `GROWPOT` `0x100`,
+`SHRINKPOT` `0x200`, `POJOEGG` `0x400`, `TURBOPUP` `0x80000`.
+
+Here (`PlayerState::tick_powers`, `PowerBits`; `player.rs`
+`apply_powers`): the adding up, the tower's hold, the weapon bits on
+blows and missiles, speed, magic and the turbo fill. Not done yet: what
+the other bits do (multi-shots, reflecting, the crossbow's and hammer's
+shots, rapid fire, the shields and invulnerability, the specials but
+levitation), and their looks (the chrome, invisibility's flicker). Test
+with `GDL_POWERS="5:1,7:0:4:40"` (subtype:value[:amount[:seconds]]).
 
 ## Items at run time
 
