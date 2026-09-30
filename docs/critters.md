@@ -622,9 +622,12 @@ reached from the hero's blows (`0x8008625c`), from explosions
    - hit points go down, and a child's also come off its parent;
    - blows on a parent are shared out over its living parts (× 0.5 ÷
      their count);
-   - the hit effect plays (`TYPE +0xF4`, or `+0xF6` for effect kind 2; or
-     `0x80093e08` by element);
-   - the body or node flashes (2 frames).
+   - a critter left with hit points, unless the kind has `0x1000000`:
+     the hit effect plays (`TYPE +0xF4`, or `+0xF6` for effect kind 2; or
+     `0x80093e08` by element), and it flashes — its own flash (`+0xABC` =
+     2) for kinds `0x100320`, else that of the `NODE` sphere the blow
+     landed on (`+0x548` = 2), for two of its updates
+     ([rendering.md](rendering.md), "Texture overrides").
 10. **At 0 hit points:**
     - state 1, and every player gets 0.2 (`r2-0x71a8`) × `TYPE +0xE8`
       (`0x80036658`);
@@ -1304,7 +1307,8 @@ the gargoyle and the general aren't run yet.
 - **Only one target is tracked.** Condition `[6]` (distance from home) and
   the multi-target weighting are bosses' and aren't done.
 - **Not done:**
-  - look nodes, the health meter (`GMETER`), hit effects and flashes,
+  - look nodes, the health meter (`GMETER`), hit effects, node spheres'
+    flashes (the body's and parts' are done),
     fading, shadows;
   - breakable `NODE`s: blows land on the body, and `TYPE` flag 2's node
     spheres aren't used;

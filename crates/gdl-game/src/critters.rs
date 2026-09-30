@@ -70,6 +70,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::math::Affine3A;
+use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use gdl_formats::anim::{AnimFile, Track, rotation_matrix as clip_rotation};
 use gdl_formats::audio::AudioCatalog;
@@ -86,6 +87,7 @@ use crate::combat::{TargetKind, Targetable};
 use crate::damage::after_armor;
 use crate::effects::effect_life;
 use crate::exits::ChangeLevelTo;
+use crate::flash::{self, Flash, FlashColours};
 use crate::message_box::{self, ShowCaption, TextFile};
 use crate::items::LevelItems;
 use crate::texanim::LevelTexAnims;
@@ -525,8 +527,11 @@ const KIND_STRONG: u32 = 0x10;
 const KIND_KNOCKDOWN: u32 = 0x20;
 const KIND_HEAVY: u32 = 0x100;
 const KIND_REACTIONS: u32 = 0x130;
-/// Blow kinds that don't land on a hit sphere (they hit the body).
+/// Blow kinds that don't land on a hit sphere (they hit the body, and a
+/// blow it lives through flashes it).
 const KIND_BODY: u32 = 0x100320;
+/// Blows of this kind play no hit effect and flash nothing.
+const KIND_NO_HIT_LOOK: u32 = 0x1000000;
 
 /// One critter file loaded for the level, with a model per body.
 pub struct CritterKind {
@@ -864,6 +869,9 @@ pub struct Critter {
     /// A part copies its body's animation this tick (the usual case)
     /// rather than playing its own move.
     mirrored: bool,
+    /// Its hit flash (`flash.rs`): a body's over its whole model, a part's
+    /// over its subtree.
+    flash: Flash,
 }
 
 impl Critter {
@@ -1000,6 +1008,12 @@ impl Critter {
         self.hit_points -= damage;
         if self.hit_points <= 0.0 {
             return (xp + self.die(), damage);
+        }
+        // Blows past the hit spheres flash it. (A blow on a hit sphere
+        // flashes that sphere's node in the game: not done, as which model
+        // node a sphere names isn't traced.)
+        if kind_bits & KIND_BODY != 0 && kind_bits & KIND_NO_HIT_LOOK == 0 {
+            self.flash.start();
         }
         if let Ok(s) = usize::try_from(ty.hit_effects[0]) {
             sound_chain(&self.kind.file, s, realm, sounds);
@@ -1537,6 +1551,18 @@ fn new_critter(
         parts: Vec::new(),
         sphere_owner: Vec::new(),
         mirrored: true,
+        flash: Flash::default(),
+    }
+}
+
+/// Tags a critter's model with its flashes: all of it while the body's
+/// shows, a part's subtree while the part's does.
+fn show_flashes(c: &Critter, animator: &Animator, colour: u32, tags: &mut Query<&mut MeshTag>, commands: &mut Commands) {
+    let lit = |node: usize| {
+        c.flash.on() || c.parts.iter().any(|p| p.flash.on() && p.body().subtree.contains(&node))
+    };
+    for &(node, e) in animator.meshes() {
+        flash::set_tag(e, if lit(node) { colour } else { 0 }, tags, commands);
     }
 }
 
@@ -1569,6 +1595,7 @@ fn tick_critters(
     mut hurt: MessageWriter<DamagePlayer>,
     mut sounds: MessageWriter<PlaySound>,
     mut death_shot: Local<Option<u32>>,
+    (colours, mut tags): (Res<FlashColours>, Query<&mut MeshTag>),
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     let level = &mut *level;
@@ -1655,6 +1682,13 @@ fn tick_critters(
             intro_reactions(p, level);
         }
         intro_reactions(c, level);
+        let mut flashes = c.flash.step();
+        for p in &mut c.parts {
+            flashes |= p.flash.step();
+        }
+        if flashes {
+            show_flashes(c, &animator, colours.body().unwrap_or(0), &mut tags, &mut commands);
+        }
         // A body whose parts are all dead dies.
         if c.state == CritterState::Active && !c.parts.is_empty() && c.parts.iter().all(|p| p.state == CritterState::Dying) {
             info!("the boss's parts are all dead");

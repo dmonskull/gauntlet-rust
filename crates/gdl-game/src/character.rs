@@ -203,6 +203,9 @@ pub struct Animator {
     tracks: Vec<Option<Track>>,
     blend: Blend,
     mods: Option<InstanceMods>,
+    /// The model's meshes (not its shadow's), with the node each hangs
+    /// from: what a texture over the body reaches (`flash.rs`).
+    meshes: Vec<(usize, Entity)>,
 }
 
 /// A spawned model's texture modifiers: what they have left on each node
@@ -238,6 +241,11 @@ enum Blend {
 }
 
 impl Animator {
+    /// The model's meshes and the node each hangs from.
+    pub fn meshes(&self) -> &[(usize, Entity)] {
+        &self.meshes
+    }
+
     pub fn play(&mut self, action: usize) {
         self.action = action.min(self.clips.actions.len().saturating_sub(1));
         self.frame = 0.0;
@@ -568,8 +576,9 @@ impl CharacterModel {
                 (*i, Flipbook { slots, frames: frames.clone(), shown: None })
             })
             .collect();
+        let mut meshes: Vec<(usize, Entity)> = drawn.iter().map(|(e, node, _)| (*node, *e)).collect();
         if let Some((bone, parts)) = &self.weapon {
-            attach(parts, bones[*bone], commands);
+            meshes.extend(attach(parts, bones[*bone], commands).into_iter().map(|(e, _)| (*bone, e)));
         }
         // Lifted off the floor it lies on (the collision floor can sit a
         // little below the drawn one).
@@ -595,6 +604,7 @@ impl CharacterModel {
             tracks: Vec::new(),
             blend: Blend::None,
             mods,
+            meshes,
         };
         animator.play(0);
         commands.entity(root).insert(animator);

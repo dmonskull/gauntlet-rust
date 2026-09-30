@@ -114,6 +114,14 @@ What plays (details in [INDEX.md](INDEX.md)):
     "Deaths").
   - Every blow that hurts a monster sprays blood (or its element's hit
     effect); kills spray more.
+  - Hit flashes: a monster that lives through a blow, a hero hit for more
+    than a point, and a critter or part struck by the kinds that reach
+    past its hit spheres (finishers, potions) glow in `AAAWHITE` for two
+    ticks; a struck obstacle shows it for one (`flash.rs`, carried on
+    `MeshTag`). The death textures now use the decoded second stage
+    (lighting × frame × 2, the body's texture dropped)
+    ([rendering.md](rendering.md) "Texture overrides"). Checked on
+    screen: a grunt, the B6 dragon (fire potion), a levelA1 hedge wall.
 - **Generators**: level-scaled damage, armour, experience ×5, realm sounds.
 - **Level mechanics** (`mechanics.rs`)
   - Triggers and chains; lifts, elevators and trap walls.
@@ -338,7 +346,8 @@ waits.
    the panel and the legendary items' hints. Left: pickup notices, the
    tower's other messages (shards after a boss, runestones: `NEWSHARDS`,
    `ALL12RUNES*`, `RUNE13*`). Saving is done (a file for the card).
-6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**, **hit flashes**.
+6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**. (Hit flashes
+   are done but for node spheres', whose model node isn't traced.)
 7. ~~Hit effects~~: done — blood sprays (BLOODFX1 per blow, BLOODFX2 on
    kills) run as particle bursts from the effects' kind-4 nodes; FIREHIT,
    HITCOL and the die effects as models. Left: the effects' depth bias,

@@ -24,6 +24,7 @@
 //! `combo`), each for the whole run or for a range of ticks since the hero
 //! appeared.
 
+use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use gdl_formats::{PlayerCollision, PlayerGround};
 use gdl_formats::enemy::FIELDS_PER_TICK;
@@ -40,6 +41,7 @@ use crate::play_camera::PlayCamera;
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
 use crate::effects::{MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
+use crate::flash::{self, Flash, FlashColours};
 use crate::hints::{Hint, ShowHint};
 use crate::projectiles::{self, HeroShot};
 use crate::world::{LevelEntity, LevelGround};
@@ -114,6 +116,8 @@ pub struct Player {
     /// Blows taken since the last tick: damage, kind flags, summed push
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
+    /// Its hit flash (`flash.rs`).
+    flash: Flash,
     /// Turbo meter, 0–100.
     pub turbo: f32,
     /// What the turbo attack under way will cost when it lands.
@@ -167,6 +171,8 @@ fn level_stats(
 const STRONG_KNOCKBACK: f32 = 16.0;
 const KNOCKDOWN_KNOCKBACK: f32 = 32.0;
 const FLING_KNOCKBACK: f32 = 100.0;
+/// Blows of more than this flash the hero (and draw a reaction).
+const HIT_FLASH_DAMAGE: f32 = 1.0;
 
 /// The game's reaction class for the blows a hero took this tick (see
 /// `docs/combat.md` "Blows that land on the hero"): 0 none, 1 a flinch,
@@ -342,6 +348,7 @@ fn spawn_player(
         strength: hero.strength,
         armor: hero.armor,
         pending_hit: (0.0, 0, Vec3::ZERO),
+        flash: Flash::default(),
         turbo: 0.0,
         turbo_cost: 0.0,
         radius: hero.radius,
@@ -490,9 +497,9 @@ fn tick(
     mut players: Query<(Entity, &mut Player, &mut Animator)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
-    mut shots: MessageWriter<HeroShot>,
-    mut potions: MessageWriter<UsePotion>,
+    (mut shots, mut potions): (MessageWriter<HeroShot>, MessageWriter<UsePotion>),
     mut hints: MessageWriter<ShowHint>,
+    (colours, mut tags, mut commands): (Res<FlashColours>, Query<&mut MeshTag>, Commands),
     state: Option<Res<PlayerState>>,
     monster_level: Option<Res<crate::monsters::MonsterLevel>>,
     boss: (Option<Res<crate::critters::CritterLevel>>, Query<&GlobalTransform>),
@@ -606,6 +613,14 @@ fn tick(
             (hit_damage, hit_flags, hit_push) = (0.0, 0, Vec3::ZERO);
         }
         let (reaction, knock, reaction_face) = hit_reaction(hit_damage, hit_flags, hit_push, facing);
+        // A blow of more than a point flashes the hero.
+        if hit_damage > HIT_FLASH_DAMAGE {
+            p.flash.start();
+        }
+        if p.flash.step() {
+            let tag = if p.flash.on() { colours.body().unwrap_or(0) } else { 0 };
+            flash::tag_body(&animator, |_| true, tag, &mut tags, &mut commands);
+        }
         if knock > 0.0 {
             let k = hit_push * knock;
             for (v, add) in p.mover.knockback.iter_mut().zip(k.to_array()) {

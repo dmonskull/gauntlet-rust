@@ -9,29 +9,32 @@
 //! item on the floor, with its model, that can't be picked up for 30
 //! fields), a barrel breaks, an exploding barrel blasts everything near it,
 //! a poison barrel lets out a cloud, a shootable wall is freed, and a hit
-//! switch is pressed down its chain.
+//! switch is pressed down its chain. An obstacle a blow leaves standing
+//! flashes for one update (`flash.rs`).
 //!
 //! Stand-ins: the blast and the poison cloud hurt once, at once, with the
 //! missiles' blast falloff (the game's effects, which carry them, aren't
 //! ported); a monster inside (a Death) comes out at tier 1 straight away;
-//! hit flashes, hints 0x14 / 0x1B and chests blown apart by
+//! hints 0x14 / 0x1B and chests blown apart by
 //! explosive blows aren't done; a shootable wall's in-between hits are
 //! silent (the level's own hit sound isn't looked up); safe rocks (which
 //! break into pieces) aren't hittable.
 
+use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use gdl_formats::population::{ItemClass, PlacementParams, rotation_matrix};
 
 use crate::audio::PlaySound;
 use crate::combat::{Hit, TargetKind, Targetable};
 use crate::damage::after_armor;
+use crate::flash::{self, FlashColours};
 use crate::items::{self, LevelItems, USED};
 use crate::mechanics::{self, Mechanics};
 use crate::monsters::{Monster, MonsterLevel, NewMonster, spawn_monster};
 use gdl_formats::enemy;
 use crate::player::Player;
 use crate::player_state::DamagePlayer;
-use crate::population::{ContentModels, LevelPopulation};
+use crate::population::{ContentModels, ItemRig, LevelPopulation, PlacementIndex};
 use crate::projectiles::blast_share;
 use crate::world::LevelEntity;
 
@@ -43,7 +46,7 @@ impl Plugin for BreakablesPlugin {
             Update,
             setup.after(items::build_items).run_if(resource_exists_and_changed::<LevelPopulation>),
         )
-        .add_systems(FixedUpdate, hits.after(crate::player::PlayerTick).before(crate::damage::apply_hits));
+        .add_systems(FixedUpdate, (hits.after(crate::player::PlayerTick).before(crate::damage::apply_hits), flash_obstacles.after(hits)));
     }
 }
 
@@ -53,6 +56,9 @@ struct Breakable {
     placement: usize,
     hit_points: i32,
     armor: i8,
+    /// Struck and still standing: an obstacle flashes on the next item
+    /// update.
+    flash: bool,
 }
 
 // Item type subtypes.
@@ -105,7 +111,7 @@ fn setup(mut commands: Commands, items: Res<LevelItems>) {
         commands.spawn((
             Transform::from_translation(at),
             Targetable::new(TargetKind::Breakable, view.shape.radius, view.ty.extent[1].max(0.5)),
-            Breakable { placement: view.placement, hit_points: i32::from(view.ty.hit_points).max(1), armor: view.ty.armor },
+            Breakable { placement: view.placement, hit_points: i32::from(view.ty.hit_points).max(1), armor: view.ty.armor, flash: false },
             LevelEntity,
         ));
         count += 1;
@@ -154,6 +160,10 @@ fn hits(
             b.hit_points = (b.hit_points - (damage + 0.5) as i32).max(0);
         }
         let dead = b.hit_points == 0;
+        // An obstacle a blow did damage and left standing flashes.
+        if class == ItemClass::Obstacle && hit.kind & NO_DAMAGE == 0 && !dead && subtype != items::SAFE_ROCK {
+            b.flash = true;
+        }
         debug!("breakable {} ({class:?} {subtype:#x}) hit for {:.1}: {} left", b.placement, hit.damage, b.hit_points);
         let mut remove = dead;
         match class {
@@ -242,6 +252,55 @@ fn hits(
         if remove {
             commands.entity(hit.target).try_despawn();
         }
+    }
+}
+
+/// An obstacle's hit flash (the game's item flash count of 1): for one
+/// item update its root object shows the level's `AAAWHITE` in place of
+/// its own texture, and its whole model skips the lightmap (`flash.rs`).
+/// Levels without one (levelT4) don't flash their obstacles.
+#[allow(clippy::too_many_arguments)]
+fn flash_obstacles(
+    mut commands: Commands,
+    mut breakables: Query<&mut Breakable>,
+    models: Query<(Entity, &PlacementIndex, Option<&ItemRig>)>,
+    children: Query<&Children>,
+    meshes: Query<(), With<Mesh3d>>,
+    mut tags: Query<&mut MeshTag>,
+    colours: Res<FlashColours>,
+    mut lit: Local<Vec<Entity>>,
+) {
+    for root in lit.drain(..) {
+        for e in children.iter_descendants(root) {
+            if meshes.contains(e) {
+                flash::set_tag(e, 0, &mut tags, &mut commands);
+            }
+        }
+    }
+    for mut b in &mut breakables {
+        if !std::mem::take(&mut b.flash) {
+            continue;
+        }
+        let Some(colour) = colours.level else { continue };
+        let Some((root, _, rig)) = models.iter().find(|(_, p, _)| p.0 == b.placement) else { continue };
+        // The root object: node 0 (or its flipbook's frame), or the whole
+        // of a model without an atree.
+        let own: Vec<Entity> = match rig {
+            Some(rig) => {
+                let holder = rig.flipbooks.iter().find(|(_, node, ..)| *node == 0).map(|(h, ..)| *h);
+                rig.bones.first().into_iter().copied().chain(holder).collect()
+            }
+            None => vec![root],
+        };
+        for e in children.iter_descendants(root) {
+            if !meshes.contains(e) {
+                continue;
+            }
+            let is_own = own.iter().any(|&o| children.get(o).is_ok_and(|c| c.contains(&e)));
+            let tag = if is_own { colour | flash::TAG_REPLACE | flash::TAG_NO_LIGHTMAP } else { flash::TAG_NO_LIGHTMAP };
+            flash::set_tag(e, tag, &mut tags, &mut commands);
+        }
+        lit.push(root);
     }
 }
 

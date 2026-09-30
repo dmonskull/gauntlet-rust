@@ -28,6 +28,8 @@ use crate::audio::PlaySound;
 use crate::combat::{TargetKind, Targetable};
 use crate::character::{Animator, CharacterData, CharacterModel};
 use crate::deaths::{self, DeathSet, DeathTextures, Dissolve};
+use crate::flash::{self, Flash, FlashColours};
+use bevy::mesh::MeshTag;
 use crate::effects::{EffectAt, ExplosionAt};
 use crate::generators::{self, Generator};
 use crate::level::LoadedGame;
@@ -342,6 +344,8 @@ pub struct Monster {
     suicide: Suicide,
     /// Killed: playing out its death (`deaths.rs`).
     pub dying: Option<Dying>,
+    /// Its hit flash (`flash.rs`).
+    flash: Flash,
 }
 
 /// A suicide runner's progress toward blowing up.
@@ -434,9 +438,12 @@ const HIT1: u8 = 0x1C;
 const HIT2: u8 = 0x1D;
 
 /// Turns the blows a monster took into its reaction: the action it plays
-/// and the push added to its knockback.
+/// and the push added to its knockback. One it lives through flashes it.
 fn react(m: &mut Monster, animator: &mut Animator) {
     let Some(action) = take_blows(m) else { return };
+    if m.hit_points > 0.0 {
+        m.flash.start();
+    }
     let action = if m.model.has(action) { action } else if m.model.has(HIT1) { HIT1 } else { return };
     m.action = action;
     if let Some(a) = m.model.actions[action as usize] {
@@ -645,6 +652,7 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         retreat: false,
         suicide: Suicide::default(),
         dying: None,
+        flash: Flash::default(),
     };
     // Hittable: its radius, and (a stand-in for the game's height test)
     // twice its centre height.
@@ -962,6 +970,7 @@ fn tick_monsters(
     death_textures: Option<Res<DeathTextures>>,
     mut effects: MessageWriter<EffectAt>,
     (mut explosions, mut sounds): (MessageWriter<ExplosionAt>, MessageWriter<PlaySound>),
+    (colours, mut tags): (Res<FlashColours>, Query<&mut MeshTag>),
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     level.tick = level.tick.wrapping_add(1);
@@ -1003,6 +1012,10 @@ fn tick_monsters(
                 if let Some(d) = m.dying.as_mut() {
                     d.started = true;
                 }
+                // The death texture takes the flash's place.
+                if m.flash.stop() {
+                    flash::tag_body(&animator, |_| true, 0, &mut tags, &mut commands);
+                }
                 start_death(entity, m, death_textures.as_deref(), &mut commands, &mut effects);
                 // However it died, a suicide runner goes off.
                 if m.ai == SUICIDE {
@@ -1027,6 +1040,10 @@ fn tick_monsters(
         // Blows taken: flinch or knockdown. While the reaction plays the
         // monster only slides on its knockback.
         react(m, &mut animator);
+        if m.flash.step() {
+            let tag = if m.flash.on() { colours.body().unwrap_or(0) } else { 0 };
+            flash::tag_body(&animator, |_| true, tag, &mut tags, &mut commands);
+        }
         let knock = scale(m.knock, dt);
         settle_knock(m, dt);
         if matches!(m.action, HIT1 | HIT2) {
