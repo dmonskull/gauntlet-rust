@@ -57,11 +57,16 @@ impl Plugin for ItemsPlugin {
 /// Activated: a door or chest opened, an exit in use.
 pub const USED: u16 = 0x1;
 /// Collides even off screen (doors, exits, placements with flag bit 0).
-const ALWAYS_ACTIVE: u16 = 0x40;
+pub const ALWAYS_ACTIVE: u16 = 0x40;
 /// A locked container: a key opens it on touch.
 const LOCKED: u16 = 0x10;
 /// An exit the quest hasn't opened: it shows `EXIT_OFF` and goes nowhere.
 pub const CLOSED: u16 = 0x8000;
+
+/// The container that explodes once opened (CHESTEXP), and the tick it
+/// plays as it's set off.
+pub const CHEST_EXP: i32 = 0x2C;
+pub const CHEST_EXP_TICK: &str = "S_TICKY";
 
 /// Powerup subtypes of the quest's pieces.
 const LEGENDARY: i32 = 13;
@@ -389,6 +394,8 @@ pub struct ItemView<'a> {
     pub live: bool,
     /// What it holds (containers).
     pub contents: Option<&'a ItemType>,
+    /// Its model, while it has one.
+    pub model: Option<Entity>,
 }
 
 /// Placement numbers of items released at run time (container contents)
@@ -417,6 +424,7 @@ impl LevelItems {
             actions: item.action_count(),
             live: !item.gone && !item.leaving,
             contents: item.contents.as_ref(),
+            model: item.model,
         }
     }
 
@@ -463,6 +471,24 @@ impl LevelItems {
         let old = i.shape.centre;
         i.shape.centre = centre;
         Some(([centre[0] - old[0], centre[1] - old[1], centre[2] - old[2]], i.model))
+    }
+
+    /// Sets what taking a powerup gives (`+0xE0`): gold blown to junk,
+    /// food spoiled by gas (`breakables.rs`).
+    pub fn set_amount(&mut self, placement: usize, amount: i32) {
+        if let Some(i) = self.find_mut(placement) {
+            i.amount = amount;
+        }
+    }
+
+    /// Lets go of the item's model, for a new one to take its place: the
+    /// caller despawns it and spawns the new one with the item's placement
+    /// number, which binds it to the item as the level's models are
+    /// (`ContentModels::spawn`).
+    pub fn take_model(&mut self, placement: usize) -> Option<Entity> {
+        let i = self.find_mut(placement)?;
+        i.atree = None;
+        i.model.take()
     }
 
     /// Frees the item at once, model and all (the game's `+0xC4 = 0xFFFF`).
@@ -1176,11 +1202,18 @@ fn touch(
 
 /// A key opened chest `i`: it plays its opening action and releases what
 /// it holds. Stand-in: the contents go straight to the hero rather than
-/// appearing as an item in the chest (see `docs/items.md`).
+/// appearing as an item in the chest (see `docs/items.md`). A CHESTEXP
+/// releases nothing: it ticks (and keeps running off screen) until it's
+/// open, then explodes (`breakables.rs`).
 fn open_chest(items: &mut LevelItems, i: usize, state: &mut PlayerState, out: &mut Out) {
     let doors = items.doors;
     let chest = &mut items.items[i];
     chest.play(1.min(chest.action_count().saturating_sub(1)));
+    if chest.ty.subtype == CHEST_EXP {
+        chest.flags |= ALWAYS_ACTIVE;
+        out.sound(CHEST_EXP_TICK);
+        return;
+    }
     let Some(ty) = chest.contents.clone() else { return };
     if chest.ty.subtype == 0x2F {
         // Gold chests keep the gold until the hero comes back for it.
