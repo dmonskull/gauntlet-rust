@@ -88,6 +88,24 @@ HUD) passed all 67 real levels.
 - Also: "big monster" is the floor step `+0x23C` > 2 (was a radius
   stand-in) — knock-down push and the hero's low-target test (kicks and
   low attacks now find small monsters).
+- **Lag / memory** (user report): the game doesn't leak within a level
+  (flat ~650 MB over 90 s of fighting) and is mostly idle between frames.
+  Across level loads memory crept up ~15 MB a load: each load built one
+  material per mesh — ~13,600 for a level's monster flipbook frames — and
+  the allocator and Metal's resource lists grew with that churn. Character
+  models now share one material per texture and draw state
+  (`TextureCache::sharing_materials`): 893 materials instead of 13,634 on
+  levelA1, ~470 MB instead of ~680 MB, and 28 reloads of the same level
+  plateau at 520–575 MB. Check with `GDL_TOUR=3 GDL_TOUR_STEP=0` +
+  `footprint -p <pid>`, and `GDL_MEMSTATS=1`.
+- **Crash on level change**: the mechanics tick could run one frame with
+  the old level's triggers against the new level's nodes (index out of
+  bounds, e.g. levelA4 → A5, or tower → a realm). The old `Mechanics` is
+  now removed as the level change starts. `GDL_TOUR=4` through 13 levels
+  runs clean.
+- The user's Mac (16 GB) sits at ~14.7 GB "wired" (kernel/driver) memory
+  after 11 days up, with heavy swapping: keep one game instance and one
+  build at a time (`cargo build -j 4`).
 
 ## Work in progress
 

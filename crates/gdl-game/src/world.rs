@@ -79,7 +79,29 @@ pub struct CurrentLevelStats {
     pub population: String,
 }
 
-fn level_keys(keys: Res<ButtonInput<KeyCode>>, mut w: MessageWriter<ChangeLevel>) {
+/// `]`/Page Down and `[`/Page Up step through the levels.
+/// `GDL_TOUR=<seconds>` (testing: memory across level changes) moves on
+/// every that many seconds, by `GDL_TOUR_STEP` levels (default 1; 0 reloads
+/// the same level).
+fn level_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time<Real>>,
+    mut tour: Local<Option<(f32, f32, isize)>>,
+    mut w: MessageWriter<ChangeLevel>,
+) {
+    let tour = tour.get_or_insert_with(|| {
+        let env = |k: &str| std::env::var(k).ok();
+        let every = env("GDL_TOUR").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+        let step = env("GDL_TOUR_STEP").and_then(|v| v.parse::<isize>().ok()).unwrap_or(1);
+        (every, every, step)
+    });
+    if tour.0 > 0.0 {
+        tour.1 -= time.delta_secs();
+        if tour.1 <= 0.0 {
+            tour.1 = tour.0;
+            w.write(ChangeLevel(tour.2));
+        }
+    }
     if keys.just_pressed(KeyCode::BracketRight) || keys.just_pressed(KeyCode::PageDown) {
         w.write(ChangeLevel(1));
     }
@@ -112,6 +134,10 @@ fn change_level(
     for e in &old {
         commands.entity(e).despawn();
     }
+    // The old level's triggers and movers point at its nodes: gone before
+    // the new nodes arrive, so the fixed tick waits for the new level's
+    // (built when its population is in).
+    commands.remove_resource::<mechanics::Mechanics>();
 
     let mut stats = CurrentLevelStats { name: game.current_name().to_string(), ..default() };
     match game.load_current() {

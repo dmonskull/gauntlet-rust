@@ -336,7 +336,7 @@ impl CharacterModel {
         materials: &mut Assets<LevelMaterial>,
         images: &mut Assets<Image>,
     ) -> Self {
-        let mut cache = TextureCache::new(&data.model, &data.textures);
+        let mut cache = TextureCache::new(&data.model, &data.textures).sharing_materials();
         let mut bounds = (Vec3::MAX, Vec3::MIN);
         let object_index = |name: &str| data.model.objects.iter().position(|o| o.name == name);
         let mut build = |object: Option<usize>, flags: u32| -> PartMeshes {
