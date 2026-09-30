@@ -155,7 +155,12 @@ What plays (details in [INDEX.md](INDEX.md)):
 
 Test aids:
 
-- `GDL_WARP="x,y,z"`: start the hero at a point.
+- `GDL_WARP="x,y,z"`: start the hero at a point, on the floor below it
+  that the player's floor check stands on (with none, a warning and the
+  level's own start: a point over a gap would drop the hero out of the
+  level and back to the point for good). The `floors` example lists every
+  floor down a line (`cargo run -p gdl-formats --example floors --
+  <level folder> x z`).
 - `GDL_LIST_NEAR="x,y,z"`: log the level objects near a point.
 - `GDL_FPS=1`: frame rate, plus a line for every frame over 20 ms.
 - `GDL_WAKE_STATUES`, `GDL_CRITTER_HP`: critter testing.
