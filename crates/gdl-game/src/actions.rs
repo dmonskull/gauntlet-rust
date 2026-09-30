@@ -110,14 +110,26 @@ impl Action {
     pub const THROW2R: Self = Self(0x62);
     pub const ATTPWRATHROW: Self = Self(0x63);
     pub const ATTPWRATHROWR: Self = Self(0x64);
+    /// Skorne's gauntlets: the left's shot and recovery are ATTFIREL and
+    /// ATTFIRER, the right's ATTFIRELR and ATTFIRERR (the table's names
+    /// run in that order).
+    pub const ATTFIREL: Self = Self(0x67);
+    pub const ATTFIRELR: Self = Self(0x68);
+    pub const ATTFIRER: Self = Self(0x69);
+    pub const ATTFIRERR: Self = Self(0x6A);
+    /// The super crossbow: SSHOT1, SSHOT2 over and over while the attack
+    /// is held, then SSHOTR.
+    pub const SSHOT1: Self = Self(0x6B);
+    pub const SSHOT2: Self = Self(0x6C);
+    pub const SSHOTR: Self = Self(0x6D);
     /// A breath (or Skorne's horns or mask) and its recovery; the
     /// hammer's chop and its recovery.
     pub const ATTBREATHE: Self = Self(0x6E);
     pub const ATTBREATHER: Self = Self(0x6F);
     pub const ATTCHOP: Self = Self(0x70);
+    pub const ATTCHOPR: Self = Self(0x71);
     /// Grabbing Death to drain it (the halo).
     pub const DEATHGRABS: Self = Self(0x1D);
-    pub const ATTCHOPR: Self = Self(0x71);
     pub const MAGICS: Self = Self(0x73);
     pub const MAGICR: Self = Self(0x74);
     pub const THROWPOTIONS: Self = Self(0x75);
@@ -340,6 +352,10 @@ pub struct Next {
     pub switch: Switch,
     /// Seconds to blend from the old pose.
     pub blend: f32,
+    /// The playing clip starts over at its end, which counts as a new
+    /// start (the game's loop flag, set by the chooser: SSHOT2 while the
+    /// crossbow's shot is asked for).
+    pub again: bool,
 }
 
 impl ActionState {
@@ -397,6 +413,7 @@ impl ActionState {
         }
 
         let mut next = req;
+        let mut again = false;
         let range = self.range;
         let defend_now = req_cat == 1;
         let pick = |a: Action, b: Action, cond: bool| if cond { a } else { b };
@@ -646,12 +663,33 @@ impl ActionState {
             // Death's grab (the halo draining a Death): held while it's
             // asked for, then let go.
             0x1D | 0x1E => next = if req.0 == 0x1D { Action(0x1E) } else { Action(0x1F) },
-            // The breath and the chop hand over to their recoveries.
-            0x6E | 0x70 => {
+            // A gauntlet's shot, the breath and the chop hand over to
+            // their recoveries (the breath and the chop at once when
+            // knocked, so they still go; a knock-down during a gauntlet's
+            // shot is taken as from READY, above).
+            0x67 | 0x68 | 0x6E | 0x70 => {
                 if knocked == 0 {
                     switch = Switch::AtEnd;
                 }
-                next = if state.0 == 0x6E { Action::ATTBREATHER } else { Action::ATTCHOPR };
+                next = match state.0 {
+                    0x67 => Action::ATTFIRER,
+                    0x68 => Action::ATTFIRERR,
+                    0x6E => Action::ATTBREATHER,
+                    _ => Action::ATTCHOPR,
+                };
+            }
+            // The crossbow: SSHOT2, over and over, while its shot is asked
+            // for; standing or moving, SSHOTR; anything else once the clip
+            // is done (a hit reaction too).
+            0x6B | 0x6C => {
+                if req == Action::SSHOT1 {
+                    next = Action::SSHOT2;
+                    again = true;
+                } else if req_cat == 0 {
+                    next = Action::SSHOTR;
+                } else {
+                    switch = Switch::AtEndAlways;
+                }
             }
             _ => {}
         }
@@ -680,7 +718,7 @@ impl ActionState {
         } else {
             0.0
         };
-        Next { action: next, switch, blend }
+        Next { action: next, switch, blend, again }
     }
 
     fn directional(&self, a: Action, second: bool) -> Action {
@@ -718,6 +756,9 @@ impl ActionState {
             // Turbo attacks land like finishers (× 3, heavy).
             0x56 | 0x57 => strike.0 |= Strike::FINISHER,
             0x63 if class != Some(class::SOR) => strike.0 |= Strike::POWER_THROW,
+            0x67 if next == Action::ATTFIRER => strike.0 |= Strike::GAUNTLET_LEFT,
+            0x68 if next == Action::ATTFIRERR => strike.0 |= Strike::GAUNTLET_RIGHT,
+            0x6B | 0x6C if matches!(next, Action::SSHOT2 | Action::SSHOTR) => strike.0 |= Strike::CROSSBOW,
             _ => {}
         }
         match next.0 {
@@ -732,7 +773,7 @@ impl ActionState {
             // Recoveries keep them.
             0x22 | 0x2A | 0x2B | 0x2E | 0x2F | 0x32 | 0x33 | 0x36 | 0x37 | 0x3A | 0x3B | 0x3D | 0x41 | 0x42
             | 0x44 | 0x46 | 0x51 | 0x53 => {}
-            0x47..=0x4E | 0x5B..=0x5E | 0x65 | 0x66 => {
+            0x47..=0x4E | 0x5B..=0x5E | 0x65 | 0x66 | 0x6B | 0x6C => {
                 strike.0 |= Strike::STARTED;
                 self.edges = 0;
             }
@@ -787,8 +828,15 @@ impl Strike {
     pub const FINISHER: u32 = 0x10;
     /// A strafe attack or throw releases a projectile.
     pub const SHOT: u32 = 0x100;
+    /// SSHOT1 or SSHOT2 hands over to SSHOT2 (or starts over) or SSHOTR:
+    /// the crossbow's bolt.
+    pub const CROSSBOW: u32 = 0x800;
     /// The power throw releases its projectile.
     pub const POWER_THROW: u32 = 0x1000;
+    /// A gauntlet's shot hands over to its recovery: the left one's
+    /// lightning, the right one's acid.
+    pub const GAUNTLET_LEFT: u32 = 0x2000;
+    pub const GAUNTLET_RIGHT: u32 = 0x4000;
     /// MAGICR starts: a potion's blast (or shield).
     pub const MAGIC: u32 = 0x20000;
     /// THROWPOTIONR starts: the potion is thrown.
@@ -989,6 +1037,45 @@ mod tests {
         assert_eq!(s.next(Action::STRAFE_ATKB1, &env()).action, Action::STRAFE_ATKB2);
         s.action = Action::STRAFE_ATKB2;
         assert_eq!(s.next(Action::STRAFE_ATKB1, &env()).action, Action::STRAFE_ATKB1);
+    }
+
+    #[test]
+    fn gauntlet_shots_go_as_their_recoveries_start() {
+        let mut s = state(Action::ATTFIREL, 0);
+        let n = s.next(Action::ATTFIREL, &env());
+        assert_eq!((n.action, n.switch), (Action::ATTFIRER, Switch::AtEnd));
+        assert_eq!(s.switched(n.action, Some(0)).0, Strike::GAUNTLET_LEFT);
+        // Knocked down, the reaction takes over at once and the shot
+        // doesn't go (the chooser treats a throw as READY then).
+        let mut s = state(Action::ATTFIRELR, 0);
+        let n = s.next(Action(0x85), &env());
+        assert_eq!((n.action, n.switch), (Action(0x85), Switch::Now));
+        assert!(!s.switched(n.action, Some(0)).projectile());
+        // Only that hand-over raises it.
+        let mut s = state(Action::ATTFIREL, 0);
+        assert_eq!(s.switched(Action::READY, Some(0)).0, 0);
+    }
+
+    #[test]
+    fn the_crossbow_shoots_while_asked() {
+        // SSHOT1 hands over to SSHOT2, which starts over while asked for:
+        // a bolt each time.
+        let mut s = state(Action::SSHOT1, 0);
+        let n = s.next(Action::SSHOT1, &env());
+        assert_eq!((n.action, n.switch, n.again), (Action::SSHOT2, Switch::AtEnd, true));
+        assert_eq!(s.switched(n.action, Some(0)).0, Strike::CROSSBOW | Strike::STARTED);
+        let n = s.next(Action::SSHOT1, &env());
+        assert_eq!((n.action, n.again), (Action::SSHOT2, true));
+        assert_eq!(s.switched(n.action, Some(0)).0 & Strike::CROSSBOW, Strike::CROSSBOW);
+        // Let go: SSHOTR at the clip's end, the last bolt.
+        let n = s.next(Action::READY, &env());
+        assert_eq!((n.action, n.switch, n.again), (Action::SSHOTR, Switch::AtEnd, false));
+        assert_eq!(s.switched(n.action, Some(0)).0, Strike::CROSSBOW);
+        // Any other attack waits for the clip's end, without a bolt.
+        let mut s = state(Action::SSHOT2, 0);
+        let n = s.next(Action::ATTQUICK1, &env());
+        assert_eq!((n.action, n.switch), (Action::ATTQUICK1, Switch::AtEndAlways));
+        assert_eq!(s.switched(n.action, Some(0)).0 & Strike::CROSSBOW, 0);
     }
 
     #[test]

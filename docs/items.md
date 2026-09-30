@@ -133,7 +133,11 @@ state machine (`FUN_800ab898`) then raises, as those actions hand over,
 0x68 → 0x6A, ATTBREATHE (0x6E) → 0x6F, ATTCHOP (0x70) → 0x71 — each at
 its clip's end (switch mode 0), or at once (mode 2) when a hit reaction,
 knockdown or GRABBED (0x83–0x94) is asked for — to the same next action,
-so a gauntlet's shot still goes. (The table's clip names run ATTFIREL,
+so the breath and the chop still go. Not a gauntlet's shot: 0x67–0x6A are
+category 10, and any request above 0x72 while an action of category 1–10
+plays is chosen as from READY (the chooser's prologue), so the reaction
+takes over at once and the shot doesn't go (the `uVar6` test in the
+gauntlets' case can't be reached). (The table's clip names run ATTFIREL,
 ATTFIRELR, ATTFIRER, ATTFIRERR for 0x67–0x6A, so the left gauntlet plays
 ATTFIREL then ATTFIRER, the right ATTFIRELR then ATTFIRERR.) The shot
 events are raised by the chooser's hand-over switch on the old action,
@@ -154,19 +158,21 @@ frame). A restart counts as a start for the hand-over switch
 (`FUN_8000eb70` bit 4), so **SSHOT2 repeats while the button is held and
 every SSHOT1 → SSHOT2, SSHOT2 → SSHOT2 and SSHOT2 → SSHOTR raises `0x800`
 — a bolt each** (SSHOT1 → SSHOTR also fires; a hand-over to any other
-action doesn't). Ported: the ATTBREATHE and ATTCHOP results and their
-chaining (`actions.rs`; [powers.md](powers.md), "breaths"); the hammer's
+action doesn't). The case's third branch (any other request, category
+1–12) sets mode 1 even over a knock-down's mode 2, so such a request
+waits for the clip's end; a hit reaction (0x83–0x87, category 0) goes to
+SSHOTR at once, with its bolt. Every clip set has the seven clips, and
+SSHOT2's own loop flag is 0 in all eight — the chooser's flag is what
+repeats it. Ported: all six results and their chaining (`actions.rs`:
+`Next::again` is the chooser's loop flag, which `player.rs` turns into a
+restart that counts as a hand-over; [powers.md](powers.md), "breaths");
+the shots ([projectiles.md](projectiles.md), "Hero release"); the hammer's
 blow on event `0x2000000` as ATTCHOPR starts (`FUN_80080d3c`): effect
 `0x1C` EXPRING on the hero's model, damage 100 (`r2-0x5b60`) out to 35
 (`r2-0x5b00`, `+0x614` = 0.1, `r2-0x5b10`, not traced) with kind `0x20`,
 flags `0x2A` (monsters, items, area), a hammer use spent, a shake
 (`FUN_800277ec(0.3, 0, 0, 30, 200)`) and `S_THUNDERHAMMER` (`0x50`) —
-`effects.rs::spawn_chops`. Not ported: the gauntlets' and the crossbow's
-cases, decoded in [projectiles.md](projectiles.md), "Hero release":
-special `0x8000` / `0x4000` pick the missile records `0x80119b58` /
-`0x80119b88` (`BOSSG_ELEC`, lightning / `BOSSG_ACID`, acid) for every
-throw while held; the crossbow's `0x800` fires `SUPERARROW` bolts.
-Rapid fire (weapon `0x20000000`) isn't among these: the action state
+`effects.rs::spawn_chops`. Rapid fire (weapon `0x20000000`) isn't among these: the action state
 machine sets the player's `+0xA8` to 0.75 (`r2-0x4da4`) instead of 1
 (`r2-0x4da8`) while it's held and a throw-category action (9–10) plays —
 as it does for every action under a speed power (special `0x10000`);
@@ -178,12 +184,13 @@ pinned down (not ported).
 Here (`PlayerState::tick_powers`, `PowerBits`; `player.rs`
 `apply_powers`): the adding up, the tower's hold, the weapon bits on
 blows and missiles, speed, magic and the turbo fill; the multi-shots,
-the crossbow's piercing bolts and reflect's bouncing
-([projectiles.md](projectiles.md)). Not done yet: the crossbow's and
-hammer's own shots, rapid fire, the shields and invulnerability, the
-specials but levitation, and their looks (the chrome, invisibility's
-flicker). Test
-with `GDL_POWERS="5:1,7:0:4:40"` (subtype:value[:amount[:seconds]]).
+the crossbow's bolts and reflect's bouncing
+([projectiles.md](projectiles.md)); the power attacks above (the
+breaths, the gauntlets, the crossbow, the hammer); the armour, the
+specials and the looks in [powers.md](powers.md). Not done yet: rapid
+fire (above). Test with `GDL_POWERS="5:1,7:0:4:40"`
+(subtype:value[:amount[:seconds]]; the crossbow `5:0x100000:5:-1`, the
+left gauntlet `9:0x8000`).
 
 ## Items at run time
 

@@ -70,6 +70,33 @@ ATTPWRATHROW ends — [combat.md](combat.md)), after the melee blow block:
   plays `S_SUPERSHOT` (`0x42`) because the weapon bits hold `0x100000`
   (any of `0x580000`: the multi-shots too), else the element's.
 
+**The sound** of every release (after the spawn, whatever became of the
+throw): special `0x8000` → `S_GAUNTLET1` (`FUN_8009ec48`), `0x4000` →
+`S_GAUNTLET2` (`FUN_8009ec08`), else `FUN_8009ee70`: weapon bits
+`& 0x580000` → `S_SUPERSHOT` (`0x42`); else by the element (`& 0xF`) 1
+`S_AMULETFIRE` (`0x44`), 2 `S_AMULETLIGHTNI` (`0x46`), 3 `S_AMULETLIGHT`
+(`0x45`), 4 `S_AMULETACID` (`0x43`); else (0, or above 4) the class's
+from the table at `0x80122e6c` (by player `+0x08`, catalog ids `bank <<
+16 | call`): `S_WARTHROW`, `S_VALTHROW`, `S_WIZTHROW`, `S_ARCTHROW`,
+`S_DWFTHROW`, `S_KNITHROW`, `S_SORTHROW`, `S_JESTHROW` — eight entries,
+the turbo table follows (sound ids are catalog indices, from 0).
+
+**Kind `0x100000`** (the passed kind: a crossbow bolt, or any throw while
+the crossbow's bit is held) also changes the spawn (`FUN_80030094`): the
+wall check at release is skipped (not only the item one's ending), the
+aim is the facing (the aim's first case), and it isn't lobbed — the
+velocity is the unit aim × the speed.
+
+Here (`projectiles.rs`: `release`, `throw_sound`, `launch_hero`; the
+actions in [items.md](items.md), "Attack overrides"): the four releases
+in that order, the gauntlets' records and models (`BOSSG_ELEC`,
+`BOSSG_ACID`, `SUPERARROW` from `WEAPONS`), the crossbow's use spent
+(`SpendPower`; with none left the class's missile), × 2 / × 1.5, the bolt
+flying straight along the facing through walls at release and on past
+an item it strikes there, the sound. The secret classes' throw sound is
+their base class's (stand-in: their `+0x08` isn't traced; read as it is,
+the table would give them turbo sounds).
+
 After any release the event word loses `0xFF00` and gains `0x10000000`
 — the throw event the phoenix, the familiars and the body looks read
 on the next tick (below, "The familiars and the phoenix").
@@ -136,11 +163,12 @@ units, 27 for the power throw.
   `+0x158`, else none; `+0x124 & 0x400` uses `0x80119be8`) turned by the
   player matrix (`FUN_800bdef0`, rotation only).
 - Check segment from hand − 3 × aim (`r2-0x7380`) to start = hand + 2 × aim
-  (`r2-0x7398`): a wall there (`FUN_8000cfa0`, the missile's radius) ends
-  the throw with a wall spark (`FUN_800938b8`), unless kind `0x200000`
-  (then it starts from the back end); an item there (`FUN_8005ed30`) takes
-  the damage at once (`FUN_8005c1c8`) and the throw ends (unless kind
-  `0x100000`).
+  (`r2-0x7398`): a wall there (`FUN_8000cfa0`, the missile's radius; not
+  checked with kind `0x100000`) ends the throw with a wall spark
+  (`FUN_800938b8`), unless kind `0x200000` (then it starts from the back
+  end); an item there (`FUN_8005ed30`) takes the damage at once
+  (`FUN_8005c1c8`, with the passed kind, not the record's) and the throw
+  ends (unless kind `0x100000`).
 - **Lob**: T = aim × reach; d = |T horizontal|; horizontal direction
   T / d; slope = (0.5 × g × d / v + (T.y − 0.5) × v / d) / v (`r2-0x73b0`,
   `r2-0x7370`); velocity = (dir X, slope, dir Z) × v. It comes down 0.5
@@ -151,7 +179,9 @@ units, 27 for the power throw.
   `0x1107`; players: `0x20e`, `0x200f` in game mode 1, `0xf` in versus;
   `& ~4` with kind `0x100000`) | `0x20000` when the record has no spin.
   Radius × 1.8 (`r2-0x7358`) with kind `0x2000000`; drawn × the damage
-  multiplier when above 1, × 1.2 above player level 98.
+  multiplier when above 1 (1.8, `r2-0x7350`, set first for the power
+  throw, is then overwritten by it), × 1.2 (`r2-0x7368`) above player
+  level 98 (`+0x3324`).
 
 ### Per-class missile record (`0x801189A8`, 8 × `0x30`)
 
@@ -426,8 +456,9 @@ throw every two seconds.
   pass every item, and skip the item check at release.
 - Hits go to the nearest target along the segment, not the first in slot
   order; per-attacker cooldowns aren't kept (only piercing needs them).
-- No wall/hit/burst effects, sparks or sounds; the burst is applied at
-  once with the analytic falloff instead of over the effect's life.
+- No wall/hit/burst effects, sparks or hit sounds (the release's sound
+  is played); the burst is applied at once with the analytic falloff
+  instead of over the effect's life.
 - Weapon powers ([items.md](items.md), "Timed powerups"): the throw
   starts from the hero's weapon bits (`+0x11C`); `0x80000` / `0x400000`
   fan it into three / five missiles turned 0°, ±15° (±30°) by the tables
@@ -442,11 +473,13 @@ throw every two seconds.
   a rise keeps 0.4 of itself) — a missile already leaving the surface it
   touches flies on (our sweep can touch it again). Stand-ins: the bounce
   leaves the lifetime alone (the game trims what's left, constants not
-  traced); the `0x800` (crossbow) and `0x6000` (gauntlet) strikes and
-  their actions are decoded above but not ported; the spread's first
-  missile's effect (the record's `+0x2C` becomes 6 / 7), the element
-  trails (`0x8023fd34`) and the gauntlets' records aren't done; the time-slow damage halving isn't; no push
-  on missile hits on monsters. The reflect shield is (`fly`: velocity ×
+  traced); the spread's first missile's effect (the record's `+0x2C`
+  becomes 6 / 7), the element trails (`0x8023fd34`), the magic classes'
+  element models and the streaks (the crossbow's white one included)
+  aren't done; the time-slow damage halving isn't; no push on missile
+  hits on monsters. A bolt that strikes an item at release and flies on
+  can meet it again at once (whether the game's item test would isn't
+  traced). The reflect shield is (`fly`: velocity ×
   −1, moved on at once, damage at most 15 (`r2-0x5570`), it then hits
   monsters and objects and passes the hero it glanced off; `S_RICOCHET`
   at most once a second) — but its life isn't capped at 10 s more

@@ -38,7 +38,7 @@ use crate::level_material::LevelMaterial;
 use crate::locomotion;
 use crate::monsters::{Monster, MonsterLevel, MonsterTick};
 use crate::player::{Player, PlayerChoice};
-use crate::player_state::{DamagePlayer, EnemyScale, PlayerState};
+use crate::player_state::{DamagePlayer, EnemyScale, PlayerState, SpendPower, power};
 use crate::population::LevelPopulation;
 use crate::world::{LevelEntity, LevelGround};
 
@@ -159,6 +159,22 @@ fn spread_count(kind: u32) -> usize {
 /// record): straight, pointing along their flight, a radius of 5, hitting
 /// heavily (`0x20`).
 const BOLT: MissileType = missile(0x20, 0.0, 0.0, 5.0, 0.0, [0.0; 3], 0.0);
+/// Skorne's gauntlets' shots (the other two special records): the left
+/// one's lightning (2), the right one's acid (4), a radius of 2, no fall
+/// or spin.
+const LIGHTNING_SHOT: MissileType = missile(2, 0.0, 0.0, 2.0, 0.0, [0.0; 3], 0.0);
+const ACID_SHOT: MissileType = missile(4, 0.0, 0.0, 2.0, 0.0, [0.0; 3], 0.0);
+/// The gauntlets' special bits: every throw while one is worn is its shot.
+const LEFT_GAUNTLET: u32 = 0x8000;
+const RIGHT_GAUNTLET: u32 = 0x4000;
+/// A crossbow bolt with a use of the power does twice the damage (1.5
+/// times on a boss level).
+const BOLT_DAMAGE: f32 = 2.0;
+const BOSS_BOLT_DAMAGE: f32 = 1.5;
+/// A missile doing more than its damage is drawn that much bigger, and
+/// 1.2 times again above level 98.
+const TOP_LEVEL: u32 = 98;
+const TOP_LEVEL_SIZE: f32 = 1.2;
 /// A bounce keeps this much of any upward speed.
 const BOUNCE_RISE: f32 = 0.4;
 /// A throw wound up for longer than this goes further, up to 0.1 s more.
@@ -428,9 +444,10 @@ pub struct Launch {
 /// The game's aim for a hero's throw: toward the target when it's within
 /// 30° of the facing (a little steeper up, half as steep down, and never
 /// flatter than the floor's slope), else straight along the facing tilted
-/// by the floor's slope. `elevation` is the sine of the floor's slope along
-/// the facing (the dwarf throws 0.2 higher).
-pub fn hero_aim(facing: f32, aim: Vec3, targeted: bool, elevation: f32, dwarf: bool) -> Vec3 {
+/// by the floor's slope — always, for a `bolt` (kind `0x100000`).
+/// `elevation` is the sine of the floor's slope along the facing (the
+/// dwarf throws 0.2 higher).
+pub fn hero_aim(facing: f32, aim: Vec3, targeted: bool, elevation: f32, dwarf: bool, bolt: bool) -> Vec3 {
     let mut e = elevation.min(0.707);
     if dwarf {
         e += 0.2;
@@ -438,7 +455,7 @@ pub fn hero_aim(facing: f32, aim: Vec3, targeted: bool, elevation: f32, dwarf: b
     let f = Vec3::new(facing.sin(), 0.0, facing.cos());
     let mut a = aim;
     let across = Vec2::new(a.x, a.z).length();
-    if f.x * a.x + f.z * a.z < AIM_CONE * across {
+    if bolt || f.x * a.x + f.z * a.z < AIM_CONE * across {
         a = Vec3::new(f.x, e, f.z);
     } else if !targeted {
         let s = (1.0 - e * e).max(0.0).sqrt();
@@ -563,16 +580,83 @@ fn wall(collision: &LevelCollision, from: Vec3, to: Vec3, radius: f32) -> Option
 }
 
 /// A hero's throw: where it starts and how fast it goes, given the class's
-/// release offset (in the hero's frame, from its centre), the missile's
-/// speed and gravity.
-pub fn hero_launch(shot: &HeroShot, class: usize, offset: Vec3, speed: f32, gravity: f32) -> Launch {
-    let power = shot.strike.0 & Strike::POWER_THROW != 0;
-    let wound_up = if power { WIND_UP + POWER_WIND_UP } else { shot.wound_up };
-    let aim = hero_aim(shot.facing, shot.aim, shot.targeted, 0.0, class == 4);
+/// release offset (in the hero's frame, from its centre), how long it
+/// counts as wound up, the missile's speed and gravity. A bolt (kind
+/// `0x100000`) isn't lobbed: it flies along the facing.
+pub fn hero_launch(shot: &HeroShot, class: usize, offset: Vec3, wound_up: f32, speed: f32, gravity: f32, bolt: bool) -> Launch {
+    let aim = hero_aim(shot.facing, shot.aim, shot.targeted, 0.0, class == 4, bolt);
     let hand = shot.feet + Vec3::Y * PLAYER_CENTRE + Quat::from_rotation_y(shot.facing) * offset;
-    let target = aim * reach(wound_up);
-    let dir = lob(Vec2::new(target.x, target.z), target.y + REACH_DROP, speed, gravity);
+    let dir = if bolt {
+        aim
+    } else {
+        let target = aim * reach(wound_up);
+        lob(Vec2::new(target.x, target.z), target.y + REACH_DROP, speed, gravity)
+    };
     Launch { check: hand - aim * CHECK_BEHIND, start: hand + aim * START_AHEAD, velocity: dir * speed }
+}
+
+/// Which release a strike is (the game's order: a gauntlet's shot, the
+/// power throw, the crossbow's bolt, a throw) and how it goes: how long
+/// it counts as wound up, the damage multiplier, where it's let go, the
+/// kind it adds, the radius it's made bigger by.
+#[derive(Debug)]
+struct Release {
+    wound_up: f32,
+    mult: f32,
+    hand: Hand,
+    kind: u32,
+    size: f32,
+}
+
+/// Where a release leaves from: the class's throwing hand, its power
+/// throw's, or the hero's centre.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hand {
+    Throw,
+    Power,
+    Centre,
+}
+
+fn release(shot: &HeroShot, crossbow_use: bool, boss_level: bool) -> Release {
+    let ev = shot.strike.0;
+    let fixed = WIND_UP + POWER_WIND_UP;
+    if ev & (Strike::GAUNTLET_LEFT | Strike::GAUNTLET_RIGHT) != 0 {
+        Release { wound_up: fixed, mult: 1.0, hand: Hand::Centre, kind: 0, size: 1.0 }
+    } else if ev & Strike::POWER_THROW != 0 {
+        Release { wound_up: fixed, mult: 2.0, hand: Hand::Power, kind: 0x200_0010, size: POWER_SIZE }
+    } else if ev & Strike::CROSSBOW != 0 {
+        let (mult, kind) = match (crossbow_use, boss_level) {
+            (false, _) => (1.0, 0),
+            (true, false) => (BOLT_DAMAGE, shot_kind::PIERCE),
+            (true, true) => (BOSS_BOLT_DAMAGE, shot_kind::PIERCE),
+        };
+        Release { wound_up: WIND_UP, mult, hand: Hand::Centre, kind, size: 1.0 }
+    } else {
+        Release { wound_up: shot.wound_up, mult: 1.0, hand: Hand::Throw, kind: 0, size: 1.0 }
+    }
+}
+
+/// The sound a hero's release makes: a gauntlet's own; else the super
+/// shot with the crossbow or a multi-shot; else the weapon element's;
+/// else the class's throw (the secret classes the class eight before
+/// theirs — a stand-in, the game's index for them isn't traced).
+fn throw_sound(special: u32, weapon: u32, class: usize) -> String {
+    if special & LEFT_GAUNTLET != 0 {
+        return "S_GAUNTLET1".into();
+    }
+    if special & RIGHT_GAUNTLET != 0 {
+        return "S_GAUNTLET2".into();
+    }
+    if weapon & (shot_kind::MULTI | shot_kind::MULTI5 | shot_kind::PIERCE) != 0 {
+        return "S_SUPERSHOT".into();
+    }
+    match weapon & 0xF {
+        1 => "S_AMULETFIRE".into(),
+        2 => "S_AMULETLIGHTNI".into(),
+        3 => "S_AMULETLIGHT".into(),
+        4 => "S_AMULETACID".into(),
+        _ => format!("S_{}THROW", ["WAR", "VAL", "WIZ", "ARC", "DWF", "KNI", "SOR", "JES"][missile_class(class)]),
+    }
 }
 
 /// A monster's throw at `shot.at`, or None when the target is off to the
@@ -632,6 +716,10 @@ struct HeroMissile {
     model: Option<Arc<CharacterModel>>,
     /// What the hero throws as the Pojo: the phoenix's fireball.
     pojo_model: Option<Arc<CharacterModel>>,
+    /// The crossbow's bolt and the gauntlets' shots.
+    bolt_model: Option<Arc<CharacterModel>>,
+    lightning_model: Option<Arc<CharacterModel>>,
+    acid_model: Option<Arc<CharacterModel>>,
 }
 
 /// The Pojo (special `0x400`) throws the phoenix's fireball (`WEAPONS`)
@@ -640,6 +728,9 @@ struct HeroMissile {
 /// size, fall, spin and damage.
 const POJO: u32 = 0x400;
 const POJO_MISSILE: &str = "PHOENIX_FBALL";
+const BOLT_MISSILE: &str = "SUPERARROW";
+const LIGHTNING_MISSILE: &str = "BOSSG_ELEC";
+const ACID_MISSILE: &str = "BOSSG_ACID";
 const POJO_HAND: Vec3 = Vec3::new(0.0, -0.5, -1.25);
 
 /// Monster missile models, loaded the first time a type throws one.
@@ -716,8 +807,18 @@ fn setup_level(
         }
         data.map(|d| Arc::new(CharacterModel::build(&d, &mut meshes, &mut materials, &mut images)))
     });
-    let pojo_model = load_atree(&mut game, "WEAPONS", POJO_MISSILE)
-        .map(|d| Arc::new(CharacterModel::build(&d, &mut meshes, &mut materials, &mut images)));
+    let mut weapon = |name: &str| {
+        let model = load_atree(&mut game, "WEAPONS", name)
+            .map(|d| Arc::new(CharacterModel::build(&d, &mut meshes, &mut materials, &mut images)));
+        if model.is_none() {
+            warn!("no {name} in WEAPONS");
+        }
+        model
+    };
+    let pojo_model = weapon(POJO_MISSILE);
+    let bolt_model = weapon(BOLT_MISSILE);
+    let lightning_model = weapon(LIGHTNING_MISSILE);
+    let acid_model = weapon(ACID_MISSILE);
     let v = |a: [f32; 3]| Vec3::from(a);
     info!("{} throws: {damage:.1} damage at {speed:.1} units/s", choice.class);
     commands.insert_resource(HeroMissile {
@@ -729,6 +830,9 @@ fn setup_level(
         speed,
         model,
         pojo_model,
+        bolt_model,
+        lightning_model,
+        acid_model,
     });
 }
 
@@ -939,50 +1043,82 @@ fn launch_hero(
     mut commands: Commands,
     mut shots: MessageReader<HeroShot>,
     hero: Option<Res<HeroMissile>>,
+    (state, level): (Option<Res<PlayerState>>, Option<Res<MonsterLevel>>),
     ground: Option<Res<LevelGround>>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
     (items, mut struck): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>),
+    (mut sounds, mut spent): (MessageWriter<PlaySound>, MessageWriter<SpendPower>),
     players: Query<&Player>,
 ) {
+    let boss_level = level.as_ref().is_some_and(|l| l.boss >= 0);
+    let top_level = state.as_ref().is_some_and(|s| s.level > TOP_LEVEL);
     for shot in shots.read() {
         let Some(hero) = hero.as_deref() else { continue };
-        let power = shot.strike.0 & Strike::POWER_THROW != 0;
-        let (offset, mult, kind, size) =
-            if power { (hero.power_offset, 2.0, 0x200_0010, POWER_SIZE) } else { (hero.throw_offset, 1.0, 0, 1.0) };
-        // The throw starts from the hero's weapon bits; with the crossbow
-        // power it's a bolt.
-        let mut kind = kind | players.get(shot.hero).map_or(0, |p| p.weapon);
-        let t = if kind & shot_kind::PIERCE != 0 && kind & shot_kind::POWER == 0 {
-            kind |= BOLT.kind;
-            BOLT
+        let (weapon, special) = players.get(shot.hero).map_or((0, 0), |p| (p.weapon, p.special_bits));
+        // The crossbow's bolt spends a use of it; with none left it's the
+        // class's missile.
+        let crossbow_use = shot.strike.0 & Strike::CROSSBOW != 0 && weapon & shot_kind::PIERCE != 0;
+        if crossbow_use {
+            spent.write(SpendPower { subtype: power::WEAPON, bits: shot_kind::PIERCE });
+        }
+        let r = release(shot, crossbow_use, boss_level);
+        // The throw starts from the hero's weapon bits.
+        let kind = r.kind | weapon;
+        let bolt = kind & shot_kind::PIERCE != 0;
+        // The missile: a gauntlet's while one is worn, a bolt with the
+        // crossbow (not the power throw), else the class's.
+        let (t, model) = if special & LEFT_GAUNTLET != 0 {
+            (LIGHTNING_SHOT, &hero.lightning_model)
+        } else if special & RIGHT_GAUNTLET != 0 {
+            (ACID_SHOT, &hero.acid_model)
+        } else if bolt && kind & shot_kind::POWER == 0 {
+            (BOLT, &hero.bolt_model)
         } else {
-            hero.kind
+            (hero.kind, &hero.model)
         };
-        let pojo = players.get(shot.hero).is_ok_and(|p| p.special_bits & POJO != 0);
-        let (offset, model) = if pojo { (POJO_HAND, &hero.pojo_model) } else { (offset, &hero.model) };
-        let launch = hero_launch(shot, missile_class(hero.class), offset, hero.speed, t.gravity);
-        let radius = t.radius * size;
-        let damage = hero.damage * mult;
-        // A wall between the hand and the start: it breaks there.
-        if let Some(g) = ground.as_deref()
+        // The Pojo throws from its own hand, the phoenix's fireball unless
+        // a gauntlet's shot.
+        let pojo = special & POJO != 0;
+        let model = if pojo && special & (LEFT_GAUNTLET | RIGHT_GAUNTLET) == 0 { &hero.pojo_model } else { model };
+        let offset = match r.hand {
+            _ if pojo => POJO_HAND,
+            Hand::Power => hero.power_offset,
+            Hand::Throw => hero.throw_offset,
+            Hand::Centre => Vec3::ZERO,
+        };
+        sounds.write(PlaySound(throw_sound(special, weapon, hero.class)));
+        let mut launch = hero_launch(shot, missile_class(hero.class), offset, r.wound_up, hero.speed, t.gravity, bolt);
+        let radius = t.radius * r.size;
+        let damage = hero.damage * r.mult;
+        // A wall between the hand and the start: it breaks there (a
+        // bouncing one starts from behind the hand instead; a bolt goes
+        // through).
+        if !bolt
+            && let Some(g) = ground.as_deref()
             && wall(&g.0, launch.check, launch.start, radius).is_some()
         {
-            debug!("throw blocked by a wall at release");
-            continue;
+            if kind & shot_kind::BOUNCE == 0 {
+                debug!("throw blocked by a wall at release");
+                continue;
+            }
+            launch.start = launch.check;
         }
         // Something breakable right there takes it at once; a potion lying
-        // there goes off.
+        // there goes off. The throw ends there, a bolt's goes on.
         let found = item_hit(launch.check, launch.start, radius, targets.iter().map(|(e, g, t)| (e, g.translation(), t)));
         let potion = items.as_deref().and_then(|i| potion_hit(launch.check, launch.start, radius, i));
         if let Some((_, placement)) = potion.filter(|(s, _)| found.is_none_or(|f| *s < f.0)) {
             struck.write(StrikePotion { placement, by: Some(shot.hero) });
-            continue;
-        }
-        if let Some((s, target, target_kind)) = found {
+            if !bolt {
+                continue;
+            }
+        } else if let Some((s, target, target_kind)) = found {
             let at = launch.check.lerp(launch.start, s);
             hits.write(Hit { target, attacker: shot.hero, damage, kind, push: Vec3::ZERO, at, target_kind, ranged: true });
-            continue;
+            if !bolt {
+                continue;
+            }
         }
         info!(
             "hero throws: {damage:.1} damage, {:.1} units/s, from {:?} along {:?}",
@@ -990,7 +1126,8 @@ fn launch_hero(
             launch.start,
             launch.velocity
         );
-        let scale = if power { 2.0 } else { 1.0 };
+        // Drawn bigger by a damage multiplier above 1, and at level 99.
+        let scale = r.mult.max(1.0) * if top_level { TOP_LEVEL_SIZE } else { 1.0 };
         let count = spread_count(kind);
         for &(c, s) in &SPREAD[..count] {
             let v = launch.velocity;
@@ -1360,19 +1497,70 @@ mod tests {
     #[test]
     fn heroes_aim_at_targets_in_front_only() {
         // Nothing found: along the facing, level.
-        let a = hero_aim(0.0, Vec3::Z, false, 0.0, false);
+        let a = hero_aim(0.0, Vec3::Z, false, 0.0, false, false);
         assert!((a - Vec3::Z).length() < 1e-6);
         // A target 20° off and a little up: steeper by 1.2.
         let n = Vec3::new(20f32.to_radians().sin(), 0.1, 20f32.to_radians().cos()).normalize();
-        let a = hero_aim(0.0, n, true, 0.0, false);
+        let a = hero_aim(0.0, n, true, 0.0, false, false);
         assert!(a.x > 0.3 && a.y > n.y);
+        // A bolt goes along the facing whatever it found.
+        assert!((hero_aim(0.0, n, true, 0.0, false, true) - Vec3::Z).length() < 1e-6);
         // 40° off: ignored.
         let off = Vec3::new(40f32.to_radians().sin(), 0.0, 40f32.to_radians().cos());
-        assert!((hero_aim(0.0, off, true, 0.0, false) - Vec3::Z).length() < 1e-6);
+        assert!((hero_aim(0.0, off, true, 0.0, false, false) - Vec3::Z).length() < 1e-6);
         // Downhill targets count half; the dwarf throws a little up.
         let down = Vec3::new(0.0, -0.4, 0.9).normalize();
-        assert!(hero_aim(0.0, down, true, 0.0, false).y > down.y);
-        assert!(hero_aim(0.0, Vec3::Z, false, 0.0, true).y > 0.19);
+        assert!(hero_aim(0.0, down, true, 0.0, false, false).y > down.y);
+        assert!(hero_aim(0.0, Vec3::Z, false, 0.0, true, false).y > 0.19);
+    }
+
+    fn shot(strike: u32, wound_up: f32) -> HeroShot {
+        let hero = Entity::from_raw_u32(1).unwrap();
+        HeroShot { hero, feet: Vec3::ZERO, facing: 0.0, aim: Vec3::Z, targeted: false, strike: Strike(strike), wound_up }
+    }
+
+    #[test]
+    fn releases_in_the_games_order() {
+        // A gauntlet's shot: from the centre, reach 27, no extra damage.
+        let r = release(&shot(Strike::GAUNTLET_LEFT, 0.0), false, false);
+        assert_eq!((r.hand, r.mult, r.kind), (Hand::Centre, 1.0, 0));
+        assert!((reach(r.wound_up) - 27.0).abs() < 1e-3);
+        // The power throw: from its own offset, twice the damage, bigger.
+        let r = release(&shot(Strike::POWER_THROW | Strike::SHOT, 0.0), false, false);
+        assert_eq!((r.hand, r.mult, r.kind, r.size), (Hand::Power, 2.0, 0x200_0010, POWER_SIZE));
+        // The crossbow's bolt: twice (1.5 times on a boss level) with a
+        // use of it, else the class's plain missile.
+        let r = release(&shot(Strike::CROSSBOW, 0.0), true, false);
+        assert_eq!((r.hand, r.mult, r.kind), (Hand::Centre, BOLT_DAMAGE, shot_kind::PIERCE));
+        assert_eq!(release(&shot(Strike::CROSSBOW, 0.0), true, true).mult, BOSS_BOLT_DAMAGE);
+        assert_eq!(release(&shot(Strike::CROSSBOW, 0.0), false, false).kind, 0);
+        // A throw: from the hand, as long as it was wound up.
+        let r = release(&shot(Strike::SHOT, 0.31), false, false);
+        assert_eq!((r.hand, r.wound_up), (Hand::Throw, 0.31));
+    }
+
+    #[test]
+    fn bolts_fly_straight() {
+        let s = shot(Strike::CROSSBOW, 0.0);
+        let l = hero_launch(&s, 0, Vec3::ZERO, WIND_UP, 40.0, 0.0, true);
+        assert!((l.velocity - Vec3::Z * 40.0).length() < 1e-4);
+        assert!((l.start - Vec3::new(0.0, PLAYER_CENTRE, START_AHEAD)).length() < 1e-4);
+        // A gauntlet's shot is lobbed (with no fall it comes down 0.5
+        // lower 27 units ahead).
+        let l = hero_launch(&s, 0, Vec3::ZERO, WIND_UP + POWER_WIND_UP, 40.0, 0.0, false);
+        assert!(l.velocity.y < 0.0 && (l.velocity.y / l.velocity.z + 0.5 / 27.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn throw_sounds_by_power() {
+        assert_eq!(throw_sound(LEFT_GAUNTLET | RIGHT_GAUNTLET, shot_kind::PIERCE, 0), "S_GAUNTLET1");
+        assert_eq!(throw_sound(RIGHT_GAUNTLET, 0, 0), "S_GAUNTLET2");
+        assert_eq!(throw_sound(0, shot_kind::PIERCE | 1, 3), "S_SUPERSHOT");
+        assert_eq!(throw_sound(0, shot_kind::MULTI, 3), "S_SUPERSHOT");
+        assert_eq!(throw_sound(0, 2, 3), "S_AMULETLIGHTNI");
+        assert_eq!(throw_sound(0, 4, 3), "S_AMULETACID");
+        assert_eq!(throw_sound(0, 0, 3), "S_ARCTHROW");
+        assert_eq!(throw_sound(0, 5, 12), "S_DWFTHROW");
     }
 
     #[test]

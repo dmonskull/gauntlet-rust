@@ -552,12 +552,12 @@ ATTBREATHER (`0x6F`) at its end (at once when knocked down); event
 `0x1000000` is set as ATTBREATHE starts.
 
 Here (`player.rs`, `actions.rs`, `effects.rs::spawn_breaths`): the
-attack table (only its ATTBREATHE results are acted on — the gauntlets',
-crossbow's and hammer's attacks aren't done), the chaining, the breath
+attack table (all of it: the gauntlets' and crossbow's shots in
+`projectiles.rs`, the hammer's chop in `effects.rs`), the chaining, the breath
 with its cone and a use spent (`SpendPower`, not in the tower). Stand-in:
 the cone heads where the hero faces, not along the head node's own axis
-(the effect's model does ride the node). The Pojo's breath (from its
-turbo) isn't done.
+(the effect's model does ride the node). The Pojo's breath (its turbo
+attack, from its own mouth node) is done too.
 
 ### `0x80` phoenix
 
@@ -679,7 +679,9 @@ the hero holds one (`FUN_8005de3c`). Confirmed:
   flagged `0x10000` (meaning not traced); `S_GAUNTLET1` (`0x5C`) for the
   left, `S_GAUNTLET2` (`0x5D`) for the right as the shot goes. The shot
   itself (the hand-over event, reach, damage, from where) is in
-  [projectiles.md](projectiles.md), "Hero release".
+  [projectiles.md](projectiles.md), "Hero release". Here: the attacks,
+  their chaining and shots (`actions.rs`, `projectiles.rs`); the
+  missile's `0x10000` flag isn't.
 
 ### Other special bits
 
