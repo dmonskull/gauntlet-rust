@@ -18,6 +18,7 @@ mod damage;
 mod exits;
 mod font;
 mod frontend;
+mod game_hud;
 mod generators;
 mod hazards;
 mod hints;
@@ -156,7 +157,7 @@ fn main() {
                 hints::HintsPlugin,
                 status_hud::StatusHudPlugin,
             ))
-            .add_plugins((font::Screen2dPlugin, frontend::FrontendPlugin { skip: skip_menus }));
+            .add_plugins((font::Screen2dPlugin, frontend::FrontendPlugin { skip: skip_menus }, game_hud::GameHudPlugin));
     }
     app.run();
 }
