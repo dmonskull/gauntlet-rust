@@ -45,6 +45,28 @@ vertex colours), not by dynamic lights.
   shared-palette formats. The submesh/binding flags that really choose the
   blend mode aren't decoded yet.
 
+## Handedness
+
+The data is right-handed (Y up, counter-clockwise front faces), but the
+game shows it through a left-handed view: its projection (built in
+`FUN_800c87c8` into the view record at `+0x80`) puts `+1` in the w row, so
+the camera looks along +Z in view space, with a negative Y scale; and the
+models agree — a character faces +Z with its right side at +X (the
+Warrior's `R_WRIST` at x +0.85, `L_WRIST` −0.96; the weapon hangs from
+`R_WRIST`). A plain right-handed render is therefore the game's picture
+mirrored left to right: on the tower's start the orange crystals (x
+15–28) came out on the hero's right, where the game has them on his left.
+
+We draw with `camera::MirroredPerspective` — Bevy's perspective with clip
+space flipped left to right — so the picture is the game's. Everything
+else stays in the game's own coordinates. Level materials take clockwise
+triangles as front faces (the flip reverses winding on screen), the stick
+maps right to +X when facing +Z (the game's heading is the camera's yaw +
+the stick's angle), and the free camera's strafe and mouse look are
+flipped to follow the screen. Camera-facing nodes need nothing: they turn
++Z to the camera as the game does, which the flip then shows the game's
+way round.
+
 ## Blending and depth (instance render flags)
 
 Each `WORLDS.PS2` node's `+0x18` holds the flags its instance is created

@@ -198,8 +198,14 @@ fn load_level_cameras(mut commands: Commands, mut game: ResMut<LoadedGame>) {
 
 fn set_fov(mut projections: Query<&mut Projection, With<Camera3d>>) {
     for mut p in &mut projections {
-        if let Projection::Perspective(p) = p.as_mut() {
-            p.fov = vertical_fov();
+        match p.as_mut() {
+            Projection::Perspective(p) => p.fov = vertical_fov(),
+            Projection::Custom(c) => {
+                if let Some(m) = c.get_mut::<crate::camera::MirroredPerspective>() {
+                    m.0.fov = vertical_fov();
+                }
+            }
+            Projection::Orthographic(_) => {}
         }
     }
 }

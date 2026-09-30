@@ -520,10 +520,12 @@ fn tick(
     let held = if free_look.0 { 0 } else { read_buttons(&keys, &pads, &controls) };
     let buttons = Buttons::from_held(held, controls.held);
     controls.held = held;
-    // Stick up moves the way the play camera faces.
+    // Stick up moves the way the play camera faces; the game's heading is
+    // the camera's yaw + the stick's angle, so right is +X facing +Z (on
+    // the screen's right: the picture is mirrored, `camera.rs`).
     let yaw = play_camera.map_or(0.0, |c| c.rig.yaw);
     let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
-    let right = Vec3::new(-forward.z, 0.0, forward.x);
+    let right = Vec3::new(forward.z, 0.0, -forward.x);
     let dir = right * raw.x + forward * raw.y;
     let stick = Stick { heading: dir.x.atan2(dir.z), magnitude: raw.length().min(1.0) };
     let body = PlayerCollision::default();

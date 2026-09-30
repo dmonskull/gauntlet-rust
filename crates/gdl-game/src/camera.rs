@@ -2,8 +2,10 @@
 //! E/Q) for up/down, hold the right mouse button to look, Shift to go fast,
 //! mouse wheel to change speed.
 
+use bevy::camera::{CameraProjection, SubCameraView};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::math::Vec3A;
 use bevy::prelude::*;
 
 pub struct CameraPlugin;
@@ -82,11 +84,51 @@ impl FlyCamera {
     }
 }
 
+/// The game's picture. Its data is right-handed (Y up, counter-clockwise
+/// fronts), but it shows it through a left-handed view: a character faces
+/// +Z with its right hand at +X (`R_WRIST` x > 0), and on the tower's
+/// start the orange crystals (+X) are to the hero's left. A plain
+/// right-handed render is the mirror image of that, so the 3D camera draws
+/// with our perspective flipped left to right (`docs/rendering.md`,
+/// "Handedness"): the level materials then take clockwise triangles as
+/// front faces, and the stick's right is +X when facing +Z.
+#[derive(Debug, Clone, Default)]
+pub struct MirroredPerspective(pub PerspectiveProjection);
+
+/// Flips clip space left to right.
+fn mirror() -> Mat4 {
+    Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0))
+}
+
+impl CameraProjection for MirroredPerspective {
+    fn get_clip_from_view(&self) -> Mat4 {
+        mirror() * self.0.get_clip_from_view()
+    }
+
+    fn get_clip_from_view_for_sub(&self, sub_view: &SubCameraView) -> Mat4 {
+        mirror() * self.0.get_clip_from_view_for_sub(sub_view)
+    }
+
+    fn update(&mut self, width: f32, height: f32) {
+        self.0.update(width, height);
+    }
+
+    fn far(&self) -> f32 {
+        self.0.far()
+    }
+
+    fn get_frustum_corners(&self, z_near: f32, z_far: f32) -> [Vec3A; 8] {
+        // The same frustum, seen the other way round.
+        self.0.get_frustum_corners(z_near, z_far)
+    }
+}
+
 fn spawn_camera(mut commands: Commands) {
     let mut transform = Transform::default();
     let fly = FlyCamera::looking_at_bounds(Vec3::splat(-100.0), Vec3::splat(100.0), &mut transform);
     // No tonemapping: level colours are the game's own, already final.
-    commands.spawn((Camera3d::default(), Tonemapping::None, transform, fly));
+    let projection = Projection::custom(MirroredPerspective::default());
+    commands.spawn((Camera3d::default(), projection, Tonemapping::None, transform, fly));
 }
 
 fn fly(
@@ -105,7 +147,8 @@ fn fly(
         fly.speed = (fly.speed * 1.15f32.powf(scroll.delta.y)).clamp(1.0, 2000.0);
     }
     if buttons.pressed(MouseButton::Right) {
-        fly.yaw -= motion.delta.x * 0.003;
+        // The picture is mirrored: dragging right turns the other way.
+        fly.yaw += motion.delta.x * 0.003;
         fly.pitch = (fly.pitch - motion.delta.y * 0.003).clamp(-1.54, 1.54);
     }
     transform.rotation = Quat::from_euler(EulerRot::YXZ, fly.yaw, fly.pitch, 0.0);
@@ -116,7 +159,8 @@ fn fly(
     let forward = axis(&[KeyCode::KeyW, KeyCode::ArrowUp], &[KeyCode::KeyS, KeyCode::ArrowDown]);
     let right = axis(&[KeyCode::KeyD, KeyCode::ArrowRight], &[KeyCode::KeyA, KeyCode::ArrowLeft]);
     let up = axis(&[KeyCode::Space, KeyCode::KeyE], &[KeyCode::ControlLeft, KeyCode::KeyQ]);
-    let dir = transform.forward() * forward + transform.right() * right + Vec3::Y * up;
+    // Mirrored picture: the screen's right is the camera's left.
+    let dir = transform.forward() * forward + transform.left() * right + Vec3::Y * up;
     if dir != Vec3::ZERO {
         let boost = if keys.pressed(KeyCode::ShiftLeft) { 4.0 } else { 1.0 };
         transform.translation += dir.normalize() * fly.speed * boost * time.delta_secs();
