@@ -77,8 +77,9 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on master `59dbbe3` (boss victory merged, quest
-HUD) passed all 67 real levels.
+The all-levels smoke test on master `b089b35` (boss intro, the level-change
+crash fix, shared materials, saving) passed all 67 real levels (`DEMO1`
+included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
 ## Fixed from user reports (2026-09-30)
 
@@ -89,8 +90,7 @@ HUD) passed all 67 real levels.
   animated (heroes too, whose 45/60/15-rate clips were off the same way),
   with the game's end-of-clip and loop timing; see
   [animation-format.md](animation-format.md) "Playing an action". The
-  critters' own clock (`critters.rs`) still needs the same change — handed
-  to the critters helper.
+  critters use the same clock (`advance_clip`), and effect lifetimes too.
 - **Enemies vanishing in place**: see "Deaths" above.
 - Also: "big monster" is the floor step `+0x23C` > 2 (was a radius
   stand-in) — knock-down push and the hero's low-target test (kicks and
