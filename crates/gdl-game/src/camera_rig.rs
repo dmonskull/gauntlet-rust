@@ -69,6 +69,16 @@ impl CameraRig {
         rig
     }
 
+    /// The level's ordinary camera points.
+    pub fn points(&self) -> &[CameraPoint] {
+        &self.points
+    }
+
+    /// The box the target is kept in.
+    pub fn bounds(&self) -> ([f32; 3], [f32; 3]) {
+        self.bounds
+    }
+
     pub fn current_point(&self) -> Option<CameraPoint> {
         self.current.map(|i| self.points[i])
     }

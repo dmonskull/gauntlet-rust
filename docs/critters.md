@@ -944,11 +944,14 @@ near–far fraction `+0xFC`):
   (`0x8023dd58` + `+0x48`) while the end sequence has him, the key effect
   (`r13-0x776c`, + `+0x3C`) while it exists, else the boss (per the
   flags) plus the look offset lerped by `+0xFC`. The yaw looks along
-  the way from the nearest players to the target (`0x8001e43c`: the
-  bisector of the two nearest players' directions, the boss counted
-  with flag 8), turned to the other side when that's nearer the camera
-  (unless flag 2); when that way is outside the boss's facing cone (cos
-  below `+0x08`) it's the boss's facing ± the `+0x04` offset instead.
+  the way from the heroes to the target (`0x8001e43c`: the bisector of
+  the directions of the two heroes **furthest** from the target across
+  the ground — the boss counted with flag 8 — taken on the first's side,
+  or when the two are over 160° apart (`r13-0x7f80`), on the side nearer
+  the camera's yaw), turned to the other side when that's nearer the
+  camera (unless flag 2; flag 4 skips the cone scores); when that way is
+  outside the boss's facing cone (cos below `+0x08`) it's the boss's
+  facing ± the `+0x04` offset instead (by which side the way is on).
   The distance fits the players the same way (the in-step is just the
   excess, and above 4) between `+0x0C` and 2 × `+0x14` (4 × in the end
   sequence); `+0xFC` = (distance − `+0x0C`) / (`+0x14` − `+0x0C`),
@@ -956,8 +959,34 @@ near–far fraction `+0xFC`):
   by it (held while the distance is still 10 or more off).
   Yaw, distance and pitch ease toward their goals (`0x8001e934`: speed
   limits π/2 rad/s, 50 in and 200 out a second, π/2 rad/s;
-  accelerations 0.52, 75 and 0.26: `r13-0x7f78`..`-0x7f64`); a target
-  jump of more than 200 × dt cuts straight to the new view.
+  accelerations π/6, 75 and π/12: `r13-0x7f78`..`-0x7f64`). The easing
+  speeds up while the time to stop (speed / acceleration) is shorter
+  than the time to arrive (gap / speed) and slows otherwise, within the
+  limits; a step that would reach the goal takes it outright; within a
+  tenth of a second's top speed of the goal, going slower than that, it
+  stops (`r2-0x7af4`). The target glides after its goal (`0x8001dcc4`):
+  from an anchor (`+0xB0`) along a way (`+0xBC`, each part easing at 20
+  a second, by 20: `r13-0x7f60`, `-0x7f5c`) by a progress easing to the
+  goal's distance (200, by 75); a way turned more than cos 0.965
+  (`r2-0x7ad8`) restarts the progress from where the target is, and a
+  goal within 0.001 is taken outright. When the new goal is further than
+  200 × dt from the target (the key or wizard appearing), the eye stays
+  and turns to look at the glided target; the distance grows to that
+  view's, or is set to it for the key and wizard.
+- **Fitting** (`0x8001c2e0`): a point, in the camera's view space (its
+  own matrix, the eye `+0x30`), has a margin to each of the game view's
+  sides — z − near, and cos(half fov) × (±x + z tan(half fov)) across
+  and up — less a radius; the smallest counts. Heroes are measured at
+  their top point `+0x54` plus `+0x888` (not decoded; 0 here) with radius
+  `+0x854` (2.5); the boss at its position with its cylinder height
+  (`TYPE +0x78`), the key with 5 and the wizard with 4.
+- **Points** before the boss wakes (`0x8006fbac`): the nearest ordinary
+  point across the ground (x, z), another taking over when it's within
+  0.667 (`r2-0x6288`) of the current one's distance — the play camera's
+  current point (`r13-0x7e0c`). While the opening (`r13-0x7340`, set at
+  the start) lasts, the entry's starting point gives the angles instead;
+  it ends when the distance goal comes within 5 of the distance, or at
+  once when the boss wakes.
 - Then the direction is +Z turned by yaw and pitch
   (`0x800be0fc`/`0x800be070`), the eye is the target − direction ×
   distance, and the view is set (`0x800b501c`). A debug flag prints
@@ -965,6 +994,13 @@ near–far fraction `+0xFC`):
 - **Players** (`0x8001bf88` → `0x8001c084`, from the player update):
   while the boss camera runs, a player's step is cut so it stays inside
   the view (the `0x8001c2e0` margins).
+
+**Here** (`boss_camera.rs`, driven from `play_camera.rs` with what
+`critters.rs` publishes as `BossWatch`): all of the above for one hero,
+from the boss's creation (the level's starting shot is the boss
+camera's). Retail records use flags 0, 1, 2, 3 and 0x10 (4, 8 and 0x20
+are ported but unused). Not done: the heroes' step cut, the `+0x888`
+offset, and the scripted cameras' precedence other than trigger cuts.
 
 ## Record layouts
 

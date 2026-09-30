@@ -6,6 +6,7 @@ mod actions;
 mod audio;
 mod autoshot;
 mod billboard;
+mod boss_camera;
 mod breakables;
 mod bootstrap;
 mod camera;

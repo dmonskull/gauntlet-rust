@@ -7,9 +7,11 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::boss_camera::{self, BossCam, Hero};
+use crate::critters::BossWatch;
 use crate::mechanics::Mechanics;
 use gdl_formats::population::LocatorKind;
-use gdl_formats::{LevelCamera, LevelLight, WorldData};
+use gdl_formats::{BossCamera, LevelCamera, LevelLight, WorldData};
 
 use crate::camera::{FlyCamera, FreeLook};
 use crate::camera_rig::{CameraPoint, CameraRig};
@@ -37,7 +39,7 @@ impl Plugin for PlayCameraPlugin {
             .add_message::<Shake>()
             .add_systems(Startup, (load_level_cameras, set_fov, spawn_bars))
             .add_systems(Update, show_bars)
-            .add_systems(FixedUpdate, tick.after(PlayerTick))
+            .add_systems(FixedUpdate, tick.after(PlayerTick).after(crate::critters::watch_boss))
             .add_systems(
                 Update,
                 (
@@ -50,10 +52,10 @@ impl Plugin for PlayCameraPlugin {
     }
 }
 
-/// Each level's camera record and light, by lower-case level folder
-/// (`levela1`).
+/// Each level's camera record, light and boss camera, by lower-case level
+/// folder (`levela1`).
 #[derive(Resource, Default)]
-struct LevelCameras(HashMap<String, (LevelCamera, LevelLight)>);
+struct LevelCameras(HashMap<String, (LevelCamera, LevelLight, Option<BossCamera>)>);
 
 #[derive(Resource)]
 pub struct PlayCamera {
@@ -67,6 +69,12 @@ pub struct PlayCamera {
     /// The shake under way, and this tick's eye and target offsets.
     shake: Option<Shake>,
     shake_offset: ([f32; 3], [f32; 3]),
+    /// On a boss level: the boss camera, which drives the view instead of
+    /// the play camera once the boss is made (`boss_camera.rs`), and the
+    /// entry's starting camera point it opens from.
+    boss: Option<BossCam>,
+    boss_active: bool,
+    start_point: Option<CameraPoint>,
 }
 
 /// Shakes the camera (`docs/camera.md` "Shakes"): `what` 0 moves the
@@ -137,10 +145,18 @@ impl PlayCamera {
         }
         let (eye, target) = match self.intro {
             Some(i) => (i.eye, i.target),
-            None => (self.rig.eye(), self.rig.target),
+            None => self.play_view(),
         };
         let (de, dt) = self.shake_offset;
         (std::array::from_fn(|i| eye[i] + de[i]), std::array::from_fn(|i| target[i] + dt[i]))
+    }
+
+    /// The play camera's own view: the boss camera's on a boss level.
+    fn play_view(&self) -> ([f32; 3], [f32; 3]) {
+        match self.boss.as_ref().filter(|_| self.boss_active) {
+            Some(b) => (b.eye(), b.target),
+            None => (self.rig.eye(), self.rig.target),
+        }
     }
 
     /// Whether a camera cut is showing (the hero can't be hurt then).
@@ -154,10 +170,15 @@ impl PlayCamera {
 /// locator with its index (entry 0's when there's none), looking along its
 /// yaw and pitch at the players' distance.
 fn intro_shot(population: &gdl_formats::Population, entry: i16, focus: [f32; 3]) -> Option<Intro> {
-    let starting = |index: i16| population.locators.iter().find(|l| l.kind == LocatorKind::Transmitter(1) && l.index == index);
-    let l = starting(entry).or_else(|| starting(0))?;
-    let (eye, target) = locator_view(l, focus);
+    let (eye, target) = locator_view(starting_locator(population, entry)?, focus);
     Some(Intro { eye, target, fields_left: INTRO_FIELDS })
+}
+
+/// The entry's starting camera point: the kind-1 locator with its index,
+/// else entry 0's.
+fn starting_locator(population: &gdl_formats::Population, entry: i16) -> Option<&gdl_formats::population::Locator> {
+    let starting = |index: i16| population.locators.iter().find(|l| l.kind == LocatorKind::Transmitter(1) && l.index == index);
+    starting(entry).or_else(|| starting(0))
 }
 
 /// Eye and target of a camera point: looking along its yaw and pitch, at
@@ -186,9 +207,8 @@ fn load_level_cameras(mut commands: Commands, mut game: ResMut<LoadedGame>) {
         match game.install.read(&path).map_err(|e| e.to_string()).and_then(|b| WorldData::parse(&b).map_err(|e| e.to_string())) {
             Ok(world) => {
                 for level in &world.levels {
-                    cameras
-                        .0
-                        .insert(level.folder().to_ascii_lowercase(), (world.cameras[level.camera].clone(), level.light));
+                    let record = (world.cameras[level.camera].clone(), level.light, level.boss_camera);
+                    cameras.0.insert(level.folder().to_ascii_lowercase(), record);
                 }
             }
             Err(e) => warn!("{path}: {e}"),
@@ -222,9 +242,10 @@ fn start(
     let Some(ground) = ground else { return };
     let records = cameras.and_then(|c| c.0.get(&population.level.to_ascii_lowercase()).cloned());
     // The level's light lights everything that isn't prelit.
-    *scene_light = records.as_ref().map_or_else(SceneLight::default, |(_, light)| SceneLight::new(light));
+    *scene_light = records.as_ref().map_or_else(SceneLight::default, |(_, light, _)| SceneLight::new(light));
+    let boss_record = records.as_ref().and_then(|(_, _, b)| *b);
     let record = records
-        .map(|(c, _)| c)
+        .map(|(c, _, _)| c)
         .unwrap_or(LevelCamera { mode: 0, pitch_limit: 0.35, bounds: None, near: 24.0, far: 32.0 });
     // Only plain camera points are picked by distance; starting, intro and
     // trigger cameras are chosen by events.
@@ -239,9 +260,25 @@ fn start(
     let bounds = record.target_bounds(lo, hi);
     let feet = population.player_start().map_or([0.0; 3], |s| s.position);
     let rig = CameraRig::new(points, bounds, record.near, top_point(feet, state.as_deref()), feet);
-    let intro = intro_shot(&population.population, population.entry, feet);
+    // A boss level with a boss camera opens with it instead of the
+    // starting shot.
+    let has_boss = population.population.locators.iter().any(|l| l.kind == LocatorKind::Boss);
+    let boss = boss_record.filter(|_| has_boss).map(BossCam::new);
+    let start_point = starting_locator(&population.population, population.entry)
+        .map(|l| CameraPoint { position: l.position, yaw: l.rotation[1], pitch: l.rotation[0] });
+    let intro = if boss.is_some() { None } else { intro_shot(&population.population, population.entry, feet) };
     let previous = intro.map_or((rig.eye(), rig.target), |i| (i.eye, i.target));
-    commands.insert_resource(PlayCamera { rig, previous, intro, cut: None, shake: None, shake_offset: ([0.0; 3], [0.0; 3]) });
+    commands.insert_resource(PlayCamera {
+        rig,
+        previous,
+        intro,
+        cut: None,
+        shake: None,
+        shake_offset: ([0.0; 3], [0.0; 3]),
+        boss,
+        boss_active: false,
+        start_point,
+    });
 }
 
 /// A hero's top point, which the camera looks at: the class's head height
@@ -262,12 +299,47 @@ fn tick(
     mut shakes: MessageReader<Shake>,
     population: Option<Res<LevelPopulation>>,
     mechanics: Option<Res<Mechanics>>,
+    (watch, fixed): (Res<BossWatch>, Res<Time<Fixed>>),
 ) {
     let (Some(mut camera), Ok(player)) = (camera, players.single()) else { return };
     let camera = &mut *camera;
     camera.previous = camera.view();
     let feet = player.mover.position;
-    camera.rig.tick(top_point(feet, state.as_deref()), feet);
+    let top = top_point(feet, state.as_deref());
+    // On a boss level the boss camera runs once the boss is made; the
+    // play camera otherwise.
+    let PlayCamera { rig, boss, boss_active, start_point, .. } = camera;
+    match (boss.as_mut(), watch.spot) {
+        (Some(boss), Some(spot)) => {
+            let heroes = [Hero { feet, top, half_height: state.as_ref().map_or(2.5, |s| s.half_height) }];
+            let scene = boss_camera::Scene {
+                heroes: &heroes,
+                boss: watch.boss,
+                spot,
+                awake: watch.awake,
+                ending: watch.ending,
+                key: watch.key,
+                wizard: watch.wizard,
+                bounds: rig.bounds(),
+                points: rig.points(),
+                start: *start_point,
+            };
+            boss.tick(&scene, fixed.delta_secs());
+            trace!(
+                "boss camera: yaw {:.1}° pitch {:.1}° distance {:.1} margin {:.2} target {:?}",
+                boss.yaw.to_degrees(),
+                boss.pitch.to_degrees(),
+                boss.distance,
+                boss.margin,
+                boss.target
+            );
+            *boss_active = true;
+        }
+        _ => {
+            rig.tick(top, feet);
+            *boss_active = false;
+        }
+    }
     for s in shakes.read() {
         if camera.shake.is_none_or(|old| s.priority >= old.priority) {
             camera.shake = Some(*s);
@@ -311,6 +383,7 @@ fn tick(
         camera.cut = None;
         camera.intro = Some(Intro { eye, target, fields_left: 1.0 });
     }
+    let (eye, target) = camera.play_view();
     let Some(intro) = camera.intro.as_mut() else { return };
     if intro.fields_left >= 2.0 {
         intro.fields_left -= FIELDS_PER_TICK;
@@ -320,7 +393,6 @@ fn tick(
         }
         return;
     }
-    let (eye, target) = (camera.rig.eye(), camera.rig.target);
     let glide = |from: &mut [f32; 3], to: [f32; 3]| -> f32 {
         for i in 0..3 {
             from[i] += (to[i] - from[i]) * INTRO_BLEND;
