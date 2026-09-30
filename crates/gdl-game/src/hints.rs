@@ -42,6 +42,8 @@ pub enum Hint {
     EatMeat,
     /// 0x10: food worth 50–99.
     EatFruit,
+    /// 0xE: a hero's blow sets off a potion lying on the floor.
+    ShootPotion,
     /// 0x11: more than 24 gold at once.
     CollectGold,
     /// 0x14: a hero's blow damages a secret wall (a nameless obstacle).
@@ -94,6 +96,7 @@ impl Hint {
             Self::Transporter => ("TRANSPORTERSMOVEYOU", "S_TRANSPORTER", true),
             Self::EatMeat => ("EATMEAT", "S_MEATGIVES", true),
             Self::EatFruit => ("EATFRUIT", "S_FRUITGIVES", true),
+            Self::ShootPotion => ("SHOOTPOTIONLESSER", "S_SHOOTINGMAGIC", true),
             Self::CollectGold => ("COLLECTGOLD", "S_COLLECTGOLD", true),
             Self::SecretWalls => ("FOUNDSECRETWALLS", "S_MULTIPLEHITS", true),
             Self::AvoidObjects => ("AVOIDOBJECTS", "S_AVOID", true),

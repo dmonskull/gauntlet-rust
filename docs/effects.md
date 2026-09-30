@@ -36,6 +36,28 @@ After a use, magic does nothing until it's let go (the control flags'
 - Sounds: `S_POTION1–4` for the blast, `S_SHIELD1–4` for the shield
   (`FUN_8009e860`).
 
+## Shooting potions
+
+A potion lying on the floor (powerup subtype 4: armour 0, 1 hit point) is
+an item the hero's missiles and blasts reach (`FUN_8005ed30`'s filter
+`FUN_8005ee04` lets it through while it lies there): the throw's release
+check, a missile in flight and a blast with the items flag all go through
+the item damage routine `FUN_8005c1c8`, whose powerup case for a potion
+brought to 0 hit points sets it off — `FUN_80076618(0.8 (`r2-0x67ec`),
+player −1, the item's position, its type's value (colour), mode 0)` —
+and frees it. For no player the blast is 40 × 0.8 = 32 damage out to 20
+(`r2-0x5ef8`) × 0.8 = 16, with no sound. A hero's missile or blast then
+also calls `FUN_8002f400`, whose potion case sets it off again as the
+hero's own magic at 0.8 of their power (their colour's bonus, the potion
+sound), shows hint `0xE` (`SHOOTPOTIONLESSER`: "SHOOTING MAGIC / HAS A
+LOWER EFFECT", `S_SHOOTINGMAGIC`) and calls `FUN_80063aa8(item, 1)`. A
+potion's own blast reaches the potions near it in turn (for nobody).
+
+Here (`set_off_potions`, `StrikePotion`; `projectiles.rs` tests potions
+along a hero missile's path and at the throw's release, `tick_blasts` in
+a blast's reach). Stand-ins: the potion's touch test is our swept
+cylinder (as for the other items); `FUN_80063aa8`'s part isn't traced.
+
 ## The blast in time (`FUN_80094418`)
 
 A growing blast lives as long as its effect model's clip (frames × rate /
