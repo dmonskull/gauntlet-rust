@@ -615,7 +615,64 @@ rocks taking damage, the throw (kind 6) and the volley (kind 5).
 - **7 — grab**: bit 1 grabs the player (`0x800746c8`) into `+0x128`; bit 2
   throws them with damage (`0x800366e4`, kind `0x8050`).
 - **8 — projectile at a point**: aimed at `+0x1FC`.
-- **9 — body-specific**: `0x8001a914`.
+- **9 — the boss's loot** (below).
+
+### The boss's loot (`DAMG` kind 9, `0x8001a914`)
+
+Every boss but garm has a kind-9 blow on its DEATH move (the dragon's at
+frame 102, the chimera's 20, the lich's 95, the yeti's 170, the first
+Skorne's 140, the P-boss's 40). As it lands (its first frame):
+
+- The call (`0x8003c9b0`): spread = acos(`DAMG +0x18`) (`0x800ea0b0`) —
+  the dragon's −0.707 is 135° either side, the chimera's 0.5 60°, the
+  first Skorne's 0.94 20°; the throw = the body's forward (`+0x3F8`)
+  turned by `+0x14` about the vertical (`0x800be0fc`: x cos − z sin, z
+  cos + x sin) and tilted by `+0x1C` in its own vertical plane
+  (`0x800be070`: a negative pitch lifts it — the dragon's −75°), × the
+  speed `+0x30` (35 for the dragon); from the move node's position
+  (`+0x3C8`, no offset).
+- **The items' sweep**: an effect `0x8009418c(5, 0 (NULLFX), at, 0x22,
+  0)` given damage 1000 and blast radius 1000, kind 0 (`0x80093768`;
+  `r2-0x7C58`, `-0x7C54`): unseen, area (`0x20`) and items (`2`) — not
+  monsters or heroes — growing as any blast does over 5 s: generators,
+  barrels and whatever else has hit points on the level break; it isn't
+  explosive (kind `0x400`), so treasure and food stand.
+- **The first Skorne** (`r13-0x7764` = 0x2A): his pieces (`0x8001b13c`,
+  table `0x801184C8`, `0x1C` bytes: name, `+0x10` amount, `+0x14`
+  value, `+0x18` duration): `BGNTR_IC` (special `0x4000`), `BMASK_IC`
+  (`0x2000`), `BHORN_IC` (`0x1000`), `BGNTL_IC` (`0x8000`), each lasting
+  240 s — powerups of subtype 9 — thrown a quarter of the spread apart,
+  centred (−3/4, −1/4, 1/4, 3/4 of it). This is where the heroes get
+  Skorne's gauntlets, mask and horns.
+- **Any other boss**: its realm's coins (`0x80118420` + realm × 12:
+  bronze, silver, gold, per player `r13-0x7390`): A 2/1/1, B 0/5/0, C
+  2/1/2, D 2/0/2, E none, F 0/0/4, G 4/1/0, H none, I 0/3/2, J 0/0/3, K
+  0/4/1. `COIN_BRONZE`, `COIN_SILVER`, `COIN_GOLD` (`0x80063914(1, 1,
+  name)`), worth 500, 1000, 5000 (set on them), each kind spread evenly
+  across ±spread (step 2 × spread / n from half a step past −spread).
+  Each gets a speed (0.85, 0.8, 0.75 of the throw, + random 0.1 per
+  axis), but for the bronze and silver the turn then overwrites it with
+  the throw itself (`0x800be0fc(angle, throw, out)`): only the gold's
+  sticks.
+- Each thrown item (at most 32 in flight, `0x8023DE34`, `r13-0x7770`)
+  gets `+0xEC` = 120 fields before it can be picked up, and flies
+  (`FUN_8001af40`, every frame): position += velocity × dt; coming
+  down, the item floor probe (4 up to 10 down, radius 1, `0x8000d3c4`)
+  under it: less than 0.1 (`r2-0x7C08`) above its rest (1 above the
+  floor, `r2-0x7C18`), it bounces back at 0.4 (`r2-0x7C00`) of its fall
+  (0 under 0.1) and stands at its rest, slowing across the floor by 4
+  (`r2-0x7BF8`) of its speed a second; otherwise gravity 32
+  (`r2-0x7BF0`) and slowing 0.5 a second (`r2-0x7C60`); a speed under
+  the slowing stops. It flies till it's picked up (`+0xC4 & 0x100`); at
+  30 ticks a second a landed item keeps hopping a hundredth of a unit.
+
+Here: `loot.rs` (the throw's items, their flight, the sweep through
+`effects::SweepItems` — an items-only blast, `Blast::monsters` off) and
+`critters.rs` (kind 9 on the first frame, `BossLoot`). Checked: B6's
+dragon throws its five silver coins toward the camera; E2's first Skorne
+throws his four pieces, which come to rest near the arena's entrance.
+Stand-ins: the random numbers are our own; the sweep leaves safe rocks
+alone (rocks taking damage isn't done).
 
 ## Taking damage (`0x800382c0`)
 
@@ -1405,8 +1462,9 @@ in the game) and the bosses on the 30 Hz tick, interpolated for drawing.
 - **The stomp ring** (`DAMG` kind 3, ATTACK4) hurts heroes within its
   radius at once. In the game it's a damaging effect in the projectile
   table, lasting `+0x08` s.
-- **Projectile kinds** (1, 2, 8), breath cones (4), generator effects (5,
-  6), grabs (7) and kind 9 aren't done.
+- **Projectile kinds** (1, 2, 8), breath cones (4) and the boss's loot (9)
+  are done (for bosses too); the safe rocks' kinds (5, 6) and grabs (7)
+  aren't.
 - **Timing.** Critter time starts at 0 each level. Moves that have never
   run count as long ago, so they're ready; the game's clock runs from boot.
 - **Only one target is tracked.** Condition `[6]` (distance from home) and
@@ -1581,7 +1639,7 @@ play camera.
 
 **Next:**
 - The boss camera.
-- Kinds 5, 6, 7 and 9, the look nodes, and breakable nodes.
+- Kinds 5, 6 and 7, the look nodes, and breakable nodes.
 - Checking the golem against hit spheres: blows on its BALL/HANDR spheres
   run out at 0.25 × its hit points.
 

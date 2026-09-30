@@ -309,6 +309,10 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
   they die, a gargoyle holding none its `GARG<kind>` piece, with hints
   `0x86`/`0x8A` (critters.md "Placed critters", "In this rewrite"). Left: a
   missile or blast waking a statue; the drop's toss.
+- **The boss's loot** (mine, `loot.rs`): each boss's DEATH throws its
+  realm's coins (the first Skorne his four pieces — where the heroes get
+  them) that bounce to rest, and an unseen sweep breaks the level's
+  items (critters.md "The boss's loot").
   - Next: rapid fire's rate (items.md "Attack overrides": how the 0.75
     reaches the clip isn't pinned down); the hero missiles' streaks
     (`WEP_STREAK`, the crossbow's white one) and the magic classes'

@@ -36,6 +36,7 @@ mod level;
 mod level_material;
 mod levelup;
 mod locomotion;
+mod loot;
 mod mechanics;
 mod message_box;
 mod model_mesh;
@@ -184,6 +185,7 @@ fn main() {
                 familiars::FamiliarsPlugin,
                 levelup::LevelUpPlugin,
                 footsteps::FootstepsPlugin,
+                loot::LootPlugin,
             ))
             .add_plugins((
                 font::Screen2dPlugin,

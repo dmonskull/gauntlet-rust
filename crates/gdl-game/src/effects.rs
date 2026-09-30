@@ -46,6 +46,7 @@ impl Plugin for EffectsPlugin {
         app.add_message::<UsePotion>()
             .add_message::<StrikePotion>()
             .add_message::<BlastAt>()
+            .add_message::<SweepItems>()
             .add_message::<EffectAt>()
             .add_message::<ExplosionAt>()
             .add_message::<NextStage>()
@@ -60,6 +61,7 @@ impl Plugin for EffectsPlugin {
                     use_potions,
                     set_off_potions,
                     spawn_blasts,
+                    sweep_items,
                     spawn_explosions,
                     spawn_breaths,
                     spawn_chops,
@@ -192,6 +194,18 @@ pub struct BlastAt {
     pub kind: u32,
     pub damage: f32,
     pub radius: f32,
+}
+
+/// An unseen blast on the level's items alone (the game's NULLFX with
+/// the area and items flags `0x22`): a boss's death clearing its level's
+/// generators, barrels and the like (`loot.rs`). It grows as any blast
+/// does over `life` seconds; its kind is 0, so treasure and food stand.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct SweepItems {
+    pub at: Vec3,
+    pub damage: f32,
+    pub radius: f32,
+    pub life: f32,
 }
 
 /// What a thrown potion becomes where it lands.
@@ -383,6 +397,9 @@ struct Blast {
     /// doesn't).
     heroes: Heroes,
     items: bool,
+    /// Whether it hits monsters and critters (the game's effect flag 8;
+    /// a boss's death sweep doesn't).
+    monsters: bool,
     /// The stages still to come when it ends (the poison cloud's).
     then: &'static [Stage],
     /// Its model's scale, and how far below the centre it's drawn (kept
@@ -906,6 +923,7 @@ fn use_potions(
                         spared_items: HashMap::new(),
                         heroes: Heroes::Spared,
                         items: true,
+                        monsters: true,
                         then: &[],
                         scale: Vec3::new(scale, 1.0, scale),
                         drop: 0.0,
@@ -1021,6 +1039,7 @@ fn spawn_blasts(
                 spared_items: HashMap::new(),
                 heroes: Heroes::Spared,
                 items: true,
+                monsters: true,
                 then: &[],
                 scale: Vec3::splat((b.radius / 32.0).min(1.0)),
                 drop: 0.0,
@@ -1097,6 +1116,7 @@ fn spawn_explosions(
             spared_items: HashMap::new(),
             heroes,
             items: e.poison || !monster,
+            monsters: true,
             then,
             scale,
             drop,
@@ -1137,6 +1157,7 @@ fn spawn_explosions(
             spared_items: HashMap::new(),
             heroes: s.heroes,
             items: s.items,
+            monsters: true,
             then: rest,
             scale: s.scale,
             drop: s.drop,
@@ -1226,6 +1247,7 @@ fn spawn_breaths(
             spared_items: HashMap::new(),
             heroes: Heroes::Spared,
             items: true,
+            monsters: true,
             then: &[],
             scale: Vec3::ONE,
             drop: 0.0,
@@ -1272,6 +1294,7 @@ fn spawn_chops(
             spared_items: HashMap::new(),
             heroes: Heroes::Spared,
             items: true,
+            monsters: true,
             then: &[],
             scale: Vec3::ONE,
             drop: 0.0,
@@ -1295,6 +1318,33 @@ fn in_cone(b: &Blast, to: Vec3, reach: f32) -> bool {
 
 /// The effect's model; without one, a stand-in: a translucent sphere in
 /// the potion's light colour showing the blast's reach.
+/// A [`SweepItems`]: nothing drawn (not even the stand-in reach sphere).
+fn sweep_items(mut commands: Commands, mut requests: MessageReader<SweepItems>) {
+    for s in requests.read() {
+        info!("the items' sweep at {:?}: {:.0} out to {:.0} over {:.1} s", s.at, s.damage, s.radius, s.life);
+        let blast = Blast {
+            owner: Entity::PLACEHOLDER,
+            shape: BlastShape::Grow,
+            centre: s.at,
+            kind: 0,
+            damage: s.damage,
+            radius: s.radius,
+            life: s.life,
+            age: 0.0,
+            spared: HashMap::new(),
+            spared_items: HashMap::new(),
+            heroes: Heroes::Spared,
+            items: true,
+            monsters: false,
+            then: &[],
+            scale: Vec3::ONE,
+            drop: 0.0,
+            heading: None,
+        };
+        commands.spawn((Transform::from_translation(s.at), Visibility::Hidden, blast, BlastColour(0, true), LevelEntity));
+    }
+}
+
 fn spawn_blast(commands: &mut Commands, effect: Option<&EffectModel>, blast: Blast, colour: usize) {
     let transform = Transform::from_translation(blast.centre - Vec3::Y * blast.drop).with_scale(blast.scale);
     let entity = match effect {
@@ -1410,8 +1460,10 @@ fn tick_blasts(
             .filter(|body| (body.centre - b.centre).length() <= reach + body.radius)
             .filter(|body| in_cone(b, body.centre, reach + body.radius))
             .collect();
-        for body in combat::one_per_critter(reached, |body| body.aim) {
-            hit(body.entity, body.kind, b);
+        if b.monsters {
+            for body in combat::one_per_critter(reached, |body| body.aim) {
+                hit(body.entity, body.kind, b);
+            }
         }
         for (e, g, t, _) in &targets {
             if !b.items || !matches!(t.kind, TargetKind::Generator | TargetKind::Breakable) {

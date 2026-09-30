@@ -533,6 +533,14 @@ impl LevelItems {
         Some(item.placement)
     }
 
+    /// Stands the item at `position` (a thrown item in flight): its touch
+    /// shape goes with it. Returns its model, for the caller to move.
+    pub fn place(&mut self, placement: usize, position: [f32; 3]) -> Option<Entity> {
+        let i = self.find_mut(placement)?;
+        i.shape = Shape::of(&i.ty, position, rotation_matrix([0.0; 3]));
+        i.model
+    }
+
     /// Its critter died at `at`: the held item is let go there (and can be
     /// picked up after `delay` fields). Returns its model, for the caller
     /// to move there and show.

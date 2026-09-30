@@ -93,6 +93,7 @@ use crate::flash::{self, Flash, FlashColours};
 use crate::message_box::{self, ShowCaption, TextFile};
 use crate::hints::{Hint, ShowHint};
 use crate::items::LevelItems;
+use crate::loot::BossLoot;
 use crate::texanim::LevelTexAnims;
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
@@ -386,6 +387,8 @@ const PLACED_SCREEN_RADIUS: f32 = 4.0;
 const PLACED_RANGE: f32 = 50.0;
 /// A `DAMG` of this kind throws down a safe rock (the yeti's boulders).
 const MAKES_ROCK: i16 = 6;
+/// A `DAMG` of this kind is a boss's loot (on its DEATH).
+const LOOT: i16 = 9;
 /// Boss types the intro and the end treat apart.
 const DRAGON: i32 = 0x22;
 const CHIMERA: i32 = 0x23;
@@ -673,6 +676,8 @@ pub struct CritterLevel {
     gargoyle_piece: String,
     /// Placements whose critters were made this tick (their items go).
     made: Vec<usize>,
+    /// A dying boss's loot, for `loot.rs`.
+    loot: Vec<BossLoot>,
 }
 
 impl CritterLevel {
@@ -1341,6 +1346,7 @@ fn setup_level(
         held: HashMap::new(),
         drops: Vec::new(),
         made: Vec::new(),
+        loot: Vec::new(),
         gargoyle_piece: format!("GARG{}", monsters.enemies.gargoyle.to_ascii_uppercase()),
     };
 
@@ -2321,9 +2327,10 @@ fn drop_items(
     items: Option<ResMut<LevelItems>>,
     (population, contents): (Option<Res<LevelPopulation>>, Option<Res<ContentModels>>),
     mut models: Query<&mut Transform>,
-    mut hints: MessageWriter<ShowHint>,
+    (mut hints, mut loot): (MessageWriter<ShowHint>, MessageWriter<BossLoot>),
 ) {
     let (Some(mut level), Some(mut items)) = (level, items) else { return };
+    loot.write_batch(std::mem::take(&mut level.loot));
     for d in std::mem::take(&mut level.drops) {
         let dropped = if let Some(h) = d.held {
             if let Some(m) = items.drop_held(h, d.at, DROP_DELAY)
@@ -2933,7 +2940,8 @@ fn blow_bits(m: &CritterMove, frame: i32, done: u8) -> u8 {
 ///   game's damaging effect, at once);
 /// - 4: a breath cone along the node's forward axis (turned by its yaw
 ///   and pitch): players between its reach and length, within its
-///   thickness.
+///   thickness;
+/// - 9: a boss's loot (`loot.rs`).
 ///
 /// Players a critter hit can't be hit again for a quarter second.
 #[allow(clippy::too_many_arguments)]
@@ -2949,6 +2957,20 @@ fn deal(
     commands: &mut Commands,
 ) {
     let mut damage = d.damage * level.damage_scale;
+    // The boss's loot (its DEATH's blow): its forward, tilted by the
+    // blow's pitch, at the blow's speed, spread acos(param) either side,
+    // from the move's node (`loot.rs`).
+    if d.kind == LOOT {
+        if first {
+            let (s, co) = c.yaw.sin_cos();
+            let velocity = turn_dir(Vec3::new(s, 0.0, co), d.yaw, d.pitch) * d.speed[0];
+            let at = Vec3::from(c.node_at.unwrap_or(c.position));
+            let spread = d.param.clamp(-1.0, 1.0).acos();
+            level.loot.push(BossLoot { at, velocity, spread, boss: level.boss_type, realm: level.realm_id });
+            level.events.push("loot");
+        }
+        return;
+    }
     if matches!(d.kind, 1 | 2 | 8) {
         if first {
             launch(c, me, d, damage, level, commands);
@@ -3355,6 +3377,7 @@ mod tests {
             drops: Vec::new(),
             gargoyle_piece: String::new(),
             made: Vec::new(),
+            loot: Vec::new(),
         }
     }
 

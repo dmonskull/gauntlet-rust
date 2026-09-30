@@ -47,7 +47,10 @@ Every armour and special power above down to the Pojo is placed on the
 disc ([items.md](items.md), "Timed powerups", with the durations); Mikey,
 Hand Of Death and Health Vampire are sold in the shop (`SHPDATA/SHOP.WAD`: `SHP_MIKEY`,
 `SHP_HANDOFDEATH`, `SHP_HEALTHVAMPIRE`, beside most of the placed ones).
-Where Skorne's horns, mask and gauntlets come from wasn't traced.
+Skorne's horns, mask and gauntlets are the first Skorne's loot: as he
+dies he throws `BHORN_IC`, `BMASK_IC`, `BGNTR_IC` and `BGNTL_IC`, powerups
+of subtype 9 lasting 240 s ([critters.md](critters.md), "The boss's
+loot").
 
 ## Timing (`FUN_8007c4f0`)
 
