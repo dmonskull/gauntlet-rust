@@ -279,8 +279,10 @@ pub struct Monster {
 pub struct Dying {
     /// The death texture its body goes through; none: it goes at once.
     pub set: Option<DeathSet>,
-    /// The killing blow's kind (its element picks the die effect).
+    /// The killing blow's kind (its element picks the die effect), and
+    /// where it landed.
     pub kind: u32,
+    pub blow: [f32; 3],
     /// The death texture's counter (`deaths::DEATH_START`, a step a tick).
     pub step: f32,
     /// The die effect and the texture are on.
@@ -297,10 +299,15 @@ impl Monster {
         self.pending.2 = add(self.pending.2, push);
     }
 
-    /// The killing blow (of `kind`): it starts dying.
-    pub fn die(&mut self, kind: u32) {
+    /// The killing blow (of `kind`, landing at `blow`): it starts dying.
+    pub fn die(&mut self, kind: u32, blow: [f32; 3]) {
         let set = deaths::death_set(self.enemy, self.stats.step, kind);
-        self.dying = Some(Dying { set, kind, step: deaths::DEATH_START, started: false });
+        self.dying = Some(Dying { set, kind, blow, step: deaths::DEATH_START, started: false });
+    }
+
+    /// Its centre: feet plus its type's centre height.
+    pub fn centre(&self) -> Vec3 {
+        Vec3::from(self.position) + Vec3::Y * enemy::enemy_stats(self.enemy).map_or(0.0, |s| s.center_height)
     }
 
     /// The death texture frame a dying body shows, once it's started.
@@ -378,7 +385,8 @@ fn start_death(
     let Some(d) = m.dying else { return };
     if let Some(name) = deaths::die_effect(m.enemy, d.kind) {
         let scale = deaths::die_effect_scale(m.enemy, m.stats.step);
-        effects.write(EffectAt { name, at: Vec3::from(m.position), facing: m.facing, scale });
+        let at = deaths::effect_origin(m.stats.step, m.centre(), Vec3::from(d.blow));
+        effects.write(EffectAt { name, at, facing: 0.0, scale });
     }
     let frames = d.set.and_then(|s| textures.and_then(|t| t.frames(s)));
     if let Some(frames) = frames {

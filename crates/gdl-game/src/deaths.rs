@@ -46,6 +46,7 @@ pub const DEATH_STEP: f32 = 0.5;
 
 const KNIGHT: i32 = 5;
 const TREE: i32 = 0xB;
+const ACID_BLOB: i32 = 0x15;
 const GOLEM: i32 = 0x1D;
 
 /// Which death texture a body goes through.
@@ -75,18 +76,40 @@ pub fn death_set(enemy: i32, step: f32, kind: u32) -> Option<DeathSet> {
 
 /// The die effect model the game leaves (from its effect list, on a
 /// kill): FIREDIE, ELECDIE, LIGHTDIE or ACIDDIE by the blow's element;
-/// a plain kill leaves HITDIE on knights, and on anything else BLOODFX2,
-/// which isn't drawn yet (it's made of texture-animation nodes). Trees and
-/// acid blobs leave nothing for a plain kill.
+/// a plain kill leaves HITDIE on knights, a blood spray (BLOODFX2) on
+/// anything else but trees and acid blobs, which leave nothing.
 pub fn die_effect(enemy: i32, kind: u32) -> Option<&'static str> {
     match (kind & 0xF, enemy) {
         (0, KNIGHT | GOLEM) => Some("HITDIE"),
+        (0, TREE | ACID_BLOB) => None,
+        (0, _) => Some("BLOODFX2"),
         (1, _) => Some("FIREDIE"),
         (2, _) => Some("ELECDIE"),
         (3, _) => Some("LIGHTDIE"),
         (4, _) => Some("ACIDDIE"),
         _ => None,
     }
+}
+
+/// The effect a blow that doesn't kill leaves: a blood spray (BLOODFX1),
+/// HITCOL on knights for plain blows; FIREHIT for fire, HITCOL for the
+/// other elements; trees and acid blobs nothing for plain blows.
+pub fn hit_effect(enemy: i32, kind: u32) -> Option<&'static str> {
+    match (kind & 0xF, enemy) {
+        (0, KNIGHT | GOLEM) => Some("HITCOL"),
+        (0, TREE | ACID_BLOB) => None,
+        (0, _) => Some("BLOODFX1"),
+        (1, _) => Some("FIREHIT"),
+        (2..=4, _) => Some("HITCOL"),
+        _ => None,
+    }
+}
+
+/// Where a monster's hit or die effect goes: at the blow for big ones
+/// (a floor step of 4 or more), else at the monster (stand-in: its
+/// centre, for the game's `+0x44` point).
+pub fn effect_origin(step: f32, centre: Vec3, blow: Vec3) -> Vec3 {
+    if step >= 4.0 { blow } else { centre }
 }
 
 /// The die effect's scale: half the monster's floor step; knights' (and
@@ -244,9 +267,13 @@ mod tests {
         // Knights and trees have their own for plain blows only.
         assert_eq!(death_set(KNIGHT, 3.0, 0), Some(DeathSet::Alt));
         assert_eq!(death_set(TREE, 3.0, 4), Some(DeathSet::Element(4)));
-        assert_eq!(die_effect(4, 0), None);
+        assert_eq!(die_effect(4, 0), Some("BLOODFX2"));
         assert_eq!(die_effect(KNIGHT, 0), Some("HITDIE"));
+        assert_eq!(die_effect(TREE, 0), None);
         assert_eq!(die_effect(TREE, 2), Some("ELECDIE"));
+        assert_eq!(hit_effect(4, 0), Some("BLOODFX1"));
+        assert_eq!(hit_effect(KNIGHT, 0), Some("HITCOL"));
+        assert_eq!(hit_effect(4, 1), Some("FIREHIT"));
         assert_eq!(die_effect_scale(4, 3.0), 1.5);
         assert_eq!(die_effect_scale(KNIGHT, 3.0), 1.0);
     }

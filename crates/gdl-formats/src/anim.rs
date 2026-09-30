@@ -17,6 +17,8 @@
 
 use thiserror::Error;
 
+use crate::psys::ParticleRecord;
+
 const ATREE_ENTRY: usize = 0x24;
 const ACTION_STRIDE: usize = 0x30;
 const NODE_STRIDE: usize = 0x3C;
@@ -220,6 +222,19 @@ pub struct Atree {
     pub flipbook: Vec<FlipbookEntry>,
     /// Byte offset of the first flipbook entry from the list header.
     flipbook_base: u32,
+    /// The particle systems of its kind-4 nodes (effects such as the blood
+    /// sprays).
+    pub particles: Vec<ParticleNode>,
+}
+
+/// A particle-system node (kind 4): the node, its particle record (at
+/// the node's index from the atree's action table) and the three values
+/// its name field holds instead of a name (a direction, it seems).
+#[derive(Debug, Clone)]
+pub struct ParticleNode {
+    pub node: usize,
+    pub record: ParticleRecord,
+    pub vector: [f32; 3],
 }
 
 impl Atree {
@@ -423,7 +438,18 @@ fn parse_atree(file: &[u8], at: usize) -> Result<Atree, AnimError> {
     let flipbook_off = le_u32(h, 8);
     let (flipbook, flipbook_base) =
         if flipbook_off != 0 { parse_flipbook(file, at + flipbook_off as usize)? } else { (Vec::new(), 0) };
-    Ok(Atree { name, nodes, actions, clips, flipbook, flipbook_base })
+    let mut particles = Vec::new();
+    for (i, n) in nodes.iter().enumerate() {
+        if n.kind != NodeKind::Other(4) {
+            continue;
+        }
+        let e = slice(file, nodes_at + i * NODE_STRIDE, NODE_STRIDE)?;
+        let at_record = (at as i64 + i64::from(actions_off) + i64::from(n.index)) as usize;
+        if let Some(record) = file.get(at_record..).and_then(ParticleRecord::parse).filter(|r| r.kind >= 0x100) {
+            particles.push(ParticleNode { node: i, record, vector: [le_f32(e, 0x14), le_f32(e, 0x18), le_f32(e, 0x1C)] });
+        }
+    }
+    Ok(Atree { name, nodes, actions, clips, flipbook, flipbook_base, particles })
 }
 
 /// `{u32 offset from here, u32 count}`, then `0x28`-byte entries: object

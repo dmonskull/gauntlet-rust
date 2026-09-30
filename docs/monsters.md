@@ -545,12 +545,22 @@ plain blows, which the list doesn't fill: nothing.) Scale: 0.5 × the step
 (`FUN_800ba9b0`: object `+0x53` = 255 − 96); depth bias −128 × scale
 (`FUN_800baa74`, `+0x68`).
 
-**In this rewrite** (`deaths.rs`, the dying branch of `monsters.rs`,
-`EffectAt` in `effects.rs`): all of the above for regular monsters (the
-golem is a critter here). Stand-ins: the second stage's blend isn't
-decoded — the frame multiplies the body's colour × 2 and its alpha, which
-fits the textures (frame 0 is ~(180, 205, 170): white at × 2) — and it's
-sampled with the body's own UVs; BLOODFX1/2 aren't drawn (their nodes are
-the texture-animation kind, `FUN_80018304`, not decoded), nor any hit
-effect; the depth bias isn't applied; the DEATHMAGIC switch isn't traced.
+The effect goes where the blow landed for big monsters (step ≥ 4,
+`r2-0x6dd8`), else at the monster's `+0x44` point.
+
+BLOODFX1/2 are three particle systems each (atree node kind 4,
+`docs/animation-format.md`): `BLOOD_SM` drops and `C_BLOOD` splats, 12–25
+particles a second for 0.3 s (the records' first time; the second, 2 s, is
+when the system is gone), living 0.3–0.8 s and falling.
+
+**In this rewrite** (`deaths.rs`, the dying branch of `monsters.rs`, the
+hit effects in `damage.rs`, `EffectAt` in `effects.rs`, bursts in
+`particles.rs`): all of the above for regular monsters (the golem is a
+critter here). Stand-ins: the second stage's blend isn't decoded — the
+frame multiplies the body's colour × 2 and its alpha, which fits the
+textures (frame 0 is ~(180, 205, 170): white at × 2) — and it's sampled
+with the body's own UVs; `+0x44` is taken as the monster's centre; an
+effect's scale scales its particles' sizes and speeds, and the node's
+vector is taken as the spray direction; the depth bias isn't applied; the
+DEATHMAGIC switch isn't traced.
 

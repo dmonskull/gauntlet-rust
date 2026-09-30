@@ -13,6 +13,7 @@ use gdl_formats::pdata::PlayerStats;
 use crate::audio::PlaySound;
 use crate::level::LoadedGame;
 use crate::player::{PlayerChoice, PlayerSpawn, PlayerTick};
+use crate::quest::Quest;
 
 /// Health a new hero starts with.
 pub const START_HEALTH: f32 = 500.0;
@@ -83,8 +84,12 @@ pub struct PlayerState {
     pub powers: Vec<Power>,
     /// Runestones held, by the stone's number (its item type's amount).
     pub runestones: Vec<i32>,
-    /// Legendary items, gems and quest pieces picked up: (subtype, amount).
+    /// Legendary items picked up: (13, amount). Kept for the boss intro
+    /// (`critters.rs`) until it reads [`Quest::legendary`].
     pub treasures: Vec<(i32, i32)>,
+    /// Crystals, gargoyle pieces, legendary items and the levels entered
+    /// (`quest.rs`).
+    pub quest: Quest,
     /// Realms whose boss this hero has beaten, a bit per realm id (the
     /// record's `+0x1EC8`, set by the boss's death for every player).
     pub realms_beaten: u32,
@@ -120,6 +125,7 @@ impl PlayerState {
             powers: Vec::new(),
             runestones: Vec::new(),
             treasures: Vec::new(),
+            quest: Quest::default(),
             realms_beaten: 0,
             alive: true,
             class: class.to_ascii_uppercase(),
@@ -203,6 +209,18 @@ impl PlayerState {
     }
 
     /// Adds up to `count` potions of `kind`; returns how many fitted.
+    /// The runestones held as bits (stone n → bit n), as the game keeps
+    /// them.
+    pub fn runestone_bits(&self) -> u32 {
+        self.runestones.iter().filter(|&&n| (0..32).contains(&n)).fold(0, |b, &n| b | (1 << n))
+    }
+
+    /// Whether the exit to `level` (0 the first) of `realm` is open for
+    /// this hero (`quest.rs`).
+    pub fn exit_open(&self, realm: u32, level: u32) -> bool {
+        self.quest.exit_open(realm, level, self.realms_beaten, self.runestone_bits())
+    }
+
     pub fn take_potions(&mut self, kind: i32, count: u32) -> u32 {
         let room = MAX_POTIONS.saturating_sub(self.potions.len()) as u32;
         let taken = count.min(room);

@@ -3,7 +3,7 @@
 
 use bevy::prelude::*;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gdl_formats::texmod::{FirstFrame, TexModKind};
 
@@ -15,6 +15,7 @@ use crate::level::{LevelData, LoadedGame};
 use crate::level_material::LevelMaterial;
 use crate::mechanics;
 use crate::particles;
+use crate::quest;
 use crate::model_mesh::{self, TextureCache};
 use crate::population::{self, LevelPopulation, PopulationView};
 
@@ -226,6 +227,13 @@ fn spawn_level(
         .filter(|&(i, _)| !emitter(i))
         .partition(|&(i, &(_, _, flags))| group_of(i).is_none() && Billboard::from_flags(flags).is_some());
     let (moving, fixed): (Vec<_>, Vec<_>) = fixed.into_iter().partition(|&(i, _)| group_of(i).is_some());
+    // The tower's exit glows (`L1NSNC<realm><n>_ACTIVE`) are drawn apart
+    // too, so a shut exit can hide its own (`quest.rs`).
+    let glows: HashMap<usize, quest::ExitGlow> =
+        level.nodes.iter().enumerate().filter_map(|(n, node)| quest::ExitGlow::named(&node.name).map(|g| (n, g))).collect();
+    let glow_roots: HashSet<usize> = glows.keys().copied().collect();
+    let glow_of = |i: usize| level.placement_nodes.get(i).and_then(|&n| nodes.group_of(n, &glow_roots));
+    let (glowing, fixed): (Vec<_>, Vec<_>) = fixed.into_iter().partition(|&(i, _)| glow_of(i).is_some());
     let instances = fixed.iter().map(|&(_, &(object, at, flags))| (object, Vec3::from(at), flags));
     let mut built = model_mesh::build_flagged(&level.model, &mut cache, instances, meshes, materials, images, &mut bounds);
     let mut triangles: usize = built.iter().map(|b| b.triangles).sum();
@@ -246,6 +254,20 @@ fn spawn_level(
         );
         let parts = model_mesh::build_flagged(&level.model, &mut cache, instances, meshes, materials, images, &mut bounds);
         let group = commands.spawn((mechanics::MovingGroup::new(root), Transform::IDENTITY, Visibility::default(), LevelEntity)).id();
+        for p in &parts {
+            triangles += p.triangles;
+            count += 1;
+            commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(group)));
+        }
+        built.extend(parts);
+    }
+    let mut glow_groups: HashMap<usize, Vec<(usize, Vec3, u32)>> = HashMap::new();
+    for &(i, &(object, at, flags)) in &glowing {
+        glow_groups.entry(glow_of(i).unwrap()).or_default().push((object, Vec3::from(at), flags));
+    }
+    for (root, instances) in glow_groups {
+        let parts = model_mesh::build_flagged(&level.model, &mut cache, instances, meshes, materials, images, &mut bounds);
+        let group = commands.spawn((glows[&root], Transform::IDENTITY, Visibility::default(), LevelEntity)).id();
         for p in &parts {
             triangles += p.triangles;
             count += 1;
