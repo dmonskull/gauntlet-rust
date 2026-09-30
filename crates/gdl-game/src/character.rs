@@ -203,6 +203,10 @@ pub struct Animator {
     /// Held: the clip's frame doesn't advance, so the pose, any blend and
     /// the flipbooks stay as they are (a monster frozen by the time stop).
     pub hold: bool,
+    /// Raises the skeleton's top nodes by this much over their pose (the
+    /// levitating hero's model); the root, and what hangs from it
+    /// directly (the blob shadow), stay put.
+    pub lift: f32,
     tracks: Vec<Option<Track>>,
     blend: Blend,
     mods: Option<InstanceMods>,
@@ -636,6 +640,7 @@ impl CharacterModel {
             action: 0,
             frame: 0.0,
             hold: false,
+            lift: 0.0,
             tracks: Vec::new(),
             blend: Blend::None,
             mods,
@@ -696,7 +701,7 @@ fn animate(
         let a = &mut *a;
         for (i, &bone) in a.bones.iter().enumerate() {
             let Ok(mut t) = bones.get_mut(bone) else { continue };
-            let pose = match &a.tracks[i] {
+            let mut pose = match &a.tracks[i] {
                 Some(track) => {
                     let pose = track.sample(sample_at);
                     let m = Mat4::from_cols_array(&rotation_matrix(pose.rotation, track.flags));
@@ -708,6 +713,9 @@ fn animate(
                 }
                 None => Transform::from_translation(a.rest[i]),
             };
+            if a.tree[i].1.is_none() {
+                pose.translation.y += a.lift;
+            }
             *t = match &a.blend {
                 Blend::Active { from, .. } if weight > 0.0 => Transform {
                     translation: pose.translation.lerp(from[i].translation, weight),
