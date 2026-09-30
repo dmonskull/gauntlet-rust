@@ -131,9 +131,9 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
 ## Work in progress
 
-- **Helper branch `worktree-agent-abe3330002fa1838d` at `827a9a5`: not
-  merged yet — review and merge first.** It has master `8ae673f` merged
-  in (no conflicts), the chimera's heads (each head animates its own part
+- **Helper branch `worktree-agent-abe3330002fa1838d` (`827a9a5`): merged
+  into master as `b30b1c3`** (builds; tests and clippy clean). It brought
+  the chimera's heads (each head animates its own part
   of the body's skeleton; wounds shared as the game does; a unit test on
   the real data), and docs/critters.md with the heads, the **boss camera
   decode** (`BCAM` records, 0x54 bytes from `LEVL +0x8C`; before the boss
@@ -203,7 +203,7 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
-0. Merge the helper branch (above), run the smoke test (`smoke.sh`: every
+0. Run the smoke test on master (`smoke.sh`: every
    level folder plus DEMO1, `GDL_BUTTONS=attack GDL_STICK="0.4,1"
    GDL_SHOT_AT=400`, 120 s timeout, stop at the first panic; resume from
    the failing level) and commit. Then: the hero's attack search against
