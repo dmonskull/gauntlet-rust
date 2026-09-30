@@ -356,15 +356,15 @@ before they break (state < 1). Within 2 (`r2-0x6850`) × the type's
 ### A hit (`FUN_8008615c` → `FUN_8005c1c8(damage, item, kind, player)`)
 
 Generators first get the level-versus-player scale. Then, for blows
-without kind `0x800`: damage − armour `+0xCF` (at least 1) is taken off
-the hit points `+0xD0` (type `+0x44`); 0 is "dead". A `0x800` blow does
-no damage (−2 when above 2.0, `r2-0x67f0`).
+without kind `0x800`: an item whose armour `+0xCF` isn't −1 has damage −
+armour (at least 1) taken off its hit points `+0xD0` (type `+0x44`); 0 is
+"dead". A `0x800` blow does no damage (−2 when above 2.0, `r2-0x67f0`).
 
 - **Containers** (class 2): dead with type flag `0x200` (barrels `0x206`)
   and not yet used → used, contents released (`FUN_8005e8f8`); a barrel
   (0x2B) plays the realm's break sound (`0x801231cc`: `S_BARREL_WOODA/B/C/
-  D/G/H/I/J/K`) and hint `0x1B`. Blows with kind `0x400` of 5 or more
-  (`r2-0x67d8`) blow chests apart (`CHESTSEXP0` / `CHESTGEXP0` effects).
+  D/G/H/I/J/K`) and hint `0x1B`. Otherwise explosions blow chests apart
+  (below, "Blows on items").
 - **Obstacles** (class 10), keyed on the **type's** subtype (not the
   placement's override): damaged, not dead and not 0x29 → hit flash
   (`+0xE0` = 1: the next item update draws the root object in the
@@ -393,6 +393,76 @@ no damage (−2 when above 2.0, `r2-0x67f0`).
 A barrel broken: the used flag steps its atree (`IDLE`, `ACTIVE` 24
 frames, `DONE`) through; at state 2 it is walked through (touch test).
 
+### Blows on items (`FUN_8005c1c8`, classes 1 and 2)
+
+What reaches a powerup or a chest:
+
+- **The hero's blows** don't: the hit search (above) and the attack
+  search (`FUN_800864b0`, which keeps an item only with armour `+0xCF`
+  ≥ 0) find neither.
+- **Missiles** (flag 2, `FUN_8005ed30` with the filter `FUN_8005ee04`)
+  stop at containers, potions (not being taken or held in a chest),
+  doors, generators with strength, placed monsters, hit switches, damage
+  tiles of subtype 5 in state 1–2 and most obstacles; the effect item
+  test (below) then decides the damage, and a missile of kind `0x800`
+  does none to items.
+- **Blasts** (area effects with flag 2, `FUN_80094418`): every item within
+  their reach + the item type's `+0x0C` that the effect item test lets
+  through, then not again until its cooldown `+0xD8`.
+
+The effect item test `FUN_8009682c(item, effect flags, kind)` gives 0
+(hit), 1 (passed by) or 2 (no damage): a powerup is passed by effects
+with flag `0x100` (gold and food get 2 from those with kind `0x800000`);
+a barrel container (0x2B) by effects with `0x1000`; and a powerup or
+container of armour −1 by any kind without `0x200` (magic) or `0x400`
+(explosion). A hero above level 24's magic (kind `0x800000`) also calls
+`FUN_8005ba08` on the items it reaches (not traced). On the disc
+(every level's types) chests — CHESTEXP (0x2C), CHEST (0x2E), CHESTG0–5
+(0x2F), CHESTS (0x30) — treasure, keys, timed powerups and the quest
+pieces have armour −1; food −2 (1 hit point for fruit, 2 for meat), so
+any blast reaches it; potions 0; the barrel container BAROBJ armour 1
+and 5 hit points.
+
+Then `FUN_8005c1c8`, by class; "explosive" is kind `0x400` with a blow
+(after armour) of 5 or more (`r2-0x67d8`):
+
+- **Powerups** (class 1), by subtype:
+  - 4 potion: at exactly 0 hit points it goes off ([effects.md](
+    effects.md));
+  - 2 key, 10–16 (runestones, the boss's key, the obelisk, legendary
+    items, scrolls, gems, gargoyle pieces): nothing;
+  - 1 treasure, explosive: effects `0x20` (CHESTDEST) and `0x21`
+    (DESTSMOKE) at it (`FUN_80094120`), its animation becomes
+    `TREAS_JUNK` (`POWERUPS`) and it's worth 10 (`+0xE0`);
+  - 3 food, a `0x800` blow above 2: spoiled — with 2 hit points (meat)
+    its animation becomes `BADMEAT` (`r2-0x67e8`), worth −100, else
+    `GAPPLE` (`r2-0x67e0`), worth −50 — and hint `0x88` GASPOISON
+    ("POISON GAS SPOILS FOOD", `S_GASFOODBAD`);
+  - the rest (food, timed powerups, TIMEBOMB), explosive: effects `0x20`
+    and `0x21`, the model `ITEMEXP0` (the realm's items bank) put in its
+    place (`FUN_800b85c0(name, item model, its parent, 0x80800)`), the
+    item freed, hint `0x87` EXPDESTROY ("EXPLOSIONS DESTROY ITEMS",
+    `S_EXPDSTITMS`).
+- **Containers** (class 2):
+  - magic (`0x200`) on a container other than 0x2B with a Death inside
+    (`FUN_80051f44` of the contents' name = `0x1E`): the Death is killed —
+    the contents become an APPLE (`r2-0x6828`), `FUN_800a03a8` at it, and
+    `+0xDE` = 3 × the blow (`r2-0x67d4`) makes the chest shake while
+    closed (`FUN_800606e8` case 2); it also writes subtype 1 into the
+    container's **type**;
+  - otherwise, unless its hit points just ran out and it breaks open,
+    explosive: a CHESTEXP (0x2C) is set off — `+0xC8` and `+0xCA` = 2,
+    used, released (`S_TICKY`, flag `0x40`), so it explodes on its next
+    update (below); any other container lets out a Death it holds
+    (`FUN_8005e8f8`), plays effects `0x1F` (CHESTDEST) and `0x21`
+    (DESTSMOKE), leaves `CHESTSEXP0` (the silver chest, 0x30) or
+    `CHESTGEXP0` in its place and is freed: anything else inside is
+    lost, and there is no hint.
+
+Nothing in these paths frees the left models (`ITEMEXP0`, the chests').
+The hints are shown once (mode 3, priority 50). A hit on an item whose
+armour isn't −1 also plays its hit effect (`FUN_80093c78`).
+
 ### Releasing contents (`FUN_8005e8f8`)
 
 A random contents type is resolved like a placement's. CHEST GOLD (0x2F)
@@ -418,11 +488,17 @@ CHESTEXP (`0x1D`), 6.5 (`r2-0x563c`) poison (6, `r2-0x566c`, only for
 other ids). The damage reaches players
 through `FUN_80094418` → `FUN_80078560` with a falloff not traced here.
 
-**CHESTEXP** (container 0x2C, locked): opened with a key it ticks while
-its `ACTIVE` action (61 frames) plays; at state 2 (`FUN_800606e8` case 2)
-it explodes, `FUN_80092bf4(50 × level +0xDC, pos, 0x1D)` (`r2-0x6728`),
-with hint `0x89`, and is freed. Its listed contents (`TIMEBOMB`) aren't
-released.
+**CHESTEXP** (container 0x2C, locked): opened with a key (or set off
+by an explosion, above) it ticks while its `ACTIVE` action (61 frames)
+plays; at state 2 (`FUN_800606e8` case 2) it explodes,
+`FUN_80092bf4(50 × level +0xDC, pos, 0x1D)` (`r2-0x6728`), with the
+realm's barrel explosion sound (`FUN_8009d210`: `S_BARREL_EXPLO<letter>`)
+and hint `0x89` CHESTSEXPL ("SOME CHESTS MAY EXPLODE WHEN OPENED",
+`S_CHESTSEXPL`), and is freed. Its listed contents (`TIMEBOMB`) aren't
+released. Effect `0x1D` is EXPLOSION's model (`0x16`) drawn 2.5 × 1 ×
+2.5 (`r2-0x5670`, `r2-0x5710`) and 3 higher (`r2-0x5650`), blasting out
+to 12 (`r2-0x5658`) with kind `0x421`, plus the effect's own `EXPCHEST`
+(`DAT_80284b54`) at the chest.
 
 ## Level record `+0xD8`, `+0xDC`
 
@@ -534,7 +610,23 @@ for CHESTEXP, radius 12, drawn 2.5 × wide and 3 higher. (A default of 6
 and 1.5 × is for other ids.) So a barrel's blast sets off the barrels
 and floor potions near it, and earns nobody experience.
 
-Stand-ins: the explosions' lights; CHESTEXP; a released monster starts
+Blasts reach what blows can't through `BlastItem` (`breakables.rs`;
+`blast_reaches` is the effect item test for items of armour below 0):
+explosive ones blow chests apart (`CHESTDEST` and `DESTSMOKE`; a Death
+inside comes out, anything else is lost), set CHESTEXPs off, turn
+treasure to junk (worth 10) and blow other powerups up; poison gas spoils
+food (bad meat −100, a green apple −50, eaten as poison). A barrel
+container blown apart without breaking open goes the same way. A CHESTEXP
+opened with a key ticks (`S_TICKY`) instead of giving its contents, and
+once open explodes: 50 × level `+0xDC`, `EXPCHEST`, the realm's
+`S_BARREL_EXPLO<letter>`, and it's freed.
+
+Stand-ins: the explosions' lights; a CHESTEXP's blast is an exploding
+barrel's (effect `0x18`; `0x1D` isn't in `effects.rs`); the hints `0x87`,
+`0x88`, `0x89` are only logged; the junk, spoiled food and left models
+(`TREAS_JUNK`, `BADMEAT`, `GAPPLE`, `ITEMEXP0`, `CHESTSEXP0`,
+`CHESTGEXP0`) show only if the level built them (`ContentModels`); a
+released monster starts
 right away (the game wakes a placed-monster item); a shootable wall's in-between hits are silent;
 safe rocks aren't hittable; walls' own collision (item shape 4) isn't
 ported, so shootable walls never blocked the hero in the first place.
