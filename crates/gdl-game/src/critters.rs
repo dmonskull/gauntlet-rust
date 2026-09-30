@@ -46,13 +46,20 @@
 //! `GDL_WAKE_STATUES=<range>` (a testing aid) also wakes them when the
 //! hero comes that close.
 //!
+//! A hero who brings the realm's legendary item gets the boss intro
+//! (`GDL_LEGENDARY=1`, a testing aid, pretends so): once START is over
+//! the level darkens, the boss idles 1–3 s, roars, and fights (the
+//! chimera only after a missile hits it); a missile in the dark freezes
+//! the dragon or stuns the djinn and cuts the intro short.
+//!
 //! Stand-ins (see the doc): a woken statue goes straight to its ACTIVE
 //! animation and its critter appears when that ends; ground rings (a
 //! damaging effect in the game) hurt players in their radius at once;
-//! critter missiles live the missiles' three seconds; the boss intro and
-//! camera, the boss key, parts (the chimera's heads), breaking nodes, the
-//! health meter, effects and fading, its blows on other monsters and
-//! pushing players aside aren't done.
+//! critter missiles live the missiles' three seconds; the chimera's wake
+//! timer starts at once. The darkening isn't drawn; the heroes' side of
+//! the intro, the boss camera, the boss key, parts (the chimera's heads),
+//! breaking nodes, the health meter, effects and fading, its blows on
+//! other monsters and pushing players aside aren't done.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -135,17 +142,72 @@ const DT: f32 = 1.0 / 30.0;
 /// Enemy type of the golem, and the first boss type.
 const GOLEM: i32 = 0x1D;
 const FIRST_BOSS: i32 = 0x22;
+/// Boss types the intro treats apart.
+const DRAGON: i32 = 0x22;
+const CHIMERA: i32 = 0x23;
+const DJINN: i32 = 0x24;
+const PBOSS: i32 = 0x26;
+const YETI: i32 = 0x27;
+const WRAITH: i32 = 0x28;
+const LICH: i32 = 0x29;
+const SKORNE: i32 = 0x2A;
+/// Bosses up to this type have an intro (not the second skorne or garm).
+const LAST_INTRO_BOSS: i32 = 0x2A;
+/// The pickup kind of the realms' legendary items (its amount is the realm).
+const LEGENDARY: i32 = 13;
+
+/// The boss intro's states (the game's `r13-0x725c`, `docs/critters.md`
+/// "The boss intro").
+mod intro {
+    /// No intro: no hero brought the realm's legendary item.
+    pub const NONE: i32 = 0;
+    /// Until the boss's START ends.
+    pub const START: i32 = 1;
+    /// A wait while the level darkens.
+    pub const WAIT: i32 = 2;
+    /// The boss roars (still dark).
+    pub const ROAR: i32 = 3;
+    /// The roar is over; the level update moves 4 on to 5 at once.
+    pub const ROARED: i32 = 4;
+    pub const AFTER: i32 = 5;
+    pub const FIGHT: i32 = 6;
+    /// The boss is dead.
+    pub const OVER: i32 = 99;
+}
+/// The intro's wait: 1 s for the chimera, the lich and the first skorne,
+/// 3 s for the rest.
+const INTRO_WAIT_SHORT: f32 = 1.0;
+const INTRO_WAIT: f32 = 3.0;
+/// Seconds in state 5 before the djinn, P-boss, yeti, wraith and first
+/// skorne go on to 6.
+const INTRO_AFTER: f32 = 29.0;
+/// A missile hitting the dragon in states 2–3 freezes it, the djinn and the
+/// P-boss are stunned (1200, 1800 and 18000 fields at 60 a second).
+const DRAGON_FREEZE: f32 = 20.0;
+const DJINN_STUN: f32 = 30.0;
+const PBOSS_STUN: f32 = 300.0;
+/// A stunned critter turns at this share of its rate.
+const STUNNED_TURN: f32 = 0.1;
+/// The level light's darkening in states 2–3: each tick asks for this
+/// offset for this long; the offset moves at most these steps a tick; an
+/// expired target decays by this factor and snaps to 0 below the last.
+const DARKEN_TO: f32 = -0.8;
+const DARKEN_HOLD: f32 = 0.1;
+const DARKEN_STEP: f32 = -0.25;
+const BRIGHTEN_STEP: f32 = 0.05;
+const DARKEN_DECAY: f32 = 0.6;
+const DARKEN_SNAP: f32 = 0.05;
 
 /// A wake trigger wakes the nearest statue within this (horizontally,
 /// less the statue item's radius).
 const WAKE_REACH: f32 = 10.0;
 /// A boss sleeps at least this long before it may wake.
 const BOSS_WAKE_DELAY: f32 = 2.0;
-/// `TYPE +0x5C` flags: hit spheres, a boxed leash, no wake delay, free
-/// turning.
+/// `TYPE +0x5C` flags: hit spheres, a boxed leash, a wake timer started by
+/// the floor, free turning.
 const TYPE_SPHERES: u32 = 0x2;
 const TYPE_BOX_LEASH: u32 = 0x20;
-const TYPE_NO_WAKE_DELAY: u32 = 0x80;
+const TYPE_FLOOR_WAKE: u32 = 0x80;
 const TYPE_FREE_TURN: u32 = 0x400;
 
 /// Anger: 0.5 at full health up to 5 near death.
@@ -269,9 +331,21 @@ pub struct CritterLevel {
     damage_scale: f32,
     /// Per player: until when critter blows can't hit it.
     guard: HashMap<Entity, f32>,
-    /// The boss, once made; whether it has died.
+    /// The boss, once made; whether it has died (its DEATH has played:
+    /// the game's `r13-0x7784`).
     pub boss: Option<Entity>,
     pub boss_dead: bool,
+    /// The level's boss type (`LEVL +0x44`, −1 for none) and its realm's
+    /// number.
+    boss_type: i32,
+    realm_id: u32,
+    /// The boss intro: its state ([`intro`]) and timer, and whether the
+    /// legendary item that started it has been used up.
+    pub intro: i32,
+    intro_timer: f32,
+    legendary_used: bool,
+    /// The scene light's darkening during the intro.
+    light: Darkening,
     /// Events this tick, for `GDL_CRITTER_SHOT_ON`.
     events: Vec<&'static str>,
     /// Stand-in look for critter missiles: their effect models are drawn by
@@ -281,9 +355,11 @@ pub struct CritterLevel {
 }
 
 impl CritterLevel {
-    /// The level's realm letter (critter sound names use it).
-    pub fn realm(&self) -> char {
-        self.realm
+    /// The offset the game adds to the scene's brightness (0 normally, down
+    /// to −0.8 in the boss intro; the brightness is clamped to 0..1). The
+    /// renderer doesn't apply it yet.
+    pub fn light_offset(&self) -> f32 {
+        self.light.offset
     }
 
     fn random(&mut self) -> f32 {
@@ -294,6 +370,37 @@ impl CritterLevel {
         x ^= x << 5;
         self.rng = x;
         (x >> 8) as f32 / (1u32 << 24) as f32
+    }
+}
+
+/// The scene-light offset (the game's `r13-0x7170`): a caller asks for a
+/// target for a while; every frame the offset moves toward the target,
+/// quickly down and slowly up, and a target nobody asks for any more
+/// decays to 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Darkening {
+    offset: f32,
+    target: f32,
+    until: f32,
+}
+
+impl Darkening {
+    fn ask(&mut self, now: f32, hold: f32, target: f32) {
+        let until = now + hold + DT;
+        if until > self.until {
+            self.until = until;
+            self.target = target;
+        }
+    }
+
+    fn step(&mut self, now: f32) {
+        if self.target != 0.0 && self.until < now {
+            self.target *= DARKEN_DECAY;
+            if self.target.abs() < DARKEN_SNAP {
+                self.target = 0.0;
+            }
+        }
+        self.offset += (self.target - self.offset).clamp(DARKEN_STEP, BRIGHTEN_STEP);
     }
 }
 
@@ -410,6 +517,12 @@ pub struct Critter {
     hp_before: f32,
     /// The critter clock at its last tick (seconds since the level began).
     now: f32,
+    /// A missile hit it since its last tick (the intro reacts).
+    missile_hit: bool,
+    /// Seconds it stays frozen (its animation and moves stop) and stunned
+    /// (it turns slowly): the intro's reactions to missiles.
+    frozen: f32,
+    stunned: f32,
 }
 
 impl Critter {
@@ -429,13 +542,25 @@ impl Critter {
         i.and_then(|i| self.moves().get(i)).map(|m| m.kind)
     }
 
-    /// A blow from the hero, on hit sphere `sphere` or the body: returns
-    /// the experience it earns. `sounds` gets the names of the sounds to
-    /// play.
-    pub fn take_hit(&mut self, damage: f32, kind_bits: u32, push: [f32; 3], sphere: Option<usize>, sounds: &mut Vec<String>, realm: char) -> u32 {
+    /// A blow from the hero, on hit sphere `sphere` or the body (`ranged`:
+    /// a missile or thrown weapon): returns the experience it earns.
+    /// `sounds` gets the names of the sounds to play.
+    #[allow(clippy::too_many_arguments)]
+    pub fn take_hit(
+        &mut self,
+        damage: f32,
+        kind_bits: u32,
+        push: [f32; 3],
+        sphere: Option<usize>,
+        ranged: bool,
+        level: Option<&CritterLevel>,
+        sounds: &mut Vec<String>,
+    ) -> u32 {
         if self.state != CritterState::Active || self.hit_points <= 0.0 {
             return 0;
         }
+        let (realm, intro) = level.map_or(('A', intro::NONE), |l| (l.realm, l.intro));
+        self.missile_hit |= ranged;
         let ty = self.kind.file.types[self.ty].clone();
         let boss = self.class() == class::BOSS;
         let (mut damage, mut kind_bits) = (damage, kind_bits);
@@ -445,7 +570,9 @@ impl Critter {
         }
         damage = after_armor(damage, ty.armor);
         self.damage_taken += damage;
-        if boss {
+        // Bosses take less with more players, except in their intro's
+        // first four states.
+        if boss && !(intro::START..=intro::ROARED).contains(&intro) {
             damage *= BOSS_DAMAGE_BY_PLAYERS[PLAYERS];
         }
         let share = damage.clamp(0.0, self.hit_points.max(0.0)) / (1.0 + self.full_hit_points);
@@ -511,6 +638,7 @@ fn setup_level(
     monsters: Res<MonsterLevel>,
     population: Option<Res<LevelPopulation>>,
     ground: Option<Res<LevelGround>>,
+    state: Option<Res<PlayerState>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -669,6 +797,12 @@ fn setup_level(
         guard: HashMap::new(),
         boss: None,
         boss_dead: false,
+        boss_type: monsters.boss,
+        realm_id,
+        intro: intro::NONE,
+        intro_timer: 0.0,
+        legendary_used: false,
+        light: Darkening::default(),
         events: Vec::new(),
         glow: (
             meshes.add(Sphere::new(1.0)),
@@ -696,6 +830,15 @@ fn setup_level(
         }
         level.boss = spawn_critter(&level, &kind, at, yaw, &mut commands);
         info!("boss {} at {at:?} facing {:.0}°", kind.file.desc.name, yaw.to_degrees());
+        // The intro runs when a hero brings the realm's legendary item
+        // (`GDL_LEGENDARY=1`, a testing aid, pretends one does); the second
+        // skorne and garm have none.
+        let carried = state.as_ref().is_some_and(|s| s.treasures.contains(&(LEGENDARY, realm_id as i32)));
+        let pretend = std::env::var("GDL_LEGENDARY").is_ok_and(|v| v == "1");
+        if (0..=LAST_INTRO_BOSS).contains(&monsters.boss) && (carried || pretend) {
+            level.intro = intro::START;
+            info!("the boss intro will run (the hero brings the legendary item{})", if carried { "" } else { ": GDL_LEGENDARY" });
+        }
     }
     commands.insert_resource(level);
 }
@@ -774,6 +917,9 @@ fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 
         hp_before: hp,
         now: level.now,
         spheres: spheres.clone(),
+        missile_hit: false,
+        frozen: 0.0,
+        stunned: 0.0,
     };
     commands.entity(root).insert((critter, LevelEntity));
     if spheres.is_empty() {
@@ -802,7 +948,7 @@ fn tick_critters(
     ground: Option<Res<LevelGround>>,
     mechanics: Option<ResMut<Mechanics>>,
     population: Option<Res<LevelPopulation>>,
-    state: Option<Res<PlayerState>>,
+    mut state: Option<ResMut<PlayerState>>,
     mut players: Query<(Entity, &mut Player)>,
     mut critters: Query<(Entity, &mut Critter, &mut Animator), Without<StatueModel>>,
     mut statues: Query<&mut Animator, With<StatueModel>>,
@@ -816,6 +962,19 @@ fn tick_critters(
     let level = &mut *level;
     level.now += DT;
     let now = level.now;
+    update_intro(level);
+    // The hero who brought the legendary item uses it up once the level
+    // darkens (the game clears its bit in the player's record).
+    if matches!(level.intro, intro::WAIT | intro::ROAR) && !level.legendary_used {
+        level.legendary_used = true;
+        let item = (LEGENDARY, level.realm_id as i32);
+        if state.as_deref().is_some_and(|s| s.treasures.contains(&item))
+            && let Some(s) = state.as_deref_mut()
+        {
+            s.treasures.retain(|t| *t != item);
+            info!("the hero's legendary item is used up");
+        }
+    }
     let alive = state.as_ref().is_none_or(|s| s.alive);
     let (radius, half) = state.as_ref().map_or((1.5, 2.5), |s| (s.radius, s.half_height));
     let heroes: Vec<Hero> = if alive {
@@ -832,6 +991,7 @@ fn tick_critters(
 
     wake_statues(level, mechanics, population.as_deref(), &heroes, &mut statues, &mut commands);
 
+    let intro_before = level.intro;
     let mut blows: Vec<Blow> = Vec::new();
     let mut to_play: Vec<String> = Vec::new();
     for (entity, mut c, mut animator) in &mut critters {
@@ -866,13 +1026,17 @@ fn tick_critters(
                 info!("the boss {} wakes", c.kind.file.desc.name);
             }
         }
+        intro_reactions(c, level);
 
-        // Dead and done: a golem when DEATH ends, a boss when its hold does.
+        // Dead and done: a golem when DEATH ends, a boss when its hold does
+        // (it counts as dead from the end of DEATH).
+        if boss && level.boss == Some(entity) && c.move_kind(c.current) == Some(kind::DEATH) && c.clock.ended && !level.boss_dead {
+            level.boss_dead = true;
+        }
         if c.move_kind(c.current) == Some(kind::DEATH) && c.clock.ended && (!boss || now >= c.hold_until) {
             debug!("critter {entity:?} is gone");
             if level.boss == Some(entity) {
-                level.boss_dead = true;
-                info!("the boss is dead (its key, drawn at {:?} from it, isn't shown yet)", c.kind.file.types[c.ty].key_offset);
+                info!("the boss is gone (its key, drawn at {:?} from it, isn't shown yet)", c.kind.file.types[c.ty].key_offset);
             }
             for s in &c.spheres {
                 commands.entity(*s).try_despawn();
@@ -885,7 +1049,7 @@ fn tick_critters(
         c.next = None;
         c.pick = None;
         c.chosen_pattern = None;
-        forced(c, &ty, now);
+        forced(c, &ty, now, level.intro, level.boss_type);
         if c.state == CritterState::Active {
             if c.next.is_none() {
                 choose_block(c, now, &heroes);
@@ -906,7 +1070,22 @@ fn tick_critters(
             c.next = c.current;
         }
         let was = c.current;
-        switch(c, now, &mut animator);
+        // Frozen, it keeps its move and frame.
+        if c.frozen <= 0.0 {
+            switch(c, now, &mut animator, &mut level.intro);
+        }
+        // The intro also moves on once the boss's START (without a
+        // follow-up) or ROAR has played out, before anything replaces it.
+        if level.boss == Some(entity)
+            && c.clock.ended
+            && let Some(m) = c.current.map(|i| &c.moves()[i])
+        {
+            if m.kind == kind::ROAR && level.intro == intro::ROAR {
+                level.intro = intro::ROARED;
+            } else if m.kind == kind::START && m.next < 0 && level.intro == intro::START {
+                level.intro = intro::WAIT;
+            }
+        }
         if c.switched && c.move_kind(c.current) == Some(kind::DEATH) {
             level.events.push("death");
         }
@@ -1004,9 +1183,17 @@ fn tick_critters(
             walk(c, &mv, &ty, &ground.0, &heroes, level.speed_scale);
         }
         turn(c, &mv, &heroes);
-        c.clock.advance(DT);
+        if c.frozen > 0.0 {
+            c.frozen = (c.frozen - DT).max(0.0);
+        } else {
+            c.clock.advance(DT);
+        }
+        c.stunned = (c.stunned - DT).max(0.0);
     }
 
+    if level.intro != intro_before {
+        info!("boss intro {intro_before} → {} at {now:.2} s", level.intro);
+    }
     for (player, amount, kind_bits, push) in blows {
         let Ok((_, mut p)) = players.get_mut(player) else { continue };
         let amount = after_armor(amount, p.armor);
@@ -1042,13 +1229,16 @@ fn tick_critters(
     }
 }
 
-/// A sleeping boss wakes once its two seconds are up (none with the type's
-/// flag) and every player it tracks is within its wake distance (at once
-/// when that's 0).
+/// A sleeping boss wakes once its two seconds are up and every player it
+/// tracks is within its wake distance (at once when that's 0). With the
+/// type's flag 0x80 (the chimera) the game starts the two seconds only
+/// when the boss stands on floor whose node has flag 0x10 in its byte
+/// `+0x16`; that byte isn't read here, so they start at once (stand-in).
 fn wake_boss(c: &mut Critter, ty: &TypeInfo, now: f32) -> bool {
     if c.wake_at == 0.0 {
-        if ty.flags & TYPE_NO_WAKE_DELAY == 0 {
-            c.wake_at = now + BOSS_WAKE_DELAY;
+        c.wake_at = now + BOSS_WAKE_DELAY;
+        if ty.flags & TYPE_FLOOR_WAKE != 0 {
+            debug!("boss wake timer started at once (stand-in for its floor's flag)");
         }
         return false;
     }
@@ -1058,6 +1248,81 @@ fn wake_boss(c: &mut Critter, ty: &TypeInfo, now: f32) -> bool {
     let furthest = c.tracked.iter().map(|t| t.distance).fold(0.0f32, f32::max);
     let furthest = if furthest <= 0.0 { REJECTED } else { furthest };
     ty.wake_distance <= 0.0 || furthest < ty.wake_distance
+}
+
+/// The level's side of the boss intro, each tick before the critters move
+/// (the game's level update): 99 once the boss is dead; in 2 a wait (from
+/// the first tick) then 3; 4 goes on to 5 at once, noting the time; after
+/// 29 s in 5 the djinn, P-boss, yeti, wraith and first skorne go on to 6
+/// (the dragon, chimera, drider and lich stay in 5; a missile moves the
+/// chimera on). The level darkens through 2–3.
+fn update_intro(level: &mut CritterLevel) {
+    let now = level.now;
+    let was = level.intro;
+    if level.boss_dead {
+        level.intro = intro::OVER;
+    }
+    match level.intro {
+        intro::ROARED => {
+            level.intro = intro::AFTER;
+            level.intro_timer = now;
+        }
+        intro::AFTER => {
+            if now - level.intro_timer >= INTRO_AFTER && matches!(level.boss_type, DJINN | PBOSS | YETI | WRAITH | SKORNE) {
+                level.intro = intro::FIGHT;
+            }
+        }
+        intro::WAIT => {
+            if level.intro_timer == 0.0 {
+                let wait = if matches!(level.boss_type, CHIMERA | LICH | SKORNE) { INTRO_WAIT_SHORT } else { INTRO_WAIT };
+                level.intro_timer = now + wait;
+            } else if level.intro_timer <= now {
+                level.intro = intro::ROAR;
+                level.intro_timer = 0.0;
+            }
+            level.light.ask(now, DARKEN_HOLD, DARKEN_TO);
+        }
+        intro::ROAR => level.light.ask(now, DARKEN_HOLD, DARKEN_TO),
+        _ => {}
+    }
+    level.light.step(now);
+    if level.intro != was {
+        info!("boss intro {was} → {} at {now:.2} s (light {:+.2})", level.intro, level.light_offset());
+    }
+}
+
+/// What a missile hitting the boss does in its intro (the game checks it
+/// where effects hit critters): in 2–3 it ends the intro for the dragon
+/// (frozen) and the djinn (stunned), and stuns the P-boss; in 5 it starts
+/// the chimera's fight. The P-boss's stun ends with its intro.
+fn intro_reactions(c: &mut Critter, level: &mut CritterLevel) {
+    if std::mem::take(&mut c.missile_hit)
+        && let Some((next, freeze, stun)) = missile_reaction(level.intro, level.boss_type)
+    {
+        level.intro = next;
+        if freeze > 0.0 {
+            c.frozen = freeze;
+        }
+        if stun > 0.0 {
+            c.stunned = stun;
+        }
+        info!("a missile hits the boss in its intro: now {next} (frozen {:.0} s, stunned {:.0} s)", c.frozen, c.stunned);
+    }
+    if level.boss_type == PBOSS && level.intro >= intro::FIGHT {
+        c.stunned = 0.0;
+    }
+}
+
+/// A missile hit in the intro: the next state, and the seconds it freezes
+/// and stuns the critter hit.
+fn missile_reaction(state: i32, boss_type: i32) -> Option<(i32, f32, f32)> {
+    match (state, boss_type) {
+        (intro::WAIT | intro::ROAR, DRAGON) => Some((intro::ROARED, DRAGON_FREEZE, 0.0)),
+        (intro::WAIT | intro::ROAR, DJINN) => Some((intro::ROARED, 0.0, DJINN_STUN)),
+        (intro::WAIT | intro::ROAR, PBOSS) => Some((state, 0.0, PBOSS_STUN)),
+        (intro::AFTER, CHIMERA) => Some((intro::FIGHT, 0.0, 0.0)),
+        _ => None,
+    }
 }
 
 /// Wakes statues: from the level's wake triggers (the nearest statue
@@ -1315,15 +1580,21 @@ fn ready(c: &Critter, i: usize, now: f32) -> bool {
 }
 
 /// The moves forced on it: INIT when new (a sleeping boss keeps playing
-/// it), START after INIT, DEATH when dying, a move's follow-up, a boss's
-/// READY after START; then reactions to the blows taken.
-fn forced(c: &mut Critter, ty: &TypeInfo, now: f32) {
+/// it), START after INIT, DEATH when dying, a move's follow-up; else, by
+/// the boss intro's state, READY in 1–2, ROAR in 3, READY for the chimera
+/// in 3–5, and otherwise a boss's READY after START; then reactions to the
+/// blows taken.
+fn forced(c: &mut Critter, ty: &TypeInfo, now: f32, intro: i32, boss_type: i32) {
     let cur = c.current.map(|i| c.moves()[i].clone());
+    let chimera_waits = (intro::ROAR..=intro::AFTER).contains(&intro) && boss_type == CHIMERA;
     let next = match (&cur, c.state) {
         (None, _) | (_, CritterState::New) => find(c, kind::INIT, Find::Nearest, now),
         (Some(m), _) if m.kind == kind::INIT => find(c, kind::START, Find::Ready, now),
         (_, CritterState::Dying) => find(c, kind::DEATH, Find::Nearest, now),
         (Some(m), _) if m.next >= 0 => Some(m.next as usize),
+        _ if (intro::START..=intro::WAIT).contains(&intro) => find(c, kind::READY, Find::Nearest, now),
+        (Some(m), _) if intro == intro::ROAR && m.kind != kind::ROAR => find(c, kind::ROAR, Find::Nearest, now),
+        _ if chimera_waits => find(c, kind::READY, Find::Ready, now),
         (Some(m), _) if m.kind == kind::START && ty.class == class::BOSS => find(c, kind::READY, Find::Ready, now),
         _ => None,
     };
@@ -1487,7 +1758,9 @@ fn transition(cur: &CritterMove, next: &CritterMove) -> u8 {
 /// a boss's hold on its move runs out, unless the new one outranks
 /// everything), and starts its animation; a switch records when the move
 /// will end (its cooldown runs from then), and steps or starts a pattern.
-fn switch(c: &mut Critter, now: f32, animator: &mut Animator) {
+/// Leaving START (without a follow-up) moves the boss intro 1 → 2, leaving
+/// ROAR 3 → 4.
+fn switch(c: &mut Critter, now: f32, animator: &mut Animator, intro: &mut i32) {
     let cur = c.current.map(|i| c.moves()[i].clone());
     let next = c.next;
     let (target, mode) = match (&cur, next) {
@@ -1519,6 +1792,13 @@ fn switch(c: &mut Critter, now: f32, animator: &mut Animator) {
             c.current = None;
         }
         return;
+    }
+    if let Some(m) = &cur {
+        if m.kind == kind::ROAR && *intro == intro::ROAR {
+            *intro = intro::ROARED;
+        } else if m.kind == kind::START && m.next < 0 && *intro == intro::START {
+            *intro = intro::WAIT;
+        }
     }
     let clip = c.body().clips.get(action).copied().unwrap_or((1, 30, false));
     c.clock.start(action, clip);
@@ -1829,7 +2109,7 @@ fn turn(c: &mut Critter, m: &CritterMove, heroes: &[Hero]) {
         })
     };
     let Some(goal) = goal else { return };
-    let rate = m.turn * DT;
+    let rate = m.turn * DT * if c.stunned > 0.0 { STUNNED_TURN } else { 1.0 };
     let d = locomotion::wrap(goal - c.yaw).clamp(-rate, rate);
     c.yaw = locomotion::wrap(c.yaw + d);
 }
@@ -1946,6 +2226,103 @@ mod tests {
         assert!((y - to.y).abs() < 1e-3, "{y}");
         // Too far to reach: straight at it.
         assert_eq!(lob_toward(from, Vec3::new(1000.0, 0.0, 0.0), 10.0, 30.0), Vec3::X);
+    }
+
+    fn level_with(boss_type: i32, state: i32) -> CritterLevel {
+        CritterLevel {
+            kinds: HashMap::new(),
+            statues: Vec::new(),
+            now: 0.0,
+            realm: 'B',
+            hit_point_scale: 1.0,
+            speed_scale: 1.0,
+            damage_scale: 1.0,
+            guard: HashMap::new(),
+            boss: None,
+            boss_dead: false,
+            boss_type,
+            realm_id: 2,
+            intro: state,
+            intro_timer: 0.0,
+            legendary_used: false,
+            light: Darkening::default(),
+            events: Vec::new(),
+            glow: (Handle::default(), Handle::default()),
+            rng: 1,
+        }
+    }
+
+    /// Ticks the level's side of the intro until the state changes (or a
+    /// minute passes): the seconds it took.
+    fn until_change(l: &mut CritterLevel) -> f32 {
+        let (from, start) = (l.intro, l.now);
+        while l.intro == from && l.now - start < 60.0 {
+            l.now += DT;
+            update_intro(l);
+        }
+        l.now - start
+    }
+
+    #[test]
+    fn the_intro_waits_then_roars_in_the_dark() {
+        let mut l = level_with(DRAGON, intro::WAIT);
+        let waited = until_change(&mut l);
+        assert_eq!(l.intro, intro::ROAR);
+        // The timer is set on the first tick: 3 s and a tick or two.
+        assert!(waited > INTRO_WAIT && waited < INTRO_WAIT + 2.5 * DT, "{waited}");
+        assert!((l.light_offset() - DARKEN_TO).abs() < 1e-5);
+        let mut chimera = level_with(CHIMERA, intro::WAIT);
+        let waited = until_change(&mut chimera);
+        assert!(waited > INTRO_WAIT_SHORT && waited < INTRO_WAIT_SHORT + 2.5 * DT, "{waited}");
+    }
+
+    #[test]
+    fn after_the_roar_some_bosses_settle_into_the_fight() {
+        let mut l = level_with(DJINN, intro::ROARED);
+        until_change(&mut l);
+        assert_eq!(l.intro, intro::AFTER);
+        let settled = until_change(&mut l);
+        assert_eq!(l.intro, intro::FIGHT);
+        assert!((settled - INTRO_AFTER).abs() < 0.05, "{settled}");
+        // The dragon stays in 5, its light back to normal, until it dies.
+        let mut l = level_with(DRAGON, intro::ROARED);
+        until_change(&mut l);
+        until_change(&mut l);
+        assert_eq!(l.intro, intro::AFTER);
+        assert_eq!(l.light_offset(), 0.0);
+        l.boss_dead = true;
+        until_change(&mut l);
+        assert_eq!(l.intro, intro::OVER);
+    }
+
+    #[test]
+    fn missiles_cut_some_intros_short() {
+        assert_eq!(missile_reaction(intro::WAIT, DRAGON), Some((intro::ROARED, DRAGON_FREEZE, 0.0)));
+        assert_eq!(missile_reaction(intro::ROAR, DJINN), Some((intro::ROARED, 0.0, DJINN_STUN)));
+        assert_eq!(missile_reaction(intro::ROAR, PBOSS), Some((intro::ROAR, 0.0, PBOSS_STUN)));
+        assert_eq!(missile_reaction(intro::AFTER, CHIMERA), Some((intro::FIGHT, 0.0, 0.0)));
+        assert_eq!(missile_reaction(intro::AFTER, DRAGON), None);
+        assert_eq!(missile_reaction(intro::START, CHIMERA), None);
+    }
+
+    #[test]
+    fn the_light_darkens_fast_and_comes_back_slowly() {
+        let mut d = Darkening::default();
+        let mut now = 0.0;
+        for _ in 0..4 {
+            now += DT;
+            d.ask(now, DARKEN_HOLD, DARKEN_TO);
+            d.step(now);
+        }
+        assert!((d.offset - DARKEN_TO).abs() < 1e-5, "{d:?}");
+        let mut ticks = 0;
+        while d.offset < 0.0 && ticks < 100 {
+            now += DT;
+            d.step(now);
+            ticks += 1;
+        }
+        // At most 0.05 a tick back up.
+        assert!((16..30).contains(&ticks), "{ticks}");
     }
 
     #[test]
