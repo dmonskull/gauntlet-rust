@@ -302,6 +302,13 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
     sound — projectiles.md "Hero release"); the stuns (STUN1 on the damage
     tiles, STUN2 while a poison or drain stun holds a standing hero —
     combat.md "The stuns").
+- **Placed critters** (mine): the **generals** (made on sight on most
+  levels) and **gargoyles** run with the golem's update; statues wake by
+  trigger or by being walked into (and block); placed golems, gargoyles and
+  generals hold the powerup on their spot (keys, mostly) and drop it where
+  they die, a gargoyle holding none its `GARG<kind>` piece, with hints
+  `0x86`/`0x8A` (critters.md "Placed critters", "In this rewrite"). Left: a
+  missile or blast waking a statue; the drop's toss.
   - Next: rapid fire's rate (items.md "Attack overrides": how the 0.75
     reaches the clip isn't pinned down); the hero missiles' streaks
     (`WEP_STREAK`, the crossbow's white one) and the magic classes'

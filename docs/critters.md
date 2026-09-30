@@ -7,8 +7,9 @@ tables (see [monsters.md](monsters.md) for regular monsters).
 The file format is parsed in
 [`crates/gdl-formats/src/critter.rs`](../crates/gdl-formats/src/critter.rs),
 which has typed records and real-data tests over all 18 files. The
-runtime is [`crates/gdl-game/src/critters.rs`](../crates/gdl-game/src/critters.rs).
-So far it runs the placed golem only; see [In this rewrite](#in-this-rewrite).
+runtime is [`crates/gdl-game/src/critters.rs`](../crates/gdl-game/src/critters.rs):
+the placed golems, gargoyles and generals and the bosses; see
+[In this rewrite](#in-this-rewrite).
 
 Addresses are in `main.dol`; `r2`/`r13` are as in [INDEX.md](INDEX.md).
 Critters keep time in seconds: `r13-0x756c` is the current time and
@@ -229,16 +230,47 @@ Callers:
     `(8,0,…)`.
   - A placed golem or gargoyle starts as a statue model, `GOL_STATUE` or
     `GAR_STATUE` (`0x800646e4`, which also drops item flag 1).
-  - The statue only comes alive once item `+0xE4` bit 1 is set. A trigger
-    with flag `0x2000` sets that bit on an item it finds near itself
-    (`0x800606e8`). The statue's animation (`+0xC4`/`+0xCA`) then plays,
-    and when its field timer `+0xC6` runs out the critter is made.
+  - The whole case waits for the placement's spot to be on screen (4 ×
+    its radius, `FUN_800b4ef4`) and within 50 (`r2-0x6728`) of
+    `0x8023f1bc`. A golem, Death or gargoyle (0x1D, 0x1E, 0x20) then only
+    comes alive once item `+0xE4` bit 1 is set; the general (0x21) is made
+    at once — it has no statue.
+  - What sets the bit (the "wake"):
+    - a trigger with flag `0x2000` coming on: the nearest placed-monster
+      item (`FUN_80062fdc(10, trigger, class 4)`: horizontal distance less
+      the type's radius, among items flagged on screen `0x4000` or always
+      active `0x40`, not held, not `0x8100`) — [mechanics.md](mechanics.md);
+    - **walking into it** (the touch handler `FUN_8005d71c`, class 4):
+      when the placement's range `+0xE8` ≥ 0 (`r2-0x6780`), and it blocks
+      the hero within the type's radius (type `+0x0C`: 4 for the golem, 8
+      for the gargoyle, the general's type has no shape);
+    - **a blow landing on it** (the item damage routine `FUN_8005c1c8`,
+      class 4: a missile's or a blast's item test; the heroes' melee search
+      doesn't look at placed monsters, [combat.md](combat.md));
+    - a container releasing it (`FUN_8005e8f8`: the Death in a barrel).
+  - Then the statue's animation (`+0xC4`/`+0xCA`) plays, and when its
+    field timer `+0xC6` runs out the critter is made; the item goes
+    (`+0xC4` = `0xFFFF`).
   - The placement's range (`+0xE8`) × level `+0xB4` becomes `+0xAD0`, and
-    its drop item (`+0xEE`) becomes `+0xACC`.
-  - Level-data survey: 38 levels name the golem.
-  - Not ported: the trigger wake-up needs the trigger system, so a
-    runtime will need a stand-in (e.g. waking when the player comes near,
-    named as such).
+    the item it holds (`+0xEE`) becomes `+0xACC`.
+  - **What it holds** (`FUN_8005d038` at every level load, through
+    `FUN_8005d0b0` for types 0x1D, 0x20, 0x21): the nearest powerup item
+    (class 1, not flagged `0x8100`, not already held) whose centre is
+    within 2 across (`r2-0x67f0`) and 3 up or down (`r2-0x67d4`) of the
+    placement; it's held (`+0xCD` = 10) and its model hidden. The data puts
+    124 powerups right on their critters (most at under 0.3): keys,
+    treasure, food, potions, power-ups — every general on A1–A3 carries a
+    key.
+  - **The drop** (`0x8003a750`, when class 3/7/8's DEATH ends): the held
+    item, else — a gargoyle — a new powerup named `GARG%s` (`r2-0x713C`)
+    by the realm's gargoyle kind (`FUN_80057ac8(0x20)`: `GARGEAGL`,
+    `GARGLION`, `GARGSERP`: gargoyle pieces, subtype 16); tossed out from
+    where it fell (`FUN_80091918`, an effect missile carrying it). With an
+    item, the general raises hint `0x86` GENSCARRY ("GENERALS MAY CARRY
+    ITEMS", `S_GENSCARRY`), the gargoyle `0x8A` DEFEATGAR ("DEFEATING
+    GARGOYLES WILL RELEASE GOLDEN ITEMS", `S_DEFGRG4GLD`); both once.
+  - Level-data survey: 38 levels name the golem; most regular levels place
+    generals for one player (two on A1, four on C1).
 
 ## The update
 
@@ -1276,8 +1308,27 @@ Move kinds:
 ## In this rewrite
 
 [`critters.rs`](../crates/gdl-game/src/critters.rs) runs the **placed
-golem** (enemy 0x1D) on the 30 Hz tick, interpolated for drawing. Bosses,
-the gargoyle and the general aren't run yet.
+golem, gargoyle and general** (enemies 0x1D, 0x20, 0x21 — one update, as
+in the game) and the bosses on the 30 Hz tick, interpolated for drawing.
+
+- **Gargoyles and generals.** The gargoyle's file and models come from
+  the realm's `ENMY` kind (`LevelEnemies::gargoyle`: `gar_eagl.wad`,
+  `MONSTERS/GAR_EAGL` with its `GAR_STATUE`); the general's from
+  `general.wad` and `MONSTERS/GENERAL/level<realm>` (no statue). A
+  general is made when its spot is on screen within 50 of a hero; every
+  statue (golem, gargoyle) wakes by the rules above — its trigger, or the
+  hero walking into it (`LevelItems::mark_statue`: the statue's item
+  blocks, and the touch wakes it) — and comes alive once its spot is on
+  screen within 50. The items they hold (`LevelItems::hold_nearest`) are
+  hidden and out of reach till they die; then they're dropped where the
+  critter fell (`drop_held`), or a gargoyle leaves its `GARG<kind>` piece
+  (`release`), with the hint. Checked on A1: the general comes on sight,
+  charges and swings, and drops its key with GENSCARRY; the gargoyle,
+  woken, bites, claws, breathes and throws fireballs, and leaves
+  `GARGEAGL` with DEFEATGAR; walking into a golem statue wakes it.
+  Stand-ins: the drop appears where the critter fell, with a 30-field
+  pickup delay (not tossed); a blow on a statue (a missile, a blast)
+  doesn't wake it yet.
 
 - **Loading.** When the level's monster state is set up, the level's golem
   slot loads its file (`golem`, `golemF` or `golemI` by realm) and builds its

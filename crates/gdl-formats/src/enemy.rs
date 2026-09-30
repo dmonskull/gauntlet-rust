@@ -19,6 +19,11 @@ pub const FIELDS_PER_TICK: f32 = 2.0;
 pub const FIRST_SPECIAL_TYPE: i32 = 28;
 /// Death: a monster like the others (AI 3), which drains heroes.
 pub const DEATH: i32 = 30;
+/// The golem, the gargoyle and the general: critters (`critter.rs`),
+/// placed in levels.
+pub const GOLEM: i32 = 29;
+pub const GARGOYLE: i32 = 32;
+pub const GENERAL: i32 = 33;
 
 /// Per-type stats of a regular monster.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -425,6 +430,10 @@ pub fn generator_sounds(realm: char, enemy: i32) -> Option<(String, String)> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LevelEnemies {
     pub loaded: Vec<(i32, i32)>,
+    /// The realm's gargoyle kind (`eagl`, `lion`, `serp`: its `ENMY`
+    /// record's name buffer's second half), which names its critter file
+    /// and models; empty without one.
+    pub gargoyle: String,
 }
 
 impl LevelEnemies {
@@ -582,16 +591,16 @@ mod tests {
     #[test]
     fn placeholders_become_the_realms_monsters() {
         // Castle A1: main grunt, small rat, critters.
-        let castle = LevelEnemies { loaded: vec![(4, 2), (3, 1), (29, 5), (33, 5), (32, 5)] };
+        let castle = LevelEnemies { loaded: vec![(4, 2), (3, 1), (29, 5), (33, 5), (32, 5)], ..Default::default() };
         assert_eq!(castle.substitute(3, 0), 3);
         assert_eq!(castle.substitute(5, 0), 4);
         // Mountain B4: demons elite, trolls special, scorpions small.
-        let mount = LevelEnemies { loaded: vec![(2, 3), (0, 1), (1, 4), (29, 5)] };
+        let mount = LevelEnemies { loaded: vec![(2, 3), (0, 1), (1, 4), (29, 5)], ..Default::default() };
         assert_eq!(mount.substitute(4, 1), 2);
         assert_eq!(mount.substitute(4, 5), 1);
         assert_eq!(mount.substitute(3, 0), 0);
         assert_eq!(mount.folders(1), ["TROAUX"]);
-        let hell = LevelEnemies { loaded: vec![(24, 13)] };
+        let hell = LevelEnemies { loaded: vec![(24, 13)], ..Default::default() };
         assert_eq!(hell.folders(24), ["WAR3"]);
         assert_eq!(hell.substitute(3, 0), -1);
         assert!(!hell.has(4));
@@ -632,7 +641,7 @@ mod tests {
                     continue;
                 };
                 let enemies =
-                    LevelEnemies { loaded: world.level_enemies(level).iter().map(|e| (e.enemy, e.subtype)).collect() };
+                    LevelEnemies { loaded: world.level_enemies(level).iter().map(|e| (e.enemy, e.subtype)).collect(), ..Default::default() };
                 let pop = Population::parse(&file).unwrap();
                 for p in &pop.placements {
                     let ty = pop.resolved_type(p);

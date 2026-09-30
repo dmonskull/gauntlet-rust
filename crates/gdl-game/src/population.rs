@@ -648,6 +648,8 @@ pub const XRAY_KEYS: &str = "KEYRING";
 const XRAY_SPRITE_BIAS: i16 = -800;
 /// The key powerup's subtype.
 const KEY: i32 = 2;
+/// The gargoyle pieces' powerup subtype (`GARG<kind>`).
+const GARGOYLE_PIECE: i32 = 16;
 
 /// The models a blast can bring (`breakables.rs`, `docs/mechanics.md`
 /// "Blows on items"), and the items they come from: treasure's junk, the
@@ -859,6 +861,19 @@ pub fn spawn(
         }
         let model = build_model(&sources, &mut caches, &inside.name, None, meshes, level_materials, images);
         contents.models.insert(inside.name.clone(), model);
+    }
+    // A dead gargoyle leaves a gargoyle piece of its kind (`critters.rs`).
+    let gargoyles = pop.placements.iter().any(|p| {
+        let ty = pop.resolved_type(p);
+        ty.class == ItemClass::EnemyInfo && ty.enemy() == Some(gdl_formats::enemy::GARGOYLE)
+    });
+    if gargoyles {
+        for ty in pop.item_types.iter().filter(|t| t.class == ItemClass::Powerup && t.subtype == GARGOYLE_PIECE) {
+            if !contents.models.contains_key(&ty.name) {
+                let model = build_model(&sources, &mut caches, &ty.name, None, meshes, level_materials, images);
+                contents.models.insert(ty.name.clone(), model);
+            }
+        }
     }
     // A shut exit shows the items bank's `EXIT_OFF` (`items.rs`).
     if pop.placements.iter().any(|p| pop.resolved_type(p).class == ItemClass::Exit) {

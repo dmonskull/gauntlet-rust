@@ -62,12 +62,16 @@ pub enum Hint {
     PoisonedFood,
     /// 0x85: food at full health.
     HealthFull,
+    /// 0x86: a dead general drops what it held.
+    GeneralsCarryItems,
     /// 0x87: an explosion blows a powerup to pieces.
     ExplosionsDestroyItems,
     /// 0x88: poison gas spoils food.
     GasSpoilsFood,
     /// 0x89: a CHESTEXP explodes.
     ChestsExplode,
+    /// 0x8A: a dead gargoyle drops its golden piece (or what it held).
+    DefeatGargoyles,
     /// 0: a blow that isn't magic lands on Death.
     KillDeathWithMagic,
     /// 0x80, 0x82: a Death drains experience, health.
@@ -236,9 +240,11 @@ impl Hint {
             Self::SomeBarrels => ("WOODBARREL", "S_SOMEBARRELS", true),
             Self::PoisonedFood => ("POISONEDFOOD", "S_POISONEDFOOD", true),
             Self::HealthFull => ("HEALTHFULL", "S_HEALTHFULL", true),
+            Self::GeneralsCarryItems => ("GENSCARRY", "S_GENSCARRY", true),
             Self::ExplosionsDestroyItems => ("EXPDESTROY", "S_EXPDSTITMS", true),
             Self::GasSpoilsFood => ("GASPOISON", "S_GASFOODBAD", true),
             Self::ChestsExplode => ("CHESTSEXPL", "S_CHESTSEXPL", true),
+            Self::DefeatGargoyles => ("DEFEATGAR", "S_DEFGRG4GLD", true),
             Self::LevelUp => ("LEVELUP", "S_GAINEDLEVEL", false),
             Self::KillDeathWithMagic => ("USEMAGIC", "S_USEMAGIC", true),
             Self::DeathDrainsExperience => ("DEATHDRAINEXP", "S_DEATHDRAINXP", true),

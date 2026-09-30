@@ -1,8 +1,9 @@
 //! Critters: the game's scripted monsters, run from their `CRITTER/*.WAD`
 //! data (`docs/critters.md` has the game's code behind all of this). This
-//! runs the placed golem and the level's boss (one-part bosses so far).
+//! runs the placed golems, gargoyles and generals and the level's boss.
 //!
-//! A golem stands as a statue until a wake trigger by it comes on; a boss
+//! A golem or gargoyle stands as a statue until it's woken; a general is
+//! made as soon as its spot is seen within 50 of a hero; a boss
 //! is made at the level's boss locator and sleeps (playing INIT) until two
 //! seconds have passed and its targets are within its wake distance. Then
 //! every 30 Hz tick a critter
@@ -41,8 +42,11 @@
 //! (bosses aren't pushed). At 0 hit points it plays DEATH and is removed
 //! when that ends (a boss when its hold after it ends).
 //!
-//! A statue only wakes when a wake trigger (flag 0x2000) next to it comes
-//! on, as in the game — most placed golems are never woken.
+//! A statue wakes when a wake trigger (flag 0x2000) next to it comes on or
+//! a hero walks into it (it blocks); it comes alive once its spot is seen
+//! within 50 of a hero. A placed golem, gargoyle or general holds the
+//! powerup lying on its spot, hidden, and drops it where it dies (a
+//! gargoyle holding none leaves a gargoyle piece).
 //! `GDL_WAKE_STATUES=<range>` (a testing aid) also wakes them when the
 //! hero comes that close.
 //!
@@ -78,7 +82,7 @@ use gdl_formats::collision::{node_flags, push_out};
 use gdl_formats::critter::{self, CritterDamage, CritterFile, CritterMove, Condition, class, kind};
 use gdl_formats::population::{ItemClass, LocatorKind, PlacementParams, REALM_LETTERS, rotation_matrix};
 use gdl_formats::texmod::TexMod;
-use gdl_formats::{LevelCollision, ModelFile};
+use gdl_formats::{LevelCollision, ModelFile, enemy};
 
 use crate::audio::{PlaySound, QueueVoice, VoiceQueues};
 use crate::character::{Animate, Animator, CharacterData, CharacterModel, advance_clip, clip_end};
@@ -87,16 +91,18 @@ use crate::effects::effect_life;
 use crate::exits::ChangeLevelTo;
 use crate::flash::{self, Flash, FlashColours};
 use crate::message_box::{self, ShowCaption, TextFile};
+use crate::hints::{Hint, ShowHint};
 use crate::items::LevelItems;
 use crate::texanim::LevelTexAnims;
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion;
 use crate::mechanics::Mechanics;
-use crate::monsters::{MonsterLevel, MonsterTick};
+use crate::monsters::{MonsterLevel, MonsterTick, game_view, on_screen};
+use crate::play_camera::PlayCamera;
 use crate::player::Player;
 use crate::player_state::{DamagePlayer, EnemyScale, PlayerState, TimeStop};
-use crate::population::LevelPopulation;
+use crate::population::{ContentModels, LevelPopulation};
 use crate::projectiles::{cylinder_hit, load_atree, spawn_critter_missile};
 use crate::world::{LevelEntity, LevelGround};
 
@@ -105,7 +111,16 @@ pub struct CrittersPlugin;
 impl Plugin for CrittersPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BossWatch>()
-            .add_systems(FixedUpdate, (tick_critters.after(MonsterTick), run_victory.after(tick_critters), watch_boss.after(run_victory)))
+            .add_systems(
+                FixedUpdate,
+                (
+                    touch_statues.before(tick_critters),
+                    tick_critters.after(MonsterTick),
+                    drop_items.after(tick_critters),
+                    run_victory.after(tick_critters),
+                    watch_boss.after(run_victory),
+                ),
+            )
             .add_systems(
             Update,
             (setup_level.run_if(resource_added::<MonsterLevel>).after(crate::items::build_items), interpolate).chain(),
@@ -359,9 +374,16 @@ fn wizard_spot(spot: [f32; 3], heroes: &[[f32; 3]]) -> [f32; 3] {
 
 /// Seconds per 30 Hz tick: critters keep time in seconds.
 const DT: f32 = 1.0 / 30.0;
-/// Enemy type of the golem, and the first boss type.
-const GOLEM: i32 = 0x1D;
+/// Enemy types of the placed critters, and the first boss type.
+const GOLEM: i32 = enemy::GOLEM;
+const GARGOYLE: i32 = enemy::GARGOYLE;
+const GENERAL: i32 = enemy::GENERAL;
 const FIRST_BOSS: i32 = 0x22;
+/// A placed critter comes (its statue starts to wake, or the general is
+/// made) once its spot is on screen — a sphere of this many times its
+/// radius — and within this of a hero (as placed monsters do).
+const PLACED_SCREEN_RADIUS: f32 = 4.0;
+const PLACED_RANGE: f32 = 50.0;
 /// A `DAMG` of this kind throws down a safe rock (the yeti's boulders).
 const MAKES_ROCK: i16 = 6;
 /// Boss types the intro and the end treat apart.
@@ -570,10 +592,25 @@ struct Statue {
     entity: Option<Entity>,
     waking: bool,
     done: bool,
+    /// The powerup it holds (its placement number), dropped when its
+    /// critter dies.
+    holds: Option<usize>,
 }
 
 #[derive(Component)]
 struct StatueModel;
+
+/// What a dead placed critter leaves: the item it held, or — a gargoyle
+/// holding nothing — a gargoyle piece of its kind.
+struct CritterDrop {
+    held: Option<usize>,
+    class: i16,
+    at: [f32; 3],
+}
+
+/// Fields before a dropped item can be picked up (a stand-in: the game
+/// tosses it out, and it can be had where it lands).
+const DROP_DELAY: i32 = 30;
 
 /// A target on a critter: one of its hit spheres (its type's `NODE`
 /// records, numbered across the body and its parts), or — `node` none —
@@ -629,6 +666,13 @@ pub struct CritterLevel {
     /// the effects system (textures it supplies), which isn't done.
     glow: (Handle<Mesh>, Handle<StandardMaterial>),
     rng: u32,
+    /// The items the placed critters hold, and what the dead ones leave
+    /// this tick; the realm's gargoyle piece (`GARG<kind>`).
+    held: HashMap<Entity, usize>,
+    drops: Vec<CritterDrop>,
+    gargoyle_piece: String,
+    /// Placements whose critters were made this tick (their items go).
+    made: Vec<usize>,
 }
 
 impl CritterLevel {
@@ -1078,12 +1122,13 @@ fn setup_level(
     let realm_items = format!("level{}", monsters.realm);
     let mut kinds = HashMap::new();
     let mut animated = Vec::new();
-    let wanted = monsters.enemies.loaded.iter().map(|e| e.0).filter(|&e| e == GOLEM || e >= FIRST_BOSS);
+    let wanted = monsters.enemies.loaded.iter().map(|e| e.0).filter(|&e| matches!(e, GOLEM | GARGOYLE | GENERAL) || e >= FIRST_BOSS);
+    let gargoyle = monsters.enemies.gargoyle.as_str();
     for enemy in wanted {
         if kinds.contains_key(&enemy) {
             continue;
         }
-        let Some(file_name) = critter::file_for_enemy(enemy, realm_id, "") else { continue };
+        let Some(file_name) = critter::file_for_enemy(enemy, realm_id, gargoyle) else { continue };
         let path = format!("CRITTER/{file_name}");
         let file = match game.install.read(&path).map_err(|e| e.to_string()).and_then(|b| CritterFile::parse(&b).map_err(|e| e.to_string())) {
             Ok(f) => f,
@@ -1097,7 +1142,7 @@ fn setup_level(
             let n = items.hide_safe_rocks();
             info!("{path}: the boss throws down the safe rocks; {n} hidden until then");
         }
-        let folder = format!("MONSTERS/{}", critter::model_folder(&file.desc, &realm_items, ""));
+        let folder = format!("MONSTERS/{}", critter::model_folder(&file.desc, &realm_items, gargoyle));
         let Some((anim, model, textures, texmods)) = read_folder(&mut game, &folder) else {
             warn!("{folder}: can't read the critter's models");
             continue;
@@ -1159,7 +1204,13 @@ fn setup_level(
             warn!("{folder}: no atree {}", file.atree_name(0));
             continue;
         }
-        let statue = data("GOL_STATUE").map(|d| build(&d));
+        // The golem and the gargoyle stand as statues till woken; the
+        // general has none.
+        let statue = match file.desc.class {
+            class::GOLEM => data("GOL_STATUE").map(|d| build(&d)),
+            class::GARGOYLE => data("GAR_STATUE").map(|d| build(&d)),
+            _ => None,
+        };
         // Missile models: the effect a projectile blow starts names an
         // atree of the critter's own folder.
         let mut effects = HashMap::new();
@@ -1203,7 +1254,8 @@ fn setup_level(
         texanims.extend(animated);
     }
 
-    // Placed critters stand as statues.
+    // Placed critters stand as statues (the general comes as soon as it's
+    // seen).
     let pop = &population.population;
     let mut statues = Vec::new();
     for (placement, p) in pop.placements.iter().enumerate() {
@@ -1232,6 +1284,9 @@ fn setup_level(
             commands.entity(e).insert((StatueModel, LevelEntity));
             e
         });
+        if entity.is_some() {
+            items.mark_statue(placement);
+        }
         debug!("critter {enemy:#x} statue at placement {placement} {position:?} (range {range})");
         statues.push(Statue {
             placement,
@@ -1240,8 +1295,9 @@ fn setup_level(
             yaw,
             radius: 0.5 * ty.extent[0].max(ty.extent[1]),
             entity,
-            waking: false,
+            waking: kind.statue.is_none(),
             done: false,
+            holds: items.hold_nearest(p.position),
         });
     }
     info!("critters: {} kinds, {} statues", kinds.len(), statues.len());
@@ -1282,6 +1338,10 @@ fn setup_level(
             }),
         ),
         rng: 0x2545_F491,
+        held: HashMap::new(),
+        drops: Vec::new(),
+        made: Vec::new(),
+        gargoyle_piece: format!("GARG{}", monsters.enemies.gargoyle.to_ascii_uppercase()),
     };
 
     // The boss appears at the level's boss locator, dropped onto the floor
@@ -1616,7 +1676,7 @@ fn tick_critters(
     bones: Query<&GlobalTransform>,
     mut hurt: MessageWriter<DamagePlayer>,
     mut sounds: MessageWriter<PlaySound>,
-    mut death_shot: Local<Option<u32>>,
+    (mut death_shot, camera): (Local<Option<u32>>, Option<Res<PlayCamera>>),
     (colours, mut tags, enemies, stop): (Res<FlashColours>, Query<&mut MeshTag>, Res<EnemyScale>, Res<TimeStop>),
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
@@ -1659,7 +1719,8 @@ fn tick_critters(
         Vec::new()
     };
 
-    wake_statues(level, mechanics, population.as_deref(), &heroes, &mut statues, &mut commands);
+    let view = game_view(camera.as_deref());
+    wake_statues(level, mechanics, population.as_deref(), &heroes, view.as_ref(), &mut statues, &mut commands);
 
     let intro_before = level.intro;
     let mut blows: Vec<Blow> = Vec::new();
@@ -1747,6 +1808,9 @@ fn tick_critters(
                     over: false,
                 });
                 info!("the boss is gone");
+            }
+            if !boss {
+                level.drops.push(CritterDrop { held: level.held.remove(&entity), class: c.class(), at: c.position });
             }
             for s in c.spheres.iter().chain([&c.aim]).chain(c.parts.iter().flat_map(|p| p.spheres.iter().chain([&p.aim]))) {
                 commands.entity(*s).try_despawn();
@@ -2232,15 +2296,83 @@ fn missile_reaction(state: i32, boss_type: i32) -> Option<(i32, f32, f32)> {
     }
 }
 
+/// Statues the heroes walked into wake (the item touch handler's placed
+/// monster case); a placement whose critter was made goes.
+fn touch_statues(mut commands: Commands, level: Option<ResMut<CritterLevel>>, items: Option<ResMut<LevelItems>>) {
+    let (Some(mut level), Some(mut items)) = (level, items) else { return };
+    for placement in items.take_woken() {
+        if let Some(s) = level.statues.iter_mut().find(|s| s.placement == placement && !s.waking && !s.done) {
+            info!("the hero walks into the statue at placement {placement}: it wakes");
+            s.waking = true;
+        }
+    }
+    for placement in std::mem::take(&mut level.made) {
+        items.free(placement, &mut commands);
+    }
+}
+
+/// A dead golem, gargoyle or general lets go of the powerup it held where
+/// it fell; a gargoyle holding none leaves a gargoyle piece of its kind.
+/// Either way the general's and the gargoyle's hint follows (the game's
+/// critter drop).
+fn drop_items(
+    mut commands: Commands,
+    level: Option<ResMut<CritterLevel>>,
+    items: Option<ResMut<LevelItems>>,
+    (population, contents): (Option<Res<LevelPopulation>>, Option<Res<ContentModels>>),
+    mut models: Query<&mut Transform>,
+    mut hints: MessageWriter<ShowHint>,
+) {
+    let (Some(mut level), Some(mut items)) = (level, items) else { return };
+    for d in std::mem::take(&mut level.drops) {
+        let dropped = if let Some(h) = d.held {
+            if let Some(m) = items.drop_held(h, d.at, DROP_DELAY)
+                && let Ok(mut t) = models.get_mut(m)
+            {
+                t.translation = Vec3::from(d.at);
+            }
+            info!("a critter drops item {h} at {:?}", d.at);
+            true
+        } else if d.class == class::GARGOYLE
+            && let Some(ty) = population.as_ref().and_then(|p| {
+                p.population.item_types.iter().find(|t| t.name.eq_ignore_ascii_case(&level.gargoyle_piece)).cloned()
+            })
+        {
+            let name = ty.name.clone();
+            let placement = items.release(ty, d.at, rotation_matrix([0.0; 3]), None, DROP_DELAY);
+            if let Some(models) = contents.as_deref() {
+                models.spawn(&name, Transform::from_translation(Vec3::from(d.at)), placement, &mut commands);
+            }
+            info!("the gargoyle leaves {name} at {:?}", d.at);
+            true
+        } else {
+            false
+        };
+        if dropped {
+            match d.class {
+                class::GENERAL => {
+                    hints.write(ShowHint(Hint::GeneralsCarryItems));
+                }
+                class::GARGOYLE => {
+                    hints.write(ShowHint(Hint::DefeatGargoyles));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Wakes statues: from the level's wake triggers (the nearest statue
 /// within [`WAKE_REACH`] of each), and with `GDL_WAKE_STATUES` when the
-/// hero comes that close; a woken statue plays ACTIVE, then its critter
-/// takes its place.
+/// hero comes that close; once its spot is on screen and within
+/// [`PLACED_RANGE`] of a hero, a woken statue plays ACTIVE, then its
+/// critter takes its place (the general, with no statue, comes at once).
 fn wake_statues(
     level: &mut CritterLevel,
     mechanics: Option<ResMut<Mechanics>>,
     population: Option<&LevelPopulation>,
     heroes: &[Hero],
+    view: Option<&bevy::camera::primitives::Frustum>,
     statues: &mut Query<&mut Animator, With<StatueModel>>,
     commands: &mut Commands,
 ) {
@@ -2273,6 +2405,12 @@ fn wake_statues(
         if !s.waking || s.done {
             continue;
         }
+        let seen = on_screen(view, s.position, PLACED_SCREEN_RADIUS * s.radius)
+            && heroes.iter().any(|h| distance(h.feet, s.position) <= PLACED_RANGE);
+        let started = s.entity.and_then(|e| statues.get(e).ok()).is_some_and(|a| a.action_name() == "ACTIVE");
+        if !seen && !started {
+            continue;
+        }
         let finished = match s.entity.and_then(|e| statues.get_mut(e).ok()) {
             Some(mut a) => {
                 if a.action_name() != "ACTIVE" && a.frame == 0.0 && a.play_named("ACTIVE") {
@@ -2296,6 +2434,10 @@ fn wake_statues(
         let Some(kind) = level.kinds.get(&enemy).cloned() else { continue };
         if let Some(e) = spawn_critter(level, &kind, position, yaw, commands) {
             info!("critter {} awakes at {position:?} ({e:?})", kind.file.desc.name);
+            if let Some(h) = level.statues[i].holds {
+                level.held.insert(e, h);
+            }
+            level.made.push(level.statues[i].placement);
         }
     }
 }
@@ -3193,7 +3335,7 @@ mod tests {
             speed_scale: 1.0,
             damage_scale: 1.0,
             enemy_scale: 1.0,
-        time_stopped: false,
+            time_stopped: false,
             guard: HashMap::new(),
             boss: None,
             boss_dead: false,
@@ -3209,6 +3351,10 @@ mod tests {
             events: Vec::new(),
             glow: (Handle::default(), Handle::default()),
             rng: 1,
+            held: HashMap::new(),
+            drops: Vec::new(),
+            gargoyle_piece: String::new(),
+            made: Vec::new(),
         }
     }
 

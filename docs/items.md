@@ -285,6 +285,7 @@ Items shape 1 (cylinder) on the disc: powerups (extent 0.5, 2 — gold
 | EXIT | stands in: sets the hero's bit in `+0xE0` (returns 2) |
 | OBSTACLE | blocks, except crumbling floors (`0x28`, `0x35`, `0x31`: they start falling) |
 | TRANSPORTER | stands in (returns 2); `FUN_80086e44` records it in the hero's `+0x8AC` |
+| ENEMYINFO | a placed monster's item (a statue till its critter is made): with its range `+0xE8` ≥ 0 it's woken (`+0xE4 \|= 1`, [critters.md](critters.md) "Placed critters"); blocks within the type's radius (`+0x0C`) |
 
 ### Picking up (`FUN_8005de3c`)
 
