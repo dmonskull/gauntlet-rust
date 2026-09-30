@@ -14,7 +14,6 @@ use bevy::prelude::*;
 use gdl_formats::population::{ItemClass, PlacementParams};
 
 use crate::audio::PlaySound;
-use crate::damage::after_armor;
 use crate::hints::{Hint, ShowHint};
 use crate::items::{self, LevelItems};
 use crate::mechanics::LevelNodes;
@@ -229,9 +228,8 @@ fn tiles(
         } else {
             Vec3::ZERO
         };
-        let amount = after_armor(t.damage * damage_scale, p.armor);
-        if amount > 0.0 {
-            p.queue_hit(amount, flags, push);
+        let amount = p.take_blow(t.damage * damage_scale, flags, push);
+        if amount != 0.0 {
             hurt.write(DamagePlayer { amount });
         }
         if let Some(name) = TILE_SOUNDS.get(realm).and_then(|row| row.get(t.subtype.clamp(0, 6) as usize))
@@ -299,9 +297,8 @@ fn walls(
     } else {
         Vec3::ZERO
     };
-    let amount = after_armor(damage, p.armor);
-    if amount > 0.0 {
-        p.queue_hit(amount, blow, push);
+    let amount = p.take_blow(damage, blow, push);
+    if amount != 0.0 {
         hurt.write(DamagePlayer { amount });
     }
     h.wall_guard = 1.0;

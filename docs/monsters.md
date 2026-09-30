@@ -661,8 +661,12 @@ hits each target once (players through their guard).
 **In this rewrite** (`monsters.rs` `suicide_ai` / `blow_up`, the
 `ExplosionAt` handling in `effects.rs`): all of the above. Stand-ins: the
 explosions' lights aren't cast; the blast hits each target once per stage
-(the game spares monsters 3 s and heroes 0.25 s between hits); a fireball
-throws heroes back as a barrel's blast does (the gas doesn't); SUICIDEEXP's
+(the game spares monsters 3 s and heroes 0.25 s between hits). Heroes
+take the blast with its own kind (`effects::blast_on_hero`, from the
+effects update's area branch: under 5 damage it loses kinds `0x170` and
+gains `0x1000000`; pushed by 0.25 × the way out from the centre, `r2-0x5578`),
+so a fireball (`0x421`) knocks them down and the gas (`0x800`) only
+makes them flinch; SUICIDEEXP's
 `+0xB4` (0.5) isn't used. A running runner that loses its player walks
 unaware for the frame (AI 5/6), and a charging one is the level's leader
 that other monsters run from (AI `0x18`, "The frame update"). Test: `GDL_THROWER=15,0x12,6` on levelA1 with

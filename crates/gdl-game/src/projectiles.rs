@@ -1012,7 +1012,7 @@ fn fly(
     time: Res<Time>,
     ground: Option<Res<LevelGround>>,
     mut projectiles: Query<(Entity, &mut Projectile)>,
-    players: Query<(Entity, &Player)>,
+    mut players: Query<(Entity, &mut Player)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable, Option<&Monster>)>,
     mut guard: ResMut<PlayerGuard>,
     mut hits: MessageWriter<Hit>,
@@ -1047,12 +1047,18 @@ fn fly(
             if let Some((s, player)) = hit {
                 to = from.lerp(to, s);
                 let until = guard.0.get(&player).copied().unwrap_or(f64::MIN);
-                if until <= now {
-                    damage.write(DamagePlayer { amount: p.damage });
+                if until <= now
+                    && let Ok((_, mut pl)) = players.get_mut(player)
+                {
+                    // Pushing along its flight.
+                    let amount = pl.take_blow(p.damage, p.kind, p.velocity.normalize_or_zero());
+                    if amount != 0.0 {
+                        damage.write(DamagePlayer { amount });
+                    }
                     if p.damage > GUARD_ABOVE {
                         guard.0.insert(player, now + PLAYER_GUARD as f64);
                     }
-                    info!("a missile hits the hero for {:.1}", p.damage);
+                    info!("a missile hits the hero for {amount:.1}");
                 }
                 stop = Some(Stop::At(to));
             }
@@ -1157,7 +1163,7 @@ fn fly(
                 if let Some(b) = p.potion {
                     potions.write(BlastAt { owner: p.owner.entity(), at, kind: b.kind, damage: b.damage, radius: b.radius });
                 } else if p.blast > 0.0 {
-                    burst(p, at, now, &players, &bodies, &mut guard, &mut hits, &mut damage);
+                    burst(p, at, now, &mut players, &bodies, &mut guard, &mut hits, &mut damage);
                 }
                 commands.entity(entity).despawn();
             }
@@ -1172,7 +1178,7 @@ fn burst(
     p: &Projectile,
     at: Vec3,
     now: f64,
-    players: &Query<(Entity, &Player)>,
+    players: &mut Query<(Entity, &mut Player)>,
     bodies: &[Body],
     guard: &mut PlayerGuard,
     hits: &mut MessageWriter<Hit>,
@@ -1197,14 +1203,19 @@ fn burst(
         });
     }
     if matches!(p.owner, Owner::Monster(_)) {
-        for (e, pl) in players.iter() {
-            let centre = Vec3::from(pl.mover.position) + Vec3::Y * PLAYER_CENTRE;
+        for (e, mut pl) in players.iter_mut() {
+            let feet = Vec3::from(pl.mover.position);
+            let centre = feet + Vec3::Y * PLAYER_CENTRE;
             let d = (centre - at).length() - pl.radius;
             let Some(share) = blast_share(d, p.blast) else { continue };
             if guard.0.get(&e).is_none_or(|&until| until <= now) {
-                let amount = p.damage * share;
-                damage.write(DamagePlayer { amount });
-                if amount > GUARD_ABOVE {
+                let blow = p.damage * share;
+                let (kind, push) = crate::effects::blast_on_hero(blow, p.kind, at, feet);
+                let amount = pl.take_blow(blow, kind, push);
+                if amount != 0.0 {
+                    damage.write(DamagePlayer { amount });
+                }
+                if blow > GUARD_ABOVE {
                     guard.0.insert(e, now + PLAYER_GUARD as f64);
                 }
             }

@@ -41,9 +41,9 @@ const DEFAULT_RADIUS: f32 = 1.5;
 /// Every class's top point is this high (`PDAT +0x50`).
 pub const DEFAULT_HEAD: f32 = 4.4;
 
-/// Hurts the hero by `amount` health. The game runs damage through armour
-/// and the level's difficulty factor before it lands; senders pass the
-/// amount that should come off (see `docs/items.md`).
+/// Hurts the hero by `amount` health (negative: heals it). Senders pass
+/// what should come off, after armour and the armour powers
+/// (`Player::take_blow`).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct DamagePlayer {
     pub amount: f32,
@@ -204,7 +204,6 @@ impl PlayerState {
         }
     }
 
-    /// Takes health away; returns `true` if this killed the hero.
     /// Experience needed to go from `level` to the next one.
     pub fn experience_to_leave(level: u32) -> u32 {
         let l = level;
@@ -223,8 +222,11 @@ impl PlayerState {
         gained
     }
 
+    /// Takes health away; returns `true` if this killed the hero. A
+    /// negative amount — the gold armour's heal — adds health, with no cap
+    /// (the game's hurt-player routine has none).
     pub fn damage(&mut self, amount: f32) -> bool {
-        if !self.alive || amount <= 0.0 {
+        if !self.alive || amount == 0.0 {
             return false;
         }
         self.health -= amount;
@@ -305,17 +307,17 @@ impl PlayerState {
     }
 
     /// The powerups' tick (the game's stats routine): their clocks run
-    /// down by `dt` seconds unless `held` (in the tower), and what they
-    /// add up to is worked out — a power counts on the tick it runs out,
-    /// then it's dropped; a turbo power is spent at once.
-    pub fn tick_powers(&mut self, dt: f32, held: bool) -> PowerBits {
+    /// down by `dt` seconds ([`power_clock`] decides how many), and what
+    /// they add up to is worked out — a power counts on the tick it runs
+    /// out, then it's dropped; a turbo power is spent at once.
+    pub fn tick_powers(&mut self, dt: f32) -> PowerBits {
         let mut b = PowerBits::default();
         let mut element_time = -1.0f32;
         for p in &mut self.powers {
             if p.time == 0.0 {
                 continue;
             }
-            if !held && p.time > 0.0 {
+            if p.time > 0.0 {
                 p.time = (p.time - dt).max(0.0);
             }
             match p.subtype {
@@ -404,7 +406,9 @@ fn take_damage(
         if cut {
             continue;
         }
-        if state.damage(hit.amount) {
+        let died = state.damage(hit.amount);
+        debug!("the hero takes {:.1}: {:.1} health", hit.amount, state.health);
+        if died {
             info!("the hero has died");
         }
     }
@@ -446,23 +450,51 @@ fn test_powers(mut state: ResMut<PlayerState>, mut done: Local<bool>) {
     }
 }
 
-/// Counts powerups down (not in the tower) and adds them up, and sounds
+/// How fast the powerups' clocks run: not at all in the tower or during a
+/// camera cut; on a boss level three times as fast while the boss is awake
+/// and alive, and not at all before it wakes or once it's dead.
+pub fn power_clock(in_tower: bool, cut: bool, boss_level: bool, boss_awake: bool, boss_dead: bool) -> f32 {
+    if in_tower || cut {
+        0.0
+    } else if !boss_level {
+        1.0
+    } else if boss_awake && !boss_dead {
+        BOSS_POWER_CLOCK
+    } else {
+        0.0
+    }
+}
+
+/// Powerups run down this much faster in a boss fight.
+const BOSS_POWER_CLOCK: f32 = 3.0;
+
+/// Counts powerups down ([`power_clock`]) and adds them up, and sounds
 /// the low-health warning: at 200 health or less the game plays `S_WARN`
-/// every 120 fields (60 below 100, 30 below 25).
+/// every 120 fields (60 below 100, 30 below 25) — not in the tower, or
+/// while invulnerable.
 fn powers_and_warning(
     time: Res<Time>,
     mut state: ResMut<PlayerState>,
     population: Option<Res<LevelPopulation>>,
+    camera: Option<Res<crate::play_camera::PlayCamera>>,
+    level: Option<Res<crate::monsters::MonsterLevel>>,
+    boss: Option<Res<crate::critters::BossWatch>>,
     mut sound: MessageWriter<PlaySound>,
 ) {
     let in_tower = population.as_ref().and_then(|p| crate::quest::level_of(&p.level)).is_some_and(|(realm, _)| realm == TOWER_REALM);
-    state.tick_powers(time.delta_secs(), in_tower);
+    let cut = camera.is_some_and(|c| c.in_cut());
+    let boss_level = level.is_some_and(|l| l.boss >= 0);
+    let (awake, dead) = boss.map_or((false, false), |b| (b.awake, b.dead));
+    state.tick_powers(time.delta_secs() * power_clock(in_tower, cut, boss_level, awake, dead));
     if !state.alive || state.health > 200.0 {
         return;
     }
     state.warning_timer -= FIELDS_PER_TICK;
     if state.warning_timer < 1 {
-        sound.write(PlaySound("S_WARN".into()));
+        let invulnerable = state.bits.armour & (crate::damage::resists::INVULNERABLE | crate::damage::resists::GOLD) != 0;
+        if !in_tower && !invulnerable {
+            sound.write(PlaySound("S_WARN".into()));
+        }
         state.warning_timer = match state.health {
             h if h < 25.0 => 30,
             h if h < 100.0 => 60,
@@ -536,16 +568,26 @@ mod tests {
         s.grant_power(power::SPEED, 0, 4.0, 40.0);
         s.grant_power(power::SPECIAL, power::TURBO, 0.0, 1.0);
         // The longest-lasting element wins; other weapon bits add.
-        let b = s.tick_powers(0.5, false);
+        let b = s.tick_powers(0.5);
         assert_eq!(b.weapon, 0x80002);
         assert_eq!((b.speed, b.special & power::SPEEDING), (4.0, power::SPEEDING));
         // The turbo power fills the meter once and is spent.
         assert_eq!(b.turbo, 100.0);
-        assert_eq!(s.tick_powers(0.5, false).turbo, 0.0);
-        // In the tower nothing runs down.
+        assert_eq!(s.tick_powers(0.5).turbo, 0.0);
+        // Held (the tower): nothing runs down.
         let before: Vec<f32> = s.powers.iter().map(|p| p.time).collect();
-        s.tick_powers(5.0, true);
+        s.tick_powers(5.0 * power_clock(true, false, false, false, false));
         assert_eq!(before, s.powers.iter().map(|p| p.time).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_boss_fight_runs_the_clocks_fast() {
+        assert_eq!(power_clock(false, false, false, false, false), 1.0);
+        assert_eq!(power_clock(false, true, false, false, false), 0.0);
+        // Before the boss wakes, while it fights, once it's dead.
+        assert_eq!(power_clock(false, false, true, false, false), 0.0);
+        assert_eq!(power_clock(false, false, true, true, false), 3.0);
+        assert_eq!(power_clock(false, false, true, true, true), 0.0);
     }
 
     #[test]
@@ -558,7 +600,7 @@ mod tests {
         s.grant_power(5, 0x10_0000, 5.0, -1.0);
         s.grant_power(5, 0x10_0000, 5.0, -1.0);
         assert_eq!(s.powers[1].amount, 10.0);
-        s.tick_powers(200.0, false);
+        s.tick_powers(200.0);
         assert_eq!(s.powers.len(), 1, "timed power ran out, counted one stays");
         for v in 0..20 {
             s.grant_power(9, 1 << v, 0.0, v as f32 + 1.0);

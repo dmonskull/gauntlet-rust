@@ -287,7 +287,12 @@ throw every two seconds.
   (monster, type, AI, centre, target point, facing, a random 0–1) from
   `monsters.rs`; both launched in `FixedUpdate` after the monsters, then
   every `Projectile` flies. `Hit` messages for monsters, generators,
-  breakables and the practice dummy; `DamagePlayer` for the hero.
+  breakables and the practice dummy; for the hero `Player::take_blow`
+  (armour, armour powers, the reaction) with the missile's kind, pushed
+  along its flight — a burst's blow as the effects' blasts land
+  (`effects::blast_on_hero`: under 5 it loses kinds `0x170` and gains
+  `0x1000000`; pushed by 0.25 × the way out from its centre, across the
+  floor) — then `DamagePlayer`.
 - Level tuning `+0xC0`/`+0xC4`/`+0xC8` are `LevelTuning::throw_timing`,
   `missile_speed`, `missile_spread` (0 read as 1, as the other scales);
   PDAT `+0x5C`/`+0x158` are `PlayerStats::throw_offset`,

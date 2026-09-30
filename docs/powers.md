@@ -71,9 +71,11 @@ slots with special bits `0x7004F1` or armour `0x200000`, the longest time
 (99999 for a counted one) sets the body model's transparency to
 255 × (1 − time) once it's under 1 s.
 
-Here: `PlayerState::tick_powers` runs the clocks down by `dt` unless in
-the tower; the boss-level rule (× 3 once awake, held before and after) and
-the cuts' hold aren't in.
+Here: `player_state::power_clock` gives the rate — 0 in the tower and
+camera cuts, × 3 on a boss level while the boss is awake (`BossWatch`)
+and not dead, 0 before and after — and `PlayerState::tick_powers` runs
+the clocks down by it. `r13-0x7340` isn't traced. Counted powers aren't
+spent yet.
 
 ## The looks: where they hang
 
@@ -145,7 +147,17 @@ The factors (resist, neutral, weak) are 0.5, 1.5, 2.0 (`r2-0x73E8`,
 1.25. Kind `0x800` is poison (poisoned food, the Pojo's chicken, the
 poison clouds); `0x200` is magic.
 
-Here: `damage.rs::after_armor` has step 5 only.
+Here: `damage.rs::resist`, for every blow: on heroes through
+`Player::take_blow` (armour stat and armour bits), on monsters (armour 0,
+1 for Death; no resistance bits — so elemental blows do × 1.5 / 1.25, and
+a hero's blow at least 1), on critters (their type's armour and
+resistances). The hero's routine around it (`FUN_80078560`): a
+non-negative result is queued for the reaction (blows of 2 or less,
+`r2-0x5e7c`, lose the knockback kinds `0x10170`; a blow armour stopped
+still carries its stun); a negative one heals and draws none. Not yet:
+poisoned food (`items.rs` takes it straight off health, not as kind
+`0x800` through the routine), defending, the `+0x3C` bit-1 test for kind
+`0x40000000`.
 
 ## Armour bits (`+0x120`)
 
@@ -181,9 +193,17 @@ Confirmed:
   The slot `+0x7DC` is the one hit flashes use ([rendering.md](
   rendering.md), "Texture overrides").
 
-To build: the armour check in the hero's damage path; skip hit reactions;
-a chrome material (the texture on every part, generated coordinates) with
-the blink; the gold heal.
+Here: the damage and the heal (`resist`), no reactions
+(`player.rs::tick`), no `S_WARN`; the chrome (`player.rs::show_chrome`,
+`flash.rs::Retexture`, `level.wgsl` mode 3) re-armed as above with the
+blink, shown for the tick it's armed and the next like a flash. The
+texture coordinates are the normal along the camera's right and up
+(the rows `FUN_800c60a4` builds: the camera's `(1, 0, 0)` and `(0, 1,
+0)` through its matrix and the model's, normalised); their scale and
+offset in the GX matrix aren't traced — the software path in
+`FUN_800c48c0` uses them as they are, so 1 per unit, no offset, and the
+32×32 texture repeats. Footsteps (no footstep sounds are played yet)
+and the death voice aren't done.
 
 ### `0x20000` reflect shield
 

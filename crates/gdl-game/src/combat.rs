@@ -275,13 +275,23 @@ pub fn one_per_critter<T>(hits: Vec<T>, aim: impl Fn(&T) -> Option<CritterAim>) 
     hits.into_iter().zip(wanted).filter_map(|(h, w)| w.then_some(h)).collect()
 }
 
-/// Extra kinds of blow, as the game hands them to the target (it ORs in the
-/// attacker's weapon power-up bits too, none of which exist yet).
+/// Extra kinds of blow, as the game hands them to the target (a hero's
+/// carry its weapon power-up bits too, the element in the low four).
 pub mod hit_kind {
+    /// The blow's element (1 fire, 2 lightning, 3 light, 4 acid;
+    /// `damage::ELEMENTS`).
+    pub const ELEMENT: u32 = 0xF;
     /// The slow attack or a lunge (double damage).
     pub const STRONG: u32 = 0x10;
     /// A combo finisher (triple damage), or the kick on a low monster.
     pub const HEAVY: u32 = 0x20;
+    /// The kinds that knock the target back or down.
+    pub const KNOCKS: u32 = 0x1_0170;
+    /// Magic and poison: armour doesn't stop them.
+    pub const MAGIC: u32 = 0x200;
+    pub const POISON: u32 = 0x800;
+    /// No hit look (blood spray) where it lands.
+    pub const NO_HIT_LOOK: u32 = 0x100_0000;
 }
 
 /// A blow landing on a target. Whoever owns the target applies it.

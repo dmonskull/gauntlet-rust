@@ -83,7 +83,6 @@ use gdl_formats::{LevelCollision, ModelFile};
 use crate::audio::{PlaySound, QueueVoice, VoiceQueues};
 use crate::character::{Animate, Animator, CharacterData, CharacterModel, advance_clip, clip_end};
 use crate::combat::{CritterAim, SphereAim, TargetKind, Targetable};
-use crate::damage::after_armor;
 use crate::effects::effect_life;
 use crate::exits::ChangeLevelTo;
 use crate::flash::{self, Flash, FlashColours};
@@ -707,12 +706,13 @@ struct Victory {
 
 /// What the boss camera follows (`boss_camera.rs`), refreshed each tick:
 /// the boss, its spot, whether it has woken (the game's `r13-0x7788`, kept
-/// once set), and the end's key and wizard.
+/// once set) and died (`r13-0x7784`), and the end's key and wizard.
 #[derive(Resource, Default, Clone)]
 pub struct BossWatch {
     pub boss: Option<crate::boss_camera::Boss>,
     pub spot: Option<[f32; 3]>,
     pub awake: bool,
+    pub dead: bool,
     pub ending: bool,
     pub key: Option<[f32; 3]>,
     pub wizard: Option<[f32; 3]>,
@@ -738,6 +738,7 @@ pub(crate) fn watch_boss(level: Option<Res<CritterLevel>>, critters: Query<&Crit
         dying: c.state == CritterState::Dying,
     });
     watch.awake |= boss.is_some_and(|c| c.state != CritterState::New);
+    watch.dead = level.boss_dead;
     watch.ending = level.victory.is_some();
     watch.key = level.victory.as_ref().and_then(|v| v.key.map(|_| v.key_at));
     watch.wizard = level.victory.as_ref().and_then(|v| v.wizard.map(|_| v.wizard_at));
@@ -976,7 +977,8 @@ impl Critter {
             kind_bits &= !KIND_REACTIONS;
             damage *= BLOCKED;
         }
-        damage = after_armor(damage, ty.armor);
+        let boss_level = level.is_some_and(|l| l.boss_type >= 0);
+        damage = crate::damage::resist(damage, &mut kind_bits, ty.armor, ty.resist, boss_level);
         self.damage_taken += damage;
         // Bosses take less with more players, except in their intro's
         // first four states.
@@ -1876,9 +1878,8 @@ fn tick_critters(
     }
     for (player, amount, kind_bits, push) in blows {
         let Ok((_, mut p)) = players.get_mut(player) else { continue };
-        let amount = after_armor(amount, p.armor);
-        if amount > 0.0 {
-            p.queue_hit(amount, kind_bits, Vec3::from(push));
+        let amount = p.take_blow(amount, kind_bits, Vec3::from(push));
+        if amount != 0.0 {
             hurt.write(DamagePlayer { amount });
         }
         info!("a critter hits the hero for {amount:.1} (kind {kind_bits:#x})");

@@ -11,6 +11,13 @@
 //! that has it), so the flash rides on the meshes' [`MeshTag`] —
 //! `level.wgsl` reads the colour and what to do with it from the tag —
 //! instead of on copies of their materials.
+//!
+//! The same slot on a hero shows the invulnerability power-ups' chrome
+//! (`CHROMESILVER`, `CHROMEGOLD`): a real texture in place of every part's
+//! own, so that one draws through copies of the body's materials
+//! ([`Retexture`]).
+
+use std::collections::HashMap;
 
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
@@ -18,6 +25,7 @@ use gdl_formats::ModelFile;
 
 use crate::character::Animator;
 use crate::level::LoadedGame;
+use crate::level_material::LevelMaterial;
 
 pub struct FlashPlugin;
 
@@ -35,11 +43,13 @@ pub const TAG_NO_LIGHTMAP: u32 = 1 << 26;
 
 /// `AAAWHITE`'s colour (0xRRGGBB): the shared powerups bank's, which the
 /// game flashes bodies with, and the level's own, for its obstacles (none
-/// where the bank hasn't one: `levelT4`).
+/// where the bank hasn't one: `levelT4`). And the powerups bank's chrome
+/// textures, silver and gold.
 #[derive(Resource, Default)]
 pub struct FlashColours {
     pub powerups: Option<u32>,
     pub level: Option<u32>,
+    pub chrome: [Option<Handle<Image>>; 2],
     tried: bool,
 }
 
@@ -64,21 +74,107 @@ pub fn white_of(model: &ModelFile, textures: &[u8]) -> Option<u32> {
     Some(u32::from(first[0]) << 16 | u32::from(first[1]) << 8 | u32::from(first[2]))
 }
 
-/// Reads the powerups bank's `AAAWHITE` once the game data is there.
-fn load_powerups_white(mut colours: ResMut<FlashColours>, game: Option<ResMut<LoadedGame>>) {
+/// The chrome textures' names, silver then gold.
+const CHROME: [&str; 2] = ["CHROMESILVER", "CHROMEGOLD"];
+
+/// Reads the powerups bank's `AAAWHITE` and chrome once the game data is
+/// there.
+fn load_powerups_white(
+    mut colours: ResMut<FlashColours>,
+    game: Option<ResMut<LoadedGame>>,
+    mut images: ResMut<Assets<Image>>,
+) {
     let Some(mut game) = game else { return };
     if colours.tried {
         return;
     }
     colours.tried = true;
     let install = &mut game.install;
-    colours.powerups = (|| {
+    let bank = (|| {
         let model = ModelFile::parse(&install.read("POWERUPS/objects.ngc").ok()?).ok()?;
-        white_of(&model, &install.read("POWERUPS/textures.ngc").ok()?)
+        Some((model, install.read("POWERUPS/textures.ngc").ok()?))
     })();
+    let Some((model, textures)) = bank else {
+        warn!("hit flashes: no powerups bank");
+        return;
+    };
+    colours.powerups = white_of(&model, &textures);
     match colours.powerups {
         Some(c) => info!("hit flashes: AAAWHITE is {c:06x}"),
         None => warn!("hit flashes: the powerups bank has no AAAWHITE"),
+    }
+    let mut cache = crate::model_mesh::TextureCache::new(&model, &textures);
+    for (slot, name) in colours.chrome.iter_mut().zip(CHROME) {
+        let binding = model.texture_names.iter().find(|t| t.name == name).map(|t| t.binding);
+        *slot = binding.and_then(|b| cache.get(b, &mut images)).map(|(image, _)| image);
+        if slot.is_none() {
+            warn!("the powerups bank has no {name}");
+        }
+    }
+}
+
+/// `level.wgsl`'s mode for a texture in place of a part's own, with its
+/// coordinates from the normals (the chrome).
+const CHROME_MODE: f32 = 3.0;
+
+/// A body drawn with a texture in place of each part's own — the game's
+/// texture override −3 with draw flag `0x80000`, which the chrome
+/// power-ups use: coordinates from each point's normal, along the
+/// camera's right and up. The parts draw through copies of their
+/// materials while it shows, made the first time a part shows a
+/// material; a part whose material changes meanwhile is copied again.
+#[derive(Default)]
+pub struct Retexture {
+    texture: Option<AssetId<Image>>,
+    /// A part's own material → its copy.
+    copies: HashMap<AssetId<LevelMaterial>, Handle<LevelMaterial>>,
+    /// A copy → the material it stands in for.
+    originals: HashMap<AssetId<LevelMaterial>, Handle<LevelMaterial>>,
+}
+
+impl Retexture {
+    /// Shows `texture` on the body's parts (`None`: their own again).
+    pub fn show(
+        &mut self,
+        texture: Option<&Handle<Image>>,
+        animator: &Animator,
+        drawn: &mut Query<&mut MeshMaterial3d<LevelMaterial>>,
+        materials: &mut Assets<LevelMaterial>,
+    ) {
+        let id = texture.map(Handle::id);
+        if id != self.texture {
+            // Back on their own materials first.
+            for &(_, e) in animator.meshes() {
+                let Ok(mut m) = drawn.get_mut(e) else { continue };
+                if let Some(own) = self.originals.get(&m.0.id()) {
+                    m.0 = own.clone();
+                }
+            }
+            self.copies.clear();
+            self.originals.clear();
+            self.texture = id;
+        }
+        let Some(texture) = texture else { return };
+        for &(_, e) in animator.meshes() {
+            let Ok(mut m) = drawn.get_mut(e) else { continue };
+            let own = m.0.id();
+            if self.originals.contains_key(&own) {
+                continue;
+            }
+            let copy = match self.copies.get(&own) {
+                Some(c) => c.clone(),
+                None => {
+                    let Some(mut copy) = materials.get(own).cloned() else { continue };
+                    copy.diffuse = Some(texture.clone());
+                    copy.params.x = CHROME_MODE;
+                    let c = materials.add(copy);
+                    self.copies.insert(own, c.clone());
+                    self.originals.insert(c.id(), m.0.clone());
+                    c
+                }
+            };
+            m.0 = copy;
+        }
     }
 }
 
