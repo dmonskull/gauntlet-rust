@@ -46,9 +46,11 @@ pub fn level_of(name: &str) -> Option<(u32, u32)> {
 }
 
 /// Entering a level marks it in the hero's record: the exits to the next
-/// one open. `GDL_CRYSTALS="<counter>:<n>,…"` (testing) sets crystal
-/// counts once, at the first level.
-fn enter_level(population: Res<LevelPopulation>, state: Option<ResMut<PlayerState>>, mut seeded: Local<bool>) {
+/// one open. Testing, once at the first level: `GDL_CRYSTALS="<counter>:<n>,…"`
+/// sets crystal counts (−1: opened), `GDL_BEATEN=<bits>` the realms beaten
+/// (a bit per realm id) and `GDL_RUNES=<bits>` the runestones (a bit per
+/// stone); bits in decimal or `0x` hex.
+pub(crate) fn enter_level(population: Res<LevelPopulation>, state: Option<ResMut<PlayerState>>, mut seeded: Local<bool>) {
     let Some(mut state) = state else { return };
     if !*seeded {
         *seeded = true;
@@ -59,6 +61,22 @@ fn enter_level(population: Res<LevelPopulation>, state: Option<ResMut<PlayerStat
                 state.quest.crystals[c] = n.min(CRYSTALS_NEEDED[c]);
                 info!("GDL_CRYSTALS: {} {}", CRYSTAL_COLOURS[c], state.quest.crystals[c]);
             }
+        }
+        let bits = |name: &str| {
+            let v = std::env::var(name).ok()?;
+            let v = v.trim();
+            match v.strip_prefix("0x") {
+                Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                None => v.parse().ok(),
+            }
+        };
+        if let Some(beaten) = bits("GDL_BEATEN") {
+            state.realms_beaten = beaten;
+            info!("GDL_BEATEN: {beaten:#x}");
+        }
+        if let Some(runes) = bits("GDL_RUNES") {
+            state.runestones = (0..32).filter(|n| runes & (1 << n) != 0).collect();
+            info!("GDL_RUNES: {:?}", state.runestones);
         }
     }
     let Some((realm, level)) = level_of(&population.level) else { return };
@@ -236,6 +254,33 @@ impl Quest {
         self.crystals.get(counter).is_some_and(|&c| c < 0 || c >= CRYSTALS_NEEDED[counter])
     }
 
+    /// The triggers the tower fires as it loads, which snaps their gates
+    /// open (`docs/items.md`, "Quest items and the tower's gates"): each
+    /// gargoyle section opened for good, `0x65` + its number (the lower
+    /// tower's also `0x68` and 199), then each crystal counter opened for
+    /// good, its number; and `0xFF` once the thirteenth runestone is held
+    /// (`runestones`, a bit per stone).
+    pub fn tower_gates(&self, runestones: u32) -> Vec<u8> {
+        let mut ids = Vec::new();
+        for (section, &n) in self.gargoyle.iter().enumerate() {
+            if n < 0 {
+                ids.push(0x65 + section as u8);
+                if section == 2 {
+                    ids.extend([0x68, 199]);
+                }
+            }
+        }
+        for (counter, &n) in self.crystals.iter().enumerate() {
+            if CRYSTALS_NEEDED[counter] != 0 && n < 0 {
+                ids.push(counter as u8);
+            }
+        }
+        if runestones & (1 << 12) != 0 {
+            ids.push(0xFF);
+        }
+        ids
+    }
+
     /// The same for a gargoyle section.
     pub fn gargoyle_open(&self, section: usize) -> bool {
         let section = section.min(2);
@@ -362,6 +407,18 @@ mod tests {
         assert!(q.exit_open(REALM_H, 0, with_f, 0));
         assert!(!q.exit_open(REALM_H, 3, with_f, 0xFFF));
         assert!(q.exit_open(REALM_H, 3, with_f, 0x1FFF));
+    }
+
+    #[test]
+    fn the_tower_opens_what_is_open_for_good_as_it_loads() {
+        let mut q = Quest::default();
+        // At its need but not yet announced: shut until touched.
+        q.crystals[1] = 15;
+        assert_eq!(q.tower_gates(0), Vec::<u8>::new());
+        q.crystals[1] = -1;
+        q.crystals[4] = -1;
+        q.gargoyle[2] = -1;
+        assert_eq!(q.tower_gates(1 << 12), vec![0x67, 0x68, 199, 1, 4, 0xFF]);
     }
 
     #[test]

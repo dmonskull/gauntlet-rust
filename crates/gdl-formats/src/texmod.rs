@@ -183,14 +183,15 @@ mod tests {
         assert_eq!(fade.fade(200), 1.0);
     }
 
-    /// Every action's modifiers (`+0x2C` on, `+0x28` of them) are ones its
-    /// own atree owns, in every bank on the disc.
+    /// Every action's modifiers (`+0x2C` on, `+0x28` of them), and every
+    /// kind-3 node's, are ones its own atree owns, in every bank on the
+    /// disc.
     #[test]
     fn action_texmods_belong_to_their_atree() {
         let root = std::env::var("GAUNTLET_ASSET_ROOT")
             .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
         let mut dirs = vec![std::path::PathBuf::from(&root)];
-        let (mut files, mut links) = (0, 0);
+        let (mut files, mut links, mut nodes) = (0, 0, 0);
         while let Some(dir) = dirs.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else { continue };
             for path in entries.flatten().map(|e| e.path()) {
@@ -217,13 +218,19 @@ mod tests {
                             links += 1;
                         }
                     }
+                    let kind3 = atree.nodes.iter().filter(|n| n.kind == crate::anim::NodeKind::Other(3)).count();
+                    assert_eq!(atree.texmod_nodes.len(), kind3, "{path:?} {}", atree.name);
+                    for &(n, k) in &atree.texmod_nodes {
+                        assert_eq!(usize::try_from(list[k].owner).ok(), Some(i), "{path:?} {} {}", atree.name, atree.nodes[n].name);
+                        nodes += 1;
+                    }
                 }
             }
         }
         if files == 0 {
             eprintln!("skipping: no banks under {root}");
         }
-        eprintln!("{files} banks, {links} action modifiers");
+        eprintln!("{files} banks, {links} action modifiers, {nodes} modifier nodes");
     }
 
     /// Every level's modifiers name bindings its model file has.

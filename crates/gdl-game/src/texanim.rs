@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use gdl_formats::ModelFile;
+use gdl_formats::anim::Atree;
 use gdl_formats::texmod::{FirstFrame, TexMod, TexModKind};
 
 use crate::level_material::LevelMaterial;
@@ -118,6 +119,141 @@ pub fn flipbook_images(
         }
         _ => None,
     }
+}
+
+/// Render flag `0x10` on a node: modifiers run on the nodes above it
+/// don't reach it or anything under it.
+const MOD_BOUNDARY: u32 = 0x10;
+
+/// A texture modifier an animation runs, with its flipbook's frames.
+struct RunMod {
+    texmod: TexMod,
+    book: Option<Flipbook>,
+}
+
+/// The texture modifiers a model's animations run, as every animated
+/// object in the game does each step (`docs/rendering.md`, "Actions"): the
+/// playing action's own on the first node and everything under it, then
+/// each kind-3 node's on that node and everything under it. A flipbook sets
+/// an object's one replaced texture (the last to run wins), a fade its
+/// opacity; both stay until something changes them.
+pub struct ModelMods {
+    /// Per action, its modifiers.
+    actions: Vec<Vec<RunMod>>,
+    /// The nodes the actions' modifiers reach.
+    action_reach: Vec<usize>,
+    /// Kind-3 nodes, in the order the game walks them: the nodes each
+    /// reaches and its modifier.
+    nodes: Vec<(Vec<usize>, RunMod)>,
+    /// The texture binding each of the model's materials draws.
+    pub bindings: HashMap<AssetId<LevelMaterial>, u16>,
+}
+
+/// What the modifiers have left on an object: the texture put in place of
+/// one of its bindings (with the blending its flipbook needs), and its
+/// opacity from a fade (0–255).
+#[derive(Clone, Default, PartialEq, Debug)]
+pub struct Look {
+    pub texture: Option<(u16, Handle<Image>, AlphaMode)>,
+    pub alpha: Option<u8>,
+}
+
+impl ModelMods {
+    /// The modifiers `atree`'s actions and kind-3 nodes run, from
+    /// `texmods` (the list of the file it came from); `book` finds a
+    /// flipbook's frames, and `drawn` is the model's materials by binding.
+    /// None when it runs none.
+    pub fn new(
+        atree: &Atree,
+        texmods: &[TexMod],
+        mut book: impl FnMut(&TexMod) -> Option<Flipbook>,
+        drawn: &HashMap<u16, Vec<Handle<LevelMaterial>>>,
+    ) -> Option<Self> {
+        let mut run = |k: usize| texmods.get(k).map(|m| RunMod { texmod: m.clone(), book: book(m) });
+        let actions: Vec<Vec<RunMod>> = atree.actions.iter().map(|a| a.texmods().filter_map(&mut run).collect()).collect();
+        let nodes: Vec<(Vec<usize>, RunMod)> =
+            atree.texmod_nodes.iter().filter_map(|&(n, k)| Some((reach(atree, n), run(k)?))).collect();
+        if nodes.is_empty() && actions.iter().all(Vec::is_empty) {
+            return None;
+        }
+        let bindings = drawn.iter().flat_map(|(&b, hs)| hs.iter().map(move |h| (h.id(), b))).collect();
+        let action_reach = if atree.nodes.is_empty() { Vec::new() } else { reach(atree, 0) };
+        Some(Self { actions, action_reach, nodes, bindings })
+    }
+
+    /// Runs the modifiers at `frame` of `action` (the animation's frame) on
+    /// the looks of the model's nodes. The frame is rounded, and counted
+    /// from the end on an action that runs backwards; the action's own
+    /// modifiers wrap round a looping action, the nodes' don't.
+    pub fn run(&self, atree: &Atree, action: usize, frame: f32, looks: &mut [Look]) {
+        let Some(a) = atree.actions.get(action) else { return };
+        let last = i32::from(a.frames) - 1;
+        let mut f = ((frame + 0.5) as i32).min(last).max(0);
+        if a.backwards() {
+            f = last - f;
+        }
+        let mut g = f;
+        for m in self.actions.get(action).into_iter().flatten() {
+            let length = i32::from(m.texmod.count) * m.texmod.period as i32;
+            if length < g && a.params[0] != 0 && length > 1 {
+                g %= length;
+            }
+            m.apply(g, &self.action_reach, looks);
+        }
+        for (reach, m) in &self.nodes {
+            m.apply(f, reach, looks);
+        }
+    }
+}
+
+impl RunMod {
+    fn apply(&self, frame: i32, reach: &[usize], looks: &mut [Look]) {
+        let m = &self.texmod;
+        match m.kind {
+            TexModKind::Frames(_) => {
+                let Some(book) = &self.book else { return };
+                let Some(Some(image)) = book.frames.get(m.action_frame(frame) as usize) else { return };
+                for &n in reach {
+                    if let Some(look) = looks.get_mut(n) {
+                        look.texture = Some((m.binding, image.clone(), book.alpha));
+                    }
+                }
+            }
+            TexModKind::FadeIn | TexModKind::FadeOut => {
+                // The game keeps how clear the object is as a byte.
+                let t = m.fade(frame);
+                let clear = if m.kind == TexModKind::FadeIn { 1.0 - t } else { t };
+                let alpha = 255 - (clear * 255.0) as u8;
+                for &n in reach {
+                    if let Some(look) = looks.get_mut(n) {
+                        look.alpha = Some(alpha);
+                    }
+                }
+            }
+            // Stand-in: an action's scrolls (texture wipes) aren't run.
+            _ => {}
+        }
+    }
+}
+
+/// The nodes a modifier run on `node` reaches: the node, then its
+/// children and theirs — none of them if the first child is a boundary
+/// ([`MOD_BOUNDARY`]), and past it only the children that aren't.
+fn reach(atree: &Atree, node: usize) -> Vec<usize> {
+    let children = |p: usize| atree.nodes.iter().enumerate().filter(move |(_, n)| n.parent == Some(p)).map(|(i, _)| i);
+    let mut out = vec![node];
+    let mut stack = vec![node];
+    while let Some(p) = stack.pop() {
+        let kids: Vec<usize> = children(p).collect();
+        if kids.first().is_none_or(|&c| atree.nodes[c].render_flags & MOD_BOUNDARY != 0) {
+            continue;
+        }
+        for c in kids.into_iter().filter(|&c| atree.nodes[c].render_flags & MOD_BOUNDARY == 0) {
+            out.push(c);
+            stack.push(c);
+        }
+    }
+    out
 }
 
 /// The current level's texture animations.

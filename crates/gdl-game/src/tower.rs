@@ -1,24 +1,48 @@
-//! The tower's own figures (`docs/items.md`, "The tower's wizard"). As
-//! every tower level loads, the game makes the idle wizard — `GWIZ`, from
-//! the tower's items bank — and stands him on the lookout whose parameter
-//! is 0: the pedestal in front of the heroes' start on `levelL1`. He goes
-//! through his first three actions in turn, each played to its end.
+//! The tower's own figures (`docs/items.md`, "The tower's wizard" and
+//! "The tower's shards and runes"). As every tower level loads, the game
+//! makes the idle wizard — `GWIZ`, from the tower's items bank — and stands
+//! him on the lookout whose parameter is 0: the pedestal in front of the
+//! heroes' start on `levelL1`. He goes through his first three actions in
+//! turn, each played to its end. It also sets out what the heroes have
+//! won: each shard (`SHARD<n>`) in the window frame over the door, each
+//! runestone (`RUNE<n>`) in its place, the thirteenth apart — the effects
+//! wound on to their last frames, their particles stopped. (The game sets
+//! out only the pieces its wizard has announced, and announces new ones
+//! in a scene that plays their effects in full; stand-in: without the
+//! scenes, new pieces are set out with the rest.)
+
+use std::sync::Arc;
 
 use bevy::prelude::*;
+use gdl_formats::ModelFile;
+use gdl_formats::anim::AnimFile;
 use gdl_formats::population::LocatorKind;
+use gdl_formats::texmod::TexMod;
 
-use crate::character::{Animator, CharacterModel};
+use crate::character::{self, Animate, Animator, CharacterData, CharacterModel};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
+use crate::mechanics::LevelNodes;
+use crate::model_mesh::TextureCache;
+use crate::player_state::PlayerState;
 use crate::population::{self, LevelPopulation};
 use crate::projectiles;
+use crate::quest;
 use crate::world::LevelEntity;
 
 pub struct TowerPlugin;
 
 impl Plugin for TowerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (place_wizard.run_if(resource_exists_and_changed::<LevelPopulation>), idle_wizard));
+        app.add_systems(
+            Update,
+            (
+                place_wizard.run_if(resource_exists_and_changed::<LevelPopulation>),
+                place_trophies.run_if(resource_exists_and_changed::<LevelPopulation>).after(quest::enter_level),
+                wind_on.before(Animate),
+                idle_wizard,
+            ),
+        );
     }
 }
 
@@ -69,6 +93,102 @@ fn place_wizard(
     let root = model.spawn(transform, &mut commands);
     commands.entity(root).insert((TowerWizard { next: 1, last_frame: 0.0 }, LevelEntity));
     info!("the wizard stands at {:?}", lookout.position);
+}
+
+/// Where the shards and runestones go: world nodes of `levelL1`.
+const SHARD_PLACE: &str = "L1WINDOWFRAME";
+const RUNE_PLACE: &str = "L1RUNEPLACE";
+const RUNE13_PLACE: &str = "L1RUNE13";
+
+/// A shard or runestone set out in the tower, to be wound on to its last
+/// frame.
+#[derive(Component)]
+struct WindOn;
+
+/// Sets out the shards (a bit each of [`quest::boss_marks`], 1–8) and the
+/// runestones (a bit each, 0–12) the hero has.
+#[allow(clippy::too_many_arguments)]
+fn place_trophies(
+    mut commands: Commands,
+    population: Res<LevelPopulation>,
+    nodes: Option<Res<LevelNodes>>,
+    state: Option<Res<PlayerState>>,
+    mut game: ResMut<LoadedGame>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<LevelMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if quest::level_of(&population.level).is_none_or(|(realm, _)| realm != TOWER_REALM) {
+        return;
+    }
+    let (Some(nodes), Some(state)) = (nodes, state) else { return };
+    let shards = quest::boss_marks(state.realms_beaten);
+    let runes = state.runestone_bits();
+    let mut wanted: Vec<(String, &str)> =
+        (1..=8).filter(|n| shards & (1 << n) != 0).map(|n| (format!("SHARD{n}"), SHARD_PLACE)).collect();
+    wanted.extend((0..12).filter(|n| runes & (1 << n) != 0).map(|n| (format!("RUNE{}", n + 1), RUNE_PLACE)));
+    if runes & (1 << 12) != 0 {
+        wanted.push(("RUNE13".into(), RUNE13_PLACE));
+    }
+    if wanted.is_empty() {
+        return;
+    }
+    let Some((anim, texmods, model, textures)) = read_bank(&mut game, WIZARD_BANK) else {
+        warn!("{WIZARD_BANK} didn't load");
+        return;
+    };
+    let Some(first) = anim.atrees.first().cloned() else { return };
+    // One set of files and one texture cache for them all.
+    let mut data = CharacterData {
+        name: String::new(),
+        class: String::new(),
+        colour: String::new(),
+        clips: Arc::new(first.clone()),
+        skeleton: first,
+        model,
+        textures,
+    };
+    let mut cache = TextureCache::new(&data.model, &data.textures).sharing_materials();
+    for (name, place) in wanted {
+        let Some(at) = nodes.nodes.iter().position(|n| n.name == place).map(|i| Vec3::from(nodes.origin[i])) else {
+            warn!("{}: no {place} for {name}", population.level);
+            continue;
+        };
+        let Some(tree) = anim.atrees.iter().find(|a| a.name == name) else {
+            warn!("{WIZARD_BANK} has no {name}");
+            continue;
+        };
+        data.name = format!("{WIZARD_BANK}/{name}");
+        data.clips = Arc::new(tree.clone());
+        data.skeleton = tree.clone();
+        let mut model = CharacterModel::build_with(&data, &mut cache, &mut meshes, &mut materials, &mut images);
+        model.run_texmods(&data, &texmods, &mut cache, &mut images);
+        let root = model.spawn(Transform::from_translation(at), &mut commands);
+        commands.entity(root).insert((WindOn, LevelEntity));
+        info!("{name} set out at {place} {at:?}");
+    }
+}
+
+/// A bank's animation file (its atrees and texture modifiers), model and
+/// textures.
+fn read_bank(game: &mut LoadedGame, folder: &str) -> Option<(AnimFile, Vec<TexMod>, ModelFile, Vec<u8>)> {
+    let bytes = game.install.read(&format!("{folder}/ANIM.PS2")).ok()?;
+    let anim = AnimFile::parse(&bytes).ok()?;
+    let texmods = TexMod::parse_all(&bytes).unwrap_or_default();
+    let model = ModelFile::parse(&game.install.read(&format!("{folder}/objects.ngc")).ok()?).ok()?;
+    let textures = game.install.read(&format!("{folder}/textures.ngc")).ok()?;
+    Some((anim, texmods, model, textures))
+}
+
+/// Winds a shard or runestone on to its action's end, as the game does
+/// when it sets one out (start time back by the clip's frames at 1/30 s,
+/// frame at the count): it holds its last frame.
+fn wind_on(mut commands: Commands, mut animators: Query<(Entity, &mut Animator), With<WindOn>>) {
+    for (e, mut a) in &mut animators {
+        let frames = a.clips.actions.get(a.action).map_or(0, |x| x.frames);
+        a.frame = character::clip_end(frames);
+        commands.entity(e).remove::<WindOn>();
+    }
 }
 
 /// Each of his actions plays out, then the next (0, 1, 2, 0…).

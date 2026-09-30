@@ -5,12 +5,13 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use gdl_formats::ModelFile;
-use gdl_formats::anim::{AnimFile, Atree, NodeKind, Track, rotation_matrix};
+use gdl_formats::anim::{Action, AnimFile, Atree, NodeKind, Track, rotation_matrix};
 use gdl_install::GameInstall;
 
 use crate::billboard::Billboard;
 use crate::level_material::LevelMaterial;
 use crate::model_mesh::{self, TextureCache};
+use crate::texanim::{Look, ModelMods};
 
 pub struct CharacterPlugin;
 
@@ -174,14 +175,17 @@ const SHADOW_LIFT: f32 = 0.1;
 /// The meshes one model object is drawn with.
 type PartMeshes = Vec<(Handle<Mesh>, Handle<LevelMaterial>)>;
 
+/// A flipbook node's frames: per action, the frame its run starts on and
+/// the meshes of each of its objects; shared by every instance.
+type ActionFrames = Arc<Vec<(u16, Vec<PartMeshes>)>>;
+
 /// A flipbook node's meshes: per action, the model objects for each frame.
 struct Flipbook {
     /// The node's child entities that show the current frame's meshes.
     slots: Vec<Entity>,
-    /// `frames[action][frame]` = the meshes of that frame's object; shared
-    /// by every instance of the character.
-    frames: Arc<Vec<Vec<PartMeshes>>>,
-    shown: Option<(usize, usize)>,
+    frames: ActionFrames,
+    /// The action and the frame of its run shown (none: hidden).
+    shown: Option<(usize, Option<usize>)>,
 }
 
 /// Drives a spawned character's bones.
@@ -198,6 +202,28 @@ pub struct Animator {
     pub frame: f32,
     tracks: Vec<Option<Track>>,
     blend: Blend,
+    mods: Option<InstanceMods>,
+}
+
+/// A spawned model's texture modifiers: what they have left on each node
+/// ([`Look`]), and its drawn parts, which show a node's look on their own
+/// copy of their material.
+struct InstanceMods {
+    model: Arc<ModelMods>,
+    looks: Vec<Look>,
+    parts: Vec<ModPart>,
+}
+
+struct ModPart {
+    entity: Entity,
+    node: usize,
+    /// The material the model draws it with (a flipbook slot's changes
+    /// with its frame).
+    shared: Handle<LevelMaterial>,
+    copy: Option<Handle<LevelMaterial>>,
+    /// The look its copy shows, over the shared material's texture at the
+    /// time; none while it draws the shared material.
+    shown: Option<(Look, Option<AssetId<Image>>)>,
 }
 
 /// Blending from the pose an action was interrupted in: the old pose's
@@ -303,9 +329,23 @@ pub fn advance_clip(frame: &mut f32, dt: f32, frames: u16, rate: u16, loops: boo
     false
 }
 
-/// The frame of a flipbook to show: the nearest, as the game rounds it.
-pub fn shown_frame(frame: f32, frames: usize) -> usize {
-    ((frame + 0.5) as usize).min(frames.saturating_sub(1))
+/// The frame of a flipbook node's run to show at `frame` of `action`
+/// (`docs/animation-format.md`, "Flipbook nodes"): the game rounds the
+/// action's frame (holding its last, and counting from the end on an
+/// action that runs backwards) and shows the run's objects from its
+/// `start` frame on, one a frame — none outside them, unless it has only
+/// one.
+pub fn flipbook_frame(action: &Action, frame: f32, start: u16, count: usize) -> Option<usize> {
+    let last = i32::from(action.frames) - 1;
+    let mut f = ((frame + 0.5) as i32).min(last).max(0);
+    if action.backwards() {
+        f = last - f;
+    }
+    if count == 1 {
+        return Some(0);
+    }
+    let k = f - i32::from(start);
+    (k >= 0 && (k as usize) < count).then_some(k as usize)
 }
 
 /// A character's meshes, built once and shared by every copy spawned with
@@ -317,12 +357,14 @@ pub struct CharacterModel {
     /// the camera-facing mode its render flags ask for.
     parts: Vec<(PartMeshes, Option<Billboard>)>,
     /// Flipbook nodes and their frames.
-    flipbooks: Vec<(usize, Arc<Vec<Vec<PartMeshes>>>)>,
+    flipbooks: Vec<(usize, ActionFrames)>,
     /// A player's weapon, in its hand bone.
     weapon: Option<(usize, PartMeshes)>,
     shadow: PartMeshes,
     clips: Arc<Atree>,
     clip_bone: Vec<Option<usize>>,
+    /// The texture modifiers its actions and kind-3 nodes run.
+    mods: Option<Arc<ModelMods>>,
     /// Rough rest-pose bounds in the root's space.
     pub bounds: (Vec3, Vec3),
 }
@@ -352,11 +394,27 @@ impl CharacterModel {
         images: &mut Assets<Image>,
     ) -> (Self, Vec<crate::texanim::TexAnim>) {
         let mut cache = TextureCache::new(&data.model, &data.textures).sharing_materials();
-        let model = Self::build_with(data, &mut cache, meshes, materials, images);
+        let mut model = Self::build_with(data, &mut cache, meshes, materials, images);
+        model.run_texmods(data, texmods, &mut cache, images);
         let drawn = cache.materials_by_binding();
         let frames = |m: &gdl_formats::texmod::TexMod| crate::texanim::flipbook_images(m, &data.model, &mut cache, None, images);
         let anims = crate::texanim::bank_anims(texmods, &drawn, frames, materials);
         (model, anims)
+    }
+
+    /// Runs the texture modifiers of its actions and kind-3 nodes as it
+    /// plays, from `texmods` (the list of the file its atree came from;
+    /// built with `cache`).
+    pub fn run_texmods(
+        &mut self,
+        data: &CharacterData,
+        texmods: &[gdl_formats::texmod::TexMod],
+        cache: &mut TextureCache,
+        images: &mut Assets<Image>,
+    ) {
+        let drawn = cache.materials_by_binding();
+        let book = |m: &gdl_formats::texmod::TexMod| crate::texanim::flipbook_images(m, &data.model, cache, None, images);
+        self.mods = ModelMods::new(&data.skeleton, texmods, book, &drawn).map(Arc::new);
     }
 
     /// Builds with the caller's texture cache (for data's own files), so
@@ -390,14 +448,15 @@ impl CharacterModel {
             let own = if visible { object_index(&format!("{}{}", data.skeleton.name, node.name)) } else { None };
             parts.push((build(own, node.render_flags), Billboard::from_flags(node.render_flags)));
             if node.kind == NodeKind::Flipbook {
-                let frames: Vec<Vec<PartMeshes>> = (0..data.clips.actions.len())
+                let frames: Vec<(u16, Vec<PartMeshes>)> = (0..data.clips.actions.len())
                     .map(|a| {
-                        let Some(entry) = data.skeleton.flipbook_entry(i, a) else { return Vec::new() };
-                        let Some(first) = object_index(&entry.first) else { return Vec::new() };
-                        (0..entry.frames.max(1) as usize)
+                        let Some(entry) = data.skeleton.flipbook_entry(i, a) else { return (0, Vec::new()) };
+                        let Some(first) = object_index(&entry.first) else { return (entry.param, Vec::new()) };
+                        let objects = (0..entry.frames.max(1) as usize)
                             .filter(|k| first + k < data.model.objects.len())
                             .map(|k| build(Some(first + k), 0))
-                            .collect()
+                            .collect();
+                        (entry.param, objects)
                     })
                     .collect();
                 flipbooks.push((i, Arc::new(frames)));
@@ -446,6 +505,7 @@ impl CharacterModel {
             shadow,
             clips: data.clips.clone(),
             clip_bone,
+            mods: None,
             bounds,
         }
     }
@@ -456,18 +516,24 @@ impl CharacterModel {
     /// weapon; not the shadow). Built for this model alone.
     pub fn materials(&self) -> impl Iterator<Item = &Handle<LevelMaterial>> {
         let parts = self.parts.iter().flat_map(|(p, _)| p.iter());
-        let frames = self.flipbooks.iter().flat_map(|(_, f)| f.iter().flatten().flatten());
+        let frames = self.flipbooks.iter().flat_map(|(_, f)| f.iter().flat_map(|(_, objects)| objects.iter().flatten()));
         let weapon = self.weapon.iter().flat_map(|(_, p)| p.iter());
         parts.chain(frames).chain(weapon).map(|(_, m)| m)
     }
 
     pub fn spawn(&self, transform: Transform, commands: &mut Commands) -> Entity {
         let root = commands.spawn((transform, Visibility::default())).id();
-        let attach = |parts: &PartMeshes, parent: Entity, commands: &mut Commands| {
-            for (mesh, material) in parts {
-                commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), ChildOf(parent)));
-            }
+        let attach = |parts: &PartMeshes, parent: Entity, commands: &mut Commands| -> Vec<(Entity, Handle<LevelMaterial>)> {
+            parts
+                .iter()
+                .map(|(mesh, material)| {
+                    let e = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), ChildOf(parent))).id();
+                    (e, material.clone())
+                })
+                .collect()
         };
+        // The parts the texture modifiers may change, by node.
+        let mut drawn: Vec<(Entity, usize, Handle<LevelMaterial>)> = Vec::new();
         let mut bones: Vec<Entity> = Vec::with_capacity(self.nodes.len());
         for (i, &(offset, parent)) in self.nodes.iter().enumerate() {
             let parent = parent.map_or(root, |p| bones[p]);
@@ -479,7 +545,7 @@ impl CharacterModel {
                 }
                 _ => bone,
             };
-            attach(parts, target, commands);
+            drawn.extend(attach(parts, target, commands).into_iter().map(|(e, m)| (e, i, m)));
             bones.push(bone);
         }
         let flipbooks = self
@@ -488,13 +554,15 @@ impl CharacterModel {
             .map(|(i, frames)| {
                 // Slots start with any frame's meshes so they carry the mesh and
                 // material components the animator swaps each frame.
-                let slots_needed = frames.iter().flatten().map(Vec::len).max().unwrap_or(0);
-                let sample: Vec<_> = frames.iter().flatten().flatten().cloned().collect();
+                let slots_needed = frames.iter().flat_map(|(_, f)| f).map(Vec::len).max().unwrap_or(0);
+                let sample: Vec<_> = frames.iter().flat_map(|(_, f)| f.iter().flatten()).cloned().collect();
                 let slots = (0..slots_needed)
                     .map(|s| {
                         let (mesh, material) = sample[s.min(sample.len() - 1)].clone();
-                        let slot = (Mesh3d(mesh), MeshMaterial3d(material), Visibility::Hidden, ChildOf(bones[*i]));
-                        commands.spawn(slot).id()
+                        let slot = (Mesh3d(mesh), MeshMaterial3d(material.clone()), Visibility::Hidden, ChildOf(bones[*i]));
+                        let e = commands.spawn(slot).id();
+                        drawn.push((e, *i, material));
+                        e
                     })
                     .collect();
                 (*i, Flipbook { slots, frames: frames.clone(), shown: None })
@@ -508,6 +576,14 @@ impl CharacterModel {
         let lift = commands.spawn((Transform::from_xyz(0.0, SHADOW_LIFT, 0.0), Visibility::default(), ChildOf(root))).id();
         attach(&self.shadow, lift, commands);
 
+        let mods = self.mods.as_ref().map(|model| InstanceMods {
+            model: model.clone(),
+            looks: vec![Look::default(); self.nodes.len()],
+            parts: drawn
+                .into_iter()
+                .map(|(entity, node, shared)| ModPart { entity, node, shared, copy: None, shown: None })
+                .collect(),
+        });
         let mut animator = Animator {
             clips: self.clips.clone(),
             rest: self.nodes.iter().map(|n| n.0).collect(),
@@ -518,6 +594,7 @@ impl CharacterModel {
             frame: 0.0,
             tracks: Vec::new(),
             blend: Blend::None,
+            mods,
         };
         animator.play(0);
         commands.entity(root).insert(animator);
@@ -546,6 +623,7 @@ fn animate(
     mut animators: Query<&mut Animator>,
     mut bones: Query<&mut Transform>,
     mut slots: Query<(&mut Mesh3d, &mut MeshMaterial3d<LevelMaterial>, &mut Visibility)>,
+    mut materials: ResMut<Assets<LevelMaterial>>,
 ) {
     for mut a in &mut animators {
         let Some(action) = a.clips.actions.get(a.action) else { continue };
@@ -594,14 +672,15 @@ fn animate(
         }
 
         let (action, frame) = (a.action, a.frame);
+        let playing = a.clips.actions.get(action);
         for (_, book) in &mut a.flipbooks {
-            let Some(frames) = book.frames.get(action) else { continue };
-            let k = shown_frame(frame, frames.len());
+            let Some((start, frames)) = book.frames.get(action) else { continue };
+            let k = playing.and_then(|p| flipbook_frame(p, frame, *start, frames.len()));
             if book.shown == Some((action, k)) {
                 continue;
             }
             book.shown = Some((action, k));
-            let meshes = frames.get(k).map(Vec::as_slice).unwrap_or_default();
+            let meshes = k.and_then(|k| frames.get(k)).map(Vec::as_slice).unwrap_or_default();
             for (s, &slot) in book.slots.iter().enumerate() {
                 let Ok((mut mesh, mut material, mut vis)) = slots.get_mut(slot) else { continue };
                 match meshes.get(s) {
@@ -614,6 +693,70 @@ fn animate(
                 }
             }
         }
+
+        if let Some(mods) = &mut a.mods {
+            mods.model.run(&a.clips, action, frame, &mut mods.looks);
+            for part in &mut mods.parts {
+                let Ok((_, mut material, _)) = slots.get_mut(part.entity) else { continue };
+                show_look(part, &mods.looks[part.node], &mods.model, &mut material, &mut materials);
+            }
+        }
+    }
+}
+
+/// Draws a part with its node's look: its own copy of its material with
+/// the replaced texture (if it's the one the part draws) and the fade's
+/// opacity, or the shared material when neither applies.
+fn show_look(
+    part: &mut ModPart,
+    look: &Look,
+    model: &ModelMods,
+    material: &mut MeshMaterial3d<LevelMaterial>,
+    materials: &mut Assets<LevelMaterial>,
+) {
+    // A flipbook slot's new frame brings its own material.
+    let current = material.0.id();
+    if part.copy.as_ref().is_none_or(|c| c.id() != current) && current != part.shared.id() {
+        part.shared = material.0.clone();
+        part.shown = None;
+    }
+    let binding = model.bindings.get(&part.shared.id()).copied();
+    let texture = look.texture.clone().filter(|(b, ..)| Some(*b) == binding);
+    if texture.is_none() && look.alpha.is_none() {
+        if current != part.shared.id() {
+            material.0 = part.shared.clone();
+        }
+        part.shown = None;
+        return;
+    }
+    let Some(diffuse) = materials.get(&part.shared).map(|m| m.diffuse.as_ref().map(Handle::id)) else { return };
+    let wanted = (Look { texture, alpha: look.alpha }, diffuse);
+    if part.shown.as_ref() != Some(&wanted) {
+        let Some(mut m) = materials.get(&part.shared).cloned() else { return };
+        if let Some((_, image, blend)) = &wanted.0.texture {
+            m.diffuse = Some(image.clone());
+            m.widen_alpha(*blend);
+        }
+        if let Some(alpha) = wanted.0.alpha {
+            m.uv_offset.w = 1.0 - f32::from(alpha) / 255.0;
+            if alpha < 255 {
+                m.widen_alpha(AlphaMode::Blend);
+            }
+        }
+        match &part.copy {
+            Some(copy) => {
+                if let Some(slot) = materials.get_mut(copy) {
+                    *slot = m;
+                }
+            }
+            None => part.copy = Some(materials.add(m)),
+        }
+        part.shown = Some(wanted);
+    }
+    if let Some(copy) = &part.copy
+        && current != copy.id()
+    {
+        material.0 = copy.clone();
     }
 }
 
@@ -640,7 +783,26 @@ mod tests {
         }
         assert_eq!(ticks, 9);
         assert_eq!(frame, 4.5);
-        assert_eq!(shown_frame(frame, 5), 4);
+        let attack = Action { name: "ATTACK1".into(), frames: 5, rate: 60, params: [0; 4], first_texmod: -1 };
+        assert_eq!(flipbook_frame(&attack, frame, 0, 5), Some(4));
+    }
+
+    /// A flipbook run shows from its start frame for its count, and
+    /// nothing outside it (the tower's runestones' arrival streaks: 17
+    /// frames from 38 of 82); a single frame always shows.
+    #[test]
+    fn flipbook_runs_show_only_their_frames() {
+        let rune = Action { name: "ACTIVE".into(), frames: 82, rate: 30, params: [0; 4], first_texmod: -1 };
+        assert_eq!(flipbook_frame(&rune, 10.0, 38, 17), None);
+        assert_eq!(flipbook_frame(&rune, 38.0, 38, 17), Some(0));
+        assert_eq!(flipbook_frame(&rune, 54.2, 38, 17), Some(16));
+        assert_eq!(flipbook_frame(&rune, 55.0, 38, 17), None);
+        assert_eq!(flipbook_frame(&rune, 81.5, 38, 1), Some(0));
+        // Held at its end, an action shows its last frame, not one past.
+        let shard = Action { frames: 112, ..rune.clone() };
+        assert_eq!(flipbook_frame(&shard, clip_end(112), 98, 14), Some(13));
+        let back = Action { params: [0, 0, 0, 1], ..rune };
+        assert_eq!(flipbook_frame(&back, 0.0, 70, 12), Some(11));
     }
 
     #[test]

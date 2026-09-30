@@ -72,12 +72,27 @@ the hit and die effects: drawn at 159/255) and 0 for every other.
 
 **Flipbooks**: a bank's `ANIM.PS2` texture modifiers (`0x58` bytes, as a
 level's) whose `+0x00` is an atree index belong to that effect (−1: free
-running on the frame counter, `FUN_80010a4c`). Each spans its clip: the
-fireball's FBALL_EXP is 15 frames × 2 ticks for EXPLOSION's 30, the gas
-clouds' POISON_GAS 5 × 4, 15 × 4 and 10 × 2, EXPRING's SUICIDE_RING 10 × 2;
-HITCOL and HITDIE own EXPLDSML_ and EXPLBIG_. Here each copy of an effect
-runs its own from its start, on copies of the materials drawing the
-texture (`EffectFrames`).
+running on the frame counter, `FUN_80010a4c`), run by its action's list
+or by its kind-3 nodes. The action's span its clip: the fireball's
+FBALL_EXP is 15 frames × 2 ticks for EXPLOSION's 30, the gas clouds'
+POISON_GAS 5 × 4, 15 × 4 and 10 × 2, EXPRING's SUICIDE_RING 10 × 2; HITCOL
+and HITDIE run EXPLDSML_ and EXPLBIG_. The nodes' run on their own parts
+from their own phases: the acid blast's 36 gas puffs and 10 rings
+(`MP_ACID`), the fire and light blasts' fade-outs. Each copy of an effect
+runs them by its action's frame on copies of its parts' materials
+(`texanim::ModelMods`, `docs/rendering.md` "Texture animation"); an
+effect's flipbook nodes show their runs only between their start and end
+frames (`docs/animation-format.md`, "Flipbook nodes").
+
+**Effects looked up by name** (`FUN_80097eb4` → `FUN_80097ed8`) — the
+tower's `SHARD<n>` and `RUNE<n>` — search the given bank, then the loaded
+banks (`r13-0x7188`, `-0x718c`, `-0x7180`, `-0x7184`), and take a custom
+entry from `0x61` on (at most `0x78` of them) with the caller's depth bias
+and transparency (0 and 0 for the tower's). `FUN_8009418c(0, type, pos,
+flags, 0x800)` makes one: flag `0x80000` keeps it once its life is over
+(held on its last frame), and the tower winds it on (record `+0x28` start
+time = now − frames / 30, `+0x20` frame = the count) and stops its
+particle nodes (`FUN_800116ec`).
 
 **Depth bias** (`FUN_800baa74` → object `+0x68`, used by the draw,
 `FUN_800c5894`): the object is depth-tested `bias` × −2048 (render context
@@ -91,7 +106,5 @@ keeps camera-facing fireballs from being cut by the floor they sit on.
 
 Not done: the bank modifiers that run free (50 in `WEAPONS`) aren't
 animated on characters and weapons yet (item and generator models run
-their banks' — `docs/rendering.md`, "Texture animation"). The game steps
-an effect's modifiers by its action's frame and holds the last frame past
-the run (wrapping only on a looping action); here they wrap on the tick
-count, the same while the clip lasts.
+their banks' — `docs/rendering.md`, "Texture animation"); nor are action
+scrolls (the combos' texture wipes).

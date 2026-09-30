@@ -67,11 +67,26 @@ name against `"DUMMY"` at `r2−0x7ec8`).
 Regular monsters (grunts, demons, ghosts…) aren't skinned: every frame of
 every action is a separate pre-posed mesh, named e.g. `DEM1WALK2F03` (tier,
 action, part, frame). The atree's list is `{u32 offset from here, u32
-count}` then `0x28`-byte entries: first frame's object name[0x20], (runtime
-object), u16 frame count, u16 parameter. A flipbook node's entries run one
-per action from its `+0x34` offset; frame *k* of an action is the *k*-th
-object after the named one (objects are stored sorted by name). All 687
-flipbook nodes on the disc have an entry for every action.
+count}` then `0x28`-byte entries: first frame's object name[0x20], `+0x20`
+the runtime object (−1 when the name isn't found), u16 `+0x24` frame
+count, u16 `+0x26` the action frame its run starts on. A flipbook node's
+entries run one per action from its `+0x34` offset; frame *k* of the run
+is the *k*-th object after the named one (objects are stored sorted by
+name). All 687 flipbook nodes on the disc have an entry for every action.
+
+**Flipbook nodes** (`FUN_80018e4c`, from the node walk `FUN_80011334`):
+with the action's frame f (⌊frame + 0.5⌋, counted from the end on an
+action running backwards; the frame holds at the action's last), a node
+without an object for the action is hidden; one whose run has a single
+object always shows it; otherwise it shows object f − start while f is in
+[start, start + count − 1], and object 0 of bank 0 — `STATIC`'s
+`AAANULLOBJ`, three points 0.1 across: nothing — outside it. Most runs
+start at 0 and last the action, but effects' don't: the tower's rune
+displays' arrival streaks run frames 38–54 of 82 (the thirteenth's
+56–67 of 104), the shards' panes 98–111 of 112 (their last frame is the
+pane left in the window), `MP_LIGHT`'s starburst 0–12 of 26, `MP_ELEC`'s
+arcs 0–24 of 44, `STARTFX` 0–12 of 30. (`character::flipbook_frame`; the
+rewrite held a run's last object past its end.)
 
 **Action**: name[0x20], frame count (u16 `+0x20`), rate (u16 `+0x22`: time
 per frame, see below; 30 almost everywhere, 60/45/40/15… for some), params

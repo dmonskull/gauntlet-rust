@@ -46,7 +46,10 @@ pub struct MechanicsPlugin;
 
 impl Plugin for MechanicsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, setup.run_if(resource_exists_and_changed::<LevelPopulation>))
+        app.add_systems(
+            Update,
+            setup.run_if(resource_exists_and_changed::<LevelPopulation>).after(crate::quest::enter_level),
+        )
             .add_systems(FixedUpdate, tick.after(PlayerTick))
             .add_systems(Update, pose_groups);
     }
@@ -323,6 +326,41 @@ pub struct Mechanics {
     need_again: HashMap<u8, f32>,
 }
 
+impl Mechanics {
+    /// Fires the triggers with this id the way the tower does as it loads
+    /// (`docs/items.md`, "Quest items and the tower's gates"): each — not
+    /// ones that need standing on their target, or with flag `0x8000` —
+    /// and those chained after it come on for good (the game also sets
+    /// their `0x400`), and their movers are already at their on heights.
+    fn fire_open(&mut self, id: u8) {
+        for i in 0..self.triggers.len() {
+            let t = &self.triggers[i];
+            if t.id != id || t.flags & (STAND_ON_TARGET | 0x8000) != 0 {
+                continue;
+            }
+            let mut k = Some(i);
+            let mut steps = 0;
+            while let Some(j) = k {
+                let t = &mut self.triggers[j];
+                t.flags |= ALL_PLAYERS;
+                t.action = 2;
+                if let Some(&mv) = t.target.and_then(|n| self.mover_of.get(&n)) {
+                    let mv = &mut self.movers[mv];
+                    mv.state = ON | PLAYERS;
+                    mv.previous = mv.state;
+                    mv.offset = mv.on;
+                }
+                k = t.chain;
+                steps += 1;
+                if k == Some(i) || steps > self.triggers.len() {
+                    break;
+                }
+            }
+            debug!("trigger {} (id {id}) fired as the level loads", self.triggers[i].placement);
+        }
+    }
+}
+
 /// A quest gate (trigger flag 0x40): touched while its crystals (ids
 /// below 100: the crystal counter of that number) or its gargoyle section
 /// (101 on: fangs, feathers, claws; 104 and up count as claws) haven't
@@ -362,7 +400,12 @@ fn quest_gate(mech: &mut Mechanics, i: usize, state: Option<&PlayerState>, messa
     }
 }
 
-fn setup(mut commands: Commands, population: Res<LevelPopulation>, nodes: Option<Res<LevelNodes>>) {
+fn setup(
+    mut commands: Commands,
+    population: Res<LevelPopulation>,
+    nodes: Option<Res<LevelNodes>>,
+    state: Option<Res<PlayerState>>,
+) {
     let Some(nodes) = nodes else { return };
     let pop = &population.population;
     let mut m = Mechanics::default();
@@ -472,6 +515,14 @@ fn setup(mut commands: Commands, population: Res<LevelPopulation>, nodes: Option
         m.poses.insert(r, (NodePose::REST, NodePose::REST));
     }
     m.roots = roots;
+    // The tower opens the gates the quest has opened for good as it loads.
+    if let Some(state) = &state
+        && quest::level_of(&population.level).is_some_and(|(realm, _)| realm == quest::TOWER)
+    {
+        for id in state.quest.tower_gates(state.runestone_bits()) {
+            m.fire_open(id);
+        }
+    }
     info!(
         "mechanics: {} triggers, {} movers, {} rotators, {} chained",
         m.triggers.len(),

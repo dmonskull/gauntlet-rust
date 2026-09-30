@@ -45,6 +45,13 @@ What plays (details in [INDEX.md](INDEX.md)):
   - The light from the tower's window (`L1XPLIGHTRAY01`) shone in every
     game; the game shows it only once all eight shards are in
     ([items.md](items.md) "The tower's shards and runes").
+  - The tower sets out what the heroes have won as it loads (`tower.rs`):
+    each shard's pane in the window over the door (a starfield until
+    then), each runestone in its slot on the rune place, the thirteenth
+    on its own slab below — the game's `SHARD<n>`/`RUNE<n>` effects wound
+    on to their last frames. Open-for-good gates are open on arrival
+    (the game fires them as the tower loads; ours stayed shut until
+    touched) ([items.md](items.md) "Quest items and the tower's gates").
   - Boss levels now have the game's boss camera (`boss_camera.rs`): the
     opening from the entry's starting point, the heroes framed from the
     nearest camera point before the boss wakes, then the boss (key,
@@ -64,6 +71,14 @@ What plays (details in [INDEX.md](INDEX.md)):
     its materials). An animated texture blends as its most demanding frame
     needs: force fields were drawn as hard-edged opaque blotches
     ([rendering.md](rendering.md) "Texture animation").
+  - Effects, monsters and critters run their actions' modifiers and their
+    kind-3 modifier nodes (flipbooks and fades, per node and subtree, by
+    the action's frame; `texanim::ModelMods`): the acid blast's gas and
+    rings, the fire and light blasts' fade-outs, the acid blob's body per
+    action. Flipbook nodes show their runs only from their start frame to
+    their end, as the game does: effects' streaks and starbursts used to
+    hang on their last frame ([animation-format.md](animation-format.md)
+    "Flipbook nodes").
   - World particles (torch flames, smoke, fires, mist) run from the
     level's `PSYS` nodes (see "World particles" below).
 - **The hero**
@@ -121,6 +136,10 @@ Test aids:
   scripted input and screenshots. `GDL_SHOT_CLOCK=ticks` counts shots in
   game ticks, so a burst lands on the same moment of play every run (frame
   counts drift with shader warm-up).
+- `GDL_BEATEN=<realm bits>` and `GDL_RUNES=<stone bits>` (decimal or
+  `0x…`): the realms beaten and runestones held, set once at the first
+  level (`0xE9E` = the eight main bosses, `0x1FFF` = all thirteen stones);
+  `GDL_CRYSTALS="1:-1"` opens a counter for good.
 
 Handy test spots are listed in [mechanics.md](mechanics.md) and
 [camera.md](camera.md) (levelA1 elevator switch, levelA4 lift, barrels,
@@ -128,7 +147,12 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on master `f83e379` (item, monster and boss
+The all-levels smoke test on the texture-modifier nodes, flipbook runs and
+the tower's shards, runestones and gates at load (the commit after
+`544d1fb`) passed all 67 real levels; so did `c8fb3f9` (the turbo meter,
+the boss camera's stick) before it.
+
+Before that, the all-levels smoke test on master `f83e379` (item, monster and boss
 texture animations, safe rocks, the shards' light, the camera's top-point
 target, unaware monsters and running from a charging runner) passed all
 67 real levels; so did `5b4ad91` and `2bb0c8c` before it.
@@ -253,15 +277,14 @@ Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
 0. The tower's wizard scenes: the `WIZARD` model appearing at a lookout to
-   announce new shards and runestones, the shard set in `L1WINDOWFRAME`, the
-   stones in `L1RUNEPLACE`, his camera cuts and speeches, and his other
-   idle actions (WELCOME, GOAWAY…) — decoded in [items.md](items.md) "The
-   tower's wizard". (The tower start's camera now frames the wizard whole
-   as in the user's screenshot: the play camera looks at the hero's top
-   point, 4.4 above the feet, as the game's does — [camera.md](camera.md);
-   the HUD's four panels are done.) The shards and runestones in their
-   places at the tower's load need the kind-3 texture-modifier nodes and
-   action fades first (the rune displays' dust) — see "Notes" below.
+   announce new shards and runestones, playing the new one's effect from
+   its start (dust, streak, fade-in) at `L1WINDOWFRAME` / `L1RUNEPLACE`
+   with a camera cut, his speeches, and his other idle actions (WELCOME,
+   GOAWAY…) — decoded in [items.md](items.md) "The tower's wizard". The
+   shards and runestones already won are set out as the tower loads
+   (done; kind-3 nodes and fades run). (The tower start's camera frames
+   the wizard whole as in the user's screenshot — [camera.md](camera.md);
+   the HUD's four panels are done.)
    (The smoke test, `smoke.sh`: every level folder plus DEMO1,
    `GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400`, 120 s timeout,
    stop at the first panic; resume from the failing level.) Next: the
@@ -300,10 +323,13 @@ waits.
 ### Notes for the next jobs
 
 - **Texture modifiers still to run**: `WEAPONS`' and the heroes' banks'
-  (hand glows, once glows are drawn; `CharacterModel::build_animated` does
-  it for monsters and critters), action fades (−4/−5) and kind-3 modifier
-  nodes (the tower's rune displays, legendary weapon effects), action
-  scrolls.
+  free-running ones (hand glows, once glows are drawn;
+  `CharacterModel::build_animated` does it for monsters and critters), the
+  heroes' own actions' (their skeleton and clips come from different
+  files), and action scrolls — the texture wipes, decoded in
+  [rendering.md](rendering.md) "Actions" (the combos', bosses' attack
+  effects); the draw's texture-shift maths (`FUN_800c68e4`, `r2-0x4800`)
+  isn't pinned down.
 - **Critter hit spheres in the attack search**: ours already uses the 3D
   surface distance and the game's cone (spheres are `TargetKind::Object`).
   Left: the game's per-critter pick (surface ÷ (sphere weight `+0x1C` ×

@@ -528,8 +528,9 @@ struct ItemPose {
     action: usize,
     frame: f32,
     tracks: Option<(usize, Vec<Option<Track>>)>,
-    /// Each flipbook node's frame on show: (action, frame).
-    shown: Vec<(usize, usize)>,
+    /// Each flipbook node's frame on show: (action, frame of its run; none
+    /// hidden).
+    shown: Vec<(usize, Option<usize>)>,
     /// The texture its actions last put in place of one of its own (the
     /// game keeps one per object), and its copies of the materials drawing
     /// that texture, by part.
@@ -673,7 +674,7 @@ fn attach_models(
             Some(item) => {
                 item.model = Some(entity);
                 item.atree = rig.map(|r| r.atree.clone());
-                let shown = vec![(0, 0); rig.map_or(0, |r| r.flipbooks.len())];
+                let shown = vec![(0, Some(0)); rig.map_or(0, |r| r.flipbooks.len())];
                 let pose = ItemPose { action: 0, frame: 0.0, tracks: None, shown, texture: None, copies: HashMap::new() };
                 commands.entity(entity).insert(pose);
             }
@@ -732,18 +733,20 @@ fn pose_items(
                 material.0 = copy;
             }
         }
-        for (k, (holder, frames, facing)) in rig.flipbooks.iter().enumerate() {
-            let action = if frames.get(pose.action).is_some_and(|f| !f.is_empty()) { pose.action } else { 0 };
-            let Some(list) = frames.get(action).filter(|f| !f.is_empty()) else { continue };
-            let frame = character::shown_frame(pose.frame, list.len());
-            if pose.shown.get(k) == Some(&(action, frame)) {
+        for (k, (holder, node, frames, facing)) in rig.flipbooks.iter().enumerate() {
+            let Some(list) = frames.get(pose.action) else { continue };
+            let start = rig.atree.flipbook_entry(*node, pose.action).map_or(0, |e| e.param);
+            let playing = rig.atree.actions.get(pose.action);
+            let frame = playing.and_then(|a| character::flipbook_frame(a, pose.frame, start, list.len()));
+            let now = (pose.action, frame);
+            if pose.shown.get(k) == Some(&now) {
                 continue;
             }
             if let Some(s) = pose.shown.get_mut(k) {
-                *s = (action, frame);
+                *s = now;
             }
             commands.entity(*holder).despawn_related::<Children>();
-            for p in &list[frame] {
+            for p in frame.and_then(|f| list.get(f)).into_iter().flatten() {
                 let e = commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(*holder))).id();
                 if let Some(b) = facing {
                     commands.entity(e).insert((*b, Transform::default()));
