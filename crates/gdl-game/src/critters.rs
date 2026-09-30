@@ -93,13 +93,13 @@ impl Plugin for CrittersPlugin {
 }
 
 /// Seconds after the boss dies before the level ends (stand-in: the
-/// game's heroes cheer, take the key and leave through their exit state,
+/// game's heroes pick up the key and leave through their exit state,
 /// which isn't traced).
 const VICTORY_SECONDS: f32 = 5.0;
 
-/// A boss's death wins the realm for every hero (`FUN_8001b854` marks the
-/// realm in each player's `+0x1EC8`), then the party goes back to the
-/// tower.
+/// A boss's death wins the realm for every hero (the game marks the realm
+/// in each player's record, `docs/critters.md`), then the party goes back
+/// to the tower.
 fn boss_victory(
     level: Option<Res<CritterLevel>>,
     population: Option<Res<crate::population::LevelPopulation>>,

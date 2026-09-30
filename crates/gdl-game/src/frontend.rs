@@ -568,6 +568,11 @@ impl Frontend {
         self.screen == Screen::Playing
     }
 
+    /// Whether a menu is up.
+    pub fn menu_open(&self) -> bool {
+        !self.menus.is_empty()
+    }
+
     /// Whether gameplay should be frozen (anything but plain play).
     fn frozen(&self) -> bool {
         !(self.screen == Screen::Playing && self.menus.is_empty())

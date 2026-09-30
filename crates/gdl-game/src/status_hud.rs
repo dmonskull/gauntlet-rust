@@ -1,5 +1,5 @@
-//! The hero's status in an overlay at the top left (F1 swaps in the
-//! developer overlay's detail on top): health, level,
+//! The hero's status as a debug line at the top left (F1 or
+//! `GDL_DEBUG_HUD=1`; the game's own panel is `game_hud.rs`): health, level,
 //! gold, keys, potions, running powerups, and the hint on screen.
 //! Bevy's built-in font is ASCII-only, so all text here is ASCII.
 
@@ -78,13 +78,22 @@ fn update(
 type HudTexts = Or<(With<StatusText>, With<HintText>)>;
 
 /// The status and hints only show while a level is played, not on the
-/// title, select or loading screens.
+/// title, select or loading screens. The status line is a debugging aid
+/// now that the game's own panel is drawn (`game_hud.rs`): F1 or
+/// `GDL_DEBUG_HUD=1` shows it.
 fn show_in_play(
     frontend: Option<Res<crate::frontend::Frontend>>,
-    mut texts: Query<&mut Visibility, HudTexts>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut debug: Local<Option<bool>>,
+    mut texts: Query<(&mut Visibility, Has<StatusText>), HudTexts>,
 ) {
-    let want = if frontend.is_none_or(|f| f.playing()) { Visibility::Inherited } else { Visibility::Hidden };
-    for mut v in &mut texts {
+    let debug = debug.get_or_insert_with(|| std::env::var("GDL_DEBUG_HUD").is_ok_and(|v| !v.is_empty() && v != "0"));
+    if keys.just_pressed(KeyCode::F1) {
+        *debug = !*debug;
+    }
+    let playing = frontend.is_none_or(|f| f.playing());
+    for (mut v, status) in &mut texts {
+        let want = if playing && (!status || *debug) { Visibility::Inherited } else { Visibility::Hidden };
         v.set_if_neq(want);
     }
 }
