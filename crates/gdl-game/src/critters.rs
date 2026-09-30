@@ -64,7 +64,7 @@
 //! Stand-ins (see the doc): a woken statue goes straight to its ACTIVE
 //! animation and its critter appears when that ends; ground rings (a
 //! damaging effect in the game) hurt players in their radius at once;
-//! critter missiles live the missiles' three seconds; the chimera's wake
+//! critter missiles fly the missiles' three seconds; the chimera's wake
 //! timer starts at once; the tower's first level follows a boss. The darkening isn't drawn; the
 //! heroes' side of the intro, the boss camera, parts (the chimera's
 //! heads), breaking nodes, the health meter, effects and fading, its blows
@@ -85,9 +85,9 @@ use gdl_formats::texmod::TexMod;
 use gdl_formats::{LevelCollision, ModelFile, enemy};
 
 use crate::audio::{PlaySoundAt, QueueVoice, VoiceQueues};
-use crate::character::{Animate, Animator, CharacterData, CharacterModel, advance_clip, clip_end};
+use crate::character::{Animate, Animator, CharacterData, CharacterModel, advance_clip, clip_end, clip_fps};
 use crate::combat::{CritterAim, SphereAim, TargetKind, Targetable};
-use crate::effects::{CritterBlast, effect_life};
+use crate::effects::{CritterBlast, OneShot, effect_life};
 use crate::exits::ChangeLevelTo;
 use crate::flash::{self, Flash, FlashColours};
 use crate::message_box::{self, ShowCaption, TextFile};
@@ -104,7 +104,7 @@ use crate::play_camera::PlayCamera;
 use crate::player::Player;
 use crate::player_state::{DamagePlayer, EnemyScale, PlayerState, TimeStop};
 use crate::population::{ContentModels, LevelPopulation};
-use crate::projectiles::{cylinder_hit, load_atree, spawn_critter_missile};
+use crate::projectiles::{CritterMissile, CritterStop, cylinder_hit, load_atree, spawn_critter_missile};
 use crate::world::{LevelEntity, LevelGround};
 
 pub struct CrittersPlugin;
@@ -711,9 +711,10 @@ struct RockBlow {
     sounds: Vec<PlaySoundAt>,
 }
 
-/// A critter's effect set down somewhere: seconds left.
-#[derive(Component)]
-struct CritterFx(f32);
+/// A missile blow's flags: 0x1000 flies past the heroes, 0x40 through
+/// walls and items.
+const NO_PLAYERS: u16 = 0x1000;
+const NO_LEVEL: u16 = 0x40;
 
 /// The most safe rocks a boss gathers.
 const MAX_ROCKS: usize = 16;
@@ -1278,11 +1279,9 @@ fn setup_level(
         // NULLFX, unseen).
         let mut effects = HashMap::new();
         let mut effect_clips = HashMap::new();
-        for d in &file.damage {
-            if !matches!(d.kind, 1 | 5 | 6 | 8) {
-                continue;
-            }
-            let Ok(e) = usize::try_from(d.effects[0]) else { continue };
+        let records = file.damage.iter().filter(|d| d.kind != LOOT).flat_map(|d| [d.effects[0], d.effects[1]]);
+        for e in records {
+            let Ok(e) = usize::try_from(e) else { continue };
             let Some(name) = file.sounds.get(e).map(|s| s.effect.clone()) else { continue };
             if effects.contains_key(&e) || name.is_empty() {
                 continue;
@@ -2408,16 +2407,9 @@ fn rock_blows(
     items: Option<ResMut<LevelItems>>,
     contents: Option<Res<ContentModels>>,
     transforms: Query<&Transform>,
-    mut fx: Query<(Entity, &mut CritterFx)>,
     mut blasts: MessageWriter<CritterBlast>,
     mut sounds: MessageWriter<PlaySoundAt>,
 ) {
-    for (e, mut f) in &mut fx {
-        f.0 -= DT;
-        if f.0 <= 0.0 {
-            commands.entity(e).try_despawn();
-        }
-    }
     let (Some(mut level), Some(mut items)) = (level, items) else { return };
     let level = &mut *level;
     // Where a rock stands: its model's pose (its node), else its centre.
@@ -2478,7 +2470,7 @@ fn rock_blows(
             let spot = spots[k];
             if let Some(model) = &b.effect {
                 let e = model.spawn(Transform::from_translation(spot), &mut commands);
-                commands.entity(e).insert((CritterFx(b.life), LevelEntity));
+                commands.entity(e).insert((OneShot(b.life), LevelEntity));
             }
             blasts.write(CritterBlast {
                 owner: b.critter,
@@ -2487,6 +2479,8 @@ fn rock_blows(
                 damage: b.damage,
                 radius: b.radius,
                 life: b.life,
+                monsters: false,
+                items: false,
             });
             sounds.write_batch(b.sounds.iter().cloned());
             if !b.every {
@@ -3237,7 +3231,7 @@ fn deal(
                 let across = Vec2::new(v.x, v.z).length();
                 across >= d.min_range
                     && across <= d.radius
-                    && cylinder_hit(at, at + forward * d.radius, centre, h.radius + d.life, h.half + d.life).is_some()
+                    && cylinder_hit(at, at + forward * d.radius, centre, h.radius + d.size, h.half + d.size).is_some()
             }
             _ => false,
         };
@@ -3295,10 +3289,21 @@ fn lob_toward(from: Vec3, to: Vec3, speed: f32, gravity: f32) -> Vec3 {
     Vec3::new(f.x * angle.cos(), angle.sin(), f.y * angle.cos())
 }
 
-/// A missile: from the move's node, at the critter's target (flag 1) or
-/// along its facing, as fast as its anger picks from the speed range, with
-/// its own effect model.
+/// A missile blow (kind 1): the blow's effect — its `SFXX` record; with
+/// none, or one the effect table doesn't hold, nothing flies — leaves the
+/// move's node (its offset turned with the critter) as fast as the
+/// critter's anger picks from the speed range, aimed as the blow's flags
+/// say. It hits with its own radius (`DAMG +0x08`) and is drawn at the
+/// record's size; the blow's flag 0x40 takes it through walls and items,
+/// 0x1000 past the heroes. Where it stops, its hit record plays: its
+/// sound, and its effect for that clip, bursting out to `DAMG +0x0C` (none
+/// without the effect).
 fn launch(c: &Critter, me: Entity, d: &CritterDamage, damage: f32, level: &mut CritterLevel, commands: &mut Commands) {
+    let effect = usize::try_from(d.effects[0]).ok().and_then(|e| Some((e, c.kind.file.sounds.get(e)?, *c.kind.effect_clips.get(&e)?)));
+    let Some((e, record, _)) = effect else {
+        debug!("critter {me:?}: a missile blow with no effect the table holds: nothing flies");
+        return;
+    };
     let (s, co) = c.yaw.sin_cos();
     let o = d.offset;
     let offset = Vec3::new(o[0] * co + o[2] * s, o[1], -o[0] * s + o[2] * co);
@@ -3323,14 +3328,44 @@ fn launch(c: &Critter, me: Entity, d: &CritterDamage, damage: f32, level: &mut C
         let spread = if d.spread > 0.0 { (level.random() - 0.5) * d.spread } else { 0.0 };
         dir = turn_dir(dir, d.yaw + spread, if d.flags & 8 != 0 { d.pitch } else { 0.0 });
     }
-    let model = usize::try_from(d.effects[0]).ok().and_then(|e| c.kind.effects.get(&e)).map(|m| m.as_ref());
-    info!("critter {me:?} launches a missile: {damage:.0} damage at {speed:.0}/s from {start:?}");
-    let size = d.life.max(0.1);
-    let e = spawn_critter_missile(commands, model, me, start, dir * speed, d.gravity, d.radius, damage, d.blow, size);
-    // Stand-in glow (half its hit radius), since the effect model draws
-    // nothing without the effects system.
+    let model = c.kind.effects.get(&e).map(|m| m.as_ref());
+    // The hit record: its sound, and its effect for its clip's length (no
+    // effect, no burst).
+    let hit = usize::try_from(d.effects[1]).ok().and_then(|h| c.kind.file.sounds.get(h).map(|r| (h, r)));
+    let stop = hit.map_or_else(CritterStop::default, |(h, r)| {
+        let clip = c.kind.effect_clips.get(&h).map(|&(f, rt)| f32::from(f) / clip_fps(rt));
+        CritterStop {
+            sound: (!r.sound.is_empty()).then(|| r.sound.replace("%c", &level.realm.to_string())),
+            effect: c.kind.effects.get(&h).cloned(),
+            life: clip.unwrap_or(0.0),
+            blast: if clip.is_some() { d.radius } else { 0.0 },
+        }
+    });
+    info!(
+        "critter {me:?} launches a missile: {damage:.0} damage at {speed:.0}/s from {start:?}, radius {:.2}, burst {:.1}",
+        d.size, stop.blast
+    );
+    let e = spawn_critter_missile(
+        commands,
+        CritterMissile {
+            model,
+            critter: me,
+            start,
+            velocity: dir * speed,
+            gravity: d.gravity,
+            radius: d.size,
+            damage,
+            kind: d.blow,
+            scale: record.size,
+            hits_players: d.flags & NO_PLAYERS == 0,
+            hits_level: d.flags & NO_LEVEL == 0,
+            stop,
+        },
+    );
+    // Stand-in glow (half its burst radius): some effect models take their
+    // textures from the effects system, which doesn't supply them yet.
     let (mesh, material) = level.glow.clone();
-    let glow = Transform::from_scale(Vec3::splat(0.5 * d.radius / size));
+    let glow = Transform::from_scale(Vec3::splat(0.5 * d.radius.max(1.0) / record.size.max(0.01)));
     commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), glow, ChildOf(e)));
 }
 

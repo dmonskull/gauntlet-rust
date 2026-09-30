@@ -331,8 +331,9 @@ pub struct CritterDamage {
     pub flags: u16,
     /// `+0x04`: the blow's kind bits (0x10 strong, 0x20 knocks down…).
     pub blow: u32,
-    /// `+0x08`: a projectile's lifetime (s); a cone's thickness.
-    pub life: f32,
+    /// `+0x08`: a missile's own radius (what it hits with; the game's
+    /// effect slot `+0x84`); a cone's thickness.
+    pub size: f32,
     /// `+0x0C`: sphere, projectile or ring radius; a cone's length.
     pub radius: f32,
     /// `+0x10`: a cone's nearest reach.
@@ -541,7 +542,7 @@ impl CritterDamage {
             kind: i16_at(r, 0),
             flags: i16_at(r, 2) as u16,
             blow: i32_at(r, 4) as u32,
-            life: f32_at(r, 8),
+            size: f32_at(r, 8),
             radius: f32_at(r, 0xC),
             min_range: f32_at(r, 0x10),
             yaw: f32_at(r, 0x14),

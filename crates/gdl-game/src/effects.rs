@@ -210,12 +210,14 @@ pub struct SweepItems {
     pub life: f32,
 }
 
-/// A boss's effect set down where it does its damage (`DAMG` kinds 5 and
-/// 6, `critters.rs`: the P-boss's spouts at the safe rocks, the yeti's
-/// boulders): the game's missile slot in area mode from the start (flags
-/// `0x801 | 0x20`: players, not monsters or items), growing as any blast
-/// does over `life`, the effect's clip. Unseen here: the effect's model is
-/// the critter's own, set down by `critters.rs`.
+/// A critter's effect doing its damage where it's set down: the game's
+/// missile slot in area mode, growing as any blast does over `life`, the
+/// effect's clip, and hurting the heroes about it — a boss's at the safe
+/// rocks (`DAMG` kinds 5 and 6, `critters.rs`: flags `0x801 | 0x20`, not
+/// monsters or items), or a critter's missile bursting where it stops
+/// (`projectiles.rs`: monsters too, and items for magic). Never its own
+/// critter. Unseen here: the effect's model is the critter's own, set down
+/// with it.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct CritterBlast {
     pub owner: Entity,
@@ -224,6 +226,8 @@ pub struct CritterBlast {
     pub damage: f32,
     pub radius: f32,
     pub life: f32,
+    pub monsters: bool,
+    pub items: bool,
 }
 
 /// What a thrown potion becomes where it lands.
@@ -770,9 +774,10 @@ pub struct EffectOn {
     pub scale: f32,
 }
 
-/// A one-off effect's seconds left.
+/// A one-off effect's seconds left (also a critter's effects set down,
+/// `critters.rs`, `projectiles.rs`).
 #[derive(Component)]
-struct OneShot(f32);
+pub(crate) struct OneShot(pub(crate) f32);
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_one_shots(
@@ -1365,7 +1370,7 @@ fn sweep_items(mut commands: Commands, mut requests: MessageReader<SweepItems>) 
 
 fn critter_blasts(mut commands: Commands, mut requests: MessageReader<CritterBlast>) {
     for c in requests.read() {
-        info!("a boss's blast at {:?}: {:.0} out to {:.0} over {:.2} s", c.at, c.damage, c.radius, c.life);
+        info!("a critter's blast at {:?}: {:.0} out to {:.0} over {:.2} s", c.at, c.damage, c.radius, c.life);
         let blast = Blast {
             owner: c.owner,
             shape: BlastShape::Grow,
@@ -1378,8 +1383,8 @@ fn critter_blasts(mut commands: Commands, mut requests: MessageReader<CritterBla
             spared: HashMap::new(),
             spared_items: HashMap::new(),
             heroes: Heroes::Hurt,
-            items: false,
-            monsters: false,
+            items: c.items,
+            monsters: c.monsters,
             then: &[],
             scale: Vec3::ONE,
             drop: 0.0,
@@ -1421,7 +1426,7 @@ fn tick_blasts(
         MessageWriter<StrikePotion>,
         MessageWriter<BlastItem>,
     ),
-    bones: Query<&GlobalTransform, Without<Targetable>>,
+    (bones, mut guard): (Query<&GlobalTransform, Without<Targetable>>, ResMut<projectiles::PlayerGuard>),
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -1506,7 +1511,10 @@ fn tick_blasts(
             .collect();
         if b.monsters {
             for body in combat::one_per_critter(reached, |body| body.aim) {
-                hit(body.entity, body.kind, b);
+                // Not the critter whose effect it is.
+                if body.aim.map_or(body.entity, |a| a.body) != b.owner {
+                    hit(body.entity, body.kind, b);
+                }
             }
         }
         for (e, g, t, _) in &targets {
@@ -1562,12 +1570,19 @@ fn tick_blasts(
         for (e, mut p) in &mut players {
             let feet = Vec3::from(p.mover.position);
             let centre = feet + Vec3::Y * projectiles::PLAYER_CENTRE;
-            if (centre - b.centre).length() > reach + p.radius || b.spared.get(&e).is_some_and(|&until| until > now) {
+            // Through the hero's guard, as every blow on a hero goes (a
+            // missile that just hit it keeps its burst off a quarter
+            // second).
+            if (centre - b.centre).length() > reach + p.radius
+                || b.spared.get(&e).is_some_and(|&until| until > now)
+                || !guard.open(e, now)
+            {
                 continue;
             }
             if damage > 2.0 {
                 b.spared.insert(e, now + spare as f64);
             }
+            guard.landed(e, damage, now);
             let (kind, push) = blast_on_hero(damage, b.kind, b.centre, feet);
             let amount = p.take_blow(damage, kind, push);
             if amount == 0.0 {
