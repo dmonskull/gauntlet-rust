@@ -40,7 +40,7 @@ use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
 use crate::player_state::{PlayerState, power};
 use crate::population::LevelPopulation;
-use crate::effects::{MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
+use crate::effects::{EffectAt, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
 use crate::flash::{self, Flash, FlashColours, Retexture};
 use crate::hints::{Hint, ShowHint};
 use crate::projectiles::{self, HeroShot};
@@ -126,6 +126,11 @@ pub struct Player {
     /// Blows taken since the last tick: damage, kind flags, summed push
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
+    /// Its left wrist's skeleton node (the lightning shield's spark
+    /// leaves from it), and until when each target is spared the
+    /// lightning shield's next blow.
+    left_wrist: Option<usize>,
+    shield_cooldowns: Vec<(Entity, f64)>,
     /// Its hit flash (`flash.rs`), and the invulnerability's chrome in
     /// the same slot ([`show_chrome`]).
     flash: Flash,
@@ -251,6 +256,39 @@ fn show_chrome(
             flash::tag_body(animator, |_| true, 0, &mut tags, &mut commands);
         }
         p.chrome_look.show(texture, animator, &mut drawn, &mut materials);
+    }
+}
+
+/// Armour bits: the fire wall and lightning shields, and all three
+/// shields (with the reflect shield) — held on the left arm.
+const FIRE_WALL: u32 = 0x20_0000;
+const LIGHTNING_SHIELD: u32 = 0x40_0000;
+const SHIELDS: u32 = 0x62_0000;
+/// The fire wall burns what the hero walks into for 3 every tick; the
+/// lightning shield strikes it for 20, heavy, once a second, with
+/// `L_SHLD_ACTIVE` from the left wrist.
+const FIRE_WALL_DAMAGE: f32 = 3.0;
+const FIRE_WALL_KIND: u32 = 0x1;
+const LIGHTNING_DAMAGE: f32 = 20.0;
+const LIGHTNING_KIND: u32 = 0x22;
+const LIGHTNING_COOLDOWN: f64 = 1.0;
+const LIGHTNING_SPARK: &str = "L_SHLD_ACTIVE";
+const LEFT_WRIST: &str = "L_WRIST";
+
+/// A shield's blow on the target it touches.
+fn shield_blow(hero: Entity, f: &combat::Found, damage: f32, kind: u32, facing: f32) -> Hit {
+    let sighted = matches!(f.kind, TargetKind::Monster | TargetKind::Object);
+    let push = if sighted { combat::push(facing, damage) } else { Vec3::ZERO };
+    Hit { target: f.entity, attacker: hero, damage, kind, push, at: f.position, target_kind: f.kind, ranged: false }
+}
+
+/// The action played with a shield on: SHIELD_READY for READY,
+/// SHIELD_RUN for the walks and runs.
+fn shield_action(action: Action) -> Action {
+    match action.0 {
+        0x00 => Action(0x15),
+        0x11..=0x14 => Action(0x16),
+        _ => action,
     }
 }
 
@@ -458,6 +496,8 @@ fn spawn_player(
         armour_bits: 0,
         boss_level: false,
         pending_hit: (0.0, 0, Vec3::ZERO),
+        left_wrist: hero.data.skeleton.node_index(LEFT_WRIST),
+        shield_cooldowns: Vec::new(),
         flash: Flash::default(),
         chrome: Flash::default(),
         chrome_look: Retexture::default(),
@@ -609,7 +649,7 @@ fn tick(
     mut players: Query<(Entity, &mut Player, &mut Animator)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
-    (mut shots, mut potions): (MessageWriter<HeroShot>, MessageWriter<UsePotion>),
+    (mut shots, mut potions, mut effects): (MessageWriter<HeroShot>, MessageWriter<UsePotion>, MessageWriter<EffectAt>),
     mut hints: MessageWriter<ShowHint>,
     (colours, mut tags, mut commands): (Res<FlashColours>, Query<&mut MeshTag>, Commands),
     state: Option<Res<PlayerState>>,
@@ -683,10 +723,62 @@ fn tick(
         let drive = if magnitude == 0.0 && !keeps_facing && actions::drifts_forward(current) { DRIFT } else { magnitude };
         let wanted = if magnitude > 0.0 && !keeps_facing { stick.heading } else { facing };
 
-        // The target the hero is heading for, and whether it walked into it.
+        // Blows taken: flinch, knockback or knockdown. A flinch only
+        // interrupts standing and moving about; the rest override.
+        let (mut hit_damage, mut hit_flags, mut hit_push) = std::mem::take(&mut p.pending_hit);
+        // Invulnerable: no reaction at all.
+        if cut || p.armour_bits & crate::damage::resists::INVULNERABLE != 0 {
+            (hit_damage, hit_flags, hit_push) = (0.0, 0, Vec3::ZERO);
+        }
+        let (reaction, knock, reaction_face) = hit_reaction(hit_damage, hit_flags, hit_push, facing);
+        // A blow of more than a point flashes the hero.
+        if hit_damage > HIT_FLASH_DAMAGE {
+            p.flash.start();
+        }
+        if p.flash.step() {
+            let tag = if p.flash.on() { colours.body().unwrap_or(0) } else { 0 };
+            flash::tag_body(&animator, |_| true, tag, &mut tags, &mut commands);
+        }
+        if knock > 0.0 {
+            let k = hit_push * knock;
+            for (v, add) in p.mover.knockback.iter_mut().zip(k.to_array()) {
+                *v += add;
+            }
+        }
+        // The target the hero is heading for, and whether it walked into it
+        // — or, with a fire wall or lightning shield, touched it with the
+        // shield (not while a blow is making it react).
         let found = combat::search(position, wanted, candidates());
+        let touching = found.filter(|f| reaction == 0 && f.distance < combat::WALK_INTO + p.radius);
+        let shielded = touching.is_some() && p.armour_bits & (FIRE_WALL | LIGHTNING_SHIELD) != 0;
+        if let Some(f) = touching.filter(|_| shielded) {
+            if p.armour_bits & FIRE_WALL != 0 {
+                // Standing counts as walking; walking or running into it
+                // burns it every tick.
+                if intent == Intent::Idle {
+                    intent = Intent::Walk;
+                }
+                if matches!(intent, Intent::Walk | Intent::Run) {
+                    hits.write(shield_blow(entity, &f, FIRE_WALL_DAMAGE, FIRE_WALL_KIND, facing));
+                }
+            } else {
+                let now = time.elapsed_secs_f64();
+                p.shield_cooldowns.retain(|(_, until)| *until > now);
+                if p.shield_cooldowns.iter().all(|(e, _)| *e != f.entity) {
+                    hits.write(shield_blow(entity, &f, LIGHTNING_DAMAGE, LIGHTNING_KIND, facing));
+                    p.shield_cooldowns.push((f.entity, now + LIGHTNING_COOLDOWN));
+                    // The shield's spark, from the left wrist toward it.
+                    let wrist = p.left_wrist.and_then(|n| animator.bone(n)).and_then(|b| bodies.get(b).ok());
+                    let at = wrist.map_or(position + Vec3::Y * body.centre_height, |t| t.translation());
+                    let toward = combat::heading_of(f.position - at);
+                    effects.write(EffectAt { name: LIGHTNING_SPARK, bank: None, at, facing: toward, scale: 1.0 });
+                }
+            }
+        }
         let mut walked_into = false;
         if WALK_INTO_ATTACK
+            && !shielded
+            && reaction == 0
             && matches!(intent, Intent::Walk | Intent::Run)
             && p.actions.edges == 0
             && !(0x27..=0x72).contains(&current.0)
@@ -718,28 +810,6 @@ fn tick(
                 _ => Action::MAGICS,
             };
         }
-        // Blows taken: flinch, knockback or knockdown. A flinch only
-        // interrupts standing and moving about; the rest override.
-        let (mut hit_damage, mut hit_flags, mut hit_push) = std::mem::take(&mut p.pending_hit);
-        // Invulnerable: no reaction at all.
-        if cut || p.armour_bits & crate::damage::resists::INVULNERABLE != 0 {
-            (hit_damage, hit_flags, hit_push) = (0.0, 0, Vec3::ZERO);
-        }
-        let (reaction, knock, reaction_face) = hit_reaction(hit_damage, hit_flags, hit_push, facing);
-        // A blow of more than a point flashes the hero.
-        if hit_damage > HIT_FLASH_DAMAGE {
-            p.flash.start();
-        }
-        if p.flash.step() {
-            let tag = if p.flash.on() { colours.body().unwrap_or(0) } else { 0 };
-            flash::tag_body(&animator, |_| true, tag, &mut tags, &mut commands);
-        }
-        if knock > 0.0 {
-            let k = hit_push * knock;
-            for (v, add) in p.mover.knockback.iter_mut().zip(k.to_array()) {
-                *v += add;
-            }
-        }
         // Turbo attacks: a full meter swings ATTPWRC, 40 or more ATTPWRB.
         if intent == Intent::Turbo {
             if p.turbo >= TURBO_MAX {
@@ -769,7 +839,11 @@ fn tick(
             has_low2: clips.actions.iter().any(|a| a.name == Action::ATTLOW2.name()),
             magic_released: p.magic.flags & MagicState::RELEASED != 0,
         };
-        let next = p.actions.next(requested, &env);
+        let mut next = p.actions.next(requested, &env);
+        // With a shield on its arm the hero stands and moves behind it.
+        if p.armour_bits & SHIELDS != 0 {
+            next.action = shield_action(next.action);
+        }
         let loops = clips.actions.get(animator.action).is_some_and(|a| a.loops());
         let wrapped = loops && p.last_clip.0 == animator.action && animator.frame < p.last_clip.1;
         let ended = animator.finished() || wrapped;
