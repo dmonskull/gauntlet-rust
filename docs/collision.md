@@ -301,8 +301,14 @@ clamped to ≥ 0 first):
    `FUN_80025ca0` / `FUN_8001c084`) — may clip `d.xz`. Not ported.
 6. **Climbing slows the walk**: if `d.y > 0.1 × step` (`step` = the stick
    step, factor × tick × speed × magnitude) and `hypot(step, d.y) > 0.01`,
-   `d.xz *= step / hypot(step, d.y)` (`FUN_800bce38` is an approximate
-   hypot).
+   `d.xz *= step / hypot(step, d.y)`, `hypot` being the game's quick
+   distance `FUN_800bce38` (ported as `approx_hypot`): with `a`, `b` the
+   two offsets' sizes, either under 0.0001 (`r2-0x49e8`) gives the other;
+   else the larger `hi` plus a share of the smaller `lo`, by `lo / hi`:
+   above 0.875 → 0.414, 0.75 → 0.376, 0.625 → 0.333, 0.5 → 0.287, 0.375
+   → 0.236, 0.25 → 0.181, 0.125 → 0.124, else 0.064 (doubles at
+   `r2-0x49d8`…`-0x4928`; within 2.6% of the true length). The boss's
+   safe-rock pick ([critters.md](critters.md)) measures with it too.
 7. If the floor result is > 0, `FUN_8008764c`: the same node lock as
    above, then `FUN_800877c0` records the floor node as the standing node
    `+0x8c4` and attaches to moving platforms (zeroing `d.xz`), and a slope

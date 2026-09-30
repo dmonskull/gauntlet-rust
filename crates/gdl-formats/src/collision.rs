@@ -1121,7 +1121,7 @@ impl LevelCollision {
             d[1] += (ground.floor - feet[1]).max(-p.max_drop);
         }
         if d[1] > 0.1 * step {
-            let h = step.hypot(d[1]);
+            let h = approx_hypot(step, d[1]);
             if h > 0.01 {
                 d[0] *= step / h;
                 d[2] *= step / h;
@@ -1283,6 +1283,38 @@ pub fn push_out(radius: f32, from: [f32; 3], delta: &mut [f32; 3], contact: [f32
     }
 }
 
+/// The game's quick distance from two offsets (`docs/collision.md`,
+/// "Moving a player"): the larger plus a share of the smaller, the share
+/// stepping with how near they are to each other (6.4% of it far apart,
+/// 41.4% when level) — within 2.6% of the true length, and the length
+/// itself when either is under 0.0001.
+pub fn approx_hypot(x: f32, y: f32) -> f32 {
+    let (a, b) = (f64::from(x.abs()), f64::from(y.abs()));
+    if a < 0.0001 {
+        return b as f32;
+    }
+    if b < 0.0001 {
+        return a as f32;
+    }
+    let (lo, hi) = if b <= a { (b, a) } else { (a, b) };
+    let share = if 0.5 * hi < lo {
+        if 0.75 * hi < lo {
+            if 0.875 * hi < lo { 0.414 } else { 0.376 }
+        } else if 0.625 * hi < lo {
+            0.333
+        } else {
+            0.287
+        }
+    } else if 0.25 * hi < lo {
+        if 0.375 * hi < lo { 0.236 } else { 0.181 }
+    } else if 0.125 * hi < lo {
+        0.124
+    } else {
+        0.064
+    };
+    (share * lo + hi) as f32
+}
+
 fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
@@ -1398,6 +1430,23 @@ mod tests {
         // Hovering within the radius counts as touching.
         assert_eq!(t.sweep([1.0, 0.4, 1.0], [1.5, 0.3, 1.0], 0.5).map(|h| h.0), Some(0.0));
         assert!(t.sweep([1.0, 0.8, 1.0], [1.5, 0.7, 1.0], 0.5).is_none());
+    }
+
+    #[test]
+    fn the_quick_distance_steps_its_share_of_the_smaller() {
+        assert_eq!(approx_hypot(3.0, 0.0), 3.0);
+        assert_eq!(approx_hypot(0.00005, -2.0), 2.0);
+        // Level: 1 + 0.414; 3 by 4: 4 + 0.333 × 3 (0.75 isn't above
+        // 0.75); 1 by 2: 2 + 0.236.
+        assert!((approx_hypot(-1.0, 1.0) - 1.414).abs() < 1e-6);
+        assert!((approx_hypot(3.0, 4.0) - 4.999).abs() < 1e-6);
+        assert!((approx_hypot(2.0, 1.0) - 2.236).abs() < 1e-6);
+        // Close to the true length everywhere.
+        for i in 0..=1000 {
+            let (x, y) = (1.0, i as f32 / 1000.0);
+            let err = (approx_hypot(x, y) - x.hypot(y)).abs() / x.hypot(y);
+            assert!(err < 0.026, "{y}: {err}");
+        }
     }
 
     #[test]
