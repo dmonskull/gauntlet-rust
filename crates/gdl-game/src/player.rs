@@ -40,7 +40,7 @@ use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
 use crate::player_state::{PlayerState, SpendPower, power};
 use crate::population::LevelPopulation;
-use crate::effects::{BreathAt, EffectAt, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
+use crate::effects::{BreathAt, ChopAt, EffectAt, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
 use crate::flash::{self, Flash, FlashColours};
 use crate::fade::BodyLook;
 use crate::hints::{Hint, ShowHint};
@@ -337,8 +337,8 @@ fn special_attack(special: u32, weapon: u32) -> Option<Action> {
         Some(Action(0x68))
     } else if weapon & 0x10_0000 != 0 {
         Some(Action(0x6B))
-    } else if weapon & 0x1000_0000 != 0 {
-        Some(Action(0x70))
+    } else if weapon & HAMMER != 0 {
+        Some(Action::ATTCHOP)
     } else if special & BREATHS != 0 {
         Some(Action::ATTBREATHE)
     } else {
@@ -346,6 +346,8 @@ fn special_attack(special: u32, weapon: u32) -> Option<Action> {
     }
 }
 
+/// The hammer's weapon bit.
+const HAMMER: u32 = 0x1000_0000;
 /// The special bits of the breath powers (fire, acid, lightning).
 const BREATHS: u32 = 0x70;
 /// A breath's reach, and the node it goes out from.
@@ -490,6 +492,7 @@ type HeroWriters<'w> = (
     MessageWriter<'w, EffectAt>,
     MessageWriter<'w, BreathAt>,
     MessageWriter<'w, SpendPower>,
+    MessageWriter<'w, ChopAt>,
 );
 
 /// Player movement; the play camera ticks after it.
@@ -761,7 +764,7 @@ fn tick(
     mut players: Query<(Entity, &mut Player, &mut Animator)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
-    (mut shots, mut potions, mut effects, mut effects_breath, mut spent): HeroWriters,
+    (mut shots, mut potions, mut effects, mut effects_breath, mut spent, mut chops): HeroWriters,
     mut hints: MessageWriter<ShowHint>,
     (colours, mut tags, mut commands): (Res<FlashColours>, Query<&mut MeshTag>, Commands),
     state: Option<Res<PlayerState>>,
@@ -914,12 +917,13 @@ fn tick(
         let mut requested =
             combat::request(intent, p.actions.range, stick.magnitude, walked_into, p.actions.combo, p.request);
         // A power's own attack takes the place of every attack (not one
-        // made by walking into something). Only the breath's is done.
+        // made by walking into something). Only the breath's and the
+        // hammer's are done.
         if !walked_into
             && matches!(intent, Intent::Quick | Intent::Power | Intent::StrafeAttack(_))
-            && special_attack(p.special_bits, p.weapon) == Some(Action::ATTBREATHE)
+            && let Some(a) = special_attack(p.special_bits, p.weapon).filter(|a| matches!(*a, Action::ATTBREATHE | Action::ATTCHOP))
         {
-            requested = Action::ATTBREATHE;
+            requested = a;
         }
         if intent == Intent::Magic {
             requested = match magic {
@@ -1021,6 +1025,12 @@ fn tick(
                 let head = animator.node(HEAD).and_then(|n| animator.bone(n));
                 effects_breath.write(BreathAt { hero: entity, head, fx, kind, damage, radius: BREATH_RADIUS, sound });
                 spent.write(SpendPower { subtype: power::SPECIAL, bits: BREATHS });
+            }
+            // The hammer comes down as its recovery starts, and a use is
+            // spent.
+            if strike.0 & Strike::CHOP != 0 {
+                chops.write(ChopAt { hero: entity });
+                spent.write(SpendPower { subtype: power::WEAPON, bits: HAMMER });
             }
             if strike.0 & (Strike::MAGIC | Strike::THROW_POTION) != 0 && !cut {
                 let mode = if strike.0 & Strike::THROW_POTION != 0 {
