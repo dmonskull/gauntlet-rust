@@ -800,10 +800,35 @@ impl LevelCollision {
         self.cast_skipping(from, to, q, None)
     }
 
+    /// The nearest hit on the nodes a query keeps apart
+    /// ([`node_flags::SECONDARY`]), which [`cast`](Self::cast) never
+    /// returns: the game records it beside the nearest hit.
+    pub fn cast_apart(&self, from: [f32; 3], to: [f32; 3], q: &Query) -> Option<Hit> {
+        self.cast_both(from, to, q, None).1
+    }
+
+    /// The water under a player standing at `feet`: what its floor probe
+    /// (from the collision centre down `3 + half_height`, crossings first,
+    /// disable mask 1) finds on the nodes kept apart — flag `0x200`, the
+    /// levels' `…WATER…` nodes — which are never its floor. The game's
+    /// floor check records it; the player's shadow lies on it and its steps
+    /// splash while it's above the floor being followed
+    /// (`docs/collision.md`, "Moving a player").
+    pub fn player_water(&self, feet: [f32; 3], p: &PlayerCollision) -> Option<Hit> {
+        let at = add(feet, [0.0, p.centre_height, 0.0]);
+        let q = Query { disable_mask: 1, prefer_crossing: true, ..Query::floors(p.radius) };
+        self.cast_apart(at, add(at, [0.0, -(3.0 + p.half_height), 0.0]), &q)
+    }
+
     /// [`cast`](Self::cast), ignoring one triangle. The game gets the same
     /// effect by bumping the triangle's "visited" byte so the next query's
     /// stamp already matches it.
     fn cast_skipping(&self, from: [f32; 3], to: [f32; 3], q: &Query, skip: Option<usize>) -> Option<Hit> {
+        self.cast_both(from, to, q, skip).0
+    }
+
+    /// The nearest hit, and the nearest on a node kept apart.
+    fn cast_both(&self, from: [f32; 3], to: [f32; 3], q: &Query, skip: Option<usize>) -> (Option<Hit>, Option<Hit>) {
         let r = q.radius;
         let delta = sub(to, from);
         let len = dot(delta, delta).sqrt();
@@ -830,7 +855,7 @@ impl LevelCollision {
         candidates.sort_unstable();
         candidates.dedup();
 
-        let mut best: Option<Hit> = None;
+        let (mut best, mut apart): (Option<Hit>, Option<Hit>) = (None, None);
         let mut i = 0;
         while i < candidates.len() {
             let ni = candidates[i].0;
@@ -906,14 +931,14 @@ impl LevelCollision {
                     node_best = Some(Hit { node: ni, triangle: ti, point, normal, score });
                 }
             }
-            if let Some(h) = node_best
-                && node.flags & node_flags::SECONDARY == 0
-                && h.score < best.map_or(NO_SCORE, |b| b.score)
-            {
-                best = Some(h);
+            if let Some(h) = node_best {
+                let slot = if node.flags & node_flags::SECONDARY == 0 { &mut best } else { &mut apart };
+                if h.score < slot.map_or(NO_SCORE, |b| b.score) {
+                    *slot = Some(h);
+                }
             }
         }
-        best
+        (best, apart)
     }
 
     /// The game's wall test from `from` to `to`.
@@ -1828,6 +1853,23 @@ mod tests {
         let m = level.move_player([20.0, 0.0, 20.0], [0.3, 0.0, 0.0], &p, &mut g);
         assert!(m.no_floor && m.delta[0] == 0.0 && (m.delta[1] + p.max_drop).abs() < 1e-6, "{m:?}");
         assert_eq!(g.floor, level.kill_height());
+    }
+
+    /// Water (a node kept apart, flag `0x200`) is never a floor, but the
+    /// player's probe reports it, within its reach.
+    #[test]
+    fn players_find_water_apart_from_the_floor() {
+        let p = PlayerCollision::default();
+        let feet = [5.0, 0.0, 5.0];
+        let water = one_node_level(&floor(0.0, 10.0, 1.0), node_flags::SECONDARY);
+        assert!(water.floor_probe(feet, 2.5, -3.0, p.radius, 1).is_none());
+        let hit = water.player_water(feet, &p).expect("the water");
+        assert!((hit.point[1] - 1.0).abs() < 1e-4, "{hit:?}");
+        // The probe ends 3 below the feet, plus its radius.
+        let deep = one_node_level(&floor(0.0, 10.0, -5.0), node_flags::SECONDARY);
+        assert!(deep.player_water(feet, &p).is_none());
+        // A plain floor isn't water.
+        assert!(test_level().player_water(feet, &p).is_none());
     }
 
     /// From every level's entry-0 player start, a player walking in eight
