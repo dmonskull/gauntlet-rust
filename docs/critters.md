@@ -416,7 +416,8 @@ On a switch, `0x8003c614`:
 
 - **Pattern bookkeeping:**
   - Outside a pattern, it records the move's end: `+0x218[i]` = now +
-    (frames − 2) × 1/30 (`r2-0x7120`). Cooldowns run from there.
+    (frames − 2) × 1/30 (`r2-0x7120`), the clip's frame count
+    (`+0x88`) whatever its rate. Cooldowns run from there.
   - Starting a pattern sets `+0x318[p]` = now, `+0x11C` = p, step 0.
   - Inside one, it steps it; a step < 0 or past 8 ends it.
 - **Boss intro:** START ending moves the intro state 1 → 2; ROAR moves it
@@ -638,8 +639,10 @@ is:
     0x80000040 and 0x880 (`0x8009418c` → `0x8009423c`). When its
     animation ends it becomes `BOSSKEY2` for 30 s (`0x80093594`: effect
     flag 0x4000, second type `+0xB8`, life `+0x6C` = `r2-0x7bb0`), then
-    goes. A sound plays at it (`0x8009eb78`: the realm's entry of
-    `0x80122f4c`);
+    goes (the second model's clip loops: its life is fixed). The key is
+    the realm's stained-glass **shard** (both models play `ACTIVE`, 39
+    frames at rate 30). A sound plays at it (`0x8009eb78`: the realm's
+    entry of `0x80122f4c`, `S_BOSSKEY<realm letter>`);
   - it calls `0x800b2bd4(…, 1)` on the HUD sprites at `0x8023ddc8` and
     `0x8023dde0` (3 × 2 each).
 - **No pick-up.** The heroes' action 0x1C (PICK) needs `r13-0x7768` ≥ 0
@@ -658,19 +661,20 @@ is:
      live players' positions, the first player's height counted twice);
      its transparency `r13-0x77a8` starts at 255;
   4. the transparency drops 4 a frame to 0; then the wizard speaks
-     (`0x8009bf48(boss, 0)`) and his message shows page by page
-     (`0x80019e64`, typed out by the fields since the page began, a
-     finished page held 60 fields):
-     message 0x94 for the dragon, 0x93 chimera, 0x95 djinn, 0x96 drider,
-     0x98 P-boss, 0x97 yeti, 0x9A wraith, 0x99 lich, 0x9F first skorne,
-     0xA2 second skorne, 0xA3 garm;
-  5. half a second (`r2-0x7d00`) after the last page, speech n + 1, where
-     n compares the realm's mask (`0x8008bdbc`) with the players'
-     `+0xDD6` bits: 0 none, 1 some, 2 or 3 all (by `0x8008bd74`);
-  6. a second message: 0x9B + n (the first skorne 0xA0 or 0xA1, the
-     second skorne and garm none);
+     (`0x8009bf48(boss, 0)`; the first skorne `0x8009bf48(boss,
+     r13-0x77b0)`) and his message shows page by page (`0x80019e64`, a
+     character typed every 2 fields since the page began, a finished page
+     held 60 fields): message 0x94 for the dragon, 0x93 chimera, 0x95
+     djinn, 0x96 drider, 0x98 P-boss, 0x97 yeti, 0x9A wraith, 0x99 lich,
+     0x9F first skorne, 0xA2 second skorne, 0xA3 garm;
+  5. half a second (`r2-0x7d00`) after the last page, speech n + 1
+     (bosses below 0x2A), where n compares the realm's runestone mask
+     (`0x8008bdbc`) with the players' runestone bits `+0xDD6`: 0 none, 1
+     some, 2 all, 3 all of a realm with two or more stones (`0x8008bd74`);
+  6. a second message: 0x9B + n (the first skorne 0xA1, or 0xA0 when
+     `r13-0x77b0`; the second skorne and garm none);
   7. a second (`r2-0x7cf8`) after its last page, speech 5, 6 or 7 (by
-     the players' `+0xDD4` and `+0xDD6` bits) and
+     the players' `+0xDD4` and `+0xDD6` bits; no boss has one) and
   8. the countdown `r13-0x72ec` = 120 fields (`r13-0x7f98`), or 600
      (`r13-0x7f9c`) when `0x8006299c` says so or the first skorne's
      `r13-0x77b0` is set (from state 9 on it's cut back to 120 whenever
@@ -683,6 +687,22 @@ is:
       next level: with no exit taken, the players' `+0x830` or else
       `r13-0x72b0` (0xD00, set when the worlds load, `0x8005a094`), then
       the first level of that world flagged 1 (`0x80057e68`).
+- **The wizard's words.** The speeches (`0x8009bf48`: the table
+  `0x80123944`, 8 sound ids per boss from the boss's own bank) are
+  `S_DEFEATVOX<L>`, `S_RUNEVOX0<L>`, `S_RUNEVOX1<L>`, then `S_RUNEVOX1<L>`
+  (dragon to drider) or `S_RUNEVOX2<L>` (P-boss to lich), `<L>` the realm
+  letter; the first skorne has `S_E2VOXA` or `S_E2VOXB`, the second
+  skorne `S_ENDVOX`, garm `S_GRMDESTVOX`. They go through the voice queue
+  (`0x80015160`, queue 1), one after another. The messages are groups of
+  the default text table, `TEXT/ENGLISH.ROM`, by number: 0x93
+  `CHIMERA_SPEECH` … 0x9A `WRAITH_SPEECH` ("You have defeated the mighty
+  Dragon and recovered his shard."), 0x9B–0x9E `RUNE_PHRASE0`, `1`, `1B`,
+  `2`, 0x9F `SKORNE1_SPEECH`, 0xA0/0xA1 `SKORNE1_RUNE_YES`/`NO`, 0xA2
+  `SKORNE2_SPEECH`, 0xA3 `GARM2_SPEECH`. `r13-0x77b0` is whether the
+  heroes hold runestones 0–11 (`0x80019928`). The realm table
+  `0x801215a0` (13 × 0x24: realm id, …, `+0x10` runestone mask, `+0x14`
+  count) gives A stone 0, K 1–2, B 3, I 4–5, C 6, G 7–8, D 9, J 10–11,
+  H 12.
 - **Boss wake-up** (`0x800399f0`, state 0):
   - Without `TYPE` flag `0x80`, a 2 s timer starts (`r13-0x74b4`).
   - With it (the chimera), the timer starts only when the floor under the
@@ -1134,6 +1154,26 @@ the gargoyle and the general aren't run yet.
 - **Boss death.** `CritterLevel::boss_dead` is set once DEATH's animation
   has ended (the game's `r13-0x7784`); the boss is removed when DEATH's
   hold ends.
+- **Victory** (`run_victory`): from the boss's removal the end sequence
+  runs as decoded: the realm is marked beaten (`PlayerState::
+  realms_beaten`); the shard (`BOSSKEY`, then `BOSSKEY2` for 30 s, from
+  `ITEMS/<level>` through `projectiles::load_atree`) shows at the spawn
+  position + `TYPE +0xD0` with `S_BOSSKEY<L>`; 5 s later (10 s) the
+  `WIZARD` appears between the boss's spot and the hero, 3 above; after
+  his 64-tick fade he says `S_DEFEATVOX<L>`, then `S_RUNEVOX…` by the
+  realm's runestones the hero holds, queued one after the other; his
+  messages (from `TEXT/ENGLISH.ROM`) are logged and timed as the game
+  types them (a character every 2 fields, 60 fields a page); the 2 s
+  countdown then sends the hero to `levelL1`.
+  - Stand-ins: the messages aren't drawn (the hint system only shows
+    `SCROLL_E.ROM`); the wizard doesn't fade in; the teleport-out effect,
+    the HUD sprites and the next level's choice (`levelL1` for world
+    13's first) aren't the game's; the shard doesn't drop to the floor
+    (flag 0x40 only acts on moving effects, and it has no velocity).
+  - Checked on B6 (`GDL_CRITTER_HP=0.02`): the dragon dies; when its
+    body goes (DEATH, then its 2 s hold) the shard shows over the arena,
+    the wizard 5 s after that; the two speeches play back to back, and
+    the tower loads 16.5 s after the dragon went.
 - **Waking.** The chimera's type flag 0x80 makes the game start the 2 s
   wake timer only when the boss stands on floor whose node has flag 0x10
   in byte `+0x16`; that byte isn't read, so the timer starts at once
@@ -1176,8 +1216,6 @@ the gargoyle and the general aren't run yet.
 - Parts (`TYPE +0x11C` children, the chimera's heads). The spawn is
   `0x8003df60` with children linked by `+0xAD8`/`+0xADC`. They share the
   body (`0x80036d18`) and patterns (`0x8003b6f0`, `0x8003bb40`).
-- The boss key as a real item. This needs a hook to build extra item
-  models.
 - The boss camera (`BCAM`, `0x8001c42c`).
 - Kinds 5, 6, 7 and 9, the look nodes, and breakable nodes.
 - Checking the golem against hit spheres: blows on its BALL/HANDR spheres
