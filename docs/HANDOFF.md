@@ -324,6 +324,22 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
   rock (kind 5) and the yeti's boulders (kind 6, remaking a rock) as
   growing blasts over their effects' clips (checked on K5 and I5). Grabs
   (kind 7) are decoded, not ported.
+- **Critter effect sounds**: every effect a critter starts (move sounds,
+  a blow's effect on its first frame, a sphere's or cone's hit effect as
+  it lands — which also sets the no-hit-look bit) plays its `SFXX` sound
+  chain from the critter at 0xE0, faded (panned during DEATH); the boss
+  key's sound is panned from the key. Left: `take_hit`'s sounds (played
+  centred by `damage.rs`: switch once the helper's damage.rs work is
+  merged). **Next (decoded, critters.md "What a DAMG does"):** critter
+  missiles as the game has them — hit radius `DAMG +0x08` (the Rust field
+  `life` is misnamed), model size `SFXX +0x4C` (`CritterSound::size`),
+  life `SFXX +0x3C` else the effect's clip, no missile without an effect
+  record; at a stop the hit record's sound (faded, 0xE0) and, with a hit
+  record (or at a wall/expiry, the element's default), the burst of
+  `+0x0C`; kinds 2 (attached to the node), 3 (attached) and 8 (at the
+  target) are still area blasts over the effect's life like 5/6
+  (`effects::CritterBlast`, needs a node-following shape), not missiles
+  or instant rings; the blow effects' models.
 - **Pickup notices** (the helper's `pickup_notices.rs`, merged): each
   pickup's plate rises over the panel (checked: a key's KEY_RING plate on
   A1); a new runestone has the announcer count the stones (unit-tested;
