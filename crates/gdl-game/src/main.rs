@@ -33,6 +33,7 @@ mod hud;
 mod items;
 mod level;
 mod level_material;
+mod levelup;
 mod locomotion;
 mod mechanics;
 mod message_box;
@@ -180,6 +181,7 @@ fn main() {
                 status_hud::StatusHudPlugin,
                 power_looks::PowerLooksPlugin,
                 familiars::FamiliarsPlugin,
+                levelup::LevelUpPlugin,
             ))
             .add_plugins((
                 font::Screen2dPlugin,
