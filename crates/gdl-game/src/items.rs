@@ -28,6 +28,7 @@ use crate::effects::EffectAt;
 use crate::exits::ChangeLevelTo;
 use crate::hints::{Hint, Hints, ShowHint};
 use crate::message_box::ShowMessage;
+use crate::pickup_notices::PickupNotice;
 use crate::level_material::LevelMaterial;
 use crate::player::{Player, PlayerTick};
 use crate::player_state::{DamagePlayer, FIELDS_PER_TICK, Heal, PlayerState, power};
@@ -1038,6 +1039,8 @@ struct Out<'a> {
     effects: Vec<(&'static str, [f32; 3])>,
     /// Statues walked into (placements).
     woken: Vec<usize>,
+    /// The plates the pickups show over the panel (`pickup_notices.rs`).
+    notices: Vec<PickupNotice>,
     seen: &'a Hints,
     /// The level's scroll texts.
     scrolls: String,
@@ -1078,6 +1081,11 @@ impl Out<'_> {
     fn message(&mut self, group: &str, index: usize, voice: Option<&'static str>) {
         self.messages.push(ShowMessage { group: group.into(), index: Some(index), voice });
     }
+
+    /// The plate for a pickup: its subtype and the game's value for it.
+    fn notice(&mut self, subtype: i32, value: i32) {
+        self.notices.push(PickupNotice { subtype, value });
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1097,6 +1105,7 @@ fn tick(
     mut change: MessageWriter<ChangeLevelTo>,
     mut effects: MessageWriter<EffectAt>,
     mut hurt: MessageWriter<DamagePlayer>,
+    mut notices: MessageWriter<PickupNotice>,
 ) {
     let dt = time.delta_secs();
     let items = &mut *items;
@@ -1111,6 +1120,7 @@ fn tick(
         sparkle: None,
         effects: Vec::new(),
         woken: Vec::new(),
+        notices: Vec::new(),
         seen: &seen,
         scrolls,
         now,
@@ -1132,6 +1142,7 @@ fn tick(
     voices.write_batch(out.voices.into_iter().map(QueueVoice::hero));
     hints.write_batch(out.hints.into_iter().map(ShowHint));
     messages.write_batch(out.messages);
+    notices.write_batch(out.notices);
     effects.write_batch(out.effects.into_iter().map(|(name, at)| EffectAt {
         name,
         bank: Some(SPARKLE_BANK),
@@ -1334,6 +1345,7 @@ fn touch(
                     out.hint(Hint::CollectGold);
                 }
                 state.add_gold(gold);
+                out.notice(1, gold as i32);
                 info!("took {gold} gold from {}", item.ty.name);
                 out.sound("S_PICKUPMAGIC");
                 item.leaving = true;
@@ -1437,6 +1449,7 @@ fn pick_up(
         1 => {
             let gold = (*amount).max(0) as u32;
             state.add_gold(gold);
+            out.notice(1, gold as i32);
             out.sound("S_PICKUPMAGIC");
             if gold > 24 {
                 out.hint(Hint::CollectGold);
@@ -1454,6 +1467,8 @@ fn pick_up(
             out.hint(if doors == 0 { Hint::UseKeyOnChest } else { Hint::SaveKeys });
             out.sound("S_PICKUPKEY");
             *amount -= taken as i32;
+            // The game's plate: the keys taken, or those left when not all fit.
+            out.notice(2, if taken == want { want as i32 } else { *amount });
             taken == want
         }
         // Food: refused at full health; negative food is poison, a blow of
@@ -1475,6 +1490,7 @@ fn pick_up(
                 _ => {}
             }
             out.voice(&eat_sound(&state.class, name, health < 0.0));
+            out.notice(3, health as i32);
             true
         }
         // Potions (magic).
@@ -1488,6 +1504,7 @@ fn pick_up(
                 out.hint(h);
             }
             out.sound("S_PICKUPMAGIC");
+            out.notice(4, 0);
             true
         }
         // Weapon, armour, speed, magic and special powers: one of Skorne's
@@ -1502,6 +1519,7 @@ fn pick_up(
                 out.hint(h);
             }
             out.sound(power_sound(subtype, value));
+            out.notice(subtype, 0);
             true
         }
         // Runestones: one of each.
@@ -1511,6 +1529,7 @@ fn pick_up(
             }
             state.runestones.push(*amount);
             out.sound("S_PICKUPRUNE");
+            out.notice(10, *amount);
             out.sparkle(RUNE_SPARKLE);
             true
         }
@@ -1524,6 +1543,7 @@ fn pick_up(
                 out.hint(Hint::Legendary(*amount as u8));
             }
             out.sound("S_PICKUPMAGIC");
+            out.notice(13, *amount);
             true
         }
         // A scroll shows its text: this level's, numbered from 1.
@@ -1543,6 +1563,7 @@ fn pick_up(
                 out.sparkle(GEM_SPARKLES[c.min(8)]);
             }
             out.sound("S_PICKUPMAGIC");
+            out.notice(15, *amount);
             true
         }
         GARGOYLE_PIECE => {
@@ -1552,6 +1573,7 @@ fn pick_up(
             }
             out.sparkle(GARGOYLE_SPARKLE);
             out.sound("S_PICKUPMAGIC");
+            out.notice(16, *amount);
             true
         }
         _ => false,

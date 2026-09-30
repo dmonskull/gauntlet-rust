@@ -43,6 +43,7 @@ mod model_mesh;
 mod options;
 mod monsters;
 mod particles;
+mod pickup_notices;
 mod play_camera;
 mod player;
 mod player_state;
@@ -194,6 +195,7 @@ fn main() {
                 tower::TowerPlugin,
                 tower_scenes::TowerScenesPlugin,
                 message_box::MessageBoxPlugin,
+                pickup_notices::PickupNoticesPlugin,
             ));
     }
     app.run();
