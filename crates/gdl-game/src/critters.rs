@@ -71,7 +71,7 @@ use std::sync::Arc;
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
-use gdl_formats::anim::AnimFile;
+use gdl_formats::anim::{AnimFile, Track, rotation_matrix as clip_rotation};
 use gdl_formats::audio::AudioCatalog;
 use gdl_formats::text::TextRom;
 use gdl_formats::collision::{node_flags, push_out};
@@ -80,7 +80,7 @@ use gdl_formats::population::{ItemClass, LocatorKind, PlacementParams, REALM_LET
 use gdl_formats::{LevelCollision, ModelFile};
 
 use crate::audio::PlaySound;
-use crate::character::{Animator, CharacterData, CharacterModel, advance_clip, clip_end};
+use crate::character::{Animate, Animator, CharacterData, CharacterModel, advance_clip, clip_end};
 use crate::combat::{TargetKind, Targetable};
 use crate::damage::after_armor;
 use crate::effects::effect_life;
@@ -105,7 +105,37 @@ impl Plugin for CrittersPlugin {
             .add_systems(
             Update,
             (setup_level.run_if(resource_added::<MonsterLevel>), interpolate).chain(),
-        );
+        )
+        .add_systems(Update, pose_parts.after(Animate));
+    }
+}
+
+/// A part playing a move of its own poses its subtree of the body's model
+/// with its own clip, over the body's animation (the game animates each
+/// part's subtree apart; copying the body, it shows the body's pose).
+fn pose_parts(critters: Query<(&Critter, &Animator)>, mut bones: Query<&mut Transform>) {
+    for (c, animator) in &critters {
+        for p in c.parts.iter().filter(|p| !p.mirrored && p.current.is_some()) {
+            let body = p.body();
+            let Some(tracks) = body.tracks.get(p.clock.action) else { continue };
+            let last = f32::from(p.clock.frames.saturating_sub(1));
+            let at = p.clock.frame.min(last);
+            for (k, &n) in body.subtree.iter().enumerate() {
+                let Some(mut t) = animator.bone(n).and_then(|b| bones.get_mut(b).ok()) else { continue };
+                *t = match tracks.get(k).and_then(Option::as_ref) {
+                    Some(track) => {
+                        let pose = track.sample(at);
+                        let m = Mat4::from_cols_array(&clip_rotation(pose.rotation, track.flags));
+                        Transform {
+                            translation: body.rest[k] + Vec3::from(pose.translation),
+                            rotation: Quat::from_mat4(&m),
+                            scale: Vec3::from(pose.scale),
+                        }
+                    }
+                    None => Transform::from_translation(body.rest[k]),
+                };
+            }
+        }
     }
 }
 
@@ -512,7 +542,14 @@ pub struct CritterKind {
 
 /// A body's model and what its moves animate.
 struct Body {
-    model: CharacterModel,
+    /// The model (parts have none: they move a subtree of their body's).
+    model: Option<CharacterModel>,
+    /// A part's subtree of its body's skeleton: the node named by `TYPE
+    /// +0x10` and everything under it; their rest offsets, and their tracks
+    /// by action.
+    subtree: Vec<usize>,
+    rest: Vec<Vec3>,
+    tracks: Vec<Vec<Option<Track>>>,
     /// Per move (within the type): its action (a missing one plays the
     /// first, as the game does), and its node.
     actions: Vec<usize>,
@@ -781,6 +818,14 @@ pub struct Critter {
     /// (it turns slowly): the intro's reactions to missiles.
     frozen: f32,
     stunned: f32,
+    /// A body's parts (the chimera's heads), updated with it.
+    parts: Vec<Critter>,
+    /// A body's hit spheres, all of them: whose (a part, or the body) and
+    /// which of its own.
+    sphere_owner: Vec<(Option<usize>, usize)>,
+    /// A part copies its body's animation this tick (the usual case)
+    /// rather than playing its own move.
+    mirrored: bool,
 }
 
 impl Critter {
@@ -800,9 +845,12 @@ impl Critter {
         i.and_then(|i| self.moves().get(i)).map(|m| m.kind)
     }
 
-    /// A blow from the hero, on hit sphere `sphere` or the body (`ranged`:
-    /// a missile or thrown weapon): returns the experience it earns.
-    /// `sounds` gets the names of the sounds to play.
+    /// A blow from the hero, on hit sphere `sphere` (numbered across a body
+    /// and its parts) or the body (`ranged`: a missile or thrown weapon):
+    /// returns the experience it earns. `sounds` gets the names of the
+    /// sounds to play. A part's blow also comes off its body while the part
+    /// lives on; a body's is shared out over its living parts, half of it
+    /// split between them.
     #[allow(clippy::too_many_arguments)]
     pub fn take_hit(
         &mut self,
@@ -814,8 +862,61 @@ impl Critter {
         level: Option<&CritterLevel>,
         sounds: &mut Vec<String>,
     ) -> u32 {
+        let owner = sphere.and_then(|g| self.sphere_owner.get(g).copied());
+        if let Some((Some(k), local)) = owner {
+            let Some(p) = self.parts.get_mut(k) else { return 0 };
+            let (mut xp, dealt) = p.hit_self(damage, kind_bits, push, Some(local), ranged, level, sounds);
+            if dealt > 0.0 && p.hit_points > 0.0 && self.state == CritterState::Active {
+                self.hit_points -= dealt;
+                if self.hit_points <= 0.0 {
+                    xp += self.die();
+                }
+            }
+            return xp;
+        }
+        let local = owner.map(|(_, i)| i).or(sphere);
+        let (mut xp, dealt) = self.hit_self(damage, kind_bits, push, local, ranged, level, sounds);
+        let living = self.parts.iter().filter(|p| p.state == CritterState::Active).count();
+        if dealt > 0.0 && self.hit_points > 0.0 && living > 0 {
+            let each = 0.5 * dealt / living as f32;
+            for p in self.parts.iter_mut().filter(|p| p.state == CritterState::Active) {
+                p.hit_points -= each;
+                if p.hit_points <= 0.0 {
+                    xp += p.die();
+                }
+            }
+        }
+        xp
+    }
+
+    /// Dies: the experience every player earns for the kill (a fifth of
+    /// its type's). A body's parts die with it.
+    fn die(&mut self) -> u32 {
+        self.state = CritterState::Dying;
+        for p in &mut self.parts {
+            if p.state != CritterState::Dying {
+                p.hit_points = p.hit_points.min(0.0);
+                p.state = CritterState::Dying;
+            }
+        }
+        (KILL_EXPERIENCE * self.kind.file.types[self.ty].experience) as u32
+    }
+
+    /// A blow on this critter alone: the experience and the hit points it
+    /// took.
+    #[allow(clippy::too_many_arguments)]
+    fn hit_self(
+        &mut self,
+        damage: f32,
+        kind_bits: u32,
+        push: [f32; 3],
+        sphere: Option<usize>,
+        ranged: bool,
+        level: Option<&CritterLevel>,
+        sounds: &mut Vec<String>,
+    ) -> (u32, f32) {
         if self.state != CritterState::Active || self.hit_points <= 0.0 {
-            return 0;
+            return (0, 0.0);
         }
         let (realm, intro) = level.map_or(('A', intro::NONE), |l| (l.realm, l.intro));
         self.missile_hit |= ranged;
@@ -853,20 +954,19 @@ impl Critter {
             }
         }
         if damage <= 0.0 {
-            return xp;
+            return (xp, 0.0);
         }
         self.kinds |= kind_bits;
         self.push = add(self.push, push);
         self.last_blow = self.now;
         self.hit_points -= damage;
         if self.hit_points <= 0.0 {
-            self.state = CritterState::Dying;
-            return xp + (KILL_EXPERIENCE * ty.experience) as u32;
+            return (xp + self.die(), damage);
         }
         if let Ok(s) = usize::try_from(ty.hit_effects[0]) {
             sound_chain(&self.kind.file, s, realm, sounds);
         }
-        xp
+        (xp, damage)
     }
 }
 
@@ -951,7 +1051,26 @@ fn setup_level(
                 let nodes = moves.iter().map(|m| node(&m.node)).collect();
                 let spheres = file.type_nodes(ty).iter().map(|n| node(&n.name)).collect();
                 let clips = d.clips.actions.iter().map(|a| (a.frames, a.rate, a.loops())).collect();
-                Some(Body { model: build(&d), actions, nodes, spheres, clips })
+                let part = file.types[ty].parent.is_some();
+                let subtree = if part { subtree_of(&d.skeleton, &part_node(&file.types[ty])) } else { Vec::new() };
+                let rest = subtree.iter().map(|&n| Vec3::from(d.skeleton.nodes[n].offset)).collect();
+                let tracks = if part {
+                    (0..d.clips.actions.len())
+                        .map(|a| {
+                            subtree
+                                .iter()
+                                .map(|&n| {
+                                    let bone = d.clips.node_index(&d.skeleton.nodes[n].name).and_then(|j| d.clips.clip_bone(j))?;
+                                    d.clips.track(bone, a).ok().flatten()
+                                })
+                                .collect()
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let model = (!part).then(|| build(&d));
+                Some(Body { model, subtree, rest, tracks, actions, nodes, spheres, clips })
             })
             .collect::<Vec<_>>();
         if bodies.first().is_none_or(Option::is_none) {
@@ -1214,15 +1333,83 @@ fn runes_held(realm_id: u32, bits: u32) -> usize {
 }
 
 /// Makes a critter of `kind` standing at `position` facing `yaw`: its
-/// hit points, its home (the type's, or here), its hit spheres.
+/// hit points, its home (the type's, or here), its hit spheres; then its
+/// parts (the types chained by `TYPE +0x11C`: the chimera's heads), which
+/// move subtrees of its model. Hit spheres are numbered across the body
+/// and its parts.
 fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 3], yaw: f32, commands: &mut Commands) -> Option<Entity> {
     let ty = 0;
     let body = kind.bodies[ty].as_ref()?;
     let t = &kind.file.types[ty];
-    let hp = t.hit_points * level.hit_point_scale;
     let position = [position[0], position[1] + t.hover, position[2]];
     let transform = Transform::from_translation(Vec3::from(position)).with_rotation(Quat::from_rotation_y(yaw));
-    let root = body.model.spawn(transform, commands);
+    let root = body.model.as_ref()?.spawn(transform, commands);
+    let mut owners = Vec::new();
+    let mut c = new_critter(level, kind, ty, position, yaw, root, None, &mut owners, commands);
+    let mut part = t.child;
+    let mut guard = 0;
+    while let Some(pt) = part.filter(|&p| p < kind.file.types.len() && guard < 8) {
+        if kind.bodies[pt].is_some() {
+            let k = c.parts.len();
+            let p = new_critter(level, kind, pt, position, yaw, root, Some(k), &mut owners, commands);
+            debug!("boss part {} ({} nodes under {})", kind.file.types[pt].name, p.body().subtree.len(), part_node(&kind.file.types[pt]));
+            c.parts.push(p);
+        }
+        part = kind.file.types[pt].child;
+        guard += 1;
+    }
+    c.sphere_owner = owners;
+    let bare = c.spheres.is_empty();
+    commands.entity(root).insert((c, LevelEntity));
+    if bare {
+        commands.entity(root).insert(Targetable::new(TargetKind::Object, t.radius, t.height));
+    }
+    Some(root)
+}
+
+/// The node a part's subtree hangs from (`TYPE +0x10`).
+fn part_node(t: &gdl_formats::critter::CritterType) -> String {
+    let raw = t.raw.get(0x10..0x20).unwrap_or_default();
+    let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+    String::from_utf8_lossy(&raw[..end]).into_owned()
+}
+
+/// A skeleton node and every node under it (none when it's missing).
+fn subtree_of(skeleton: &gdl_formats::anim::Atree, name: &str) -> Vec<usize> {
+    let Some(top) = skeleton.node_index(name) else { return Vec::new() };
+    let under = |mut n: usize| -> bool {
+        let mut guard = 0;
+        loop {
+            if n == top {
+                return true;
+            }
+            match skeleton.nodes.get(n).and_then(|x| x.parent) {
+                Some(p) if guard < 256 => n = p,
+                _ => return false,
+            }
+            guard += 1;
+        }
+    };
+    (0..skeleton.nodes.len()).filter(|&n| under(n)).collect()
+}
+
+/// A critter of type `ty` (a body, or part `part` of the body `root`):
+/// its state and its hit spheres (entities on `root`, numbered on from
+/// `owners`, which records whose each is).
+#[allow(clippy::too_many_arguments)]
+fn new_critter(
+    level: &CritterLevel,
+    kind: &Arc<CritterKind>,
+    ty: usize,
+    position: [f32; 3],
+    yaw: f32,
+    root: Entity,
+    part: Option<usize>,
+    owners: &mut Vec<(Option<usize>, usize)>,
+    commands: &mut Commands,
+) -> Critter {
+    let t = &kind.file.types[ty];
+    let hp = t.hit_points * level.hit_point_scale;
     let moves = kind.file.type_moves(ty).len();
     let nodes = kind.file.type_nodes(ty);
     let spheres: Vec<Entity> = if t.flags & TYPE_SPHERES != 0 {
@@ -1231,14 +1418,15 @@ fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 
             .enumerate()
             .map(|(i, n)| {
                 let target = Targetable::new(TargetKind::Object, n.radius, n.radius);
-                let sphere = CritterSphere { critter: root, node: i };
+                let sphere = CritterSphere { critter: root, node: owners.len() };
+                owners.push((part, i));
                 commands.spawn((Transform::from_translation(Vec3::from(position)), target, sphere, LevelEntity)).id()
             })
             .collect()
     } else {
         Vec::new()
     };
-    let critter = Critter {
+    Critter {
         kind: kind.clone(),
         ty,
         state: CritterState::New,
@@ -1280,16 +1468,14 @@ fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 
         blows_dealt: 0,
         hp_before: hp,
         now: level.now,
-        spheres: spheres.clone(),
+        spheres,
         missile_hit: false,
         frozen: 0.0,
         stunned: 0.0,
-    };
-    commands.entity(root).insert((critter, LevelEntity));
-    if spheres.is_empty() {
-        commands.entity(root).insert(Targetable::new(TargetKind::Object, t.radius, t.height));
+        parts: Vec::new(),
+        sphere_owner: Vec::new(),
+        mirrored: true,
     }
-    Some(root)
 }
 
 /// A player as the critters see it.
@@ -1369,28 +1555,49 @@ fn tick_critters(
         // The blows taken become knockback; old damage is forgotten.
         knockback(c);
         let cur_kind = c.move_kind(c.current);
-        if (c.last_blow > 0.0 && now - c.last_blow > DAMAGE_MEMORY)
-            || cur_kind == Some(kind::ROAR)
-            || cur_kind.is_some_and(|k| (0x40..0x7F).contains(&k))
-        {
-            c.damage_taken = 0.0;
-            c.kinds = 0;
-            c.last_blow = 0.0;
-        }
+        forget_damage(c, now);
 
-        // Targets and anger.
+        // Targets and anger; the parts share the body's place and wake
+        // with it.
         let centre = centre_of(c, &ty);
         track(c, &ty, centre, &heroes, level);
-        c.anger = (1.0 - c.hit_points.max(0.0) / (1.0 + c.full_hit_points)) * ANGER_SPAN + ANGER_BASE;
+        c.anger = anger_of(c);
         if c.state == CritterState::New {
             if !boss {
                 c.state = CritterState::Active;
             } else if wake_boss(c, &ty, now) {
                 c.state = CritterState::Active;
                 info!("the boss {} wakes", c.kind.file.desc.name);
+                let at = |c: &Critter| -> Vec<(String, Vec3)> {
+                    let names = c.kind.file.type_nodes(c.ty);
+                    c.spheres.iter().zip(names).filter_map(|(s, n)| Some((n.name.clone(), spheres.get(*s).ok()?.translation))).collect()
+                };
+                debug!("boss hit spheres: {:?}", at(c).into_iter().chain(c.parts.iter().flat_map(at)).collect::<Vec<_>>());
             }
         }
+        let (position, yaw, awake) = (c.position, c.yaw, c.state != CritterState::New);
+        for p in &mut c.parts {
+            p.now = now;
+            p.position = position;
+            p.yaw = yaw;
+            p.previous = (position, yaw);
+            p.switched = false;
+            forget_damage(p, now);
+            let pty = type_info(&p.kind.file, p.ty);
+            let pc = centre_of(p, &pty);
+            track(p, &pty, pc, &heroes, level);
+            p.anger = anger_of(p);
+            if awake && p.state == CritterState::New {
+                p.state = CritterState::Active;
+            }
+            intro_reactions(p, level);
+        }
         intro_reactions(c, level);
+        // A body whose parts are all dead dies.
+        if c.state == CritterState::Active && !c.parts.is_empty() && c.parts.iter().all(|p| p.state == CritterState::Dying) {
+            info!("the boss's parts are all dead");
+            c.die();
+        }
 
         // Dead and done: a golem when DEATH ends, a boss when its hold does
         // (it counts as dead from the end of DEATH).
@@ -1414,7 +1621,7 @@ fn tick_critters(
                 });
                 info!("the boss is gone");
             }
-            for s in &c.spheres {
+            for s in c.spheres.iter().chain(c.parts.iter().flat_map(|p| &p.spheres)) {
                 commands.entity(*s).try_despawn();
             }
             commands.entity(entity).try_despawn();
@@ -1432,24 +1639,26 @@ fn tick_critters(
             }
             if c.next.is_none() {
                 choose_attack(c, now);
+                choose_parts(c, now, level.intro, level.boss_type);
             }
             let attacking = cur_kind.is_some_and(|k| k >= kind::ATTACK_FIRST);
             if c.next.is_none() && !(boss && attacking) {
                 choose_movement(c, centre, now);
             }
             if c.next.is_none() {
-                let taunt = if c.anger < TAUNT_ANGER { find(c, kind::TAUNT, Find::Ready, now) } else { None };
-                c.next = taunt.or_else(|| find(c, kind::READY, Find::Nearest, now));
+                c.next = idle(c, now);
             }
         }
         if c.next.is_none() && !boss {
             c.next = c.current;
         }
         let was = c.current;
+        let parts_were: Vec<Option<usize>> = c.parts.iter().map(|p| p.current).collect();
         // Frozen, it keeps its move and frame.
         if c.frozen <= 0.0 {
-            switch(c, now, &mut animator, &mut level.intro);
+            switch(c, now, Some(&mut animator), &mut level.intro, true);
         }
+        switch_parts(c, now, &mut level.intro);
         // The intro also moves on once the boss's START (without a
         // follow-up) or ROAR has played out, before anything replaces it.
         if level.boss == Some(entity)
@@ -1465,13 +1674,19 @@ fn tick_critters(
         if c.switched && c.move_kind(c.current) == Some(kind::DEATH) {
             level.events.push("death");
         }
-        if c.hit_points < c.hp_before {
+        let hp_now = c.hit_points + c.parts.iter().map(|p| p.hit_points).sum::<f32>();
+        if hp_now < c.hp_before {
             level.events.push("hurt");
         }
-        c.hp_before = c.hit_points;
+        c.hp_before = hp_now;
         if c.state == CritterState::Dying {
             commands.entity(entity).try_remove::<Targetable>();
             for s in &c.spheres {
+                commands.entity(*s).try_remove::<Targetable>();
+            }
+        }
+        for p in c.parts.iter().filter(|p| p.state == CritterState::Dying) {
+            for s in &p.spheres {
                 commands.entity(*s).try_remove::<Targetable>();
             }
         }
@@ -1484,6 +1699,40 @@ fn tick_critters(
                 c.hit_points
             );
         }
+        for (k, p) in c.parts.iter().enumerate() {
+            if p.current != parts_were[k] && let Some(i) = p.current {
+                if p.moves()[i].is_attack() {
+                    level.events.push("part");
+                }
+                debug!(
+                    "critter {entity:?} part {} {} → {} ({:.0} hp)",
+                    p.kind.file.types[p.ty].name,
+                    parts_were[k].map_or("-", |w| p.moves()[w].name.as_str()),
+                    p.moves()[i].name,
+                    p.hit_points
+                );
+            }
+        }
+
+        let root = Affine3A::from_rotation_translation(Quat::from_rotation_y(c.yaw), Vec3::from(c.position));
+        let bone_matrix = |n: Option<usize>| -> Affine3A {
+            n.and_then(|n| animator.bone(n)).and_then(|b| bones.get(b).ok()).map_or(root, |g| g.affine())
+        };
+        // The parts' moves: target, node, blows and sounds; their hit
+        // spheres follow their nodes.
+        for p in &mut c.parts {
+            follow_spheres(p, &bone_matrix, &mut spheres);
+            if !p.mirrored
+                && let Some(pcur) = p.current
+            {
+                let pmv = p.moves()[pcur].clone();
+                act(p, entity, &pmv, pcur, &bone_matrix, &heroes, level, &mut blows, &mut to_play, &mut commands);
+                if p.frozen <= 0.0 {
+                    p.clock.advance(DT);
+                }
+            }
+        }
+
         let Some(cur) = c.current else { continue };
         let mv = c.moves()[cur].clone();
         trace!(
@@ -1503,54 +1752,8 @@ fn tick_critters(
             c.hold_until = now + mv.hold;
         }
 
-        // The move's target and node.
-        if c.move_target.is_none() || c.switched {
-            c.move_target = c.pick.or_else(|| best_target(c, &mv.condition, true));
-        }
-        if c.switched {
-            c.blows_done = 0;
-            c.sounds_done = 0;
-            c.node_was = None;
-        }
-        let root = Affine3A::from_rotation_translation(Quat::from_rotation_y(c.yaw), Vec3::from(c.position));
-        let bone_matrix = |n: Option<usize>| -> Affine3A {
-            n.and_then(|n| animator.bone(n)).and_then(|b| bones.get(b).ok()).map_or(root, |g| g.affine())
-        };
-        let node_matrix = bone_matrix(c.body().nodes[cur]);
-        c.node_was = c.node_at.filter(|_| c.node_was.is_some() || !c.switched);
-        c.node_at = Some(node_matrix.translation.into());
-        if c.node_was.is_none() {
-            c.node_was = c.node_at;
-        }
-        // The hit spheres follow their nodes.
-        for (i, s) in c.spheres.iter().enumerate() {
-            let Some(n) = c.kind.file.type_nodes(c.ty).get(i) else { continue };
-            let m = bone_matrix(c.body().spheres[i]);
-            if let Ok(mut t) = spheres.get_mut(*s) {
-                t.translation = m.transform_point3(Vec3::from(n.offset));
-            }
-        }
-
-        // Blows and sounds on their frames.
-        let frame = c.clock.frame as i32;
-        let bits = blow_bits(&mv, frame, c.blows_done);
-        for (slot, bit) in [(0usize, 1u8), (1, 2)] {
-            if bits & bit == 0 {
-                continue;
-            }
-            let first = c.blows_done & bit == 0;
-            c.blows_done |= bit;
-            let Ok(d) = usize::try_from(mv.damage[slot]) else { continue };
-            let Some(dmg) = c.kind.file.damage.get(d).cloned() else { continue };
-            deal(c, entity, &dmg, first, node_matrix, &heroes, level, &mut blows, &mut commands);
-        }
-        for (k, (s, at)) in mv.sounds.iter().enumerate() {
-            let bit = 1 << k;
-            if c.sounds_done & bit == 0 && *s >= 0 && i32::from(*at) <= frame {
-                c.sounds_done |= bit;
-                sound_chain(&c.kind.file, *s as usize, level.realm, &mut to_play);
-            }
-        }
+        follow_spheres(c, &bone_matrix, &mut spheres);
+        act(c, entity, &mv, cur, &bone_matrix, &heroes, level, &mut blows, &mut to_play, &mut commands);
 
         // Walk and turn.
         if boss {
@@ -1565,6 +1768,11 @@ fn tick_critters(
             c.clock.advance(DT);
         }
         c.stunned = (c.stunned - DT).max(0.0);
+        // Parts copying the body keep its clock.
+        let clock = c.clock;
+        for p in c.parts.iter_mut().filter(|p| p.mirrored) {
+            p.clock = clock;
+        }
     }
 
     if level.intro != intro_before {
@@ -1581,7 +1789,8 @@ fn tick_critters(
     }
     // `GDL_CRITTER_SHOT=<png>`: a testing aid that saves a screenshot a
     // few ticks after the first critter event named by
-    // `GDL_CRITTER_SHOT_ON` (`death`, the default; `missile`; `hurt`).
+    // `GDL_CRITTER_SHOT_ON` (`death`, the default; `missile`; `hurt`; `part`, a
+    // boss part starting an attack).
     let wanted = std::env::var("GDL_CRITTER_SHOT_ON").unwrap_or_else(|_| "death".into());
     if death_shot.is_none() && level.events.iter().any(|e| *e == wanted) {
         let delay = std::env::var("GDL_CRITTER_SHOT_DELAY").ok().and_then(|v| v.parse().ok());
@@ -1602,6 +1811,179 @@ fn tick_critters(
     }
     for s in to_play {
         sounds.write(PlaySound(s));
+    }
+}
+
+/// Old damage is forgotten after 3 s, and during ROAR and hit reactions.
+fn forget_damage(c: &mut Critter, now: f32) {
+    let cur_kind = c.move_kind(c.current);
+    if (c.last_blow > 0.0 && now - c.last_blow > DAMAGE_MEMORY)
+        || cur_kind == Some(kind::ROAR)
+        || cur_kind.is_some_and(|k| (0x40..0x7F).contains(&k))
+    {
+        c.damage_taken = 0.0;
+        c.kinds = 0;
+        c.last_blow = 0.0;
+    }
+}
+
+/// Anger: 0.5 at full health up to 5 near death.
+fn anger_of(c: &Critter) -> f32 {
+    (1.0 - c.hit_points.max(0.0) / (1.0 + c.full_hit_points)) * ANGER_SPAN + ANGER_BASE
+}
+
+/// Its hit spheres follow their nodes.
+fn follow_spheres(
+    c: &Critter,
+    bone_matrix: &dyn Fn(Option<usize>) -> Affine3A,
+    spheres: &mut Query<&mut Transform, (With<CritterSphere>, Without<Critter>)>,
+) {
+    for (i, s) in c.spheres.iter().enumerate() {
+        let Some(n) = c.kind.file.type_nodes(c.ty).get(i) else { continue };
+        let m = bone_matrix(c.body().spheres[i]);
+        if let Ok(mut t) = spheres.get_mut(*s) {
+            t.translation = m.transform_point3(Vec3::from(n.offset));
+        }
+    }
+}
+
+/// Doing the move (a body's or a part's; `me` is the body): its target
+/// and node, and the blows and sounds on their frames.
+#[allow(clippy::too_many_arguments)]
+fn act(
+    c: &mut Critter,
+    me: Entity,
+    mv: &CritterMove,
+    cur: usize,
+    bone_matrix: &dyn Fn(Option<usize>) -> Affine3A,
+    heroes: &[Hero],
+    level: &mut CritterLevel,
+    blows: &mut Vec<Blow>,
+    to_play: &mut Vec<String>,
+    commands: &mut Commands,
+) {
+    if c.move_target.is_none() || c.switched {
+        c.move_target = c.pick.or_else(|| best_target(c, &mv.condition, true));
+    }
+    if c.switched {
+        c.blows_done = 0;
+        c.sounds_done = 0;
+        c.node_was = None;
+    }
+    let node_matrix = bone_matrix(c.body().nodes[cur]);
+    c.node_was = c.node_at.filter(|_| c.node_was.is_some() || !c.switched);
+    c.node_at = Some(node_matrix.translation.into());
+    if c.node_was.is_none() {
+        c.node_was = c.node_at;
+    }
+    let frame = c.clock.frame as i32;
+    let bits = blow_bits(mv, frame, c.blows_done);
+    for (slot, bit) in [(0usize, 1u8), (1, 2)] {
+        if bits & bit == 0 {
+            continue;
+        }
+        let first = c.blows_done & bit == 0;
+        c.blows_done |= bit;
+        let Ok(d) = usize::try_from(mv.damage[slot]) else { continue };
+        let Some(dmg) = c.kind.file.damage.get(d).cloned() else { continue };
+        deal(c, me, &dmg, first, node_matrix, heroes, level, blows, commands);
+    }
+    for (k, (s, at)) in mv.sounds.iter().enumerate() {
+        let bit = 1 << k;
+        if c.sounds_done & bit == 0 && *s >= 0 && i32::from(*at) <= frame {
+            c.sounds_done |= bit;
+            sound_chain(&c.kind.file, *s as usize, level.realm, to_play);
+        }
+    }
+}
+
+/// The idle move: TAUNT while unhurt, else READY.
+fn idle(c: &Critter, now: f32) -> Option<usize> {
+    let taunt = if c.anger < TAUNT_ANGER { find(c, kind::TAUNT, Find::Ready, now) } else { None };
+    taunt.or_else(|| find(c, kind::READY, Find::Nearest, now))
+}
+
+/// The parts' moves, after the body's attack choice: while the body runs
+/// a pattern, the step of their own pattern of the same number; when the
+/// body chose nothing, their forced moves, their attacks, or idling. A
+/// part attacking makes the body play TOGETHER.
+fn choose_parts(c: &mut Critter, now: f32, intro: i32, boss_type: i32) {
+    if c.parts.is_empty() {
+        return;
+    }
+    let (pattern, free) = (c.pattern, c.next.is_none());
+    let mut attacking = 0;
+    for p in &mut c.parts {
+        p.next = None;
+        p.pick = None;
+        p.chosen_pattern = None;
+        match pattern {
+            None if free => {
+                forced_part(p, now, intro, boss_type);
+                if p.next.is_none() {
+                    choose_attack(p, now);
+                }
+                if p.next.is_none() {
+                    p.next = idle(p, now);
+                } else if p.pattern.is_some() || p.move_kind(p.next).is_some_and(|k| k >= kind::ATTACK_FIRST) {
+                    attacking += 1;
+                }
+            }
+            None => {}
+            Some((n, step)) => {
+                if let Some(own) = p.kind.file.type_patterns(p.ty).get(n) {
+                    p.pattern = Some((n, step));
+                    p.next = own.moves.get(step).and_then(|&m| usize::try_from(m).ok());
+                }
+            }
+        }
+    }
+    if attacking > 0 {
+        c.next = find(c, kind::TOGETHER, Find::Nearest, now);
+    }
+}
+
+/// A part's forced moves: DEATH when dying; else its move's follow-up, or
+/// READY for the chimera's heads in the intro's states 3–5; then its
+/// reactions to the blows it took.
+fn forced_part(p: &mut Critter, now: f32, intro: i32, boss_type: i32) {
+    let chimera_waits = (intro::ROAR..=intro::AFTER).contains(&intro) && boss_type == CHIMERA;
+    p.next = if p.state == CritterState::Dying {
+        find(p, kind::DEATH, Find::Nearest, now)
+    } else if chimera_waits {
+        find(p, kind::READY, Find::Ready, now)
+    } else {
+        p.current.map(|i| p.moves()[i].next).and_then(|n| usize::try_from(n).ok())
+    };
+    reactions(p, now);
+}
+
+/// The parts after the body's switch: a dying part plays DEATH; while the
+/// body plays TOGETHER or runs a pattern (not in the intro's dark), a part
+/// with a move of its own switches as a body does; otherwise it copies the
+/// body's animation.
+fn switch_parts(c: &mut Critter, now: f32, intro: &mut i32) {
+    let body_kind = c.move_kind(c.current);
+    let in_pattern = c.pattern.is_some();
+    let own = (body_kind == Some(kind::TOGETHER) || in_pattern) && !(intro::WAIT..=intro::ROAR).contains(intro);
+    let switched = c.switched;
+    for p in &mut c.parts {
+        if p.state == CritterState::Dying {
+            p.next = find(p, kind::DEATH, Find::Nearest, now);
+        } else if !(own && (p.current.is_some() || p.next.is_some())) {
+            p.mirrored = true;
+            p.switched = switched;
+            p.current = None;
+            p.pattern = None;
+            if body_kind == Some(kind::TOGETHER) {
+                p.next = Some(0);
+            }
+            continue;
+        }
+        p.mirrored = false;
+        if p.frozen <= 0.0 {
+            switch(p, now, None, intro, !in_pattern);
+        }
     }
 }
 
@@ -1975,6 +2357,19 @@ fn forced(c: &mut Critter, ty: &TypeInfo, now: f32, intro: i32, boss_type: i32) 
         _ => None,
     };
     c.next = next;
+    reactions(c, now);
+    if c.next.is_some() {
+        // A forced move ends a pattern, the parts' too.
+        c.pattern = None;
+        for p in &mut c.parts {
+            p.pattern = None;
+        }
+    }
+}
+
+/// Reactions to the blows taken, when nothing else is forced: a knockdown
+/// or knockback, a roar after enough damage, a flinch.
+fn reactions(c: &mut Critter, now: f32) {
     if c.next.is_none() && c.kinds & 0x120 != 0 {
         if c.kinds & KIND_HEAVY != 0 {
             c.next = find(c, kind::KNOCKDOWN, Find::Ready, now);
@@ -1990,10 +2385,6 @@ fn forced(c: &mut Critter, ty: &TypeInfo, now: f32, intro: i32, boss_type: i32) 
         c.next = find(c, kind::FLINCH, Find::Ready, now);
     }
     c.kinds &= !KIND_REACTIONS;
-    if c.next.is_some() {
-        // A forced move ends a pattern.
-        c.pattern = None;
-    }
 }
 
 /// Whether a move's node (and its follow-up's) are there.
@@ -2029,10 +2420,15 @@ fn choose_attack(c: &mut Critter, now: f32) {
         c.next = Some(m as usize);
         return;
     }
+    let all_parts = c.parts.iter().all(|p| p.state != CritterState::Dying);
     let mut best_time = 999_999.0f32;
     let mut pattern_pick: Option<usize> = None;
     for (i, p) in patterns.iter().enumerate() {
-        if Some(i) == c.pattern.map(|p| p.0) || p.flags & 0x1000 != 0 || c.pattern_starts[i] + p.cooldown > now {
+        if Some(i) == c.pattern.map(|p| p.0)
+            || p.flags & 0x1000 != 0
+            || (p.flags & 2 != 0 && !all_parts)
+            || c.pattern_starts[i] + p.cooldown > now
+        {
             continue;
         }
         let Some(t) = best_target(c, &p.condition, false) else { continue };
@@ -2045,7 +2441,7 @@ fn choose_attack(c: &mut Critter, now: f32) {
     let mut chosen: Option<usize> = None;
     for i in 0..c.moves().len() {
         let m = c.moves()[i].clone();
-        if Some(i) == c.current || !m.is_attack() || m.flags & 4 != 0 {
+        if Some(i) == c.current || !m.is_attack() || m.flags & 4 != 0 || (m.flags & 2 != 0 && !all_parts) {
             continue;
         }
         if m.flags & 0x10 != 0 && !has_nodes(c, i) {
@@ -2136,7 +2532,7 @@ fn transition(cur: &CritterMove, next: &CritterMove) -> u8 {
 /// will end (its cooldown runs from then), and steps or starts a pattern.
 /// Leaving START (without a follow-up) moves the boss intro 1 → 2, leaving
 /// ROAR 3 → 4.
-fn switch(c: &mut Critter, now: f32, animator: &mut Animator, intro: &mut i32) {
+fn switch(c: &mut Critter, now: f32, animator: Option<&mut Animator>, intro: &mut i32, steps_pattern: bool) {
     let cur = c.current.map(|i| c.moves()[i].clone());
     let next = c.next;
     let (target, mode) = match (&cur, next) {
@@ -2178,7 +2574,9 @@ fn switch(c: &mut Critter, now: f32, animator: &mut Animator, intro: &mut i32) {
     }
     let clip = c.body().clips.get(action).copied().unwrap_or((1, 30, false));
     c.clock.start(action, clip);
-    animator.play(action);
+    if let Some(a) = animator {
+        a.play(action);
+    }
     c.switched = true;
     c.current = Some(t);
     c.hold_until = 0.0;
@@ -2187,9 +2585,12 @@ fn switch(c: &mut Critter, now: f32, animator: &mut Animator, intro: &mut i32) {
         c.pattern_starts[p] = now;
         c.pattern = Some((p, 0));
     } else if let Some((p, step)) = c.pattern {
-        let patterns = c.kind.file.type_patterns(c.ty);
-        let step = step + 1;
-        c.pattern = patterns[p].moves.get(step).filter(|&&m| m >= 0 && m as usize == t).map(|_| (p, step));
+        // A part following its body's pattern doesn't step it itself.
+        if steps_pattern {
+            let patterns = c.kind.file.type_patterns(c.ty);
+            let step = step + 1;
+            c.pattern = patterns[p].moves.get(step).filter(|&&m| m >= 0 && m as usize == t).map(|_| (p, step));
+        }
     } else {
         c.ends[t] = now + FRAME_TIME * (f32::from(clip.0) - 2.0);
     }
@@ -2743,6 +3144,65 @@ mod tests {
         assert_eq!(wizard_spot([1.0, 2.0, 3.0], &[]), [1.0, 2.0, 3.0]);
         // A page of 60 characters takes 2 s to type and stays 1 s.
         assert!((page_time(&"x".repeat(60)) - 3.0).abs() < 1e-5);
+    }
+
+    /// The chimera's body and heads share their wounds (real data).
+    #[test]
+    fn the_chimeras_heads_and_body_share_their_wounds() {
+        let root_dir = std::env::var("GAUNTLET_ASSET_ROOT").unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let path = std::path::Path::new(&root_dir).join("CRITTER/CHIMERA.WAD");
+        let Ok(bytes) = std::fs::read(&path) else {
+            eprintln!("skipping: no {path:?}");
+            return;
+        };
+        let file = CritterFile::parse(&bytes).unwrap();
+        let kind = Arc::new(CritterKind { file, bodies: Vec::new(), statue: None, effects: HashMap::new() });
+        let level = level_with(CHIMERA, intro::NONE);
+        let mut world = World::new();
+        let root = world.spawn_empty().id();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &world);
+        let mut owners = Vec::new();
+        let mut c = new_critter(&level, &kind, 0, [0.0; 3], 0.0, root, None, &mut owners, &mut commands);
+        for (k, ty) in [1, 2, 3].into_iter().enumerate() {
+            c.parts.push(new_critter(&level, &kind, ty, [0.0; 3], 0.0, root, Some(k), &mut owners, &mut commands));
+        }
+        c.sphere_owner = owners;
+        c.state = CritterState::Active;
+        for p in &mut c.parts {
+            p.state = CritterState::Active;
+        }
+        // Five body spheres, then one per head.
+        assert_eq!(c.sphere_owner.len(), 8);
+        assert_eq!(c.sphere_owner[5], (Some(0), 0));
+        let mut sounds = Vec::new();
+        let hp = |c: &Critter| (c.hit_points, c.parts.iter().map(|p| p.hit_points).collect::<Vec<_>>());
+
+        // A blow on the eagle's head comes off the body too.
+        let (body, heads) = hp(&c);
+        c.take_hit(100.0, 0, [0.0; 3], Some(5), false, None, &mut sounds);
+        let (body2, heads2) = hp(&c);
+        let dealt = heads[0] - heads2[0];
+        assert!(dealt > 0.0 && (body - body2 - dealt).abs() < 1e-3, "{dealt} {body} {body2}");
+        assert_eq!(heads[1..], heads2[1..]);
+
+        // A blow on the body: half of it over the three heads.
+        c.take_hit(90.0, 0, [0.0; 3], Some(0), false, None, &mut sounds);
+        let (body3, heads3) = hp(&c);
+        let dealt = body2 - body3;
+        for k in 0..3 {
+            assert!((heads2[k] - heads3[k] - 0.5 * dealt / 3.0).abs() < 1e-3);
+        }
+
+        // The killing blow on a head doesn't reach the body.
+        c.take_hit(1.0e6, 0, [0.0; 3], Some(5), false, None, &mut sounds);
+        assert_eq!(c.parts[0].state, CritterState::Dying);
+        assert_eq!(c.hit_points, body3);
+
+        // The body's death takes the heads with it.
+        c.take_hit(1.0e6, 0, [0.0; 3], Some(0), false, None, &mut sounds);
+        assert_eq!(c.state, CritterState::Dying);
+        assert!(c.parts.iter().all(|p| p.state == CritterState::Dying));
     }
 
     #[test]
