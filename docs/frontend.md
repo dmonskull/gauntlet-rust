@@ -244,6 +244,34 @@ player is ready the game starts (`FUN_80053530`) in the tower level
 `0xD00` — realm 13 (`L`), level 0: **`levelL1`**. Backing out of the
 New/Load menu with nobody else joined returns to the title.
 
+## Saving
+
+The game keeps a single save file, `Gauntlet Save Data`, on the memory
+card in Slot A, holding every character's record (`MEMCARD.C`; the
+strings "The Gauntlet Dark Legacy Save File / on the Memory Card in Slot A
+is corrupt", "Gauntlet will now create a Save File.", "Save File
+Created!"). At boot it checks the card and makes the file when it's
+missing; without a usable card saving is disabled, and New/Load's Load is
+disabled while there are no saved characters. The character menu (step 1
+above) saves the joined hero's record (Save) or swaps in a saved one
+(Load); Quit with an unsaved character asks "Character / Not Saved / Quit
+Anyway?" (step 2).
+
+In this rewrite (`saves.rs`) the file is `characters.ron` in the
+platform's data folder (macOS `~/Library/Application Support/`, Windows
+`%APPDATA%`, else `$XDG_DATA_HOME` or `~/.local/share`, then
+`GauntletDarkLegacyRust/`); `GDL_SAVE_DIR` puts it elsewhere. A record
+holds the name, class and colour, level, experience, health, gold, keys,
+potions, runestones, realms beaten and the quest's progress (crystals,
+gargoyle items, legendary items, levels entered). Saving a name that's
+already there replaces it. Load lists the saved characters ("NAME Lv n",
+the first 10, `font32` × 0.5) in the player's column; choosing one
+makes a fresh hero of its class and colour with the record laid on it,
+then goes to the tower. Quit asks first only when the hero differs from
+its saved record. A hero started from the command line (`--level`,
+`--character`) is named LARRY, as a blank name entry takes one of the
+sixteen.
+
 ## In-game HUD
 
 Implemented in [`game_hud.rs`](../crates/gdl-game/src/game_hud.rs); the old
@@ -352,8 +380,12 @@ Start, triggers.
 - The menus' spinning 3D arrow (`ICON_ARROW`) is drawn as the flat
   `MENU_MARKER` texture, 24 px, 16 left of the items.
 - Options, Game Options, Compass and Controls list their items but change
-  nothing; Shop, Inventory and memory-card Save / Load aren't implemented
-  (Load and Save are disabled, as with no card).
+  nothing; Shop and Inventory aren't implemented.
+- Saving: a file stands in for the memory card, so the card's screens
+  ("Accessing Memory Card in Slot A.", "Save File?", the save/load
+  confirmations) aren't shown, the load list is plain text in the
+  player's column, and a record keeps one level and experience rather
+  than one per class (see Saving).
 - Audio: the game's Mono/Stereo item is replaced by a Master Volume
   slider (not in the game); the three sliders set `GameOptions`
   (`options.rs`) and sit 40 apart instead of 52 so all three fit above the

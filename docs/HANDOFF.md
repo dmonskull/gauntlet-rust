@@ -15,11 +15,18 @@ What plays (details in [INDEX.md](INDEX.md)):
   - Title, character select, pause menus with volume sliders, death flow,
     GAME OVER.
   - A bare run opens on the title; `--level` goes straight into play.
+  - Saving: Tower Menu → Manage Character → Save writes the hero's record
+    to `characters.ron` (`saves.rs`; `GDL_SAVE_DIR` moves it), and Load
+    (New/Load or Manage Character) brings it back: level, experience,
+    gold, keys, potions, runestones, realms beaten and the quest
+    ([frontend.md](frontend.md) "Saving"). Checked with scripted menus:
+    a save from the tower with 3 keys and 7 orange crystals, then a fresh
+    start → Load → the character came back with its keys and name.
 - **Levels**
   - Drawn with lightmaps and blending. Additive glows are correct; they used
     to draw as dark discs (fixed with premultiplied output in `level.wgsl`).
-  - Particle emitter nodes are hidden, because their flames and sparks
-    aren't ported yet.
+  - World particles (torch flames, smoke, fires, mist) run from the
+    level's `PSYS` nodes (see "World particles" below).
 - **The hero**
   - Movement, combat, combos, throws and turbo attacks.
   - Experience and levels, pickups, doors, exits and transporters.
@@ -183,7 +190,7 @@ waits.
 5. ~~Tower progression~~: done for one player, with the gem count above
    the panel and the legendary items' hints. Left: pickup notices, the
    tower's other messages (shards after a boss, runestones: `NEWSHARDS`,
-   `ALL12RUNES*`, `RUNE13*`), saving progress.
+   `ALL12RUNES*`, `RUNE13*`). Saving is done (a file for the card).
 6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**, **hit flashes**.
 7. ~~Hit effects~~: done — blood sprays (BLOODFX1 per blow, BLOODFX2 on
    kills) run as particle bursts from the effects' kind-4 nodes; FIREHIT,
