@@ -635,9 +635,12 @@ animation on a fading part holds its frame until it's whole). Test the
 temple's with `GDL_BEATEN=0xE9E GDL_ANNOUNCED="0xFE:0"` (seven shards
 announced before; `GDL_ANNOUNCED="<shard marks>:<stone bits>"`). Stand-ins:
 a placed shard sprays its particle systems once from its place (the
-effects' bursts; the game runs them along the effect's nodes); the flash
-and sparkle play
-where the hero stands rather than riding him. Test with `GDL_BEATEN`/
+effects' bursts; the game runs them along the effect's nodes). The flash
+and sparkle ride the hero (`effects::EffectOn`: the model a child of the
+hero, the particles bursting where it starts). Open: `LEVELUP_<colour>`
+(one `FF_K` node, render flags `0x1001800`: turned about Y to the camera;
+ACTIVE 20 frames) doesn't show on screen at all, riding or placed — at
+the tick it spawns the hero looks the same; not traced why. Test with `GDL_BEATEN`/
 `GDL_RUNES`/`GDL_EXPERIENCE` on `levelL1` (a fresh hero gets the welcome
 first: `GDL_MENU="b@400,b@440,b@480,b@520,b@560,b@600"`).
 
