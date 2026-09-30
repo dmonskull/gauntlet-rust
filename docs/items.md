@@ -326,6 +326,78 @@ meat becomes `BADMEAT` worth −100, fruit `GAPPLE` worth −50 — eaten as
 poisoned food — with hint `0x88` GASPOISON. Here: `breakables.rs`
 (`BlastItem`).
 
+### Pickup notices
+
+Besides its sound, hint and sparkle, a pickup shows a **plate** over the
+player's panel: `FUN_8007fa7c(player, subtype, value)` takes the first
+free of 24 slots (`0x80274F14`, `0x1C` bytes: state, player, subtype,
+value, timer, two sprites; none free: nothing) for subtypes 1–10, 13, 15
+and 16 — not scrolls. The pickup (`FUN_8005de3c`) passes gold's amount,
+the keys taken (when not all fit, those left on the floor), food's health
+as used (negative for poison; the Pojo's chicken −100; none when refused
+at full health), 0 for potions and powers, and the item's amount for a
+runestone, legendary item, gem or gargoyle piece; an opened gold chest
+(`FUN_8005d71c`, subtype `0x2F`) passes 1 and its gold.
+
+`FUN_8007f510`, every frame from the player update (`FUN_8007692c`,
+outside modes `0x400D`, `0x4012`, `0x4016` and the level's opening
+`r13-0x7340`), steps each slot by the fields elapsed (`r13-0x7584`):
+
+1. **New**: two sprites (`FUN_800b3090`, textures from `STATIC`), 128
+   wide, at the panel's x (`0x8011FA00[player]`: 0, 128, 256, 384):
+   `S3` (128 × 16) at y 384, depth 63980, and under it at y 400, depth
+   63979, the picture (128 × 64) — gold `GOLD` (`JUNK` when worth under
+   11; `COINHUD` in the secret realm), keys `KEY` (`KEY_RING` from 2),
+   food `MEAT` from 100 health, `FRUIT` from 0, `BADFRUIT` below 0,
+   `BADMEAT` below −99, potions `MAGIC`, powers (5–9) `SPECIALS`,
+   `RUNESTONE`, `LEGEND`, gems `CRYSTAL`, gargoyle pieces `GOLDNICON`.
+2. **Rising**: up a pixel a field (the picture 16 below the strip) until
+   the strip's top reaches 304 — the panel's own top — then a 90-field
+   hold.
+3. **Up**: until the hold runs out.
+4. **Sinking**: down a pixel a field until the top is at 400 or lower;
+   then the sprites are freed.
+
+So a plate slides up from the screen's bottom edge over 80 fields
+(1.3 s), covers the whole panel (in front of it: the panel's sprites are
+at depth 64000) for 1.5 s and slides away over 96 fields; every slot moves
+on its own, so quick pickups slide over each other, and every strip lies
+behind every picture. The panel's text stays on top. The HUD's build at a
+level's load (`FUN_8007bb40`) clears all 24; a player's own go when it's
+taken out of the level (`FUN_80078de8`, Quit Level), when its death ends
+(`FUN_80079094`: out of the level, or up again in the tower) and when it
+quits (`FUN_80079418`).
+
+**The runestone count.** A runestone none of the heroes held (class 10)
+is set for all four players, restarts the key row (`r13-0x6fdc` = 300),
+sparkles, and has the announcer count the stones the heroes in the game
+hold (`FUN_8009f40c`, bits 0–12 of their `+0x1ECA`): 1 `S_RUNEFOUND1`;
+2–12 `S_RUNE<n>` (`0x80122C4C`) then `S_RUNEFOUND2`; 13 nothing. Each
+line is queued on the announcer's queue with no wait limit, unless a boss
+level's end has begun (`r13-0x7790` ≥ 3; [frontend.md](frontend.md), "The
+voice queues").
+
+**The secret realm's coins** (not done): there each gold pickup counts a
+coin for every player in play (`FUN_800a1458`: the level's secret
+character `0x80124568[r13-0x7224]`, 8–16; `+0x930` += 1, and for the
+HUD's count `+0x928` = `0x200` + the character, `+0x92C` = 60); at the
+level's need (`r13-0x7208`) each of them gets the character's bit
+(character − 8) in `+0xA8C`, `S_SECRETCHAR` is queued (`FUN_8009f368`)
+and `ALLCOINS` ("Congratulations! You have unlocked a secret character!")
+opens in the message box (`FUN_8006d7f4`, the group found by name
+`AllCoins`), and `r13-0x72E8` = 1 (the level's end, not traced).
+
+Here (`pickup_notices.rs`): the plates for player 1's panel from
+`PickupNotice` messages — which the pickups in `items.rs` have yet to send
+— moved by play's clock (stopped under the message box, and held under the
+level's opening shot) and drawn over the panel, under the message box, not
+under a menu; cleared at a level's
+start, when the hero is out of the level and when it stands up again in
+the tower after dying. Equal depths are drawn oldest first
+(the game's order for them isn't traced). The count follows the stones
+held: a new one in play, past a level start's first second (what the
+load sets, and `GDL_RUNES`, count as held), queues its lines.
+
 ### Item animation
 
 There's no spin or bob in code: **items animate through their atree**
@@ -457,8 +529,8 @@ Stand-ins: each is shown once per session, for 3 seconds.
 - Breaking containers, releasing contents as items, quest effects of
   runestones, legendary items, gems and scrolls, exits switched off by
   quests, the shop.
-- The announcer's class-name lines; the pickup score pop-ups
-  (`FUN_8007fa7c`).
+- The announcer's class-name lines; the secret realm's coins
+  ("Pickup notices").
 - Four players.
 
 ## Experience and levels
@@ -501,8 +573,8 @@ effect `0x45` + its crystal counter (`GETGEMORANGE` … `GETGEMBLACK`,
 (`0x4E`, kind `0x100`), a new runestone `GETRUNE` (`0x4F`, kind `0x400`) —
 `POWERUPS` atrees, depth bias −512, at the item (flags `0x80880`). Here:
 `items.rs`, through `EffectAt` with its bank. (A runestone also restarts
-the HUD's key/rune row timer `r13-0x6fdc` = 300 and plays a count voice,
-`FUN_8009f40c`; not done.)
+the HUD's key/rune row timer `r13-0x6fdc` = 300 — `game_hud.rs` — and has
+the announcer count the stones, `FUN_8009f40c` — "Pickup notices".)
 
 ## The tower's welcome
 
@@ -700,6 +772,22 @@ vertex. Test with `GDL_BEATEN`/
 `GDL_RUNES`/`GDL_EXPERIENCE` on `levelL1` (a fresh hero gets the welcome
 first: `GDL_MENU="b@400,b@440,b@480,b@520,b@560,b@600"`).
 
+**The quest's messages, and where they're done** (text groups of
+`TEXT/SCROLL_E.ROM` unless said):
+
+| words | group | voice | when | here |
+| --- | --- | --- | --- | --- |
+| a shard | `NEWSHARDS` page n | `S_SHRD4<realm>` | the first tower visit after its boss | `tower_scenes.rs` |
+| more to find, all eight | `MORESHARDS`, `ALLSHARDS` | `S_CONTINUEVOX`, `S_4KEYVOX` | once the shard is in the window (all eight: after the temple's portal fades in) | `tower_scenes.rs` |
+| a runestone | `NEWRUNES` | `S_FNDRUNEYOU` | the first tower visit after it's found | `tower_scenes.rs` |
+| all twelve | `ALL12RUNESNO`, `ALL12RUNESYES` | `S_12RUNENO`, `S_12RUNEYES` | once the twelfth is in place: Skorne not yet beaten (he must be banished first), or beaten (the Underworld's portal fades in first) | `tower_scenes.rs` |
+| the thirteenth | `RUNE13YES`; `RUNE13NO` | `S_RUNE13YES`; `S_RUNE13NO` | in place with all thirteen (Garm's Citadel's portal fades in first); back from `levelH3` without it | `tower_scenes.rs` |
+| a boss beaten | `ENGLISH.ROM`: `<BOSS>_SPEECH` ("…and recovered his shard"), `RUNE_PHRASE0`/`1`/`1B`/`2`, `SKORNE1_RUNE_YES`/`NO`, `SKORNE2_SPEECH`, `GARM2_SPEECH` | `S_DEFEATVOX<L>`, `S_RUNEVOX…` | the boss level's end ([critters.md](critters.md), "The end sequence") | `critters.rs` |
+| a counter or wing open, a gate shut | `UNLOCKLEVEL`, `UNLOCKSECTION`; `NEEDCRYSTALS`, `NEEDGARGITEMS` | `S_CRYS4…`, `S_FNGS4WST`… | in the tower (below) | `quest.rs`, `mechanics.rs` |
+| the welcome, Garm | `WELCOMEMESSAGE`, `GARMMESSAGE` | | the tower ("The tower's welcome") | `tower.rs` |
+| a pickup | the plates, and the runestone count | `S_RUNEFOUND1`, `S_RUNE<n>` + `S_RUNEFOUND2` | any level ("Pickup notices") | `pickup_notices.rs` |
+| a secret character | `ALLCOINS` | `S_SECRETCHAR` | the secret realm's last coin ("Pickup notices") | not done |
+
 ## Quest items and the tower's gates
 
 Implemented in [`quest.rs`](../crates/gdl-game/src/quest.rs) (the rules and
@@ -727,7 +815,7 @@ the session copies are the player's `+0x1EC8…`):
   5, 1, 7, 8, 3, 10, 5); the counter goes up (`FUN_800a1af4`) while it's
   at least 0 and below its need; the HUD shows `SM_CRYSTAL_<colour>` and
   "n/need" for 3 s (`+0x928`/`+0x92C`, `FUN_80074b08`). Sound `S_PICKUPMAGIC`
-  (`FUN_8009c870`, id `0x26`), a pickup notice (`FUN_8007fa7c`), a sparkle
+  (`FUN_8009c870`, id `0x26`), a plate (`FUN_8007fa7c`, "Pickup notices"), a sparkle
   (`FUN_8009176c`).
 - **16 gargoyle piece**: amount 0 fang, 1 feather, 2 claw; counts up to
   12, 20, 28 (`FUN_800a1850`, `0x8012455c`).
@@ -821,10 +909,8 @@ node — its glowing trail — is hidden (instance flag `0x2`). Loading a level
 
 **In this rewrite**: all of the above for one player; the messages show
 in the game's message box (`docs/frontend.md`, "Message box"). Stand-ins
-and gaps: the pickup notices (`FUN_8007fa7c`: a queue of 24 for the
-HUD, subtypes 1–10, 13, 15, 16) aren't shown; the level-record
-seen bits
-(`+0xDDC…`) aren't kept. The gem/gargoyle count shows above the panel
+and gaps: the pickup plates ("Pickup notices") wait for the pickups to
+send them; the level-record seen bits (`+0xDDC…`) aren't kept. The gem/gargoyle count shows above the panel
 (`game_hud.rs`: `SM_CRYSTAL_<colour>` or `SM_FANGS`/`SM_FEATHERS`/
 `SM_CLAWS` at panel x + 28, y 288, 16 × 16; "n/need" in font 1 at scale
 1.5 at x + 48, y 292; `FUN_80074b08`). The game builds the icon's name
