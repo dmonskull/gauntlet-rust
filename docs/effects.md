@@ -97,7 +97,7 @@ particle nodes (`FUN_800116ec`).
 **Depth bias** (`FUN_800baa74` → object `+0x68`, used by the draw,
 `FUN_800c5894`): the object is depth-tested `bias` × −2048 (render context
 `+0x78`, `r2-0x4888`) of the 24-bit z-buffer nearer: −128 for most effects
-(1/64 of the range), −512 for SUICIDEEXP and the sparkles round a hero, 0
+(1/64 of the range), −512 for SUICIDEEXP and the pickup sparkles, 0
 for the breaths and bags. The game's clip planes are 1 and 65536
 (`FUN_800c9a18`), so the step is fixed in 1 / distance; our reverse-Z
 buffer gets the same step × our near plane (`LevelMaterial::
