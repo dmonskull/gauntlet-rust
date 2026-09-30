@@ -111,7 +111,16 @@ then   : u16 volume (0..0x7F), u16 duck, u16 priority
   sample indices when a bank's samples land in the global sample table.
 - `FUN_800d2698` (play) skips to the last step and reads volume
   (`requested × vol / 0x7F`), duck (subtracted from every other voice's
-  volume while it plays) and priority (voice stealing, `FUN_800d350c`).
+  volume while it plays) and priority (voice stealing, `FUN_800d350c`):
+  the voice keeps `requested priority << 16 | call priority`, the
+  requested one being the third word of the play command (each caller's
+  own: 2 for the announcer's queued lines, `0x42`–`0x6E` for the heroes',
+  10 for the tower's chimes). With no free voice (no call, no duck, the AX
+  voice stopped; searched round-robin from `r13-0x68c0`) the new sound
+  takes the voice whose key is the highest met so far on that walk while
+  still ≤ its requested priority — in effect only voices started at
+  priority 0 — and otherwise isn't played (the reply is −2).
+  `docs/frontend.md`, "The voice queues".
 - `FUN_800d36a8` plays the current step's sample, then: `0x2000` → back to
   the nearest `0x4000` step at or before it; else `0x8000` → stop; else next
   step. Samples themselves never hardware-loop (voice loop flag 0, start
@@ -134,7 +143,8 @@ group 0x124:  name[16], u32, u32, u32 bank count, 64 × u32 bank index,
               u32, u32 (runtime)
 bank  0x2C:   file[16], name[16], u32 (size, PS2?), u16 sound count,
               u16 first sound, u16 slot, u16 handle (runtime)
-sound 0x1C:   name[16], u32 id = bank << 16 | call, f32 length, u32
+sound 0x1C:   name[16], u32 id = bank << 16 | call, f32 length,
+              f32 start (runtime, fields)
 ```
 
 - `FUN_800168bc` finds a mode by name (`"AUDIO: UNABLE TO FIND MODE %s"`)
@@ -146,7 +156,11 @@ sound 0x1C:   name[16], u32 id = bank << 16 | call, f32 length, u32
 - `FUN_80015cac` plays an id: bank = `id >> 16`, call handle = bank's
   handle + `(id & 0xFFF)` (`"AUDIO: BANK %s NOT LOADED. SOUND:%s"`).
 - `FUN_80017fe8` reads the f32; it's the call length in seconds (1/640 s
-  resolution) or −1 for looping calls — matches all 2,228 sounds.
+  resolution) or −1 for looping calls — matches all 2,228 sounds. The
+  voice queues hold a line for it × 60 fields, and a started sound counts
+  as playing for as long (`docs/frontend.md`, "The voice queues").
+- `+0x18` is written when a line is queued (when it will start) and when
+  a sound starts (`FUN_80015f24`: now); nothing reads it.
 
 Retail catalog: one mode `ALL` with groups COMMON, VOICE1, VOICE2,
 PLAYER1–4 (the 8 character banks), LEVELS (48 banks); 60 banks, 2,228

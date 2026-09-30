@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use gdl_formats::font::FONT32;
 use gdl_formats::text::{TextGroup, TextRom};
 
-use crate::audio::{PlaySound, StopSound};
+use crate::audio::{QueueVoice, StopSound};
 use crate::font::{Draw2d, Flush2d, GameFonts, TextStyle, UiTextures};
 use crate::frontend::{self, Frontend};
 use crate::level::LoadedGame;
@@ -44,7 +44,8 @@ impl Plugin for MessageBoxPlugin {
 
 /// Asks for a message in the box: page `index` of a `TEXT/SCROLL_E.ROM`
 /// group (every page in turn when none), with the voice line that plays
-/// while it's up.
+/// while it's up — an announcer's line (the tower's unlocks), queued as
+/// the box opens.
 #[derive(Message, Clone, Debug)]
 pub struct ShowMessage {
     pub group: String,
@@ -98,6 +99,9 @@ pub struct ShowCaption {
 const PAGE_GUARD: f32 = 15.0;
 /// Frames the pads are ignored once the box closes.
 const QUIET_FRAMES: u32 = 4;
+/// A box's voice line is dropped when it would wait longer than this,
+/// seconds (the tower's unlock lines).
+const VOICE_MOST_WAIT: f32 = 10.0;
 /// The panel's texture and the prompt under the text.
 const PANEL: &str = "Scroll_A";
 const PROMPT: &str = "Press     Button when done.";
@@ -216,7 +220,7 @@ fn run_box(
     mut boxes: ResMut<MessageBox>,
     fe: Res<Frontend>,
     mut requests: MessageReader<ShowMessage>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut voices: MessageWriter<QueueVoice>,
     mut stops: MessageWriter<StopSound>,
 ) {
     let fields = real.delta_secs() * 60.0;
@@ -258,7 +262,7 @@ fn run_box(
         }
         info!("message box: {} {:?}", m.group, pages);
         if let Some(line) = m.voice {
-            sounds.write(PlaySound(line.into()));
+            voices.write(QueueVoice::announcer(line, VOICE_MOST_WAIT));
         }
         boxes.open = Some(Open { group: g.clone(), pages, page: 0, fields: 0.0, voice: m.voice });
         break;
