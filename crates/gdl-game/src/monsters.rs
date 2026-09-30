@@ -1014,6 +1014,10 @@ fn tick_monsters(
         let m = &mut *m;
         m.previous = (m.position, m.facing);
         if let Some(d) = m.dying {
+            // The dying play on whatever the time.
+            if animator.hold {
+                animator.hold = false;
+            }
             if !d.started {
                 if let Some(d) = m.dying.as_mut() {
                     d.started = true;
@@ -1042,8 +1046,11 @@ fn tick_monsters(
         }
         let r = m.stats.radius;
         m.near_screen = on_screen(frustum, m.position, 2.0 * r + 15.0);
-        // Time stopped, it stands frozen: no target, move or blow; only
-        // the blows it takes are still turned into reactions.
+        // Time stopped, it stands frozen, its clip too: no target, move or
+        // blow; only the blows it takes are still turned into reactions.
+        if animator.hold != stop.0 {
+            animator.hold = stop.0;
+        }
         if stop.0 {
             react(m, &mut animator);
             if m.flash.step() {
