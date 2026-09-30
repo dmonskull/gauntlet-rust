@@ -208,24 +208,43 @@ the action's frame f = ⌊frame + 0.5⌋ — counted down (frames − f − 1) w
 action `+0x2A` bit 0 is set; wrapped modulo `count × period` on a looping
 action once past it — and:
 
-- a flipbook shows frame `(f − phase) / period` of its run (none before
-  `phase`, holding the last) on **that object only** (`FUN_800ba85c`:
-  object `+0x5C` = binding, `+0x58` = texture, passed down its children).
-  An object has one such replacement, so the last modifier listed wins;
-  it stays after the action until another replaces it (objects start with
+- a flipbook shows frame `(f − phase) / period` of its run (frame 0
+  before `phase`, holding the last) on **that object only**
+  (`FUN_800ba85c`: object `+0x5C` = binding, `+0x58` = texture). An
+  object has one such replacement, so the last modifier listed wins; it
+  stays after the action until another replaces it (objects start with
   none, `0xFFFF`).
 - −4 fades the object in, −5 out, over `count` frames from `phase`
-  (`FUN_800ba9b0`: transparency `+0x53` = 255 − value, flag `0x200`);
-  the tower's rune displays and some `WEAPONS` effects use them.
-- action scrolls (monsters, heroes, weapons) move the object's own
-  texture matrix; −6 does nothing.
+  (`FUN_800ba9b0`): t = (f − phase) / count in 0…1, value =
+  ⌊(1 − t) × 255⌋ in, ⌊t × 255⌋ out; transparency `+0x53` = 255 − value
+  (its opacity), flag `0x200` while value ≥ 1. The tower's rune displays
+  and some `WEAPONS` effects use them.
+- action scrolls (−2 U, −3 V) are texture wipes (`FUN_80018cb4` →
+  `FUN_800ba4ac`): an object's texture coordinates are scaled and
+  shifted (a "UV Scale Add" slot, `0x802c7708`, index in object `+0x5E`,
+  flag `0x10000000`; identity 1, 0) so the texture's strip slides along
+  the mesh — with x = f − phase, m = min(period, count), w = count / m,
+  the visible span [start, end] goes [x(1 + w)/m − 2w, 1] while x < m, then
+  to [0, w] by x = count, then [(x − count)/m, w] until x = count + m, and
+  [1, w] after. −6 does nothing.
+
+Each setter walks from the object down its subtree (param 1): itself, its
+children and theirs, but no further into a child whose render flags have
+`0x10` — and none of the children at all if the first child has it (the
+effects' roots get `0x10`, `FUN_80093858`, so nothing set above reaches
+into them).
 
 Atree nodes of kind 3 carry one modifier each (node `+0x34`: the byte
-offset from the action table to its record in the list), run the same
-way on that node's object with the action's frame, not wrapped
-(`FUN_80011334`). Only the heroes' power effects, bosses, `WEAPONS` and a
-few item effects have them (the tower's rune displays, `LEGENDFX`,
-`LEGENDPRJ`, `SAFEREXP`) — none of the placed items; not run yet.
+offset from the action table to its record in the list; all 1,626 on the
+disc point at their own atree's), run the same way on that node and its
+subtree with the action's frame, not wrapped (`FUN_80011334`, walking the
+nodes parent first, so a node's modifier wins over the action's below
+it). The heroes' power effects, bosses' and monsters' attack effects,
+`WEAPONS` (the potions' blasts: 46 flipbook nodes in `MP_ACID`, fades in
+`MP_FIRE` and `MP_LIGHT`, the combos' wipes) and a few item effects have
+them (the tower's rune displays, `LEGENDFX`, `LEGENDPRJ`, `SAFEREXP`) —
+none of the placed items. Every animated object runs these steps — items,
+heroes, monsters, effects, the tower's wizard (`FUN_80011104`'s callers).
 
 So a transporter's `ACTIVE` loop swirls `NEWTRAN_` on each pad, a force
 field's `ONA` lights `FFGEN` (33…47), `ON` runs `FFIELD` (49…68) and
@@ -234,12 +253,24 @@ frame 33 through `OFF`, while one that has never cycled shows the bank's
 lit 47. `items.rs` runs these on copies of the materials of the parts
 drawing the texture (`ItemRig::texmod_parts`).
 
+Models built as characters (effects, monsters, critters, the tower's
+shards and runestones) run both — the action's and their kind-3 nodes' —
+through `texanim::ModelMods`: each node keeps what the modifiers left on
+it (a replaced texture, an opacity) and each drawn part shows its node's
+on its own copy of its material (`character.rs`, `show_look`). This took
+over from the effects' old stand-in, which stepped every modifier an
+effect's atree owned on the tick count: the acid blast's gas and rings
+now run node by node from their own phases, the fire and light blasts
+fade out. Stand-in: action scrolls (the wipes) aren't run yet.
+
 The frames a flipbook steps through can need more blending than the
 texture it starts from — `FFIELD`'s base and first frame are clear, its
 later frames soft — so a material a flipbook drives blends as its most
 demanding frame needs (`LevelMaterial::widen_alpha`; the game blends
-everything). Not done: action fades; `WEAPONS`' and the heroes' banks'
-running modifiers (the hand glows, which aren't drawn yet).
+everything); a fade makes its part's copy blend while it's see-through.
+Not done: `WEAPONS`' and the heroes' banks' running modifiers (the hand
+glows, which aren't drawn yet), and the heroes' own actions' modifiers
+(their clips and skeletons come from different files).
 
 ## Particle-system nodes
 

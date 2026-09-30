@@ -96,9 +96,9 @@ pub struct PlacementIndex(pub usize);
 pub struct ItemRig {
     pub atree: Arc<Atree>,
     pub bones: Vec<Entity>,
-    /// Flipbook nodes: the entity holding the frame shown, the frames and
-    /// how they face the camera.
-    pub flipbooks: Vec<(Entity, FlipbookFrames, Option<Billboard>)>,
+    /// Flipbook nodes: the entity holding the frame shown, the node, the
+    /// frames and how they face the camera.
+    pub flipbooks: Vec<(Entity, usize, FlipbookFrames, Option<Billboard>)>,
     /// What its actions do to its textures, and the parts drawing a
     /// texture they change: (entity, binding, the shared material).
     pub texmods: Option<Arc<ActionTexMods>>,
@@ -607,7 +607,7 @@ fn spawn_built(model: &BuiltModel, transform: Transform, index: usize, view: Pop
                 match holders.iter().find(|(n, _, _)| n == node) {
                     Some((_, holder, frames)) => {
                         attach(commands, *holder, parts, *facing);
-                        flipbooks.push((*holder, frames.clone(), *facing));
+                        flipbooks.push((*holder, *node, frames.clone(), *facing));
                     }
                     None => attach(commands, bones[*node], parts, *facing),
                 }

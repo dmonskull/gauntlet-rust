@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use gdl_formats::ModelFile;
 use gdl_formats::anim::AnimFile;
 use gdl_formats::pdata::PlayerStats;
-use gdl_formats::texmod::{FirstFrame, TexMod, TexModKind};
+use gdl_formats::texmod::TexMod;
 
 use crate::audio::PlaySound;
 use crate::character::{CharacterData, CharacterModel, clip_fps};
@@ -52,7 +52,7 @@ impl Plugin for EffectsPlugin {
             .init_resource::<PotionCycle>()
             .add_systems(
                 FixedUpdate,
-                (use_potions, spawn_blasts, spawn_explosions, tick_blasts, spawn_one_shots, tick_one_shots, step_effect_frames)
+                (use_potions, spawn_blasts, spawn_explosions, tick_blasts, spawn_one_shots, tick_one_shots)
                     .chain()
                     .after(MonsterTick),
             )
@@ -354,40 +354,15 @@ static POISON_STAGES: [Stage; 2] = [Stage { model: "POISONEXP2", blast: true }, 
 const SUICIDE_FX: &str = "SUICIDEEXP";
 const EXPLOSION_SOUND: &str = "S_SUICIDE_BOMB";
 
-/// An effect model: its meshes, its life (seconds), its particle systems
-/// (their values, material and direction) and its own texture animations.
+/// An effect model: its meshes (which run its texture modifiers as it
+/// plays: the fireball's FBALL_EXP, a gas cloud's POISON_GAS, the acid
+/// blast's gas), its life (seconds) and its particle systems (their
+/// values, material and direction).
 #[derive(Clone)]
 struct EffectModel {
     model: Arc<CharacterModel>,
     life: f32,
     particles: Arc<[(particles::Params, Handle<LevelMaterial>, Vec3)]>,
-    flipbooks: Arc<[Flipbook]>,
-}
-
-/// A bank texture modifier owned by an effect's atree (the fireball's
-/// FBALL_EXP, a gas cloud's POISON_GAS): each copy of the effect runs it
-/// from its start, a frame every `period` ticks — over exactly the
-/// effect's clip.
-struct Flipbook {
-    /// The image the model's materials draw the changed texture with.
-    base: Handle<Image>,
-    frames: Vec<Handle<Image>>,
-    texmod: TexMod,
-}
-
-/// A playing effect's flipbooks: its own copies of the materials they
-/// change, and the ticks since it started.
-#[derive(Component)]
-struct EffectFrames {
-    flipbooks: Arc<[Flipbook]>,
-    copies: HashMap<AssetId<LevelMaterial>, (Handle<LevelMaterial>, usize)>,
-    ticks: u64,
-}
-
-impl EffectFrames {
-    fn of(effect: &EffectModel) -> Option<Self> {
-        (!effect.flipbooks.is_empty()).then(|| Self { flipbooks: effect.flipbooks.clone(), copies: HashMap::new(), ticks: 0 })
-    }
 }
 
 /// Effect models, loaded on first use: `WEAPONS`' by atree name, and the
@@ -483,8 +458,7 @@ fn load_effect(
     let bytes = game.install.read(&format!("{folder}/ANIM.PS2")).ok()?;
     let anim = AnimFile::parse(&bytes).ok()?;
     let index = anim.atrees.iter().position(|a| a.name.eq_ignore_ascii_case(name))?;
-    let texmods: Vec<TexMod> =
-        TexMod::parse_all(&bytes).unwrap_or_default().into_iter().filter(|t| usize::try_from(t.owner) == Ok(index)).collect();
+    let texmods = TexMod::parse_all(&bytes).unwrap_or_default();
     let tree = anim.atrees.into_iter().nth(index)?;
     let data = CharacterData {
         name: format!("{folder}/{name}"),
@@ -512,16 +486,9 @@ fn load_effect(
             (params, material, Vec3::from(n.vector))
         })
         .collect();
-    let model = Arc::new(CharacterModel::build_with(&data, &mut cache, meshes, materials, images));
-    let flipbooks = texmods
-        .into_iter()
-        .filter_map(|texmod| {
-            let TexModKind::Frames(FirstFrame::Binding(first)) = texmod.kind else { return None };
-            let (base, _) = cache.get(texmod.binding, images)?;
-            let frames = (0..texmod.count.max(1) as u16).filter_map(|k| cache.get(first + k, images).map(|(i, _)| i)).collect();
-            Some(Flipbook { base, frames, texmod })
-        })
-        .collect();
+    let mut model = CharacterModel::build_with(&data, &mut cache, meshes, materials, images);
+    model.run_texmods(&data, &texmods, &mut cache, images);
+    let model = Arc::new(model);
     let (see_through, bias) = (SEE_THROUGH.contains(&name), effect_bias(name));
     let near = PerspectiveProjection::default().near;
     for h in model.materials() {
@@ -535,59 +502,7 @@ fn load_effect(
             m.set_depth_bias(bias, near);
         }
     }
-    Some(EffectModel { model, life, particles, flipbooks })
-}
-
-/// Steps each playing effect's flipbooks on the 30 Hz tick: its meshes
-/// move onto its own copies of the materials drawing a changed texture,
-/// and the copies show the frame for the ticks since it started.
-fn step_effect_frames(
-    mut effects: Query<(Entity, &mut EffectFrames)>,
-    children: Query<&Children>,
-    mut drawn: Query<&mut MeshMaterial3d<LevelMaterial>>,
-    mut materials: ResMut<Assets<LevelMaterial>>,
-) {
-    for (root, mut fx) in &mut effects {
-        let fx = &mut *fx;
-        for e in children.iter_descendants(root) {
-            let Ok(mut mat) = drawn.get_mut(e) else { continue };
-            let id = mat.0.id();
-            if fx.copies.values().any(|(c, _)| c.id() == id) {
-                continue;
-            }
-            let copy = match fx.copies.get(&id) {
-                Some((c, _)) => Some(c.clone()),
-                None => {
-                    let own = materials.get(id).cloned();
-                    let book = own.as_ref().and_then(|m| {
-                        let diffuse = m.diffuse.as_ref()?.id();
-                        fx.flipbooks.iter().position(|b| b.base.id() == diffuse)
-                    });
-                    match (own, book) {
-                        (Some(own), Some(book)) => {
-                            let c = materials.add(own);
-                            fx.copies.insert(id, (c.clone(), book));
-                            Some(c)
-                        }
-                        _ => None,
-                    }
-                }
-            };
-            if let Some(copy) = copy {
-                mat.0 = copy;
-            }
-        }
-        for (copy, book) in fx.copies.values() {
-            let b = &fx.flipbooks[*book];
-            let frame = b.texmod.frame(fx.ticks) as usize;
-            if let (Some(image), Some(m)) = (b.frames.get(frame), materials.get_mut(copy))
-                && m.diffuse.as_ref() != Some(image)
-            {
-                m.diffuse = Some(image.clone());
-            }
-        }
-        fx.ticks += 1;
-    }
+    Some(EffectModel { model, life, particles })
 }
 
 /// A one-off effect model where something happened (a monster's die
@@ -645,9 +560,6 @@ fn play_effect(
     let transform = Transform::from_translation(at).with_rotation(Quat::from_rotation_y(facing)).with_scale(scale);
     let entity = effect.model.spawn(transform, commands);
     commands.entity(entity).insert((OneShot(effect.life), LevelEntity));
-    if let Some(frames) = EffectFrames::of(effect) {
-        commands.entity(entity).insert(frames);
-    }
 }
 
 fn tick_one_shots(mut commands: Commands, time: Res<Time>, mut shots: Query<(Entity, &mut OneShot)>) {
@@ -921,9 +833,6 @@ fn spawn_blast(commands: &mut Commands, effect: Option<&EffectModel>, blast: Bla
         None => commands.spawn((transform, Visibility::default())).id(),
     };
     commands.entity(entity).insert((blast, BlastColour(colour, effect.is_some()), LevelEntity));
-    if let Some(frames) = effect.and_then(EffectFrames::of) {
-        commands.entity(entity).insert(frames);
-    }
 }
 
 #[derive(Component)]

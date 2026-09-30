@@ -361,7 +361,10 @@ hero in the game, the bit of the realm's place in the tower's order
 `FUN_800a2ba8`, with the bits of every hero in the game:
 
 - places each shard held: the effect `SHARD<n>` at the window frame's node
-  (`L1WINDOWFRAME`, over the tower's door), wound on to its last frame;
+  (`L1WINDOWFRAME`, over the tower's door), wound on to its last frame
+  (`docs/effects.md`, "Effects looked up by name"), its particle nodes
+  stopped: the pane its flipbook ends on fills that part of the window,
+  where a starfield shows until then;
 - unless all eight are held, hides the light shining from the window
   (`L1XPLIGHTRAY01`) with everything under it: render flag 2, which the
   draw walk (`FUN_800c7d6c`) skips along with the node's children (flag
@@ -370,9 +373,38 @@ hero in the game, the bit of the realm's place in the tower's order
   for 1–12, and for the thirteenth (bit 12) fires trigger `0xFF` and
   shows `RUNE13` at `L1RUNE13`.
 
-Here: the light shows only once all eight shards are in
-(`quest::TowerPiece`, bits by `quest::boss_marks`) — a new game's tower
-had it shining. Not done: the shards and runestones in their places.
+Each of these effects plays out over its action (82 frames for a rune,
+104 for the thirteenth, 112 for a shard): dust clouds (`GARDUST` kind-3
+flipbooks on `CFXCDU` parts, each from its own frame 38–43, their last
+frame clear), a streak as the stone arrives (a flipbook run of frames
+38–54), and the stone fading in (`TEXFADEIN<n>_18_19`); wound on, only
+the stone in its slot is left.
+
+What the tower sets out as it loads are the pieces already **announced**:
+the character record keeps a second pair of words (player `+0x2220`
+shards, `+0x2222` runestones, per record × `0xF0`), which the load reads
+(`0x802776e0`/`0x802776e2`) rather than the ones won (`+0x1EC8`,
+`+0x1ECA`). Then the tower's update (`FUN_800a20c4(1)`, at the end of the
+load) ORs each hero's won bits into the record and into the announced
+ones, and the first bit won but not announced before starts the wizard's
+scene for it (`r13-0x6e8c` = shard n, or 100 + stone; the thirteenth
+stone and "all twelve" have their own codes): his text and voice
+(`FUN_800a33c4`), then `FUN_800a39c4` plays the piece's effect in full
+(not wound on) with a camera cut to it, and — the eighth shard, the
+twelfth stone — the reveals that follow (the light fading in, a realm's
+portal).
+
+Here (`tower.rs`, `quest.rs`): the shards and runestones are set out as the
+tower loads, wound on (`WindOn`), from the tower's items bank; the light
+shows only once all eight shards are in (`quest::TowerPiece`, bits by
+`quest::boss_marks`) — a new game's tower had it shining. Stand-in: there
+are no announced bits and no scenes yet, so pieces just won are set out
+wound on with the rest. Test with
+`GDL_BEATEN=<realm bits>` and `GDL_RUNES=<stone bits>` (e.g. `0xE9E` for
+the eight main bosses, `0x1FFF` for all thirteen stones) and
+`GDL_LOOK_AT="3.5,0,-9.8,24"` (the rune place),
+`"2.6,11,-79.9,26,180"` (the window) or `"4.1,-28.5,31.2,16"` (the
+thirteenth).
 
 ## Quest items and the tower's gates
 
@@ -457,6 +489,21 @@ player at its need); 101 and up: gargoyle section id − 101, 104+ counting as
 the gates are ids 1–8 on the realms' shield walls `L1XPTRAPW<letter>`
 (bridge-kind movers that vanish while on), 101–103 on `L1TRAPWEASYA`,
 `L1TRAPWMEDA`, `L1TRAPWHARD`, and 104 on the lift `L1LIFT01`.
+
+**Opened as the tower loads** (`FUN_800a2ba8`): each gargoyle section and
+then each crystal counter (need not 0) that some player has opened for
+good (−1) has its gate triggers fired with `FUN_8005ff4c(id, 1)` — the
+sections' `0x65` + section (the lower tower's also `0x68` and 199, the
+elevator `L1ELEV02`), the counters' their number — and, with the
+thirteenth runestone, `0xFF` (`L1ELEV669`, which doesn't move: heights
+0/0). `FUN_8005ff4c` takes every trigger with that id (not ones with
+flags `0x8100`) and those chained after it: flags `|= 0x400`, on (`+0xC8`
+and `+0xCA` = 2), its target's state `0x2F`, and a mover snapped to its on
+height (`0x802571d0` = `0x802578d8`); a bridge-kind wall then fades out
+over its first ticks. A counter at its need but not yet announced stays
+shut until touched. Here: `Quest::tower_gates`, `Mechanics::fire_open` —
+before, open gates were shut again on every return to the tower until
+touched.
 
 **Realms open** (`FUN_800a12cc`, by realm id): the tower always; E once
 realms 1–8 of the quest order are beaten (`FUN_800a1d98` mask `0x1FE`); F

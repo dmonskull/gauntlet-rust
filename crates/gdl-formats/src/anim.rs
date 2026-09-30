@@ -24,6 +24,8 @@ const ACTION_STRIDE: usize = 0x30;
 const NODE_STRIDE: usize = 0x3C;
 const TRACK_ENTRY: usize = 8;
 const FLIPBOOK_STRIDE: usize = 0x28;
+/// A texture modifier record (`texmod.rs`).
+const TEXMOD_LEN: i64 = 0x58;
 const DELTA_TABLE_LEN: usize = 256;
 
 /// Track flag bits: which channels are stored.
@@ -245,6 +247,9 @@ pub struct Atree {
     /// The particle systems of its kind-4 nodes (effects such as the blood
     /// sprays).
     pub particles: Vec<ParticleNode>,
+    /// Its kind-3 nodes and the texture modifier each runs on its subtree
+    /// as the action plays: (node, index in the file's list, `texmod.rs`).
+    pub texmod_nodes: Vec<(usize, usize)>,
 }
 
 /// A particle-system node (kind 4): the node, its particle record (at
@@ -470,7 +475,21 @@ fn parse_atree(file: &[u8], at: usize) -> Result<Atree, AnimError> {
             particles.push(ParticleNode { node: i, record, vector: [le_f32(e, 0x14), le_f32(e, 0x18), le_f32(e, 0x1C)] });
         }
     }
-    Ok(Atree { name, nodes, actions, clips, flipbook, flipbook_base, particles })
+    // A kind-3 node's record sits at its index from the action table, in
+    // the file's texture modifier list (header `+0x08` count, `+0x0C`
+    // offset).
+    let texmod_list = (le_u32(file, 8) as i64, le_u32(file, 12) as i64);
+    let texmod_nodes = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.kind == NodeKind::Other(3) && actions_off != 0)
+        .filter_map(|(i, n)| {
+            let from_list = at as i64 + i64::from(actions_off) + i64::from(n.index) - texmod_list.1;
+            let k = from_list / TEXMOD_LEN;
+            (from_list >= 0 && from_list % TEXMOD_LEN == 0 && k < texmod_list.0).then_some((i, k as usize))
+        })
+        .collect();
+    Ok(Atree { name, nodes, actions, clips, flipbook, flipbook_base, particles, texmod_nodes })
 }
 
 /// `{u32 offset from here, u32 count}`, then `0x28`-byte entries: object

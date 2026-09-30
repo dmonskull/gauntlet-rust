@@ -36,6 +36,10 @@ The touch test (`FUN_8005f0e0`, class 5) uses a cylinder of radius
 (0x1B) doubling its radius (× `r2-0x6850` = 2). Quest triggers (flag
 0x40, id < 100, `FUN_800a1928` true) double it too. Item flag 0x400 and
 trigger flag 0x200 (chained-to, below) make a trigger untouchable.
+`FUN_8005ff4c(id, snap)` fires every trigger with an id (and its chain)
+from code — the tower's gates as it loads, snapped open
+(`docs/items.md`, "Quest items and the tower's gates";
+`Mechanics::fire_open`).
 
 ### Default flags by subtype
 
