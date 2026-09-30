@@ -332,8 +332,12 @@ throw every two seconds.
   actions that make them aren't traced; the spread's first missile's
   effect (the record's `+0x2C` becomes 6 / 7), the element trails
   (`0x8023fd34`) and the special powers' records (`0x80119b58`,
-  `0x80119b88`) aren't done; the reflect shield and the time-slow damage
-  halving aren't; no push on missile hits.
+  `0x80119b88`) aren't done; the time-slow damage halving isn't; no push
+  on missile hits on monsters. The reflect shield is (`fly`: velocity ×
+  −1, moved on at once, damage at most 15 (`r2-0x5570`), it then hits
+  monsters and objects and passes the hero it glanced off; `S_RICOCHET`
+  at most once a second) — but its life isn't capped at 10 s more
+  (`r2-0x5598`), and it still passes items as monsters' missiles do.
 - The kiting thrower's wall-bump angles and the leader logic aren't done;
   AIs `0x1C`/`0x1D`/`0x1F` (fireball casters) move like the chasers (their own
   movement isn't traced) and fire a fireball on each attack blow.

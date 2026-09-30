@@ -257,9 +257,14 @@ Confirmed (`FUN_800ab898`, the action machine): with any of `0x620000`,
 READY becomes SHIELD_READY (`0x15`) and WALK1–RUN2 (`0x11`–`0x14`) become
 SHIELD_RUN (`0x16`).
 
-To build (all three shields): the reflect in the missile update; contact
-damage in the hero's update from the attack search's target; the shield
-models and actions; `L_SHLD_ACTIVE` as an effect.
+Here (`player.rs`, `projectiles.rs`): the reflect in `fly`; the fire wall
+and lightning blows on the searched target within 1 (`WALK_INTO`) of the
+hero while no reaction was picked this tick, in place of walking into it
+(lightning's 1 s cooldown kept per target on the hero), with
+`L_SHLD_ACTIVE` played from the left wrist (`L_WRIST`) toward the target
+— turned about Y only; the SHIELD_READY / SHIELD_RUN swap where the next
+action's clip is played (`shield_action`). The models on the arm are
+the looks' (above).
 
 ### `0x80000` halo (anti-Death)
 

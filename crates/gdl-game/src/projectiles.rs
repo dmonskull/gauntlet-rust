@@ -28,6 +28,7 @@ use gdl_formats::pdata::PlayerStats;
 use gdl_formats::{LevelCollision, ModelFile, enemy};
 
 use crate::actions::Strike;
+use crate::audio::PlaySound;
 use crate::character::{self, CharacterData, CharacterModel};
 use crate::combat::{self, CritterAim, Hit, TargetKind, Targetable};
 use crate::effects::{BlastAt, PotionBurst, StrikePotion, is_floor_potion};
@@ -373,6 +374,15 @@ impl Owner {
     }
 }
 
+/// Armour bits that turn monster missiles back (the reflect shield;
+/// `0x1000000`, which no power-up sets, does too).
+const REFLECTS: u32 = 0x102_0000;
+/// A reflected missile does at most this.
+const REFLECTED_MOST: f32 = 15.0;
+/// The ricochet sound, at most this often (seconds).
+const RICOCHET: &str = "S_RICOCHET";
+const RICOCHET_EVERY: f64 = 1.0;
+
 /// A missile in flight.
 #[derive(Component, Debug)]
 pub struct Projectile {
@@ -397,6 +407,9 @@ pub struct Projectile {
     pub potion: Option<PotionBurst>,
     /// What a piercing missile has hit already (it hits each once).
     pierced: Vec<Entity>,
+    /// The hero whose reflect shield turned it back: it flies on at
+    /// monsters (and past that hero).
+    reflected: Option<Entity>,
 }
 
 /// What a missile was let go with.
@@ -815,6 +828,7 @@ fn spawn_projectile(
         scale,
         potion: None,
         pierced: Vec::new(),
+        reflected: None,
     };
     let transform = Transform::from_translation(launch.start).with_rotation(orientation(&p)).with_scale(Vec3::splat(scale));
     let entity = match model {
@@ -1019,6 +1033,7 @@ fn fly(
     mut damage: MessageWriter<DamagePlayer>,
     mut potions: MessageWriter<BlastAt>,
     (items, mut struck): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>),
+    (mut sounds, mut ricochet): (MessageWriter<PlaySound>, Local<f64>),
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -1039,12 +1054,27 @@ fn fly(
         if !hero_owned {
             let hit = players
                 .iter()
+                .filter(|(e, _)| p.reflected != Some(*e))
                 .filter_map(|(e, pl)| {
                     let centre = Vec3::from(pl.mover.position) + Vec3::Y * PLAYER_CENTRE;
                     cylinder_hit(from, to, centre, r + pl.radius, r + PLAYER_HALF_HEIGHT).map(|s| (s, e))
                 })
                 .min_by(|a, b| a.0.total_cmp(&b.0));
-            if let Some((s, player)) = hit {
+            let reflects = hit.is_some_and(|(_, e)| players.get(e).is_ok_and(|(_, pl)| pl.armour_bits & REFLECTS != 0));
+            if let Some((s, player)) = hit.filter(|_| reflects) {
+                // A reflect shield turns it back unhurt: it hits monsters
+                // now, at most 15, and moves on at once (`S_RICOCHET` at
+                // most once a second).
+                if now >= *ricochet + RICOCHET_EVERY {
+                    sounds.write(PlaySound(RICOCHET.into()));
+                    *ricochet = now;
+                }
+                p.velocity = -p.velocity;
+                p.damage = p.damage.min(REFLECTED_MOST);
+                p.reflected = Some(player);
+                to = from.lerp(to, s) + p.velocity * dt;
+                info!("a missile glances off the hero's reflect shield");
+            } else if let Some((s, player)) = hit {
                 to = from.lerp(to, s);
                 let until = guard.0.get(&player).copied().unwrap_or(f64::MIN);
                 if until <= now
@@ -1063,8 +1093,8 @@ fn fly(
                 stop = Some(Stop::At(to));
             }
         }
-        // Monsters and objects (hero missiles).
-        if stop.is_none() && hero_owned {
+        // Monsters and objects (hero missiles, and reflected ones).
+        if stop.is_none() && (hero_owned || p.reflected.is_some()) {
             // A critter's spheres before its body.
             let met: Vec<(f32, &Body)> = bodies
                 .iter()
