@@ -119,6 +119,27 @@ The power-ups on the disc: weapon — `FIREICON` 1, `ELECICON` 2,
 `0x20` / `0x40` (5 uses), `PHOENIX_ICON` `0x80`, `GROWPOT` `0x100`,
 `SHRINKPOT` `0x200`, `POJOEGG` `0x400`, `TURBOPUP` `0x80000`.
 
+**Attack overrides** (`FUN_80080d3c`, before the request switch): unless
+a condition (`bVar5`, not traced) holds, a held power replaces the attack
+the hero asks for — the first of: special `0x1000` or `0x2000` → 0x6E
+ATTBREATHE; special `0x8000` → 0x67 ATTFIREL; special `0x4000` → 0x68;
+weapon `0x100000` (the crossbow) → 0x6B SSHOT1; weapon `0x10000000` (the
+hammer) → 0x70 ATTCHOP; special `& 0x70` (a breath) → 0x6E. The action
+state machine (`FUN_800ab898`) then raises, as those actions hand over,
+`0x2000` (0x67 → 0x69), `0x4000` (0x68 → 0x6A) and `0x800` (0x6B/0x6C →
+0x6C/0x6D), which release the shots in [projectiles.md](projectiles.md),
+"Hero release" (the crossbow's `0x800` spends a shot through
+`FUN_8007ed38`). Special `0x4000`/`0x8000` also pick the missile records
+`0x80119b88`/`0x80119b58` (no power-up on the disc has them; not traced).
+Rapid fire (weapon `0x20000000`) isn't among these: the action state
+machine sets the player's `+0xA8` to 0.75 (`r2-0x4da4`) instead of 1
+(`r2-0x4da8`) while it's held and a throw-category action (9–10) plays —
+as it does for every action under a speed power (special `0x10000`);
+DEFEND2 gets 0.2 × armour (at least 0.25). `+0xA8` is the player's anim
+instance (`+0x7C`) `+0x2C`, its frame length, which the action start
+(`FUN_8000ed70`) recomputes — so how the 0.75 reaches the clip isn't
+pinned down (not ported).
+
 Here (`PlayerState::tick_powers`, `PowerBits`; `player.rs`
 `apply_powers`): the adding up, the tower's hold, the weapon bits on
 blows and missiles, speed, magic and the turbo fill; the multi-shots,
@@ -566,6 +587,15 @@ red 2, green 5 → effects `0x4B`, `0x49`, `0x47`, `0x4A` in `POWERUPS`); once
 typed, 360 fields in and his line done, the next hero. The piece's words
 (if any) then start at once, the wizard and his cut staying; with none
 he goes 0.5 s later.
+
+**The reveals** (`FUN_800a39c4` and the steps above): "made clear" is
+the exit item found by its destination code (`FUN_8005b544(0x500 /
+0x600 / 0x803)`) given transparency 255 (`FUN_800ba9b0(item +0x64, 0xFF,
+1)`, over its model tree); step 11 also shows the light
+(`L1XPLIGHTRAY01`, render flag 2 cleared) at transparency 255. The fade
+steps (116, 126, 136) count `r13-0x6e78` down from 180 by the fields
+elapsed and set both to (left × 255) / 180 — clear to solid over three
+seconds — then drop to the step 100 below.
 
 Here (`tower_scenes.rs`): all of the above for one hero, his lines in
 the announcer's voice queue (`audio::QueueVoice`); the rank level

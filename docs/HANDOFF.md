@@ -170,6 +170,18 @@ Test aids:
   `GDL_CRYSTALS="1:-1"` opens a counter for good; `GDL_EXPERIENCE=<n>`
   gives the hero experience with its rank last checked at its old level
   (12000 → level 10: the tower announces the new rank).
+- `GDL_LOOK_AT="x,y,z,dist[,yaw]"` pins the camera on what's tested (a
+  user rule: frame it rather than hunt for it); `GDL_SHOTS` /
+  `GDL_SHOT_EVERY` take a burst of screenshots; `GDL_THROWER=<distance>[,
+  <ai>[,<tier>]]` puts a grunt in front of the hero; `GDL_POTIONS=<n>[,
+  <kind>]` hands it potions; `GDL_POWERS="<subtype>:<value>[:<amount>[:
+  <seconds>]],…"` powerups; `GDL_PARTICLE_TEST`. A death check on levelA1:
+  `GDL_THROWER=4,7,2 GDL_BUTTONS=attack GDL_LOOK_AT="0,-1.5,-9,10,180"
+  GDL_SHOT_AT=36 GDL_SHOTS=60 GDL_SHOT_EVERY=2` (a fire kill: add
+  `GDL_POWERS=5:1`). Screenshots slow the frames: a two-tick flash can
+  fall between two of them.
+- Gate every game run on `pgrep -x gdl-game` (one instance at a time; the
+  helper runs games too) and give it `GDL_MUTE=1`.
 
 Handy test spots are listed in [mechanics.md](mechanics.md) and
 [camera.md](camera.md) (levelA1 elevator switch, levelA4 lift, barrels,
@@ -177,7 +189,12 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on the tower wizard's scenes (the commit after
+The all-levels smoke test on `0b8a828` (hit flashes, hints, critters
+found and hit once, floor potions set off, power-ups stages A–B, and the
+helper's HUD key row, "IN TOWER" and voice queues) passed all 67 real
+levels.
+
+Before that, the all-levels smoke test on the tower wizard's scenes (the commit after
 `6ca8c15`) passed all 67 real levels; so did `6ca8c15` (the message box,
 captions, the welcome, input blocked in cuts; the tower's check has the
 welcome box up).
@@ -239,72 +256,33 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
 ## Work in progress
 
-- **Helper branch `worktree-agent-abe3330002fa1838d` (`827a9a5`): merged
-  into master as `b30b1c3`** (builds; tests and clippy clean). It brought
-  the chimera's heads (each head animates its own part
-  of the body's skeleton; wounds shared as the game does; a unit test on
-  the real data), and docs/critters.md with the heads, the **boss camera
-  decode** (`BCAM` records, 0x54 bytes from `LEVL +0x8C`; before the boss
-  wakes: the heroes' centre from the nearest play-camera point; after:
-  wizard → shard → boss with near/far distance and pitch easing) and a
-  smoke test of every boss level (B6 fights and dies; C5, H4 and the rest
-  wake; A5 chimera fights and dies; nothing panicked). Boss levels: A5 B6
-  C5 D5 E2 F2 G5 H4 I5 J5 K5 (none in the tower). Left from it: build the
-  boss camera; head-stump effects; heads' look nodes; longer boss runs.
-  - Finding for `player.rs` (mine): the game's attack search measures 3D
-    distance to each living hit sphere in the facing cone, so melee only
-    reaches a chimera head while it's down biting; missiles and magic hit
-    a sphere only within its radius sideways and at most that much above
-    the missile. Our search uses its own rules.
-
-- **In-game HUD**: merged (`46a1365`). Player 1's bottom panel draws with
-  the game's art (frame, class portrait, keys, potions, gold, health,
-  "LV n", runestones, turbo meter). The old text line shows only with F1 or
-  `GDL_DEBUG_HUD=1`. Not drawn yet: the turbo flash and glow, the
-  legendary-key row, the quest and rune-13 icons, and the "Wait In Tower"
-  prompt. See [frontend.md](frontend.md) "In-game HUD".
-- **Magic potions**: merged. Tap for a blast, tap twice for the shield,
-  hold to throw; the game's effect models are used (the light potion's
-  starburst is verified). See [effects.md](effects.md).
-- **Test aids**: `GDL_CRYSTALS="<counter>:<n>,…"` seeds crystal counts
-  (1 orange … 8 black); `GDL_LOOK_AT` (now with a yaw: `"x,y,z,dist,180"` looks
-  from the other side), `GDL_PARTICLE_TEST`, `GDL_POTIONS`, `GDL_THROWER`
-  (a monster in front of the hero), and screenshot bursts with `GDL_SHOTS`
-  / `GDL_SHOT_EVERY`. Frame what's being tested instead of hunting for it
-  (a user rule). A death check on levelA1: `GDL_THROWER=4,7,2
-  GDL_BUTTONS=attack GDL_LOOK_AT="0,-1.5,-9,10,180" GDL_SHOT_AT=36
-  GDL_SHOTS=60 GDL_SHOT_EVERY=2`; for a fire kill add `GDL_POTIONS=2,1` and
-  use `GDL_BUTTONS="magic@30-32"` with the burst from frame 70.
-- **World particles**: `particles.rs` runs every level's `PSYS` nodes
-  (torch flames, smoke, pool fires, mist, embers) from the decoded records
-  and presets ([rendering.md](rendering.md)). The emitter's own ring and
-  callback machinery is a stand-in (each particle is simulated directly),
-  and trigger-switched emitters always run.
-
-- **Bosses**: the B6 dragon is merged into master (`5e74b35`). It wakes,
-  uses fireballs, breath, claws and stomp, hits the hero, takes hits and
-  dies. Tests and clippy pass.
-  - Fixed: blows on a critter's spent body-part sphere now land on the body
-    in full, as in the game. The golems used to stop taking damage.
-  - Stand-in: the dragon's fireball draws as an orange glow sphere (its
-    model needs the effects system).
-  - Victory: the boss's death marks the realm in `PlayerState::realms_beaten`
-    (the record's `+0x1EC8`, `FUN_8001b854`). After 5 s the party goes back
-    to the tower (a stand-in: the game's heroes pick up the key (action `0x1C`, PICK), the
-    `BOSSKEY`/`BOSSKEY2` effect shows, and their exit state
-    (`FUN_8007692c` case 4 → `FUN_80077ccc`) ends the level). Tested on B6
-    with `GDL_WARP="-3.2,29.7,-12" GDL_CRITTER_HP=0.02` + attack.
-  - Not done: the `BOSSKEY` effect, the key pick-up, the boss intro and
-    camera, and multi-part bosses such as the chimera; the other bosses are
-    untested.
-- **Throw aim** (a user report): throws now aim from the release height at
-  the target's centre, tilting up or down, and look 200 units out on boss
-  levels. See [projectiles.md](projectiles.md), "The throw's target".
-- **Warm-up hitches**
-  - The early frames of a level can take 20–40 ms.
-  - A pre-warm was added (level meshes skip frustum culling for 3 frames).
-  - It isn't verified yet: measure with `GDL_FPS=1` while no other build is
-    running.
+- **Helper** (worktree branch `worktree-agent-aba24fd14c15b99a9`, one at a
+  time): decoding the armour and special power-ups into a new
+  `docs/powers.md` (docs only). Merged from it today: the HUD's key row
+  and icons (`187c269`), the out hero's "IN TOWER" (`f5bd27a`), the voice
+  queues (`1cc6fd2`: hints, unlocks, the wizards' speeches and the hero's
+  eating lines wait their turn; a level change waits for them).
+- **Power-ups** (mine), in stages: A done (`4d2f23c`: the adding-up each
+  tick, weapon bits on blows and missiles — elements burn, shock, light,
+  dissolve — speed, magic, turbo fill); B done (`b4d7b75`: multi-shot
+  spreads, the crossbow's piercing bolts, reflect's bounces). Next: C the
+  armour powers (invulnerability and its chrome, the shields, halo, gas
+  mask), D the specials (invisibility, x-ray, time, breaths, grow,
+  shrink, phoenix, pojo), from `docs/powers.md`; the crossbow and hammer
+  shots' strikes (`0x800`, `0x6000`) and rapid fire. `GDL_POWERS` grants
+  powers for tests ([items.md](items.md) "Timed powerups").
+- Done today besides: hit flashes (`39082f5`), hints 0x14/0x15/0x1B and
+  0xE, critters found and hit once (spheres, then the body; a potion blast
+  used to hit a boss once per sphere), potions on the floor set off by
+  missiles and blasts.
+- **Older notes** kept for reference:
+  - The boss fights: B6 dragon verified; the chimera's heads animate
+    their own subtrees; the boss camera and intro are in. Not done: the
+    `BOSSKEY` effect and key pick-up (a 5 s stand-in returns to the
+    tower), head-stump effects, the heads' look nodes.
+  - Warm-up hitches: early frames of a level can take 20–40 ms; a
+    pre-warm skips frustum culling for 3 frames. Not verified yet
+    (`GDL_FPS=1` with nothing else building).
 
 ## Next jobs, in order
 
@@ -313,17 +291,13 @@ waits.
 
 0. The tower's scenes, what's left: the exits' reveals (made clear, then
    faded in — needs per-instance alpha on item models), the pieces'
-   sparkles — [items.md](items.md) "The tower wizard's scenes". Done: the
-   welcome, the rank and piece announcements, the pieces set out, the
-   gates at load. A helper (worktree branch) is on the HUD's legendary-key
-   row, quest/rune-13 icons and "Wait In Tower" prompt.
+   sparkles — [items.md](items.md) "The tower wizard's scenes". The
+   power-ups' stages C and D (above). The heroes' step cut under the boss
+   camera; the hand glows (and their banks' running modifiers); the
+   node spheres' flashes (which model node a `NODE` names, `+0x500`).
    (The smoke test, `smoke.sh`: every level folder plus DEMO1,
    `GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400`, 120 s timeout,
-   stop at the first panic; resume from the failing level.) Next: the
-   hero's attack search against critter spheres in 3D (above); the heroes'
-   step cut under the boss camera; the hand glows (and their banks'
-   running modifiers). Done this session: the boss camera, AI 5/6 and the
-   leader runner, the banks' texture animations on items and monsters.
+   stop at the first panic; resume from the failing level.)
 
 1. **Finish bosses** (the critters helper: intro and victory merged;
    chimera parts, all boss levels and the boss camera next). Player side,
