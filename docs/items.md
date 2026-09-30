@@ -389,8 +389,9 @@ opens in the message box (`FUN_8006d7f4`, the group found by name
 
 Here (`pickup_notices.rs`): the plates for player 1's panel from
 `PickupNotice` messages — which the pickups in `items.rs` have yet to send
-— moved by play's clock (stopped under the message box) and drawn over
-the panel, under the message box, not under a menu; cleared at a level's
+— moved by play's clock (stopped under the message box, and held under the
+level's opening shot) and drawn over the panel, under the message box, not
+under a menu; cleared at a level's
 start, when the hero is out of the level and when it stands up again in
 the tower after dying. Equal depths are drawn oldest first
 (the game's order for them isn't traced). The count follows the stones
