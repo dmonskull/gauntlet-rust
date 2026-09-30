@@ -724,7 +724,6 @@ pub struct EffectOn {
 struct OneShot(f32);
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn spawn_one_shots(
     mut commands: Commands,
     mut requests: MessageReader<EffectAt>,
