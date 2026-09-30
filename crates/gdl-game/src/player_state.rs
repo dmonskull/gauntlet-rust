@@ -138,8 +138,10 @@ pub mod power {
     pub const SPECIAL: i32 = 9;
     /// The element in a weapon's low four bits.
     pub const ELEMENT: u32 = 0xF;
-    /// Special bits: levitation, the turbo refill, a speed power running.
+    /// Special bits: levitation, invisibility, the turbo refill, a speed
+    /// power running.
     pub const LEVITATE: u32 = 0x1;
+    pub const INVISIBLE: u32 = 0x4;
     pub const TURBO: u32 = 0x8_0000;
     pub const SPEEDING: u32 = 0x1_0000;
 }

@@ -292,6 +292,9 @@ pub mod hit_kind {
     pub const POISON: u32 = 0x800;
     /// No hit look (blood spray) where it lands.
     pub const NO_HIT_LOOK: u32 = 0x100_0000;
+    /// A small monster's blow (or any while the enemies are shrunk):
+    /// levitation dodges it.
+    pub const SMALL_MONSTER: u32 = 0x4000_0000;
 }
 
 /// A blow landing on a target. Whoever owns the target applies it.

@@ -37,6 +37,7 @@ use crate::level_material::LevelMaterial;
 use crate::locomotion;
 use crate::play_camera::PlayCamera;
 use crate::player::{Player, PlayerTick};
+use crate::player_state::power;
 use crate::population::LevelPopulation;
 use crate::projectiles::{self, MonsterShot};
 use crate::texanim::{LevelTexAnims, TexAnim};
@@ -944,6 +945,8 @@ pub fn on_screen(view: Option<&Frustum>, at: [f32; 3], radius: f32) -> bool {
 pub struct Target {
     pub entity: Entity,
     pub feet: [f32; 3],
+    /// Invisible: not picked.
+    pub hidden: bool,
 }
 
 /// Monster positions at the start of the tick, for bump tests.
@@ -978,7 +981,10 @@ fn tick_monsters(
     let dt = time.delta_secs();
     let view = game_view(camera.as_deref());
     let frustum = view.as_ref();
-    let targets: Vec<Target> = players.iter().map(|(e, p)| Target { entity: e, feet: p.mover.position }).collect();
+    let targets: Vec<Target> = players
+        .iter()
+        .map(|(e, p)| Target { entity: e, feet: p.mover.position, hidden: p.special_bits & power::INVISIBLE != 0 })
+        .collect();
     // The dying don't get in anyone's way.
     let bodies: Vec<Body> = monsters
         .iter()
@@ -1412,7 +1418,8 @@ pub fn despawn_monster(commands: &mut Commands, entity: Entity, m: &Monster, gen
 
 /// The game re-picks a monster's target on one tick in eight (staggered
 /// by monster), or whenever it has none: the nearest player within its
-/// awareness range. Its distance to the target is kept every tick.
+/// awareness range, not an invisible one. Its distance to the target is
+/// kept every tick.
 fn select_target(m: &mut Monster, targets: &[Target], tick: u32) {
     let keep = m.target.is_some() && tick & 7 != m.number & 7;
     let current = m.target.and_then(|t| targets.iter().find(|p| p.entity == t));
@@ -1422,7 +1429,7 @@ fn select_target(m: &mut Monster, targets: &[Target], tick: u32) {
     }
     m.target = None;
     m.target_distance = f32::MAX;
-    for p in targets {
+    for p in targets.iter().filter(|p| !p.hidden) {
         let d = distance(m.position, p.feet);
         if d <= m.stats.awareness && d < m.target_distance {
             m.target = Some(p.entity);

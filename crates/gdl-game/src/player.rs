@@ -41,7 +41,8 @@ use crate::play_camera::PlayCamera;
 use crate::player_state::{PlayerState, power};
 use crate::population::LevelPopulation;
 use crate::effects::{EffectAt, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
-use crate::flash::{self, Flash, FlashColours, Retexture};
+use crate::flash::{self, Flash, FlashColours};
+use crate::fade::BodyLook;
 use crate::hints::{Hint, ShowHint};
 use crate::projectiles::{self, HeroShot};
 use crate::world::{LevelEntity, LevelGround};
@@ -123,6 +124,8 @@ pub struct Player {
     /// factors).
     pub armour_bits: u32,
     boss_level: bool,
+    /// Its special powers' bits (`PowerBits::special`).
+    pub special_bits: u32,
     /// Blows taken since the last tick: damage, kind flags, summed push
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
@@ -131,11 +134,11 @@ pub struct Player {
     /// lightning shield's next blow.
     left_wrist: Option<usize>,
     shield_cooldowns: Vec<(Entity, f64)>,
-    /// Its hit flash (`flash.rs`), and the invulnerability's chrome in
-    /// the same slot ([`show_chrome`]).
+    /// Its hit flash (`flash.rs`), the invulnerability's chrome in the
+    /// same slot, and how its body is drawn for them ([`show_body_looks`]).
     flash: Flash,
     chrome: Flash,
-    chrome_look: Retexture,
+    body_look: BodyLook,
     /// Turbo meter, 0–100.
     pub turbo: f32,
     /// What the turbo attack under way will cost when it lands.
@@ -200,6 +203,7 @@ fn apply_powers(
     for mut p in &mut players {
         p.weapon = b.weapon;
         p.armour_bits = b.armour;
+        p.special_bits = b.special;
         p.boss_level = boss_level;
         let speed = (p.base_speed + b.speed).clamp(locomotion::SPEED_MIN, locomotion::SPEED_MAX);
         if p.mover.speed != speed {
@@ -211,20 +215,43 @@ fn apply_powers(
     }
 }
 
-/// The chrome blinks in its last this many seconds, this many times a
-/// second (on in the odd eighths).
-const CHROME_BLINKS_FROM: f32 = 3.0;
-const CHROME_BLINK_RATE: f32 = 8.0;
+/// The chrome and invisibility blink in their last this many seconds,
+/// this many times a second (shown in the odd eighths).
+const BLINKS_FROM: f32 = 3.0;
+const BLINK_RATE: f32 = 8.0;
+/// Invisibility: the body's transparency (of 255) wavers about this, by
+/// this much, once a second.
+const INVISIBLE: f32 = 160.0;
+const INVISIBLE_WAVER: f32 = 16.0;
 
-/// The invulnerability power-ups' chrome (`docs/powers.md`): the stats
-/// routine re-arms the hero's timed texture effect with `CHROMEGOLD` (with
-/// the gold armour) or `CHROMESILVER` every tick the longest
-/// invulnerability's time is unlimited, over 3 s or in an odd eighth of a
-/// second — so it blinks in its last three seconds — and, like a flash,
-/// it shows for the tick it's armed and the next. It takes the slot from
-/// a hit flash.
+/// The longest-lasting of the hero's powers of `subtype` with any of
+/// `bits`: its seconds left, negative for one that doesn't run out.
+fn longest_power(state: &PlayerState, subtype: i32, bits: u32) -> Option<f32> {
+    state
+        .powers
+        .iter()
+        .filter(|p| p.subtype == subtype && p.value & bits != 0)
+        .map(|p| p.time)
+        .reduce(|a, b| if a < 0.0 || b < 0.0 { -1.0 } else { a.max(b) })
+}
+
+/// Whether a power with `t` seconds left shows its look: always, but in
+/// its last three seconds only on the odd eighths.
+fn blink_shows(t: f32) -> bool {
+    t < 0.0 || t > BLINKS_FROM || (t * BLINK_RATE) as i32 % 2 == 1
+}
+
+/// The powers' looks on the hero's body (`docs/powers.md`), from the stats
+/// routine:
+/// - **Chrome** (invulnerability): the hero's timed texture effect is
+///   re-armed with `CHROMEGOLD` (with the gold armour) or `CHROMESILVER`
+///   every tick the longest invulnerability shows ([`blink_shows`]) and,
+///   like a flash, it shows for the tick it's armed and the next. It takes
+///   the slot from a hit flash.
+/// - **Invisibility**: the body's transparency is 160 + 16 × sin(2π t)
+///   while the longest invisibility shows, else none.
 #[allow(clippy::type_complexity)]
-fn show_chrome(
+fn show_body_looks(
     state: Option<Res<PlayerState>>,
     colours: Res<FlashColours>,
     mut players: Query<(&mut Player, &Animator)>,
@@ -233,29 +260,29 @@ fn show_chrome(
     (mut tags, mut commands): (Query<&mut MeshTag>, Commands),
 ) {
     let Some(state) = state else { return };
-    let invulnerable = crate::damage::resists::INVULNERABLE;
-    // The longest one's time; negative for one that doesn't run out.
-    let time = state
-        .powers
-        .iter()
-        .filter(|p| p.subtype == power::ARMOUR && p.value & invulnerable != 0)
-        .map(|p| p.time)
-        .reduce(|a, b| if a < 0.0 || b < 0.0 { -1.0 } else { a.max(b) });
-    let armed = time.is_some_and(|t| t < 0.0 || t > CHROME_BLINKS_FROM || (t * CHROME_BLINK_RATE) as i32 % 2 == 1);
+    let chrome_time = longest_power(&state, power::ARMOUR, crate::damage::resists::INVULNERABLE);
+    let armed = chrome_time.is_some_and(blink_shows);
     let gold = state.bits.armour & crate::damage::resists::GOLD != 0;
+    let fade = match longest_power(&state, power::SPECIAL, power::INVISIBLE) {
+        Some(t) if blink_shows(t) => {
+            let transparency = INVISIBLE + (INVISIBLE_WAVER * (std::f32::consts::TAU * t).sin()).trunc();
+            transparency / 255.0
+        }
+        _ => 0.0,
+    };
     for (mut p, animator) in &mut players {
         let p = &mut *p;
         if armed {
             p.chrome.start();
         }
         if p.chrome.step() {
-            debug!("chrome {} (time {time:?})", if p.chrome.on() { "on" } else { "off" });
+            debug!("chrome {} (time {chrome_time:?})", if p.chrome.on() { "on" } else { "off" });
         }
         let texture = if p.chrome.on() { colours.chrome[usize::from(gold)].as_ref() } else { None };
         if texture.is_some() && p.flash.stop() {
             flash::tag_body(animator, |_| true, 0, &mut tags, &mut commands);
         }
-        p.chrome_look.show(texture, animator, &mut drawn, &mut materials);
+        p.body_look.show(texture, fade, animator, &mut drawn, &mut materials);
     }
 }
 
@@ -352,7 +379,8 @@ const KNOCKLESS_DAMAGE: f32 = 2.0;
 impl Player {
     /// A blow lands on the hero (the game's hurt-player routine,
     /// `docs/combat.md`): through its armour and armour powers
-    /// (`damage::resist`), then queued for its next tick's reaction — a
+    /// (`damage::resist`) — levitation dodging small monsters' blows —
+    /// then queued for its next tick's reaction — a
     /// blow of 2 or less without its knockback, one armour stopped still
     /// with its stun. Returns the health it takes, for a [`DamagePlayer`]:
     /// negative for the gold armour's heal, which draws no reaction.
@@ -360,7 +388,11 @@ impl Player {
     /// [`DamagePlayer`]: crate::player_state::DamagePlayer
     pub fn take_blow(&mut self, damage: f32, kind: u32, push: Vec3) -> f32 {
         let mut kind = kind;
-        let d = crate::damage::resist(damage, &mut kind, self.armor, self.armour_bits, self.boss_level);
+        let mut d = crate::damage::resist(damage, &mut kind, self.armor, self.armour_bits, self.boss_level);
+        // Levitating, small monsters' blows don't reach it.
+        if kind & combat::hit_kind::SMALL_MONSTER != 0 && self.special_bits & power::LEVITATE != 0 {
+            d = 0.0;
+        }
         if d >= 0.0 {
             if d <= KNOCKLESS_DAMAGE {
                 kind &= !combat::hit_kind::KNOCKS;
@@ -407,7 +439,7 @@ impl Plugin for PlayerPlugin {
             // character select); the next level spawn uses it.
             .add_systems(Update, load_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
             .add_systems(FixedUpdate, tick.in_set(PlayerTick))
-            .add_systems(FixedUpdate, (apply_powers, show_chrome).after(crate::player_state::PowersTick))
+            .add_systems(FixedUpdate, (apply_powers, show_body_looks).after(crate::player_state::PowersTick))
             .add_systems(Update, level_stats)
             .add_systems(
                 Update,
@@ -495,12 +527,13 @@ fn spawn_player(
         weapon: 0,
         armour_bits: 0,
         boss_level: false,
+        special_bits: 0,
         pending_hit: (0.0, 0, Vec3::ZERO),
         left_wrist: hero.data.skeleton.node_index(LEFT_WRIST),
         shield_cooldowns: Vec::new(),
         flash: Flash::default(),
         chrome: Flash::default(),
-        chrome_look: Retexture::default(),
+        body_look: BodyLook::default(),
         turbo: 0.0,
         turbo_cost: 0.0,
         radius: hero.radius,

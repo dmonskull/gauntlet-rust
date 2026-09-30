@@ -195,7 +195,7 @@ Confirmed:
 
 Here: the damage and the heal (`resist`), no reactions
 (`player.rs::tick`), no `S_WARN`; the chrome (`player.rs::show_chrome`,
-`flash.rs::Retexture`, `level.wgsl` mode 3) re-armed as above with the
+`fade.rs::BodyLook`, `level.wgsl` mode 3) re-armed as above with the
 blink, shown for the tick it's armed and the next like a flash. The
 texture coordinates are the normal along the camera's right and up
 (the rows `FUN_800c60a4` builds: the camera's `(1, 0, 0)` and `(0, 1,
@@ -326,6 +326,10 @@ Confirmed:
 
 No other read of the bit was found (every `+0x124 & 1` in the dump).
 
+Here: the tiles (`hazards.rs`) and the blows (`Player::take_blow`, the
+`+0x124 & 1` test on kind `0x40000000` in `FUN_80078560`). The lift and
+`S_LEVITATEDOWN` aren't done (footsteps aren't played at all).
+
 ### `0x2` x-ray
 
 `XRAYICON` (hint SEETHRU "X RAY GLASSES", `S_XRAYVOX`). Confirmed
@@ -360,6 +364,14 @@ Confirmed:
   target — also as the hero that last hurt them (`r13-0x6FD4`).
 - **Critters** (`0x80036b88`) skip it too; **bosses** (`0x80036ed4`,
   types whose `DESC +0x20` is 4) still pick it.
+
+Here: the looks (`player.rs::show_body_looks`, the model's meshes through
+`fade.rs::BodyLook`; the shadow stays), monsters' target pick
+(`monsters.rs::select_target`: a target they hold is dropped at their
+next pick, one tick in eight) and critters' tracking (`critters.rs::track`,
+bosses excepted). Not done: the sorceress's combo's 95, the last hero to
+hurt a monster (`r13-0x6FD4`). Monsters still swing at a hero they walk
+into (that test doesn't look at targets).
 
 ### `0x8` time stop
 

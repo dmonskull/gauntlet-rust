@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::character::Animator;
 use crate::level_material::LevelMaterial;
 
 pub struct FadePlugin;
@@ -93,6 +94,99 @@ fn draw_fades(
             for c in f.copies.values() {
                 if let Some(m) = materials.get_mut(c) {
                     m.uv_offset.w = f.amount;
+                }
+            }
+        }
+    }
+}
+
+/// `level.wgsl`'s mode for a texture in place of a part's own, with its
+/// coordinates from the normals (the chrome).
+const CHROME_MODE: f32 = 3.0;
+
+/// A hero's body (its model's meshes, not its shadow) drawn through copies
+/// of its materials: with a texture in place of each part's own — the
+/// game's texture override −3 with draw flag `0x80000`, which the chrome
+/// power-ups use: coordinates from each point's normal, along the camera's
+/// right and up — and/or see-through by `fade` (the object's transparency
+/// / 255: invisibility). A part gets its copy the first time it shows a
+/// material; one whose material changes meanwhile is copied again.
+#[derive(Default)]
+pub struct BodyLook {
+    /// What the copies show: the texture, and whether they're faded.
+    shown: Option<(Option<AssetId<Image>>, bool)>,
+    fade: f32,
+    /// A part's own material → its copy.
+    copies: HashMap<AssetId<LevelMaterial>, Handle<LevelMaterial>>,
+    /// A copy → the material it stands in for.
+    originals: HashMap<AssetId<LevelMaterial>, Handle<LevelMaterial>>,
+}
+
+impl BodyLook {
+    /// Shows `texture` and `fade` on the body's parts (neither: their own
+    /// again).
+    pub fn show(
+        &mut self,
+        texture: Option<&Handle<Image>>,
+        fade: f32,
+        animator: &Animator,
+        drawn: &mut Query<&mut MeshMaterial3d<LevelMaterial>>,
+        materials: &mut Assets<LevelMaterial>,
+    ) {
+        let key = (texture.map(Handle::id), fade > 0.0);
+        let wanted = (key.0.is_some() || key.1).then_some(key);
+        if wanted != self.shown {
+            // Back on their own materials first.
+            for &(_, e) in animator.meshes() {
+                let Ok(mut m) = drawn.get_mut(e) else { continue };
+                if let Some(own) = self.originals.get(&m.0.id()) {
+                    m.0 = own.clone();
+                }
+            }
+            self.copies.clear();
+            self.originals.clear();
+            self.shown = wanted;
+            self.fade = fade;
+        }
+        if wanted.is_none() {
+            return;
+        }
+        for &(_, e) in animator.meshes() {
+            let Ok(mut m) = drawn.get_mut(e) else { continue };
+            let own = m.0.id();
+            if self.originals.contains_key(&own) {
+                continue;
+            }
+            let copy = match self.copies.get(&own) {
+                Some(c) => c.clone(),
+                None => {
+                    let Some(mut copy) = materials.get(own).cloned() else { continue };
+                    if let Some(texture) = texture {
+                        copy.diffuse = Some(texture.clone());
+                        copy.params.x = CHROME_MODE;
+                    }
+                    if fade > 0.0 {
+                        // Solid parts blend, still hiding their own far
+                        // sides.
+                        if matches!(copy.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+                            copy.widen_alpha(AlphaMode::Blend);
+                            copy.blend_depth_write = true;
+                        }
+                        copy.uv_offset.w = fade;
+                    }
+                    let c = materials.add(copy);
+                    self.copies.insert(own, c.clone());
+                    self.originals.insert(c.id(), m.0.clone());
+                    c
+                }
+            };
+            m.0 = copy;
+        }
+        if fade != self.fade {
+            self.fade = fade;
+            for c in self.copies.values() {
+                if let Some(m) = materials.get_mut(c) {
+                    m.uv_offset.w = fade;
                 }
             }
         }
