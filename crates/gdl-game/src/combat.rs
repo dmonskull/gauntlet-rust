@@ -150,8 +150,8 @@ impl Intent {
 /// What the game distinguishes when it searches for and damages a target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetKind {
-    /// A monster. Walking into one attacks it; one no taller than 2 units
-    /// gets the low attacks.
+    /// A monster. Walking into one attacks it; one whose floor step is at
+    /// most 2 units (the small ones) gets the low attacks.
     Monster,
     /// A generator. Walking into one attacks it; searched with its radius
     /// capped at 5 and within twice its height vertically.
@@ -171,9 +171,11 @@ pub struct Targetable {
     pub kind: TargetKind,
     /// Distances are measured to this far from the reference point.
     pub radius: f32,
-    /// Monsters: at most 2 is a low target. Generators and breakables: at
-    /// most 3.5 is low, and they're found within twice this vertically.
+    /// Generators and breakables are found within twice this vertically.
     pub height: f32,
+    /// What the low test measures: a monster's floor step (`+0x23C`, low
+    /// at most 2), a generator's or breakable's height (at most 3.5).
+    pub size: f32,
     /// Per attacker, until when (seconds, `Time<Fixed>` elapsed) they can't
     /// hit this again. Melee blows don't use one; the charge would.
     #[allow(dead_code)]
@@ -185,7 +187,13 @@ pub struct Targetable {
 #[allow(dead_code)]
 impl Targetable {
     pub fn new(kind: TargetKind, radius: f32, height: f32) -> Self {
-        Self { kind, radius, height, cooldowns: Vec::new() }
+        Self { kind, radius, height, size: height, cooldowns: Vec::new() }
+    }
+
+    /// The size the low test uses, when it isn't the height (monsters).
+    pub fn with_size(mut self, size: f32) -> Self {
+        self.size = size;
+        self
     }
 
     /// Whether `attacker` may hit this at time `now`.
@@ -266,7 +274,7 @@ pub const WALK_INTO: f32 = 1.0;
 /// Range bands past the hero's radius (one more while attacking).
 pub const CLOSE: f32 = 1.0;
 pub const MEDIUM: f32 = 2.0;
-/// Low targets: monster height, generator/breakable height.
+/// Low targets: monster floor step, generator/breakable height.
 pub const LOW_MONSTER: f32 = 2.0;
 pub const LOW_GENERATOR: f32 = 3.5;
 /// Push per point of damage, and its cap.
@@ -295,6 +303,8 @@ pub struct Found {
     pub direction: Vec3,
     pub position: Vec3,
     pub height: f32,
+    /// The target's size for the low test ([`Targetable::size`]).
+    pub size: f32,
 }
 
 impl Found {
@@ -305,7 +315,7 @@ impl Found {
             TargetKind::Generator | TargetKind::Breakable => LOW_GENERATOR,
             TargetKind::Object => return false,
         };
-        self.height <= limit && self.distance < REACH + hero_radius
+        self.size <= limit && self.distance < REACH + hero_radius
     }
 
     /// Walking into it starts an attack.
@@ -368,7 +378,7 @@ pub fn search_within<'a>(
         if horizontal * (distance * narrowing + SEARCH_CONE) > n.x * dir.x + n.z * dir.z {
             continue;
         }
-        best = Some(Found { entity, kind: t.kind, distance, direction: n, position, height: t.height });
+        best = Some(Found { entity, kind: t.kind, distance, direction: n, position, height: t.height, size: t.size });
     }
     best
 }
@@ -465,7 +475,7 @@ pub fn blow(strike: Strike, strength: f32, target: &Found) -> (f32, u32) {
     } else if strike.0 & Strike::STRONG != 0 {
         kind |= hit_kind::STRONG;
         damage *= STRONG_MULTIPLIER;
-    } else if strike.0 & Strike::KICK != 0 && target.kind == TargetKind::Monster && target.height <= LOW_MONSTER {
+    } else if strike.0 & Strike::KICK != 0 && target.kind == TargetKind::Monster && target.size <= LOW_MONSTER {
         kind |= hit_kind::HEAVY;
     }
     (damage, kind)

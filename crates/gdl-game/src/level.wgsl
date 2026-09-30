@@ -9,8 +9,9 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var diffuse_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var lightmap_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var lightmap_sampler: sampler;
-// x: lightmap enabled, y: alpha cutoff, z: stage 0 scale, w: lit by the
-// level light instead of prelit vertex colours
+// x: lightmap enabled (2: the second texture is a dying monster's death
+// texture instead), y: alpha cutoff, z: stage 0 scale, w: lit by the level
+// light instead of prelit vertex colours
 @group(#{MATERIAL_BIND_GROUP}) @binding(4) var<uniform> params: vec4<f32>;
 // xyz: unit vector toward the light, w: ambient level
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> light_dir: vec4<f32>;
@@ -50,8 +51,16 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     color = vec4(clamp(color.rgb * params.z, vec3(0.0), vec3(1.0)), color.a);
 #ifdef VERTEX_UVS_B
     let light = textureSample(lightmap_texture, lightmap_sampler, in.uv_b).a;
-    if (params.x > 0.5) {
+    if (params.x > 0.5 && params.x < 1.5) {
         color = vec4(color.rgb * light, color.a);
+    }
+#endif
+#ifdef VERTEX_UVS_A
+    if (params.x > 1.5) {
+        // A dying monster (docs/monsters.md): its death texture over the
+        // body, colour x 2 and alpha, the way the game's other stages scale.
+        let death = textureSample(lightmap_texture, lightmap_sampler, in.uv);
+        color = vec4(clamp(color.rgb * death.rgb * 2.0, vec3(0.0), vec3(1.0)), color.a * death.a);
     }
 #endif
     if (color.a < params.y) {

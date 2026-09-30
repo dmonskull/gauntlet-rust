@@ -13,7 +13,7 @@
 //! `actions.rs`. `GDL_POTIONS=<n>[,<kind>]` hands the hero potions at each
 //! level start.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bevy::prelude::*;
@@ -21,6 +21,7 @@ use gdl_formats::pdata::PlayerStats;
 
 use crate::audio::PlaySound;
 use crate::character::{CharacterData, CharacterModel};
+use crate::deaths;
 use crate::combat::{Hit, TargetKind, Targetable, button};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
@@ -38,9 +39,13 @@ impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<UsePotion>()
             .add_message::<BlastAt>()
+            .add_message::<EffectAt>()
             .init_resource::<EffectModels>()
             .init_resource::<PotionCycle>()
-            .add_systems(FixedUpdate, (use_potions, spawn_blasts, tick_blasts).chain().after(MonsterTick))
+            .add_systems(
+                FixedUpdate,
+                (use_potions, spawn_blasts, tick_blasts, spawn_one_shots, tick_one_shots).chain().after(MonsterTick),
+            )
             .add_systems(Update, (setup_level.run_if(resource_exists_and_changed::<LevelPopulation>), follow_blasts));
     }
 }
@@ -284,6 +289,67 @@ impl EffectModels {
                 Some((Arc::new(CharacterModel::build(&data, meshes, materials, images)), life))
             })
             .clone()
+    }
+}
+
+/// A one-off effect model where something happened (a monster's die
+/// effect, `deaths.rs`): played once, at the game's effect transparency.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct EffectAt {
+    /// Its atree in `WEAPONS`.
+    pub name: &'static str,
+    pub at: Vec3,
+    /// Heading, radians.
+    pub facing: f32,
+    pub scale: f32,
+}
+
+/// A one-off effect's seconds left.
+#[derive(Component)]
+struct OneShot(f32);
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_one_shots(
+    mut commands: Commands,
+    mut requests: MessageReader<EffectAt>,
+    mut game: ResMut<LoadedGame>,
+    mut models: ResMut<EffectModels>,
+    mut faded: Local<HashSet<&'static str>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<LevelMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    for e in requests.read() {
+        let Some((model, life)) = models.get(e.name, &mut game, &mut meshes, &mut materials, &mut images) else {
+            debug!("effect {} has no model", e.name);
+            continue;
+        };
+        // The game draws effects part see-through (its models are only
+        // ever used as effects, so their own materials change).
+        if faded.insert(e.name) {
+            for h in model.materials() {
+                if let Some(m) = materials.get_mut(h) {
+                    m.uv_offset.w = 1.0 - deaths::EFFECT_ALPHA;
+                    if matches!(m.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+                        m.alpha_mode = AlphaMode::Blend;
+                    }
+                }
+            }
+        }
+        let transform = Transform::from_translation(e.at)
+            .with_rotation(Quat::from_rotation_y(e.facing))
+            .with_scale(Vec3::splat(e.scale));
+        let entity = model.spawn(transform, &mut commands);
+        commands.entity(entity).insert((OneShot(life), LevelEntity));
+    }
+}
+
+fn tick_one_shots(mut commands: Commands, time: Res<Time>, mut shots: Query<(Entity, &mut OneShot)>) {
+    for (e, mut left) in &mut shots {
+        left.0 -= time.delta_secs();
+        if left.0 <= 0.0 {
+            commands.entity(e).try_despawn();
+        }
     }
 }
 
