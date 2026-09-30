@@ -30,8 +30,10 @@ What plays (details in [INDEX.md](INDEX.md)):
   - Deaths as in the game: DEATH or the knock-down plays while the body
     dissolves through its death texture (blood, or fire/electric/light/acid
     for magic, knights' and trees' own), then it's gone; small monsters go
-    at once; elemental kills leave their die effect ([monsters.md](monsters.md)
+    at once; kills leave their die effect ([monsters.md](monsters.md)
     "Deaths").
+  - Every blow that hurts a monster sprays blood (or its element's hit
+    effect); kills spray more.
 - **Generators**: level-scaled damage, armour, experience ×5, realm sounds.
 - **Level mechanics** (`mechanics.rs`)
   - Triggers and chains; lifts, elevators and trap walls.
@@ -68,7 +70,7 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on master `006b7ee` (animation rates, deaths)
+The all-levels smoke test on master `5c1f9ba` (tower progression)
 passed all 67 real levels.
 
 ## Fixed from user reports (2026-09-30)
@@ -162,10 +164,10 @@ waits.
    hints (`0x71+`), the tower's other messages (shards after a boss,
    runestones: `NEWSHARDS`, `ALL12RUNES*`, `RUNE13*`), saving progress.
 6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**, **hit flashes**.
-7. **Hit effects**: the per-blow effect models (BLOODFX1, FIREHIT,
-   HITCOL…, tables in [monsters.md](monsters.md) "Deaths") and the kill's
-   BLOODFX2. BLOODFX1/2 are made of texture-animation nodes (atree node
-   kind 4, `FUN_80018304`), which need decoding first.
+7. ~~Hit effects~~: done — blood sprays (BLOODFX1 per blow, BLOODFX2 on
+   kills) run as particle bursts from the effects' kind-4 nodes; FIREHIT,
+   HITCOL and the die effects as models. Left: the effects' depth bias,
+   the no-blood switch (`r13-0x72cc`), exact particle maths.
 
 ## Working rules (from the user)
 

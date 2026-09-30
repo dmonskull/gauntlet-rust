@@ -26,7 +26,9 @@ use crate::combat::{Hit, TargetKind, Targetable, button};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion;
+use crate::model_mesh::TextureCache;
 use crate::monsters::{Monster, MonsterTick};
+use crate::particles;
 use crate::player::{Player, PlayerChoice};
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
@@ -265,13 +267,21 @@ struct Blast {
     spared: HashMap<Entity, f64>,
 }
 
-/// Magic effect models, by atree name (loaded on first use from `WEAPONS`).
+/// An effect model: its meshes, its life (seconds) and its particle
+/// systems (their values, material and direction).
+#[derive(Clone)]
+struct EffectModel {
+    model: Arc<CharacterModel>,
+    life: f32,
+    particles: Arc<[(particles::Params, Handle<LevelMaterial>, Vec3)]>,
+}
+
+/// Effect models, by atree name (loaded on first use from `WEAPONS`).
 #[derive(Resource, Default)]
-struct EffectModels(HashMap<&'static str, Option<(Arc<CharacterModel>, f32)>>);
+struct EffectModels(HashMap<&'static str, Option<EffectModel>>);
 
 impl EffectModels {
     /// The model and its life (seconds) for `name`.
-    #[allow(clippy::too_many_arguments)]
     fn get(
         &mut self,
         name: &'static str,
@@ -280,13 +290,39 @@ impl EffectModels {
         materials: &mut Assets<LevelMaterial>,
         images: &mut Assets<Image>,
     ) -> Option<(Arc<CharacterModel>, f32)> {
+        self.effect(name, game, meshes, materials, images).map(|e| (e.model, e.life))
+    }
+
+    fn effect(
+        &mut self,
+        name: &'static str,
+        game: &mut LoadedGame,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<LevelMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Option<EffectModel> {
         self.0
             .entry(name)
             .or_insert_with(|| {
                 let data: CharacterData = projectiles::load_atree(game, "WEAPONS", name)?;
-
                 let life = data.clips.actions.first().map_or(1.0, |a| effect_life(a.frames, a.rate));
-                Some((Arc::new(CharacterModel::build(&data, meshes, materials, images)), life))
+                // Its particle systems' textures come from the same files.
+                let mut cache = TextureCache::new(&data.model, &data.textures);
+                let particles = data
+                    .skeleton
+                    .particles
+                    .iter()
+                    .map(|n| {
+                        let params = particles::Params::of(&n.record);
+                        let texture = n.record.texture();
+                        let binding = data.model.texture_names.iter().find(|t| t.name == texture).map(|t| t.binding);
+                        let image = binding.and_then(|b| cache.get(b, images)).map(|(i, _)| i);
+                        let material = params.material(image, materials);
+                        (params, material, Vec3::from(n.vector))
+                    })
+                    .collect();
+                let model = Arc::new(CharacterModel::build(&data, meshes, materials, images));
+                Some(EffectModel { model, life, particles })
             })
             .clone()
     }
@@ -315,15 +351,23 @@ fn spawn_one_shots(
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
     mut faded: Local<HashSet<&'static str>>,
+    mut seed: Local<u32>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     for e in requests.read() {
-        let Some((model, life)) = models.get(e.name, &mut game, &mut meshes, &mut materials, &mut images) else {
+        let Some(effect) = models.effect(e.name, &mut game, &mut meshes, &mut materials, &mut images) else {
             debug!("effect {} has no model", e.name);
             continue;
         };
+        // Its particle systems: bursts where it happens, at its scale.
+        for (k, (params, material, direction)) in effect.particles.iter().enumerate() {
+            *seed = seed.wrapping_add(0x9E37_79B9);
+            let seed = *seed ^ k as u32;
+            particles::spawn_burst(params.clone().scaled(e.scale), material.clone(), e.at, *direction, seed, &mut commands, &mut meshes);
+        }
+        let (model, life) = (effect.model, effect.life);
         // The game draws effects part see-through (its models are only
         // ever used as effects, so their own materials change).
         if faded.insert(e.name) {
