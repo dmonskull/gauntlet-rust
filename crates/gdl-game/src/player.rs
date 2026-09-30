@@ -695,11 +695,21 @@ fn spawn_player(
         let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
         (v.len() == 3).then(|| [v[0], v[1], v[2]])
     });
+    // Only onto a floor the player's own floor check stands on (the items'
+    // probe also finds floors players fall through): with none under the
+    // point the hero would fall out of the level, back to the point, for
+    // good.
+    let warped = warped.and_then(|at| {
+        let y = collision.player_floor_height(at, PlayerCollision::default().radius);
+        if y.is_none() {
+            warn!("GDL_WARP: no floor a player stands on under {at:?}; starting at the level's start");
+        }
+        y.map(|y| [at[0], y, at[2]])
+    });
     if let Some(at) = warped {
         feet = at;
-    }
-    // Stand on the floor under the start.
-    if let Some(y) = collision.floor_height(feet).or_else(|| collision.top_floor(feet[0], feet[2])) {
+    } else if let Some(y) = collision.floor_height(feet).or_else(|| collision.top_floor(feet[0], feet[2])) {
+        // Stand on the floor under the start.
         feet[1] = y;
     }
     let transform = Transform::from_translation(Vec3::from(feet)).with_rotation(Quat::from_rotation_y(facing));

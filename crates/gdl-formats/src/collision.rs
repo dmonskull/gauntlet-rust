@@ -960,6 +960,21 @@ impl LevelCollision {
         self.cast([at[0], at[1] + 4.0, at[2]], [at[0], at[1] - 10.0, at[2]], &q).map(|h| h.point[1])
     }
 
+    /// The floor a player put at `at` stands on, as the player's own floor
+    /// probe sees floors (it ignores nodes with disable bit 1, which the
+    /// items' probe doesn't): from 4 above down to 10 below, else the first
+    /// one further down, else the topmost at that X/Z (not a game query:
+    /// for placing a player somewhere, `GDL_WARP`).
+    pub fn player_floor_height(&self, at: [f32; 3], radius: f32) -> Option<f32> {
+        let [lo, hi] = self.bounds;
+        let q = Query { disable_mask: 1, ..Query::floors(radius) };
+        let from = [at[0], at[1] + 4.0, at[2]];
+        self.cast(from, [at[0], at[1] - 10.0, at[2]], &q)
+            .or_else(|| self.cast(from, [at[0], lo[1] - 1.0, at[2]], &q))
+            .or_else(|| self.cast([at[0], hi[1] + 1.0, at[2]], [at[0], lo[1] - 1.0, at[2]], &q))
+            .map(|h| h.point[1])
+    }
+
     /// The topmost floor at a world X/Z (not a game query: a convenience for
     /// placing things with no height to start from).
     pub fn top_floor(&self, x: f32, z: f32) -> Option<f32> {
