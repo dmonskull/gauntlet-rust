@@ -15,7 +15,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use gdl_formats::population::LocatorKind;
 
-use crate::audio::{EffectName, PlaySound};
+use crate::audio::{EffectName, PlaySound, QueueVoice};
 use crate::character::CharacterModel;
 use crate::effects::EffectAt;
 use crate::level_material::LevelMaterial;
@@ -111,6 +111,15 @@ pub struct Rank {
 /// The classes' codes in their rank voice lines (`S_EXP10WAR`…).
 const RANK_VOICE_CODES: [&str; 16] =
     ["WAR", "VAL", "WIZ", "ARC", "DWA", "KNI", "SOR", "JES", "MIN", "FAL", "JAC", "TIG", "OGR", "UNI", "MED", "HYE"];
+/// The colours' and the classes' codes in the announcer's names for a hero
+/// (`S_BLUWAR2`: "Blue Warrior", from the class's own bank).
+const NAME_COLOUR_CODES: [&str; 4] = ["YEL", "BLU", "RED", "GRE"];
+const NAME_CLASS_CODES: [&str; 16] =
+    ["WAR", "VAL", "WIZ", "ARC", "DWF", "KNI", "SOR", "JES", "MIN", "FAL", "JAC", "TIG", "OGR", "UNI", "MED", "HYE"];
+/// His rank sentence is dropped when it would wait longer than this,
+/// seconds; a piece's line, `PIECE_MOST_WAIT`.
+const RANK_MOST_WAIT: f32 = 5.0;
+const PIECE_MOST_WAIT: f32 = 10.0;
 /// The level-up flash and the gem sparkle, by colour.
 const LEVELUP_EFFECTS: [&str; 4] = ["LEVELUP_YEL", "LEVELUP_BLU", "LEVELUP_RED", "LEVELUP_GRE"];
 const RANK_SPARKLES: [&str; 4] = ["GETGEMYELLOW", "GETGEMBLUE", "GETGEMRED", "GETGEMGREEN"];
@@ -122,6 +131,18 @@ impl Rank {
             return "S_EXP99ALL".into();
         }
         format!("S_EXP{}{}", self.level / 10 * 10, RANK_VOICE_CODES.get(self.class).copied().unwrap_or("WAR"))
+    }
+
+    /// The hero's name as the announcer says it first: `S_<colour><class>2`
+    /// ("Blue Warrior").
+    pub fn name_line(self) -> String {
+        let colour = NAME_COLOUR_CODES.get(self.colour).copied().unwrap_or("YEL");
+        format!("S_{colour}{}2", NAME_CLASS_CODES.get(self.class).copied().unwrap_or("WAR"))
+    }
+
+    /// What he says: the hero's name, then the rank line.
+    pub fn sentence(self) -> QueueVoice {
+        QueueVoice::announcer(self.name_line(), RANK_MOST_WAIT).then(self.voice())
     }
 
     /// His words: `NEWLEVEL` ("%s %s is now / a level %d %s!") with the
@@ -348,6 +369,7 @@ fn run_scene(
     camera: Option<ResMut<PlayCamera>>,
     (mut captions, mut caption_requests): (ResMut<Captions>, MessageWriter<ShowCaption>),
     (mut cuts, mut sounds, mut effects): (MessageWriter<StartCut>, MessageWriter<PlaySound>, MessageWriter<EffectAt>),
+    mut voices: MessageWriter<QueueVoice>,
     (population, nodes): (Option<Res<LevelPopulation>>, Option<Res<LevelNodes>>),
     (players, playing): (Query<&Player>, Query<&EffectName>),
     (state, choice): (Option<ResMut<PlayerState>>, Option<Res<crate::player::PlayerChoice>>),
@@ -411,9 +433,8 @@ fn run_scene(
                         stay: true,
                         text: Some(text.unwrap_or_default()),
                     });
-                    let voice = rank.voice();
-                    sounds.write(PlaySound(voice.clone()));
-                    scene.rank_voice = Some(voice);
+                    voices.write(rank.sentence());
+                    scene.rank_voice = Some(rank.voice());
                     return;
                 }
                 let colour = rank.colour.min(3);
@@ -455,7 +476,7 @@ fn run_scene(
                         stay: true,
                         text: None,
                     });
-                    sounds.write(PlaySound(voice.into()));
+                    voices.write(QueueVoice::announcer(voice, PIECE_MOST_WAIT));
                 }
                 return;
             }
@@ -728,6 +749,7 @@ mod tests {
         assert!(!quest::rank_changed(99, 99));
         let rank = Rank { level: 20, class: 4, colour: 2 };
         assert_eq!(rank.voice(), "S_EXP20DWA");
+        assert_eq!(rank.name_line(), "S_REDDWF2");
         assert_eq!(Rank { level: 99, ..rank }.voice(), "S_EXP99ALL");
         assert_eq!(printf("%s %s is now\na level %d %s!\n", &["Red", "Dwarf", "20", "Warrior"]), "Red Dwarf is now\na level 20 Warrior!\n");
     }
@@ -746,6 +768,29 @@ mod tests {
         assert_eq!(words(10, 0, 1), "Blue Warrior is now\na level 10 Fighter!\n");
         assert_eq!(words(99, 3, 0), "Yellow Archer is now\na level 99 Legend!\n");
         assert!(words(40, 3, 3).starts_with("Green Archer is now\na level 40 Ranger"));
+    }
+
+    /// Every hero's name line and rank line is in the sound catalog (real
+    /// data).
+    #[test]
+    fn rank_lines_are_in_the_catalog() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT")
+            .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let Ok(bytes) = std::fs::read(std::path::Path::new(&root).join("AUDIO/AUDATPS2.ROM")) else {
+            eprintln!("skipping: no AUDATPS2.ROM");
+            return;
+        };
+        let catalog = gdl_formats::audio::AudioCatalog::parse(&bytes).unwrap();
+        for class in 0..16 {
+            for colour in 0..4 {
+                for level in [10, 50, 90, 99] {
+                    let rank = Rank { level, class, colour };
+                    for line in [rank.name_line(), rank.voice()] {
+                        assert!(catalog.find_sound(&line).is_some(), "{line}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

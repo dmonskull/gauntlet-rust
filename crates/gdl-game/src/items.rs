@@ -21,7 +21,7 @@ use gdl_formats::population::{
 };
 use gdl_formats::{LevelCollision, MoveParams};
 
-use crate::audio::PlaySound;
+use crate::audio::{PlaySound, QueueVoice};
 use crate::character;
 use crate::effects::EffectAt;
 use crate::exits::ChangeLevelTo;
@@ -835,6 +835,8 @@ enum Touch {
 /// Sounds and hints a tick raises, sent when it ends.
 struct Out<'a> {
     sounds: Vec<String>,
+    /// The hero's own lines, for the heroes' voice queue.
+    voices: Vec<String>,
     hints: Vec<Hint>,
     messages: Vec<ShowMessage>,
     /// The sparkle a pickup gives off (placed at the item by its caller),
@@ -852,6 +854,13 @@ impl Out<'_> {
     fn sound(&mut self, name: &str) {
         if !name.is_empty() {
             self.sounds.push(name.into());
+        }
+    }
+
+    /// A line of the hero's, queued in the heroes' voice queue.
+    fn voice(&mut self, name: &str) {
+        if !name.is_empty() {
+            self.voices.push(name.into());
         }
     }
 
@@ -886,6 +895,7 @@ fn tick(
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mut commands: Commands,
     mut sounds: MessageWriter<PlaySound>,
+    mut voices: MessageWriter<QueueVoice>,
     mut hints: MessageWriter<ShowHint>,
     mut messages: MessageWriter<ShowMessage>,
     seen: Res<Hints>,
@@ -898,6 +908,7 @@ fn tick(
     let now = time.elapsed_secs();
     let mut out = Out {
         sounds: Vec::new(),
+        voices: Vec::new(),
         hints: Vec::new(),
         messages: Vec::new(),
         sparkle: None,
@@ -909,6 +920,7 @@ fn tick(
     update_items(items, dt, &mut commands);
     run(items, dt, &mut state, ground.as_deref(), &mut players, &cameras, &mut out, &mut change);
     sounds.write_batch(out.sounds.into_iter().map(PlaySound));
+    voices.write_batch(out.voices.into_iter().map(QueueVoice::hero));
     hints.write_batch(out.hints.into_iter().map(ShowHint));
     messages.write_batch(out.messages);
     effects.write_batch(out.effects.into_iter().map(|(name, at)| EffectAt {
@@ -1234,7 +1246,7 @@ fn pick_up(
                 a if a < 0 => out.hint(Hint::PoisonedFood),
                 _ => {}
             }
-            out.sound(&eat_sound(&state.class, name, health < 0.0));
+            out.voice(&eat_sound(&state.class, name, health < 0.0));
             true
         }
         // Potions (magic).
@@ -1324,7 +1336,8 @@ fn power_sound(subtype: i32, value: u32) -> &'static str {
 
 /// The hero's eating sound: the class's eating effect, or — one time in
 /// four in the game — its voice line (the archer has one per fruit).
-/// Poisoned food plays the class's poisoned sound.
+/// Poisoned food plays the class's poisoned sound. All three are the
+/// hero's own lines, which wait in the heroes' voice queue.
 fn eat_sound(class: &str, food: &str, poisoned: bool) -> String {
     if !EATERS.contains(&class) {
         return String::new();
