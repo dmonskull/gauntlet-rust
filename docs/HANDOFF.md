@@ -62,10 +62,15 @@ fix) passed all 67 real levels; only the two empty folders fail.
 
 ## Work in progress
 
-- **In-game HUD**: the front-end helper (branch
-  `worktree-agent-ae4de672b088538df`) was working on it when usage ran
-  out and was told to commit its WIP. Review, build, test and merge it
-  before starting the next job.
+- **In-game HUD**: merged (`46a1365`). Player 1's bottom panel draws with
+  the game's art (frame, class portrait, keys, potions, gold, health,
+  "LV n", runestones, turbo meter). The old text line shows only with F1 or
+  `GDL_DEBUG_HUD=1`. Not drawn yet: the turbo flash and glow, the
+  legendary-key row, the quest and rune-13 icons, and the "Wait In Tower"
+  prompt. See [frontend.md](frontend.md) "In-game HUD".
+- **Effects and magic potions**: handed to the projectiles helper (branch
+  `worktree-agent-a8dd539691ef57ca7`) as its current job. When it
+  reports, review, merge, test and smoke test.
 
 - **Bosses**: the B6 dragon is merged into master (`5e74b35`). It wakes,
   uses fireballs, breath, claws and stomp, hits the hero, takes hits and
@@ -99,14 +104,8 @@ waits.
 
 1. **Finish bosses**: A5 chimera or B6 dragon first, then the rest. See
    [critters.md](critters.md).
-2. **In-game HUD**, best done by the front-end agent (it knows the 2D sprite
-   API):
-   - per-player bottom panels, set up by `FUN_8007bca4` and updated by
-     `FUN_80075cac` / `FUN_80074cf8`;
-   - textures `BTMBK_*`, `TRBO_*`, `THERM*`, key and potion icons, all in
-     `STATIC`.
-   - This replaces the debug text line in `status_hud.rs`.
-3. **Effects system and magic potions**, best done by the projectiles agent
+2. ~~In-game HUD~~: done (the remaining HUD details are listed above).
+3. **Effects system and magic potions** (in progress with the projectiles agent)
    (it knows the effect slots at `0x802855ac` and `FUN_80094418`):
    - Potions are used through `FUN_80076618`: mode 0 is the magic blast
      (`FUN_8009262c`, radius 40, damage = magic power `+0x10C`), mode 1 the
