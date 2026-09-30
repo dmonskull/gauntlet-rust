@@ -136,10 +136,11 @@ pub struct Player {
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
     /// Its left wrist's skeleton node (the lightning shield's spark
-    /// leaves from it), and until when each target is spared the
-    /// lightning shield's next blow.
+    /// leaves from it), and until when each target is spared its next
+    /// timed blow (the lightning shield's, the charge's: the game keeps
+    /// these per attacker on the target).
     left_wrist: Option<usize>,
-    shield_cooldowns: Vec<(Entity, f64)>,
+    blow_cooldowns: Vec<(Entity, f64)>,
     /// Its hit flash (`flash.rs`), the invulnerability's chrome in the
     /// same slot, and how its body is drawn for them ([`show_body_looks`]).
     flash: Flash,
@@ -316,6 +317,10 @@ const LIGHTNING_DAMAGE: f32 = 20.0;
 const LIGHTNING_KIND: u32 = 0x22;
 const LIGHTNING_COOLDOWN: f64 = 1.0;
 const LIGHTNING_SPARK: &str = "L_SHLD_ACTIVE";
+/// The charge's blow on what it runs into, and how long each target is
+/// spared another.
+const CHARGE_DAMAGE: f32 = 3.0;
+const CHARGE_COOLDOWN: f64 = 1.0;
 
 /// The hero's model scale: the ogre's (class 12) always; grown (the
 /// special power `0x100`); at level 99.
@@ -646,7 +651,7 @@ fn spawn_player(
         death_hand: [false; 2],
         pending_hit: (0.0, 0, Vec3::ZERO),
         left_wrist: hero.data.skeleton.node_index(crate::power_looks::left_wrist(hero.class)),
-        shield_cooldowns: Vec::new(),
+        blow_cooldowns: Vec::new(),
         flash: Flash::default(),
         chrome: Flash::default(),
         body_look: BodyLook::default(),
@@ -914,10 +919,10 @@ fn tick(
                 }
             } else {
                 let now = time.elapsed_secs_f64();
-                p.shield_cooldowns.retain(|(_, until)| *until > now);
-                if p.shield_cooldowns.iter().all(|(e, _)| *e != f.entity) {
+                p.blow_cooldowns.retain(|(_, until)| *until > now);
+                if p.blow_cooldowns.iter().all(|(e, _)| *e != f.entity) {
                     hits.write(shield_blow(entity, &f, LIGHTNING_DAMAGE, LIGHTNING_KIND, facing, grown));
-                    p.shield_cooldowns.push((f.entity, now + LIGHTNING_COOLDOWN));
+                    p.blow_cooldowns.push((f.entity, now + LIGHTNING_COOLDOWN));
                     // The shield's spark, from the left wrist toward it.
                     let wrist = p.left_wrist.and_then(|n| animator.bone(n)).and_then(|b| bodies.get(b).ok());
                     let at = wrist.map_or(position + Vec3::Y * body.centre_height, |t| t.translation());
@@ -926,14 +931,36 @@ fn tick(
                 }
             }
         }
+        // Charging (SHOVE) into a monster or a critter other than a boss:
+        // 3, heavy, once a second each — in place of walking into it.
+        let boss = |f: &combat::Found| targets.get(f.entity).is_ok_and(|(_, _, t)| t.boss);
+        let charged = !shielded
+            && current == Action::SHOVE
+            && touching.is_some_and(|f| matches!(f.kind, TargetKind::Monster | TargetKind::Object) && !boss(&f));
+        if charged && let Some(f) = touching {
+            let now = time.elapsed_secs_f64();
+            p.blow_cooldowns.retain(|(_, until)| *until > now);
+            if p.blow_cooldowns.iter().all(|(e, _)| *e != f.entity) {
+                hits.write(shield_blow(entity, &f, CHARGE_DAMAGE, combat::hit_kind::HEAVY, facing, grown));
+                p.blow_cooldowns.push((f.entity, now + CHARGE_COOLDOWN));
+            }
+        }
+        // Bosses are walked into only on the two levels whose boss is
+        // type 0x25 or 0x29.
+        let boss_walkable = monster_level.as_ref().is_some_and(|l| matches!(l.boss, 0x25 | 0x29));
         let mut walked_into = false;
         if WALK_INTO_ATTACK
             && !shielded
+            && !charged
             && reaction == 0
             && matches!(intent, Intent::Walk | Intent::Run)
             && p.actions.edges == 0
             && !(0x27..=0x72).contains(&current.0)
-            && found.is_some_and(|f| f.distance < combat::WALK_INTO + p.radius && f.attacked_by_walking_into())
+            && found.is_some_and(|f| {
+                f.distance < combat::WALK_INTO + p.radius
+                    && f.attacked_by_walking_into()
+                    && (!boss(&f) || boss_walkable)
+            })
         {
             intent = Intent::Quick;
             walked_into = true;

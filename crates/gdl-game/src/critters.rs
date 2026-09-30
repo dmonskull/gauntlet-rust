@@ -1501,14 +1501,17 @@ fn new_critter(
     let centre = centre_at(position, yaw, t.center);
     let aim = commands.spawn((Transform::from_translation(Vec3::from(centre)), CritterSphere { critter: root, node: None, part }, LevelEntity)).id();
     let body = CritterAim { body: aim, sphere: None };
-    commands.entity(aim).insert(Targetable::new(TargetKind::Object, t.radius, t.height).of_critter(body));
+    let boss = kind.file.desc.class == class::BOSS;
+    commands.entity(aim).insert(Targetable::new(TargetKind::Object, t.radius, t.height).of_critter(body).of_boss(boss));
     let spheres: Vec<Entity> = if t.flags & TYPE_SPHERES != 0 {
         nodes
             .iter()
             .enumerate()
             .map(|(i, n)| {
                 let sphere = SphereAim { index: i, reach: n.reach, weight: n.weight };
-                let target = Targetable::new(TargetKind::Object, n.radius, n.radius).of_critter(CritterAim { body: aim, sphere: Some(sphere) });
+                let target = Targetable::new(TargetKind::Object, n.radius, n.radius)
+                    .of_critter(CritterAim { body: aim, sphere: Some(sphere) })
+                    .of_boss(boss);
                 let sphere = CritterSphere { critter: root, node: Some(owners.len()), part };
                 owners.push((part, i));
                 commands.spawn((Transform::from_translation(Vec3::from(position)), target, sphere, LevelEntity)).id()
