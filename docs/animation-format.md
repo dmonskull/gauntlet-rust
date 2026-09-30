@@ -63,9 +63,37 @@ per action from its `+0x34` offset; frame *k* of an action is the *k*-th
 object after the named one (objects are stored sorted by name). All 687
 flipbook nodes on the disc have an entry for every action.
 
-**Action**: name[0x20], frame count (u16 `+0x20`), playback rate (u16
-`+0x22`, frames per second: 30 almost everywhere, 45/60/15 for some),
-params (`+0x24`, bit 0 = loops), link (`+0x2C`).
+**Action**: name[0x20], frame count (u16 `+0x20`), rate (u16 `+0x22`: time
+per frame, see below; 30 almost everywhere, 60/45/40/15… for some), params
+(`+0x24` bit 0 = loops; `+0x26` bit 0 = move the object by the root's offset
+when the action ends; `+0x28` = the flipbook nodes' count; `+0x2A` bit 0 =
+flipbook frames play backwards), link (`+0x2C`, at run time the flipbook
+entries). No monster action sets the `+0x26` or `+0x2A` bits.
+
+## Playing an action (`FUN_8000ed70`, `FUN_8000ef18`)
+
+An object's anim instance times its action against the game clock
+`r13-0x757c`, in seconds (`FUN_8002eff4` adds fields / 60 each frame, 1/30
+at the game's 30 fps):
+
+- starting (`FUN_8000ed70`): frame length `+0x2C` = rate × 1/30
+  (`r2-0x7f60`) × the instance's speed `+0x28` (1.0, `FUN_8000e910`; nothing
+  in the player or monster code changes it); a rate below 1 uses the speed
+  alone. Start time `+0x20` = clock − start frame × length × 1/30
+  (`r13-0x7958`, set by `FUN_8000e8e8`).
+- each frame (`FUN_8000ef18`): t = (clock − start) / (length / 30); the
+  frame shown is floor(t + 0.5) (`r2-0x7f48`), or t itself where the
+  instance interpolates and t is more than 0.125 from it. Once that
+  reaches frames − 1 + 0.5 the action is over: it holds its last frame, or
+  a looping one restarts from 0 at that tick.
+
+So each frame lasts **rate / 900 s**: rate 30 plays at 30 frames a second,
+60 at 15, 45 at 20, 40 at 22.5, 15 at 60. A clip is done half a frame after
+its last frame comes up; a 30-rate loop of *n* frames comes round every *n*
+ticks, a 60-rate one every 2*n* − 1. (`character::clip_fps`, `clip_end`,
+`loop_length`; the rewrite had played the rate as frames per second, so
+60-rate clips — most monster attacks, some walks — ran four times too
+fast.)
 
 A player class splits these: `PLAYERS/<class>/<variant>/ANIM.PS2` holds the
 variant's skeleton (named `ARC_BLU` etc., no clips), and

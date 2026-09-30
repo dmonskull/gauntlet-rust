@@ -315,7 +315,8 @@ fn claim_slot(
         return Ok(None);
     }
     let mut worst: Option<(f32, Entity, bool)> = None;
-    for (e, m) in monsters {
+    // The dying keep their slots until they're gone.
+    for (e, m) in monsters.iter().filter(|(_, m)| m.dying.is_none()) {
         let mut score = if m.target.is_some() { m.target_distance } else { 1.0e5 };
         if m.placed {
             score *= 0.01;

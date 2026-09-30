@@ -20,7 +20,7 @@ One file per system, written only once it's confirmed against the actual
 | [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music |
 | [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |
 | [combat.md](combat.md) | Controls → logical buttons, attack intents and chaining, target search, blows, damage |
-| [monsters.md](monsters.md) | Monster stats and tiers, the realm's monster slots, generators, placed monsters, the monster AI and mover; `CRITTER` files |
+| [monsters.md](monsters.md) | Monster stats and tiers, the realm's monster slots, generators, placed monsters, the monster AI and mover, hit reactions, deaths (death textures, die effects); `CRITTER` files |
 | [critters.md](critters.md) | The scripted monsters (bosses, golem, gargoyles, general): `CRITTER` file records, loading, spawning, move choice and switching, blows, damage, death; the placed golem runs |
 | [projectiles.md](projectiles.md) | Thrown weapons and monster missiles: release, aim, lob, flight, collision, blasts, the throwing AIs |
 | [items.md](items.md) | The hero's state (health, gold, keys, potions, powerups), item touch, pickups, doors, chests, exits, transporters, hints |
@@ -68,6 +68,7 @@ One file per system, written only once it's confirmed against the actual
   items it touches: pickups, keyed doors and chests, exits, transporters,
   item animation and the game's hints.
 - Magic potions ([effects.md](effects.md)): blast, shield and thrown potion with the game's effect models.
+- Monster deaths ([monsters.md](monsters.md) "Deaths"): DEATH or the knock-down while the body dissolves through its death texture; die effects for elemental kills. Animation clips play at the game's rate (rate / 900 s a frame, [animation-format.md](animation-format.md)).
 - World particle systems ([rendering.md](rendering.md)): torch flames, smoke, pool fires, mist.
 - Level mechanics ([mechanics.md](mechanics.md)): trigger pads, switches
   and chains; lifts, elevators, trap walls, fading bridges and rotators
