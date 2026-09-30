@@ -600,9 +600,13 @@ seconds — then drop to the step 100 below.
 Here (`tower_scenes.rs`): all of the above for one hero, his lines in
 the announcer's voice queue (`audio::QueueVoice`); the rank level
 is kept as a level (`Quest::rank_level`, saved; a record without one is
-checked from its level then). Stand-ins: the exits aren't made clear or
-faded in (they show as their open state says), the light comes on at
-once; the pieces' particles aren't sprayed; the flash and sparkle play
+checked from its level then). The reveals: the exits are made clear and
+faded in, and the light with the temple's, through `fade.rs` (blended
+copies of the models' materials while they're see-through; a texture
+animation on a fading part holds its frame until it's whole). Test the
+temple's with `GDL_BEATEN=0xE9E GDL_ANNOUNCED="0xFE:0"` (seven shards
+announced before; `GDL_ANNOUNCED="<shard marks>:<stone bits>"`). Stand-ins:
+the pieces' particles aren't sprayed; the flash and sparkle play
 where the hero stands rather than riding him. Test with `GDL_BEATEN`/
 `GDL_RUNES`/`GDL_EXPERIENCE` on `levelL1` (a fresh hero gets the welcome
 first: `GDL_MENU="b@400,b@440,b@480,b@520,b@560,b@600"`).
