@@ -295,6 +295,9 @@ string (−1 = the whole group), `VOICE1` sound id. The ones items use:
 | 9 | `TRANSPORTERSMOVEYOU` | `S_TRANSPORTER` |
 | `0xF`, `0x10` | `EATMEAT`, `EATFRUIT` | `S_MEATGIVES`, `S_FRUITGIVES` |
 | `0x11` | `COLLECTGOLD` | `S_COLLECTGOLD` |
+| `0x14` | `FOUNDSECRETWALLS` ("MULTIPLE HITS DESTROY / SECRET WALLS"): a hero's melee blow (`FUN_8008615c`) that does damage to an obstacle whose type has no name (type `+0x28` = 0: the secret walls) | `S_MULTIPLEHITS` |
+| `0x15` | `AVOIDOBJECTS` ("AVOID DANGEROUS OBJECTS"): a damage tile hurts the hero (`FUN_8005d71c` case 8) | `S_AVOID` |
+| `0x1B` | `WOODBARREL` ("SOME BARRELS / CONTAIN ITEMS"): a barrel container (0x2B) breaks open (`FUN_8005c1c8`) | `S_SOMEBARRELS` |
 | `0x1C` | `POISONEDFOOD` | `S_POISONEDFOOD` |
 | `0x85` | `HEALTHFULL` | `S_HEALTHFULL` |
 | `0x71` + n | legendary item n (1–11): `LEGEND_ITEMS000`–`010` ("THE SCIMITAR OF DECAPITATION", "THE LEGENDARY ICE AXE"…; `0x71` itself is `TURBOBOOST`), once | `VOICE2`: `S_SCIMITARVOX`, `S_ICEAXEVOX`, `S_LAMPVOX`, `S_BELLOWSVOX`, `S_SAVIORVOX` (5, 6, 8), `S_BOOKVOX`, `S_PARCHVOX`, `S_LANTERNVOX`, `S_JAVELINVOX` |

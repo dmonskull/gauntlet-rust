@@ -15,8 +15,7 @@
 //! Stand-ins: the blast and the poison cloud hurt once, at once, with the
 //! missiles' blast falloff (the game's effects, which carry them, aren't
 //! ported); a monster inside (a Death) comes out at tier 1 straight away;
-//! hints 0x14 / 0x1B and chests blown apart by
-//! explosive blows aren't done; a shootable wall's in-between hits are
+//! chests blown apart by explosive blows aren't done; a shootable wall's in-between hits are
 //! silent (the level's own hit sound isn't looked up); safe rocks (which
 //! break into pieces) aren't hittable.
 
@@ -28,6 +27,7 @@ use crate::audio::PlaySound;
 use crate::combat::{Hit, TargetKind, Targetable};
 use crate::damage::after_armor;
 use crate::flash::{self, FlashColours};
+use crate::hints::{Hint, ShowHint};
 use crate::items::{self, LevelItems, USED};
 use crate::mechanics::{self, Mechanics};
 use crate::monsters::{Monster, MonsterLevel, NewMonster, spawn_monster};
@@ -132,6 +132,7 @@ fn hits(
     mut players: Query<(Entity, &mut Player)>,
     mut hurt: MessageWriter<DamagePlayer>,
     mut sounds: MessageWriter<PlaySound>,
+    mut hints: MessageWriter<ShowHint>,
 ) {
     let Some(mut items) = items else { return };
     let incoming: Vec<Hit> = messages.p0().read().filter(|h| h.target_kind == TargetKind::Breakable).cloned().collect();
@@ -145,6 +146,7 @@ fn hits(
         let Some(view) = items.view(b.placement) else { continue };
         let (class, subtype, flags, centre, pos) = (view.ty.class, view.ty.subtype, view.flags, view.shape.centre, view.shape.centre);
         let inside = view.contents.cloned();
+        let nameless = view.ty.name.is_empty();
         let keys = match view.params {
             PlacementParams::Container { param, .. } => Some(i32::from(*param)),
             _ => None,
@@ -160,6 +162,11 @@ fn hits(
             b.hit_points = (b.hit_points - (damage + 0.5) as i32).max(0);
         }
         let dead = b.hit_points == 0;
+        // A hero's blow that does damage to a secret wall (a nameless
+        // obstacle) tells of them.
+        if class == ItemClass::Obstacle && nameless && hit.kind & NO_DAMAGE == 0 && !hit.ranged && players.contains(hit.attacker) {
+            hints.write(ShowHint(Hint::SecretWalls));
+        }
         // An obstacle a blow did damage and left standing flashes.
         if class == ItemClass::Obstacle && hit.kind & NO_DAMAGE == 0 && !dead && subtype != items::SAFE_ROCK {
             b.flash = true;
@@ -170,10 +177,11 @@ fn hits(
             ItemClass::Container => {
                 if dead && flags & BREAKS_OPEN != 0 && flags & USED == 0 {
                     items.set_flags(b.placement, USED);
-                    if subtype == BARREL
-                        && let Some(s) = barrel_sound("WOOD", realm)
-                    {
-                        sounds.write(PlaySound(s));
+                    if subtype == BARREL {
+                        if let Some(s) = barrel_sound("WOOD", realm) {
+                            sounds.write(PlaySound(s));
+                        }
+                        hints.write(ShowHint(Hint::SomeBarrels));
                     }
                     // A monster inside (a Death) comes out where the container stood.
                     if let Some(id) = inside.as_ref().filter(|t| t.class == ItemClass::EnemyInfo).and_then(|t| t.enemy())

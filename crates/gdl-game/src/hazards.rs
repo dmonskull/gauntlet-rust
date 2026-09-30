@@ -4,16 +4,18 @@
 //! whoever stands in them while they're out, and damaging walls, level
 //! nodes flagged to hurt what runs into them.
 //!
+//! A tile that hurts the hero raises the hint to avoid dangerous objects.
+//!
 //! Stand-ins: an active phase lasts its animation (the game's own timing
-//! for it isn't confirmed); the tiles' hint (0x15) isn't shown; damaging
-//! walls on nodes that hurt only while animating (flag 0x2000000, which
-//! nothing animates yet) never hurt.
+//! for it isn't confirmed); damaging walls on nodes that hurt only while
+//! animating (flag 0x2000000, which nothing animates yet) never hurt.
 
 use bevy::prelude::*;
 use gdl_formats::population::{ItemClass, PlacementParams};
 
 use crate::audio::PlaySound;
 use crate::damage::after_armor;
+use crate::hints::{Hint, ShowHint};
 use crate::items::{self, LevelItems};
 use crate::mechanics::LevelNodes;
 use crate::monsters::MonsterLevel;
@@ -155,6 +157,7 @@ fn tiles(
     mut players: Query<&mut Player>,
     mut hurt: MessageWriter<DamagePlayer>,
     mut sounds: MessageWriter<PlaySound>,
+    mut hints: MessageWriter<ShowHint>,
 ) {
     let (Some(mut h), Some(mut items), Some(state)) = (hazards, items, state) else { return };
     let h = &mut *h;
@@ -236,6 +239,7 @@ fn tiles(
         {
             sounds.write(PlaySound((*name).into()));
         }
+        hints.write(ShowHint(Hint::AvoidObjects));
         debug!("damage tile {} hurts the hero for {amount:.1}", t.placement);
         // Once per phase: until this one is over.
         h.tile_guard = Some((i, t.phase));
