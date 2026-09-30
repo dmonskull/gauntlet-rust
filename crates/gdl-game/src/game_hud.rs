@@ -16,9 +16,11 @@
 //! (counted only while the key row is gone), its icon and "count/needed"
 //! (the needed count once its realm or wing has opened; `docs/items.md`).
 //!
-//! Stand-ins: the secret realm's coin count and the out player's "IN
-//! TOWER" (here the hero's death leads straight back to the tower) aren't
-//! drawn.
+//! Once the hero's death is over outside the tower it is out of the level
+//! until the level ends: its panel is the plain one in its colour, with
+//! "IN TOWER", gold and health.
+//!
+//! Stand-in: the secret realm's coin count isn't drawn.
 
 use bevy::prelude::*;
 use gdl_formats::font::{FONT_8HI, INITIALS};
@@ -54,6 +56,8 @@ const RUNE_COLOURS: [&str; 4] = ["BLU", "RED", "YEL", "GRE"];
 const COLOURS: [&str; 4] = ["YEL", "BLU", "RED", "GRE"];
 /// A panel waiting for its player: `S4` in the slot's dim colour.
 const NOT_JOINED: [[u8; 3]; 4] = [[0x5A, 0x5A, 0x1E], [0x1E, 0x1E, 0x69], [0x64, 0x28, 0x28], [0x1E, 0x4B, 0x1E]];
+/// A joined player's plain panel (out of the level): `S4` in its colour.
+const JOINED: [[u8; 3]; 4] = [[0x78, 0x78, 0x00], [0x1E, 0x1E, 0x78], [0x78, 0x00, 0x00], [0x00, 0x64, 0x00]];
 /// Each panel's width (players 2–4 follow player 1's).
 const PANEL_WIDTH: f32 = 128.0;
 /// Fields the key row shows for.
@@ -170,10 +174,14 @@ fn draw(
     if frontend.as_deref().is_some_and(|f| !f.playing() || f.menu_open()) {
         return;
     }
+    // The hero out of the level: its panel is set up afresh, the plain
+    // one in its joined colour, and says "IN TOWER".
+    let out = frontend.as_deref().is_some_and(Frontend::hero_out);
     // The pickup count shows, and counts down, only once the key row is
-    // gone; the key row counts fields while it shows.
+    // gone (and not for an out hero); the key row counts fields while it
+    // shows.
     let key_row = t.key_row >= 1.0;
-    let popup_shows = !key_row && t.popup_left > 0.0;
+    let popup_shows = !key_row && !out && t.popup_left > 0.0;
     if popup_shows {
         t.popup_left -= game_time.delta_secs();
     }
@@ -194,13 +202,20 @@ fn draw(
         image(&mut p, "S4_FRAME", px, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
     }
 
-    // The runestone bar and the class plate in its frame.
-    image(&mut p, "BK_RUNE_STONE_02", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
-    image(&mut p, &format!("S4_{}", choice.class), x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
+    // The runestone bar and the class plate in its frame; out, `S3` over
+    // `S4` in the player's colour, framed.
+    if out {
+        let [r, g, b] = JOINED[colour];
+        image(&mut p, "S3", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
+        image(&mut p, "S4", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::srgb_u8(r, g, b));
+    } else {
+        image(&mut p, "BK_RUNE_STONE_02", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
+        image(&mut p, &format!("S4_{}", choice.class), x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
+    }
     image(&mut p, "S4_FRAME", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
     // Twelve runestone slots, lit for the stones held (stone n in slot n).
     for i in 0..12usize {
-        let held = state.runestones.contains(&(i as i32));
+        let held = !out && state.runestones.contains(&(i as i32));
         if held {
             let name = format!("SM_RUNE_{}_{:02}", RUNE_COLOURS[i / 3], i % 3 + 1);
             image(&mut p, &name, x + 8.0 * i as f32 + (i / 3) as f32 + 15.0, 306.0, None, Color::WHITE);
@@ -219,11 +234,13 @@ fn draw(
     // The quest icon while the hero holds the legendary item it brought
     // to the realm's boss (there's none in the tower), the rune-13 icon
     // with the thirteenth runestone. With no health left the icons keep
-    // their look and the turbo meter is hidden.
+    // their look and the turbo meter is hidden; the out panel has neither.
     let has_health = state.health > 0.0;
     if has_health {
         t.quest_icon = critters.as_ref().is_some_and(|c| c.intro == INTRO_START);
         t.rune_13 = state.runestones.contains(&RUNE_13);
+    } else if out {
+        (t.quest_icon, t.rune_13) = (false, false);
     }
     if t.rune_13 {
         image(&mut p, "RUNE13", x + 8.0, 340.0, Some(Vec2::splat(16.0)), Color::WHITE);
@@ -291,10 +308,14 @@ fn draw(
     if !state.potions.is_empty() {
         draw.text(&fonts, &small, x + 92.0, 327.0, &state.potions.len().to_string());
     }
-    // Name (initials font, centred), level, gold and health right-aligned
-    // at 60 and 116.
-    draw.text(&fonts, &TextStyle::new(INITIALS, 0.667, tint), -(x + 64.0), 339.0, &name(&frontend_name(frontend.as_deref())));
-    draw.text(&fonts, &TextStyle::new(FONT_8HI, 1.0, Color::WHITE), -(x + 64.0), 326.0, &format!("LV {}", state.level));
+    // Name (initials font, centred) and level, or out of the level "IN
+    // TOWER"; gold and health right-aligned at 60 and 116.
+    if out {
+        draw.text(&fonts, &TextStyle::new(FONT_8HI, 1.2, tint), -(x + 64.0), 340.0, "IN TOWER");
+    } else {
+        draw.text(&fonts, &TextStyle::new(INITIALS, 0.667, tint), -(x + 64.0), 339.0, &name(&frontend_name(frontend.as_deref())));
+        draw.text(&fonts, &TextStyle::new(FONT_8HI, 1.0, Color::WHITE), -(x + 64.0), 326.0, &format!("LV {}", state.level));
+    }
     let numbers = TextStyle::new(SCORE, 1.0, tint);
     let gold = state.gold.min(99_999).to_string();
     let w = fonts.width(SCORE, 1.0, &gold);
