@@ -239,6 +239,27 @@ waits.
    HITCOL and the die effects as models. Left: the effects' depth bias,
    the no-blood switch (`r13-0x72cc`), exact particle maths.
 
+### Notes for the next jobs
+
+- **Free-running bank texture modifiers** (owner −1 in a bank's
+  `ANIM.PS2`, stepped by the game's frame counter like a level's): ITEMS
+  banks (torches `TORCHA–C`, force fields `FFGEN`/`FFIELD`, `RED_ARROW`,
+  transporters), POWERUPS (gem sheens, glow rings), monsters (bomb `FUSE`,
+  `LAVA`, `FLAME`, head glows, boss attack textures), WEAPONS (weapon
+  glows). Only level textures animate here. Plan: after building a bank
+  model with a shared-material `TextureCache` (`CharacterModel::
+  build_with`; items in `population.rs` build per source cache), collect
+  that bank's owner −1 modifiers whose binding the model uses (the
+  cache's shared materials by binding, frames by `cache.get`), keep them
+  in an `Arc` owned by the model and register a `Weak` in a resource that
+  steps them like `texanim.rs` and prunes dead ones (no leaks across
+  levels).
+- **Critter hit spheres in the attack search**: ours already uses the 3D
+  surface distance and the game's cone (spheres are `TargetKind::Object`).
+  Left: the game's per-critter pick (surface ÷ (sphere weight `+0x1C` ×
+  margin inside the cone)), each sphere's own max range (`+0x18`), and
+  skipping spent spheres (`FUN_80038008`).
+
 ## Working rules (from the user)
 
 - At most **one helper agent** besides the main session. It gets one
