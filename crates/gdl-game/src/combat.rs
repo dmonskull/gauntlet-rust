@@ -176,6 +176,9 @@ pub struct Targetable {
     /// What the low test measures: a monster's floor step (`+0x23C`, low
     /// at most 2), a generator's or breakable's height (at most 3.5).
     pub size: f32,
+    /// A critter's body or hit sphere: its reference point is the centre
+    /// of it, and the critter counts once (see [`CritterAim`]).
+    pub critter: Option<CritterAim>,
     /// Per attacker, until when (seconds, `Time<Fixed>` elapsed) they can't
     /// hit this again. Melee blows don't use one; the charge would.
     #[allow(dead_code)]
@@ -187,7 +190,13 @@ pub struct Targetable {
 #[allow(dead_code)]
 impl Targetable {
     pub fn new(kind: TargetKind, radius: f32, height: f32) -> Self {
-        Self { kind, radius, height, size: height, cooldowns: Vec::new() }
+        Self { kind, radius, height, size: height, critter: None, cooldowns: Vec::new() }
+    }
+
+    /// Part of a critter.
+    pub fn of_critter(mut self, aim: CritterAim) -> Self {
+        self.critter = Some(aim);
+        self
     }
 
     /// The size the low test uses, when it isn't the height (monsters).
@@ -220,6 +229,51 @@ impl Targetable {
 
 #[allow(dead_code)]
 const COOLDOWN_SLOTS: usize = 4;
+
+/// Which critter (a body, or one of a boss's parts) a target belongs to:
+/// the game tests a critter's live hit spheres before its body, and finds
+/// or hits the critter once — its body only when none of its spheres will
+/// do (`docs/critters.md`, "Found and hit").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CritterAim {
+    /// The critter's body target (for the body, the target itself).
+    pub body: Entity,
+    /// A hit sphere's place among its critter's, its reach and weight.
+    pub sphere: Option<SphereAim>,
+}
+
+/// A hit sphere as the searches see it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SphereAim {
+    /// Its place among its critter's spheres: the first that will do wins.
+    pub index: usize,
+    /// How far away the hero's search finds it (0: as far as it looks).
+    pub reach: f32,
+    /// How much the search favours it among its critter's.
+    pub weight: f32,
+}
+
+/// Keeps one of each critter's targets among `hits` (those a test
+/// accepted): its first sphere, else its body; everything else stays.
+pub fn one_per_critter<T>(hits: Vec<T>, aim: impl Fn(&T) -> Option<CritterAim>) -> Vec<T> {
+    let first_sphere = |body: Entity| {
+        hits.iter()
+            .filter_map(|h| aim(h).filter(|a| a.body == body).and_then(|a| a.sphere).map(|s| s.index))
+            .min()
+    };
+    let wanted: Vec<bool> = hits
+        .iter()
+        .map(|h| match aim(h) {
+            None => true,
+            Some(a) => match (a.sphere, first_sphere(a.body)) {
+                (Some(s), Some(first)) => s.index == first,
+                (None, first) => first.is_none(),
+                (Some(_), None) => true,
+            },
+        })
+        .collect();
+    hits.into_iter().zip(wanted).filter_map(|(h, w)| w.then_some(h)).collect()
+}
 
 /// Extra kinds of blow, as the game hands them to the target (it ORs in the
 /// attacker's weapon power-up bits too, none of which exist yet).
@@ -345,10 +399,50 @@ pub fn search_within<'a>(
 ) -> Option<Found> {
     let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
     let narrowing = (1.0 - SEARCH_CONE) / range;
+    // Inside the cone: the margin by which it is (the game's test).
+    let margin = |n: Vec3, distance: f32| -> Option<f32> {
+        let horizontal = Vec2::new(n.x, n.z).length();
+        let m = n.x * dir.x + n.z * dir.z - horizontal * (distance * narrowing + SEARCH_CONE);
+        (m > 0.0).then_some(m)
+    };
     let mut best: Option<Found> = None;
+    // Critters: the best-placed sphere of each (its surface distance over
+    // its weight × its margin inside the cone, least wins), and their
+    // bodies, found only when none of their spheres is.
+    let mut spheres: Vec<(Entity, f32, Found)> = Vec::new();
+    let mut bodies: Vec<Found> = Vec::new();
     for (entity, position, t) in candidates {
         let v = position - origin;
         let length = v.length();
+        if let Some(aim) = t.critter {
+            if length > range {
+                continue;
+            }
+            let n = if length > 0.0 { v / length } else { dir };
+            let distance = length - t.radius;
+            let found = Found { entity, kind: t.kind, distance, direction: n, position, height: t.height, size: t.size };
+            match aim.sphere {
+                Some(s) => {
+                    if s.reach > 0.0 && length > s.reach {
+                        continue;
+                    }
+                    let Some(m) = margin(n, distance) else { continue };
+                    let score = distance / (s.weight * m);
+                    match spheres.iter_mut().find(|(body, ..)| *body == aim.body) {
+                        Some(slot) if score < slot.1 => *slot = (aim.body, score, found),
+                        Some(_) => {}
+                        None if score < f32::MAX => spheres.push((aim.body, score, found)),
+                        None => {}
+                    }
+                }
+                None => {
+                    if margin(n, distance).is_some() {
+                        bodies.push(found);
+                    }
+                }
+            }
+            continue;
+        }
         let distance = match t.kind {
             TargetKind::Monster => {
                 if v.y.abs() > MONSTER_VERTICAL {
@@ -374,11 +468,19 @@ pub fn search_within<'a>(
             continue;
         }
         let n = if length > 0.0 { v / length } else { dir };
-        let horizontal = Vec2::new(n.x, n.z).length();
-        if horizontal * (distance * narrowing + SEARCH_CONE) > n.x * dir.x + n.z * dir.z {
+        if margin(n, distance).is_none() {
             continue;
         }
         best = Some(Found { entity, kind: t.kind, distance, direction: n, position, height: t.height, size: t.size });
+    }
+    let critters = spheres
+        .iter()
+        .map(|(_, _, f)| *f)
+        .chain(bodies.into_iter().filter(|b| !spheres.iter().any(|(body, ..)| *body == b.entity)));
+    for f in critters {
+        if f.distance <= range && best.is_none_or(|b| f.distance < b.distance) {
+            best = Some(f);
+        }
     }
     best
 }
@@ -614,6 +716,50 @@ mod tests {
 
     fn e(n: u32) -> Entity {
         Entity::from_raw_u32(n).unwrap()
+    }
+
+    #[test]
+    fn a_critter_counts_once() {
+        let (a, b) = (e(1), e(2));
+        let sphere = |body, index| Some(CritterAim { body, sphere: Some(SphereAim { index, reach: 0.0, weight: 1.0 }) });
+        let hits = vec![
+            ("a sphere 2", sphere(a, 2)),
+            ("a body", Some(CritterAim { body: a, sphere: None })),
+            ("monster", None),
+            ("a sphere 0", sphere(a, 0)),
+            ("b body", Some(CritterAim { body: b, sphere: None })),
+        ];
+        let kept: Vec<&str> = one_per_critter(hits, |h| h.1).into_iter().map(|h| h.0).collect();
+        assert_eq!(kept, ["monster", "a sphere 0", "b body"]);
+    }
+
+    #[test]
+    fn critters_are_found_by_their_best_placed_sphere() {
+        let body = e(10);
+        let aim = |index, reach, weight| {
+            Targetable::new(TargetKind::Object, 1.0, 1.0)
+                .of_critter(CritterAim { body, sphere: Some(SphereAim { index, reach, weight }) })
+        };
+        let whole = Targetable::new(TargetKind::Object, 3.0, 4.0).of_critter(CritterAim { body, sphere: None });
+        // Straight ahead is +Z. The nearer sphere is off to the side; the
+        // heavier, straighter one wins, and the search reports its surface
+        // distance.
+        let near = aim(0, 0.0, 1.0);
+        let straight = aim(1, 0.0, 5.0);
+        let far = aim(2, 5.0, 100.0);
+        let candidates = [
+            (e(11), Vec3::new(3.0, 0.0, 6.0), &near),
+            (e(12), Vec3::new(0.0, 0.0, 10.0), &straight),
+            // Beyond its reach of 5.
+            (e(13), Vec3::new(0.0, 0.0, 8.0), &far),
+            (body, Vec3::new(0.0, 0.0, 9.0), &whole),
+        ];
+        let found = search(Vec3::ZERO, 0.0, candidates).unwrap();
+        assert_eq!(found.entity, e(12));
+        assert!((found.distance - 9.0).abs() < 1e-5);
+        // No sphere will do: the body is found.
+        let candidates = [(e(13), Vec3::new(0.0, 0.0, 8.0), &far), (body, Vec3::new(0.0, 0.0, 9.0), &whole)];
+        assert_eq!(search(Vec3::ZERO, 0.0, candidates).unwrap().entity, body);
     }
 
     #[test]

@@ -363,11 +363,11 @@ waits.
   [rendering.md](rendering.md) "Actions" (the combos', bosses' attack
   effects); the draw's texture-shift maths (`FUN_800c68e4`, `r2-0x4800`)
   isn't pinned down.
-- **Critter hit spheres in the attack search**: ours already uses the 3D
-  surface distance and the game's cone (spheres are `TargetKind::Object`).
-  Left: the game's per-critter pick (surface ÷ (sphere weight `+0x1C` ×
-  margin inside the cone)), each sphere's own max range (`+0x18`), and
-  skipping spent spheres (`FUN_80038008`).
+- **Critter hit spheres**: done — the search's per-critter pick, each
+  sphere's reach, spent spheres skipped, the body's fallback at its
+  centre, and one hit per critter for missiles, bombs and potion blasts
+  (a blast used to hit a boss once per sphere it reached)
+  ([critters.md](critters.md) "Found and hit").
 
 ## Working rules (from the user)
 
@@ -398,5 +398,9 @@ waits.
   gone. `smoke.sh` just runs every level folder with
   `GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400` under a
   120 s timeout and greps for panics.
-- Disk: `target/` grows large (~26 GB). Agent worktrees have their own
-  `target/` dirs; delete those after merging.
+- Disk: `target/` grows large. Split debug info leaves every build's
+  object files for our crates in `target/debug/deps` (37 GB after a day
+  of edits, which filled the disk on 2026-09-30). Free it with
+  `cargo clean -p gdl-game -p gdl-formats -p gdl-install` (only our crates
+  rebuild; deleting the files by hand breaks cargo's fingerprints). Agent
+  worktrees have their own `target/` dirs; delete those after merging.

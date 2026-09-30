@@ -337,7 +337,8 @@ When `+0x900 & 0xFE` is set:
   after it.
 - Last tick's bumped monster / locked generator aren't preferred, and the
   0.9 scale for exploding/poison barrels isn't distinguished (breakables
-  all use 1.2). Multi-part objects are one target.
+  all use 1.2). Critters with hit spheres follow the game's per-critter
+  pick ([critters.md](critters.md), "Found and hit").
 - Knockback on the hero, hit reactions, pushing, the idle timers, the
   start-frame offset for interrupted throws, and animation speed (DEFEND2
   plays at 0.2 × armour) aren't done. The attack-sound indices in `PDAT`

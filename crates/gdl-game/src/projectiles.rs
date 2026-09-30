@@ -29,7 +29,7 @@ use gdl_formats::{LevelCollision, ModelFile, enemy};
 
 use crate::actions::Strike;
 use crate::character::{self, CharacterData, CharacterModel};
-use crate::combat::{Hit, TargetKind, Targetable};
+use crate::combat::{self, CritterAim, Hit, TargetKind, Targetable};
 use crate::effects::{BlastAt, PotionBurst};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
@@ -672,13 +672,17 @@ pub(crate) struct Body {
     pub centre: Vec3,
     pub radius: f32,
     pub half: f32,
+    /// Part of a critter: it counts once (`combat::one_per_critter`).
+    pub aim: Option<CritterAim>,
 }
 
 /// The monsters and objects this tick. A monster is its radius and, as
 /// half height, its step, around its centre (feet + centre height; the
-/// game's `+0x54` point, taken to be that as for players); anything else
-/// targetable as a monster or object (the practice dummy) is its own
-/// extent.
+/// game's `+0x54` point, taken to be that as for players); a critter's
+/// body its cylinder's radius and, as half height, its height around its
+/// centre, a hit sphere its radius both ways around its own (the game's
+/// swept cylinder tests); anything else targetable as a monster or object
+/// (the practice dummy) is its own extent.
 pub(crate) fn bodies(targets: &Query<(Entity, &GlobalTransform, &Targetable, Option<&Monster>)>) -> Vec<Body> {
     targets
         .iter()
@@ -690,6 +694,15 @@ pub(crate) fn bodies(targets: &Query<(Entity, &GlobalTransform, &Targetable, Opt
                 centre: Vec3::from(m.position) + Vec3::Y * enemy::enemy_stats(m.enemy).map_or(0.0, |s| s.center_height),
                 radius: m.stats.radius,
                 half: m.stats.step,
+                aim: None,
+            },
+            None if t.critter.is_some() => Body {
+                entity,
+                kind: t.kind,
+                centre: g.translation(),
+                radius: t.radius,
+                half: t.height,
+                aim: t.critter,
             },
             None => Body {
                 entity,
@@ -697,6 +710,7 @@ pub(crate) fn bodies(targets: &Query<(Entity, &GlobalTransform, &Targetable, Opt
                 centre: g.translation() + Vec3::Y * (0.5 * t.height),
                 radius: t.radius,
                 half: 0.5 * t.height,
+                aim: None,
             },
         })
         .collect()
@@ -967,10 +981,12 @@ fn fly(
         }
         // Monsters and objects (hero missiles).
         if stop.is_none() && hero_owned {
-            let hit = bodies
+            // A critter's spheres before its body.
+            let met: Vec<(f32, &Body)> = bodies
                 .iter()
                 .filter_map(|b| cylinder_hit(from, to, b.centre, r + b.radius, r + b.half).map(|s| (s, b)))
-                .min_by(|a, b| a.0.total_cmp(&b.0));
+                .collect();
+            let hit = combat::one_per_critter(met, |(_, b)| b.aim).into_iter().min_by(|a, b| a.0.total_cmp(&b.0));
             if let Some((s, b)) = hit {
                 to = from.lerp(to, s);
                 info!("missile hits {:?} {:?} for {:.1}", b.kind, b.entity, p.damage);
@@ -1054,20 +1070,22 @@ fn burst(
     damage: &mut MessageWriter<DamagePlayer>,
 ) {
     info!("bomb bursts at {at:?} (blast {:.1})", p.blast);
-    for b in bodies {
-        let d = (b.centre - at).length() - b.radius;
-        if let Some(share) = blast_share(d, p.blast) {
-            hits.write(Hit {
-                target: b.entity,
-                attacker: p.owner.entity(),
-                damage: p.damage * share,
-                kind: p.kind,
-                push: Vec3::ZERO,
-                at,
-                target_kind: b.kind,
-                ranged: true,
-            });
-        }
+    // A critter once: its first sphere in reach, else its body.
+    let reached: Vec<(f32, &Body)> = bodies
+        .iter()
+        .filter_map(|b| blast_share((b.centre - at).length() - b.radius, p.blast).map(|share| (share, b)))
+        .collect();
+    for (share, b) in combat::one_per_critter(reached, |(_, b)| b.aim) {
+        hits.write(Hit {
+            target: b.entity,
+            attacker: p.owner.entity(),
+            damage: p.damage * share,
+            kind: p.kind,
+            push: Vec3::ZERO,
+            at,
+            target_kind: b.kind,
+            ranged: true,
+        });
     }
     if matches!(p.owner, Owner::Monster(_)) {
         for (e, pl) in players.iter() {
