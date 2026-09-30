@@ -178,8 +178,11 @@ The library (`FUN_800cbf44`, per emitter per frame) keeps particles in
 packed rings filled through emitter callbacks and states 0 (delay) → 2/3
 (phase A: rate `+0xD0` + `+0xD4`·t) → 4/5 (phase B) → 6 (done) → 8
 (freed); `particles.rs` simulates each particle directly from the record
-instead (stand-in), with the phases taken as always on. What's known of
-the setup:
+instead (stand-in), with the phases taken as always on. Unconfirmed: whether
+the library counts frames or video fields (twice as many: brighter, busier
+torches). `GDL_PARTICLE_TEST=<letter>` with `GDL_LOOK_AT="0,0.5,-6,10"`
+on levelA1 shows one record's system in the open. What's known of the
+setup:
 
 - `FUN_800aae??` (the world-instance setup, around `0x800aaeb0`): a node
   whose name contains `PSYS` (`r2-0x5000`) takes the letter after it

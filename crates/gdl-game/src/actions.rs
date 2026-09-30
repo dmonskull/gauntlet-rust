@@ -110,6 +110,10 @@ impl Action {
     pub const THROW2R: Self = Self(0x62);
     pub const ATTPWRATHROW: Self = Self(0x63);
     pub const ATTPWRATHROWR: Self = Self(0x64);
+    pub const MAGICS: Self = Self(0x73);
+    pub const MAGICR: Self = Self(0x74);
+    pub const THROWPOTIONS: Self = Self(0x75);
+    pub const THROWPOTIONR: Self = Self(0x76);
     pub const DEFEND1: Self = Self(0x77);
     pub const DEFEND2: Self = Self(0x78);
     pub const DEFENDR: Self = Self(0x79);
@@ -316,6 +320,9 @@ pub struct Env {
     pub class: Option<usize>,
     /// The class has an ATTLOW2 clip.
     pub has_low2: bool,
+    /// Magic was let go during MAGICS (the player's control flag 4): it
+    /// becomes a blast rather than the potion throw.
+    pub magic_released: bool,
 }
 
 /// The action to go to next and how.
@@ -614,6 +621,20 @@ impl ActionState {
                 }
                 next = Action::ATTPWRATHROWR;
             }
+            // Magic: let go during MAGICS, the blast (MAGICR); still held,
+            // the potion throw's wind-up (THROWPOTIONS), which ends in the
+            // throw (THROWPOTIONR).
+            0x73 => {
+                if req == Action::THROWPOTIONS {
+                    switch = Switch::Now;
+                    next = req;
+                } else if env.magic_released {
+                    next = Action::MAGICR;
+                } else {
+                    next = Action::THROWPOTIONS;
+                }
+            }
+            0x75 => next = Action::THROWPOTIONR,
             _ => {}
         }
 
@@ -699,6 +720,11 @@ impl ActionState {
             }
             _ => self.edges = 0,
         }
+        match next.0 {
+            0x74 => strike.0 |= Strike::MAGIC,
+            0x76 => strike.0 |= Strike::THROW_POTION,
+            _ => {}
+        }
         self.action = next;
         strike
     }
@@ -743,6 +769,10 @@ impl Strike {
     pub const SHOT: u32 = 0x100;
     /// The power throw releases its projectile.
     pub const POWER_THROW: u32 = 0x1000;
+    /// MAGICR starts: a potion's blast (or shield).
+    pub const MAGIC: u32 = 0x20000;
+    /// THROWPOTIONR starts: the potion is thrown.
+    pub const THROW_POTION: u32 = 0x40000;
 
     /// A melee blow is resolved now.
     pub fn melee(self) -> bool {
@@ -759,7 +789,7 @@ mod tests {
     use super::*;
 
     fn env() -> Env {
-        Env { frame: 0.0, class: Some(0), has_low2: true }
+        Env { frame: 0.0, class: Some(0), has_low2: true, magic_released: false }
     }
 
     fn state(action: Action, range: u32) -> ActionState {

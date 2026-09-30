@@ -68,10 +68,12 @@ fix) passed all 67 real levels; only the two empty folders fail.
   `GDL_DEBUG_HUD=1`. Not drawn yet: the turbo flash and glow, the
   legendary-key row, the quest and rune-13 icons, and the "Wait In Tower"
   prompt. See [frontend.md](frontend.md) "In-game HUD".
-- **Effects and magic potions**: the projectiles helper (branch
-  `worktree-agent-a8dd539691ef57ca7`) was stopped mid-edit, and its work
-  is uncommitted in that worktree. Check `git status` there; commit or
-  discard it, then finish the job (the brief is in "Next jobs").
+- **Magic potions**: merged. Tap for a blast, tap twice for the shield,
+  hold to throw; the game's effect models are used (the light potion's
+  starburst is verified). See [effects.md](effects.md).
+- **Test aids**: `GDL_LOOK_AT`, `GDL_PARTICLE_TEST`, `GDL_POTIONS`, and
+  screenshot bursts with `GDL_SHOTS` / `GDL_SHOT_EVERY`. Frame what's being
+  tested instead of hunting for it (a user rule).
 - **World particles**: `particles.rs` runs every level's `PSYS` nodes
   (torch flames, smoke, pool fires, mist, embers) from the decoded records
   and presets ([rendering.md](rendering.md)). The emitter's own ring and
@@ -111,7 +113,7 @@ waits.
 1. **Finish bosses**: A5 chimera or B6 dragon first, then the rest. See
    [critters.md](critters.md).
 2. ~~In-game HUD~~: done (the remaining HUD details are listed above).
-3. **Effects system and magic potions** (in progress with the projectiles agent)
+3. ~~Effects system and magic potions~~: done (effects.md)
    (it knows the effect slots at `0x802855ac` and `FUN_80094418`):
    - Potions are used through `FUN_80076618`: mode 0 is the magic blast
      (`FUN_8009262c`, radius 40, damage = magic power `+0x10C`), mode 1 the

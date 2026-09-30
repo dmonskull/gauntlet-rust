@@ -26,6 +26,7 @@
 
 use bevy::prelude::*;
 use gdl_formats::{PlayerCollision, PlayerGround};
+use gdl_formats::enemy::FIELDS_PER_TICK;
 use gdl_formats::pdata::PlayerStats;
 
 use crate::actions::{self, Action, ActionState, Env, Strike};
@@ -38,6 +39,8 @@ use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
+use crate::effects::{MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
+use crate::hints::{Hint, ShowHint};
 use crate::projectiles::{self, HeroShot};
 use crate::world::{LevelEntity, LevelGround};
 
@@ -84,6 +87,9 @@ struct Hero {
 
 #[derive(Component)]
 pub struct Player {
+    /// The magic controls: the double tap, the lock after a use, the
+    /// throw's wind-up.
+    pub magic: MagicState,
     pub mover: Mover,
     /// The floor being followed and the node stood on, between ticks.
     pub ground: PlayerGround,
@@ -341,6 +347,7 @@ fn spawn_player(
         radius: hero.radius,
         class: hero.class,
         attack_started: 0.0,
+        magic: MagicState::default(),
         wall_hit: None,
     };
     commands.entity(root).insert((player, LevelEntity));
@@ -381,6 +388,9 @@ fn named_button(name: &str) -> Option<u32> {
         "power" | "y" => button::POWER,
         "turbo" | "defend" | "b" => button::TURBO | button::DEFEND,
         "magic" | "x" => button::MAGIC,
+        // Not on any GameCube scheme's buttons: for testing.
+        "throwmagic" => button::THROW_MAGIC,
+        "shieldmagic" => button::MAGIC_SHIELD,
         "charge" | "l" => button::CHARGE,
         "strafe" | "r" => button::STRAFE,
         "combo" | "z" => button::COMBO_MOVE,
@@ -481,12 +491,14 @@ fn tick(
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
     mut shots: MessageWriter<HeroShot>,
+    mut potions: MessageWriter<UsePotion>,
+    mut hints: MessageWriter<ShowHint>,
     state: Option<Res<PlayerState>>,
     monster_level: Option<Res<crate::monsters::MonsterLevel>>,
 ) {
     let boss_level = monster_level.as_ref().is_some_and(|l| l.boss >= 0);
     // A dead hero lies still until it's revived.
-    if state.is_some_and(|s| !s.alive) {
+    if state.as_ref().is_some_and(|s| !s.alive) {
         return;
     }
     let dt = time.delta_secs();
@@ -517,7 +529,19 @@ fn tick(
         // What the controls ask for. The action playing may hold the stick
         // back (magic, defending); lunges drift on without it.
         let magnitude = stick.magnitude * actions::stick_scale(current);
-        let mut intent = combat::classify(buttons, stick.magnitude, wrap(stick.heading - facing), p.turbo);
+        // Magic is ignored until let go after a use; while MAGICS or
+        // THROWPOTIONS plays, it's watched for the double tap and the
+        // throw's wind-up.
+        let magic = p.magic.observe(held, current.0, FIELDS_PER_TICK);
+        let unmagic = |b: u32| if magic.is_none() { b & !MAGIC_BUTTONS } else { b };
+        let magic_buttons = Buttons { held: unmagic(buttons.held), pressed: unmagic(buttons.pressed) };
+        let mut intent = combat::classify(magic_buttons, stick.magnitude, wrap(stick.heading - facing), p.turbo);
+        let has_potions = state.as_ref().is_some_and(|s| !s.potions.is_empty());
+        if intent == Intent::Magic && !has_potions {
+            // No potion: the hint, and the hero moves as the stick says.
+            hints.write(ShowHint(Hint::CollectMagicFirst));
+            intent = combat::classify(Buttons::default(), stick.magnitude, 0.0, p.turbo);
+        }
         p.actions.observe_buttons(buttons.held);
         let keeps_facing = intent.keeps_facing();
         let drive = if magnitude == 0.0 && !keeps_facing && actions::drifts_forward(current) { DRIFT } else { magnitude };
@@ -548,6 +572,16 @@ fn tick(
 
         let mut requested =
             combat::request(intent, p.actions.range, stick.magnitude, walked_into, p.actions.combo, p.request);
+        if intent == Intent::Magic {
+            requested = match magic {
+                Some(MagicIntent::Throw) => Action::THROWPOTIONS,
+                Some(MagicIntent::Shield) => {
+                    p.magic.flags |= MagicState::SHIELD;
+                    Action::MAGICS
+                }
+                _ => Action::MAGICS,
+            };
+        }
         // Blows taken: flinch, knockback or knockdown. A flinch only
         // interrupts standing and moving about; the rest override.
         let (mut hit_damage, mut hit_flags, mut hit_push) = std::mem::take(&mut p.pending_hit);
@@ -588,6 +622,7 @@ fn tick(
             frame: animator.frame,
             class: p.class,
             has_low2: clips.actions.iter().any(|a| a.name == Action::ATTLOW2.name()),
+            magic_released: p.magic.flags & MagicState::RELEASED != 0,
         };
         let next = p.actions.next(requested, &env);
         let loops = clips.actions.get(animator.action).is_some_and(|a| a.loops());
@@ -632,6 +667,23 @@ fn tick(
             // with no wind-up.
             if strike.0 & Strike::STARTED != 0 {
                 p.attack_started = time.elapsed_secs_f64();
+            }
+            if next.action == Action::THROWPOTIONS {
+                p.magic.charge = 0.0;
+            }
+            // A potion: the blast (the shield after a double tap), or the
+            // throw (mode 3 with the throw button held). Not during a
+            // camera cut.
+            if strike.0 & (Strike::MAGIC | Strike::THROW_POTION) != 0 && !cut {
+                let mode = if strike.0 & Strike::THROW_POTION != 0 {
+                    if held & button::THROW_MAGIC != 0 { 3 } else { 2 }
+                } else if p.magic.flags & MagicState::SHIELD != 0 {
+                    1
+                } else {
+                    0
+                };
+                potions.write(UsePotion { hero: entity, feet: position, facing, mode, charge: p.magic.charge });
+                p.magic.flags = MagicState::USED;
             }
             if strike.projectile() {
                 // Aimed at what the search found, unless strafing or
