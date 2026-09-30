@@ -73,7 +73,6 @@ use bevy::math::Affine3A;
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use gdl_formats::anim::{AnimFile, Track, rotation_matrix as clip_rotation};
-use gdl_formats::audio::AudioCatalog;
 use gdl_formats::text::TextRom;
 use gdl_formats::collision::{node_flags, push_out};
 use gdl_formats::critter::{self, CritterDamage, CritterFile, CritterMove, Condition, class, kind};
@@ -81,7 +80,7 @@ use gdl_formats::population::{ItemClass, LocatorKind, PlacementParams, REALM_LET
 use gdl_formats::texmod::TexMod;
 use gdl_formats::{LevelCollision, ModelFile};
 
-use crate::audio::PlaySound;
+use crate::audio::{PlaySound, QueueVoice, VoiceQueues};
 use crate::character::{Animate, Animator, CharacterData, CharacterModel, advance_clip, clip_end};
 use crate::combat::{CritterAim, SphereAim, TargetKind, Targetable};
 use crate::damage::after_armor;
@@ -157,13 +156,17 @@ fn pose_parts(critters: Query<(&Critter, &Animator)>, mut bones: Query<&mut Tran
 /// - 5: he speaks and his first message's pages type out; half a second
 ///   after them, 6: his second speech and message (how many of the realm's
 ///   runestones the heroes hold), and a second after its pages
-/// - 8: the last countdown, 2 s (10 s after the first skorne when the
-///   heroes hold all twelve runestones), ends the level.
+/// - 8: the last countdown starts, 2 s (10 s after the first skorne when
+///   the heroes hold all twelve runestones); it ends the level (which
+///   then waits for the voice queues, as every level change does);
+/// - 9: once the voice queues are empty (his speeches done),
+/// - 10: at 35 fields left the heroes teleport out.
 ///
-/// His speeches queue as the game's voice queue does; his messages show a
-/// page at a time for as long as the game types each. Stand-ins: the
-/// message box is the hints' plain text; he doesn't fade; the heroes'
-/// teleport-out effect isn't drawn; the next level is the tower's first.
+/// His speeches wait in the announcer's voice queue; from his appearance
+/// the announcer's own lines (hints) are refused. His messages show a page
+/// at a time for as long as the game types each. Stand-ins: he doesn't
+/// fade; the heroes' teleport-out effect isn't drawn; the next level is
+/// the tower's first.
 #[allow(clippy::too_many_arguments)]
 fn run_victory(
     mut commands: Commands,
@@ -172,6 +175,7 @@ fn run_victory(
     players: Query<&Player>,
     mut animators: Query<&mut Animator>,
     mut sounds: MessageWriter<PlaySound>,
+    (mut voices, mut queues): (MessageWriter<QueueVoice>, ResMut<VoiceQueues>),
     mut messages: MessageWriter<ShowCaption>,
     mut change: MessageWriter<ChangeLevelTo>,
 ) {
@@ -205,15 +209,6 @@ fn run_victory(
             a.play(0);
         }
     }
-    // The voice queue.
-    if let Some((name, at)) = v.queued.take() {
-        if now >= at {
-            sounds.write(PlaySound(name));
-        } else {
-            v.queued = Some((name, at));
-        }
-    }
-
     match v.step {
         0 => {
             if let Some(s) = state.as_deref_mut() {
@@ -249,6 +244,7 @@ fn run_victory(
             v.wizard = level.end.wizard.as_ref().map(|m| spawn(m, at, &mut commands));
             v.wizard_at = at;
             info!("the wizard appears at {at:?}");
+            queues.close_announcer();
             v.fade = WIZARD_FADE;
             v.step = 4;
         }
@@ -256,7 +252,7 @@ fn run_victory(
             v.fade -= WIZARD_FADE_STEP;
             if v.fade <= 0 {
                 let speech = if level.boss_type == SKORNE && all_twelve { 1 } else { 0 };
-                speak(level, &mut v, speech, now, &mut sounds);
+                speak(level, speech, &mut voices);
                 let pages = show_message(level, first_message(level.boss_type), &mut messages);
                 v.timer = now + pages + AFTER_FIRST_SPEECH;
                 v.step = 5;
@@ -265,7 +261,7 @@ fn run_victory(
         5 if now >= v.timer => {
             let held = runes_held(level.realm_id, runes);
             if level.boss_type < SKORNE {
-                speak(level, &mut v, held + 1, now, &mut sounds);
+                speak(level, held + 1, &mut voices);
             }
             let pages = show_message(level, second_message(level.boss_type, held, all_twelve), &mut messages);
             v.timer = now + pages + if pages > 0.0 { AFTER_SECOND_SPEECH } else { 0.0 };
@@ -273,19 +269,22 @@ fn run_victory(
         }
         6 if now >= v.timer => {
             v.countdown = if level.boss_type == SKORNE && all_twelve { COUNTDOWN_LONG } else { COUNTDOWN };
-            v.step = 8;
+            v.step = 9;
         }
-        8 | 10 => {
+        9..=11 => {
             v.countdown -= DT;
-            if v.step == 8 && v.countdown <= TELEPORT_LEFT {
-                debug!("the heroes teleport out (the effect isn't drawn)");
+            if v.step == 9 && !queues.busy() {
                 v.step = 10;
             }
-            if v.countdown <= 0.0 {
+            if v.step == 10 && v.countdown <= TELEPORT_LEFT {
+                debug!("the heroes teleport out (the effect isn't drawn)");
+                v.step = 11;
+            }
+            if v.countdown <= 0.0 && !v.over {
+                // The key and the wizard go with the level.
                 info!("the boss level is over: to {AFTER_BOSS_LEVEL}");
                 change.write(ChangeLevelTo(AFTER_BOSS_LEVEL.into()));
-                // The key and the wizard go with the level.
-                return;
+                v.over = true;
             }
         }
         _ => {}
@@ -299,18 +298,12 @@ fn run_victory(
     level.victory = Some(v);
 }
 
-/// Queues the wizard's speech `n`: it plays once the one before it is
-/// over.
-fn speak(level: &CritterLevel, v: &mut Victory, n: usize, now: f32, sounds: &mut MessageWriter<PlaySound>) {
-    let Some((name, length)) = level.end.speeches.get(n).cloned().flatten() else { return };
-    let at = v.voice_until.max(now);
-    info!("the wizard says {name} ({length:.1} s, from {at:.1} s)");
-    if at <= now {
-        sounds.write(PlaySound(name));
-    } else {
-        v.queued = Some((name, at));
-    }
-    v.voice_until = at + length;
+/// Queues the wizard's speech `n` in the announcer's voice queue: it plays
+/// once the lines before it are over.
+fn speak(level: &CritterLevel, n: usize, voices: &mut MessageWriter<QueueVoice>) {
+    let Some(name) = level.end.speeches.get(n).cloned().flatten() else { return };
+    info!("the wizard says {name}");
+    voices.write(QueueVoice::announcer(name, SPEECH_MOST_WAIT));
 }
 
 /// Types one of the wizard's messages in the top bar, a page at a time,
@@ -451,8 +444,8 @@ const SPEECH_Y: f32 = 16.0;
 /// Runestones 0–11 (the first skorne wants them all).
 const ALL_RUNESTONES: u32 = 0xFFF;
 const TELEPORT_LEFT: f32 = 35.0 / 60.0;
-/// A speech missing from the sound catalog counts as this long.
-const SPEECH_GUESS: f32 = 4.5;
+/// A speech is dropped when it would wait longer than this, seconds.
+const SPEECH_MOST_WAIT: f32 = 10.0;
 /// Where the heroes go after a boss (stand-in: the game picks the first
 /// level of world 13 flagged for it).
 const AFTER_BOSS_LEVEL: &str = "levelL1";
@@ -683,13 +676,13 @@ impl Darkening {
 
 /// The models of a boss level's end, from the level's own item set
 /// (`ITEMS/<level>`): the key (and its clip's length), its second model,
-/// the wizard; and the wizard's speeches for this boss with their lengths.
+/// the wizard; and the wizard's speeches for this boss.
 #[derive(Default)]
 struct EndModels {
     key: Option<(Arc<CharacterModel>, f32)>,
     key_after: Option<Arc<CharacterModel>>,
     wizard: Option<Arc<CharacterModel>>,
-    speeches: Vec<Option<(String, f32)>>,
+    speeches: Vec<Option<String>>,
     /// The wizard's messages for this boss: pages by group.
     texts: HashMap<&'static str, Vec<String>>,
 }
@@ -708,9 +701,8 @@ struct Victory {
     wizard_at: [f32; 3],
     fade: i32,
     countdown: f32,
-    /// The voice queue: when the speech playing ends, and one waiting.
-    voice_until: f32,
-    queued: Option<(String, f32)>,
+    /// The countdown has run out and the level change is asked for.
+    over: bool,
 }
 
 /// What the boss camera follows (`boss_camera.rs`), refreshed each tick:
@@ -1320,8 +1312,8 @@ fn read_folder(game: &mut LoadedGame, folder: &str) -> Option<CritterFolder> {
 }
 
 /// Loads the models of the boss level's end from the level's own item set:
-/// the key (bosses before the first skorne) and the wizard; and the lengths
-/// of the wizard's speeches (from the sound catalog).
+/// the key (bosses before the first skorne) and the wizard; and the names
+/// of the wizard's speeches.
 fn load_end_models(
     game: &mut LoadedGame,
     level: &str,
@@ -1347,14 +1339,7 @@ fn load_end_models(
     let key = if has_key { build("BOSSKEY") } else { None };
     let key_after = if has_key { build("BOSSKEY2").map(|m| m.0) } else { None };
     let wizard = build("WIZARD").map(|m| m.0);
-    let catalog = game.install.read("AUDIO/AUDATPS2.ROM").ok().and_then(|b| AudioCatalog::parse(&b).ok());
-    let speeches = (0..5)
-        .map(|n| {
-            let name = wizard_speech(boss_type, letter, n)?;
-            let length = catalog.as_ref().and_then(|c| c.find_sound(&name)).map_or(SPEECH_GUESS, |s| s.length.max(0.0));
-            Some((name, length))
-        })
-        .collect();
+    let speeches = (0..5).map(|n| wizard_speech(boss_type, letter, n)).collect();
     let rom = game.install.read("TEXT/ENGLISH.ROM").ok().and_then(|b| TextRom::parse(&b).ok());
     let groups = [first_message(boss_type)]
         .into_iter()
@@ -1729,8 +1714,7 @@ fn tick_critters(
                     wizard_at: [0.0; 3],
                     fade: 0,
                     countdown: 0.0,
-                    voice_until: 0.0,
-                    queued: None,
+                    over: false,
                 });
                 info!("the boss is gone");
             }

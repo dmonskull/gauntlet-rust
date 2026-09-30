@@ -18,15 +18,11 @@
 //! and their sub-menus, Shop, Inventory and memory-card Save/Load open or
 //! list what the game lists but change nothing.
 
-use std::collections::HashSet;
-
 use bevy::prelude::*;
-use gdl_formats::audio::AudioCatalog;
 use gdl_formats::font::{FONT8X8, FONT32, INITIALS};
 use gdl_formats::pdata::PlayerStats;
 use gdl_formats::text::TextRom;
 
-use crate::audio::EffectName;
 use crate::character::Animator;
 use crate::exits::ChangeLevelTo;
 use crate::font::{Draw2d, FontTexture, GameFonts, TextStyle, UiTextures};
@@ -1116,29 +1112,6 @@ fn select(
 /// Stand-in for the game's dying time (its own counter on the death
 /// animation isn't traced): the DEATH action, at most this long.
 const DYING_SECONDS: f32 = 4.0;
-/// The sound catalog, and its banks of the announcer's lines.
-const CATALOG: &str = "AUDIO/AUDATPS2.ROM";
-const ANNOUNCER_BANKS: [&str; 2] = ["VOICE1", "VOICE2"];
-
-/// The announcer's lines by name (upper-case). Stand-in for the game's
-/// voice queues, which the rewrite doesn't have: while one of these plays,
-/// an out hero's level doesn't end.
-fn announcer_lines(game: &mut LoadedGame) -> HashSet<String> {
-    let catalog = game.install.read(CATALOG).map_err(|e| e.to_string()).and_then(|b| AudioCatalog::parse(&b).map_err(|e| e.to_string()));
-    let catalog = match catalog {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("no sound catalog, the level ends without waiting for the announcer: {e}");
-            return HashSet::new();
-        }
-    };
-    ANNOUNCER_BANKS
-        .iter()
-        .filter_map(|b| catalog.find_bank(b))
-        .flat_map(|b| catalog.bank_sounds(b))
-        .map(|s| s.name.to_ascii_uppercase())
-        .collect()
-}
 
 /// When a level starts: outside the tower and the secret realm the game
 /// saves the hero's record — except in `levelE2` and `levelF2` — and a
@@ -1173,20 +1146,17 @@ fn level_started(
 
 /// A dead hero plays DEATH; then in the tower it stands up again with its
 /// saved record, and anywhere else it is out of the level. With no hero
-/// left standing the level ends — once no announcer line is playing, as
-/// the game waits for its voice queues — and the party returns to the
-/// tower, where it is revived.
-#[allow(clippy::too_many_arguments)]
+/// left standing the level ends from the next frame — once the voice
+/// queues are empty, as every level change waits (`exits.rs`) — and the
+/// party returns to the tower, where it is revived.
 fn death(
     time: Res<Time>,
-    mut game: ResMut<LoadedGame>,
+    game: Res<LoadedGame>,
     mut fe: ResMut<Frontend>,
     snapshot: Res<Snapshot>,
     mut state: ResMut<PlayerState>,
     mut players: Query<&mut Animator, With<Player>>,
     mut to_level: MessageWriter<ChangeLevelTo>,
-    playing: Query<&EffectName>,
-    mut announcer: Local<Option<HashSet<String>>>,
 ) {
     if state.alive || fe.screen != Screen::Playing {
         fe.dead_for = 0.0;
@@ -1194,12 +1164,9 @@ fn death(
     }
     if fe.out {
         if !fe.leaving {
-            let lines = announcer.get_or_insert_with(|| announcer_lines(&mut game));
-            if !playing.iter().any(|n| lines.contains(&n.0.to_ascii_uppercase())) {
-                fe.leaving = true;
-                to_level.write(ChangeLevelTo(TOWER.to_string()));
-                info!("no hero left standing: back to the tower");
-            }
+            fe.leaving = true;
+            to_level.write(ChangeLevelTo(TOWER.to_string()));
+            info!("no hero left standing: back to the tower");
         }
         return;
     }

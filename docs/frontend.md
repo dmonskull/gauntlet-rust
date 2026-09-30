@@ -426,51 +426,141 @@ then `FUN_80079094`:
 
 **The wait for the voices.** The player update (`FUN_8007692c`) reports
 the level over from the frame after the last hero goes out (in the frame
-it goes out, its dying case keeps the level going). The play mode then
-ends the level only if `FUN_8001538c(1)` returns 0; otherwise it tries
-again next frame, the level still running and the out panel up.
-`FUN_8001538c` returns 0 at once if the audio has failed (`r13-0x7860`);
-otherwise it steps the voice queues (`FUN_80015480`) and returns 1 while
-either of them holds a line — with a limit of 50,000,000 tries ("Audio
-Play Timeout"), in effect none.
+it goes out, its dying case keeps the level going), and when the heroes
+leave through an exit or a boss level's countdown runs out (`r13-0x72f0`).
+The play mode then ends the level only if `FUN_8001538c(1)` returns 0;
+otherwise it tries again next frame, the level still running (the out
+panel up). `FUN_8001538c` returns 0 at once if the audio has failed
+(`r13-0x7860`); otherwise it steps the voice queues (`FUN_80015480`) and
+returns 1 while either of them holds a line — with a limit of 50,000,000
+tries ("Audio Play Timeout"), in effect none. (Its loop over the started
+sounds' table afterwards changes nothing.) The next level's start waits
+again: `FUN_80053530` → `FUN_800a097c` loops on `FUN_8001538c(1)` a frame
+at a time, then `FUN_80015618` empties both queues and stops the started
+sounds (`FUN_800166d8(0x1FFF)`).
+Two more waits: a boss level's end sequence (step 9, `FUN_80019044`,
+[critters.md](critters.md), "The end sequence") and a level's opening
+(`FUN_8001a220` state 2, `FUN_8001538c(10)`; its state 0 queues two lines
+named by the level's records, `FUN_8009f5bc` — not traced further, not
+done here).
 
-- **The voice queues** (`r13-0x781c`: two counts; lines at `0x8023cb58` +
-  queue × `0x140`, 16 of `0x14` bytes: sound id, volume, two sound
-  arguments, length). `FUN_80015160(length, most wait, queue, id, …)`
-  appends a line: a length ≤ 0 is the sound's catalog length (sound record
-  `+0x14`, seconds) × 60 (`r2-0x7de0`) fields, and the line is dropped
-  when what is already queued runs more than most wait × 60 fields.
-  `FUN_80015480`, every frame, plays the first line when its turn comes
-  (`FUN_80015cac`) and removes it `length` fields later (by the field
-  counter `r13-0x6bb0`); it doesn't step, and counts nothing, while banks
-  load (`r13-0x7800`) or a sound is being started (`r13-0x7804`).
-- **Queue 1, the announcer**: hints' voices (`FUN_800a4268` →
-  `FUN_8009c37c`), the health warnings (`FUN_8009f82c` → `FUN_8009f9e0`:
-  lines picked by the player's colour and class from tables at
-  `0x8028b020`…`0x8028b360`, then `S_BADLY`, `S_LIFEFORCE`, `S_NEEDSFOOD`
-  or `S_ABOUT`), the tower wizard's (`FUN_8009bec0`, `FUN_8009bd28`:
-  `WIZTOWER` sounds) and the bosses' wizard's speeches (`FUN_8009bf48`:
-  the boss's bank), and the other announcer calls
-  (`FUN_8009bbb0`…`FUN_8009f95c`).
-- **Queue 0, the heroes**: their own voice lines (`FUN_80015124` from
-  `FUN_8009ef80`, `FUN_8009f010`, `FUN_8009f098`, and `FUN_8009f220`, the
-  hurt cries of the damage function; the character's tables at
-  `0x80122cac`…`0x80122e0c`), and a sound asked for without a position
-  while banks load (`FUN_80015cac`).
+### The voice queues
+
+`r13-0x781c`: two counts; `r13-0x7824`: each queue's first line's end (0
+until it starts); lines at `0x8023cb58` + queue × `0x140`, 16 of `0x14`
+bytes: sound id, volume, pan, priority, length (f32 fields). The clock is
+the field counter `r13-0x6bb0`, milliseconds × 3 / 50 since it was
+started (`FUN_800c84c0`): real time at 60 a second, running under the
+message box and menus.
+
+- **Appending** — `FUN_80015160(length, most wait, queue, id, volume, pan,
+  priority)`; `FUN_80015124` is the same with queue 0. With 16 lines the
+  line is dropped. Its start is now for an empty queue, else the first
+  line's end (now + its length if it hasn't started) plus the lengths of
+  the others; with most wait ≥ 0 it's dropped when that start is more than
+  most wait × 60 fields away. A length ≤ 0 is the sound's catalog length
+  (sound record `+0x14`, seconds; −1 for a loop) × 60 (`r2-0x7de0`). It
+  returns the length, or 0 when dropped. It also writes the start into the
+  sound record's `+0x18`; the start callback overwrites that with the
+  actual start, and nothing reads it (every load of the catalog pointer
+  `r13-0x7850` in the binary checked: only these two write it and the
+  loader byte-swaps it).
+- **Stepping** — `FUN_80015480`, every frame from the main loop
+  (`FUN_80067f50`) and twice a frame in the message box's loop: for each
+  queue with lines, a first line not started is played (`FUN_80015cac(−1,
+  id, volume, 0, pan, priority)`) and its end set to now + length; a first
+  line whose end has come is taken off (the next starts on the next
+  step). It doesn't step while banks load (`r13-0x7800`) or a sound is
+  being started (`r13-0x7804`). It returns 1 if either queue held a line.
+- **Starting a sound** — `FUN_80015cac` sends the sound driver three
+  words: the call's handle, volume << 16 | pan, and the priority (with a
+  first argument ≥ 0 — the jukebox's — that argument `& 0x1FFF | 0x8000`
+  instead). When the
+  driver has started it, `FUN_80015f24` runs: the record's `+0x18` = now,
+  and each voice the driver used gets a slot in the table `0x8023d4e8`
+  (12 × `0x14`: id, handle, end = now + 60 × length, …). `FUN_80016358(id)`
+  is "is it playing": a slot with that id whose end hasn't come.
+  `FUN_80016558(id)` stops it: the voices in slots with that id, and a
+  request still pending for it (a queued line not yet started isn't
+  touched).
+- **The priority** is the driver's, for voice stealing: a started voice
+  keeps `priority << 16 | the call's own priority` (the bank call's last
+  word, [audio-format.md](audio-format.md) "Calls"). A new sound takes a
+  free voice (round-robin from the cursor `r13-0x68c0`); with all 12 busy
+  it takes, walking from the cursor, the voice whose key is the highest
+  seen so far if that key is still ≤ the new sound's priority
+  (`FUN_800d350c`) — so only voices started at priority 0 can be taken,
+  and a sound with nowhere to go isn't played. Callers' priorities: the
+  announcer's lines 2, the heroes' eating and poison lines `0x42`, their
+  steal lines `0x6E`, hurt cries `0x64`, the tower's chimes 10. Nothing
+  in the queues themselves orders by it.
+- **Queue 1, the announcer** (volume `0xE0`, the player's pan
+  `0x80122a90` = centre), its most waits:
+  - hints (`FUN_800a4268` → `FUN_8009c37c`), 0.5 s; with one player
+    (`r13-0x7390` ≤ 1) four are sentences naming the hero (below):
+    the name then `S_NOWIT` or `S_POJOVOX` (5 s), the name, `S_HAS`
+    and `S_GAINEDLEVEL` (1 s) or `S_SHRINKVOX` (4 s);
+  - the tower's unlocks (`FUN_8009bdf0`, `FUN_8009be58`: `UNLOCKSECTION`,
+    `UNLOCKLEVEL` lines, queued before the message box opens), 10 s;
+  - the tower wizard's pieces (`FUN_8009bec0`, `FUN_8009bd28`), 10 s,
+    and ranks (`FUN_8009c5b8`: a sentence, 5 s);
+  - the bosses' wizard's speeches (`FUN_8009bf48`), 10 s;
+  - the random taunts (`FUN_8009bbb0`/`FUN_8009bc24`, from
+    `FUN_800a11c4`), 0.5 s; `FUN_8009caec`/`FUN_8009cb38`, 10 s;
+    `FUN_8009f2ec`, `FUN_8009f368` (from the pickups), 1 s; `FUN_8009f6d8`…
+    `FUN_8009f7dc`, 3 s; `FUN_8009f8d8`/`FUN_8009f95c`, 10 s; the
+    runestone count `FUN_8009f40c` and the level's names `FUN_8009f5bc`,
+    no limit; the health warnings (`FUN_8009f82c` → `FUN_8009f9e0`:
+    `S_BADLY`, `S_LIFEFORCE`, `S_NEEDSFOOD`, `S_ABOUT`).
+
+  All of these but the wizards' (`FUN_8009bec0`, `FUN_8009bd28`,
+  `FUN_8009bf48`, `FUN_8009bdf0`, `FUN_8009be58`) are refused while
+  `r13-0x7790` ≥ 3: a boss level's end sequence from the wizard's
+  appearance (it's reset to 0 by `FUN_80053d1c` and `FUN_80057020`).
+
+  **Sentences** (`FUN_8009f9e0(most wait, before, player, line, after)`):
+  up to five lines queued in turn — `before`, the colour's name, the
+  class's name, `line`, `after` — the first with the most wait and the
+  rest with none; when one is dropped the rest aren't queued. The name is
+  `S_<colour><class>2` (`S_BLUWAR2`, "Blue Warrior", from the class's
+  bank) without a `before`, else `S_<colour><class>1`; the colour's own
+  line is never said (its tables hold −1). Colours `YEL`, `BLU`, `RED`, `GRE`
+  (`0x8011f8cc`); classes `WAR`, `VAL`, `WIZ`, `ARC`, `DWF`, `KNI`, `SOR`,
+  `JES`, `MIN`, `FAL`, `JAC`, `TIG`, `OGR`, `UNI`, `MED`, `HYE`
+  (`0x8011f878`); the tables are filled by `FUN_8009fcc8`. A hero as the
+  Pojo (`+0x124` flag `0x400`) is `S_POJO2`/`S_POJO1`. While
+  `r13-0x6ed4` is set (`FUN_800a079c`) other tables are used (`S_%s%s1S`,
+  `S_%s%s2S`; not traced).
+- **Queue 0, the heroes**: their own lines (`FUN_80015124`, 1 s, volume
+  `0xC0`, pan from the hero's position): eating (`FUN_8009f098`: one time
+  in four the class's `S_<CLS>EAT` — the archer's by fruit — else
+  `S_<CLS>EATSFX`, table `0x80122dcc`), poison (`FUN_8009f010`,
+  `S_<CLS>POISON`), `FUN_8009ef80` (`S_<CLS>STEAL`), the hurt cries of the
+  damage function (`FUN_8009f220`, `S_<CLS>PAIN1`–`4`, volume `0xE0`);
+  and, while banks load (`r13-0x7800`) or with `r13-0x7830` < 0, a sound
+  asked for without a position (`FUN_80015cac` → queue 0, 2 s).
 - Nothing else counts: sounds played directly (`FUN_80015a30`,
   `FUN_80015a94`, `FUN_800157ec`) — hits, pickups, the death cry
   (`FUN_8009ea88`: sound 1 and the class's cry), `S_GAMEOVERVOX` — and
   the music.
 
-Here (`frontend.rs`, `death`): once the DEATH action is over outside the
-tower the hero is out (`Frontend::hero_out`; the HUD shows its "IN TOWER"
-panel, "In-game HUD"), and from the next frame the level ends — back to
-the tower — as soon as no announcer line is playing. Stand-in: the rewrite
-has no voice queues (its voice lines play at once, side by side), so an
-announcer line is a sound of the catalog's `VOICE1` or `VOICE2` bank still
-playing; the speeches of the tower's and the bosses' wizards and the
-heroes' own lines (which the rewrite doesn't play yet) don't hold the
-level.
+Here (`audio.rs`: `QueueVoice`, `VoiceQueues`): both queues, with the
+catalog lengths, the most waits, the 16-line limit, sentences and the
+boss end's gate, on real time. In them: the hints (0.5 s, gated), the
+message box's line (the tower's unlocks, 10 s), the tower wizard's pieces
+(10 s) and ranks (the hero's name, then `S_EXP…`, 5 s), the bosses'
+wizard (10 s), and the heroes' eating and poison lines. Every level
+change by name waits while a queue holds a line (`exits.rs`): an exit,
+the boss level's end, the last hero out (`frontend.rs`, `death`: once
+the DEATH action is over outside the tower the hero is out — the HUD
+shows its "IN TOWER" panel, "In-game HUD" — and from the next frame the
+level change to the tower is asked for), the menus. Stand-ins: the old
+level keeps running during the wait even where the game's is frozen (a
+level start's own wait, `FUN_800a097c`); the queues aren't emptied and
+the voices aren't stopped as the new level starts (they're empty by
+then); lines aren't panned and there's no 12-voice limit, so the priority
+does nothing. Not done: the level's name lines and the opening's wait,
+the health warnings, the taunts, the hurt cries, the runestone count.
 
 The save (`FUN_8007a670(p, 1)`, from `FUN_80053530`) happens when a level
 outside the tower starts, except in the secret realm (12) and in `levelE2`
@@ -578,10 +668,10 @@ Start, triggers.
   out aren't drawn.
 - The dying time is the DEATH animation, at most 4 s (the game's own
   counter isn't traced).
-- An out hero's level waits only for the announcer's lines (`VOICE1`,
-  `VOICE2`) still playing, not for the game's voice queues (not in the
-  rewrite): the wizards' speeches don't hold it, lines don't wait their
-  turn, and the heroes' own lines aren't played (see Death).
+- A level change waiting for the voice queues leaves the old level
+  running even where the game's is frozen (a level start's own wait);
+  the queued lines aren't panned, and there's no 12-voice limit (see "The
+  voice queues").
 - Only player 1 is interactive on the select screen; class attributes show
   the start values (no per-character points or levels); changing class
   starts that class fresh (the game keeps each class's progress in the
