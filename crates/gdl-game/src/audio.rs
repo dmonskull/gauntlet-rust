@@ -6,10 +6,15 @@
 //! one looping. Sound effects are played by catalog name through
 //! [`PlaySound`]; `N` steps through the current level's bank.
 //!
+//! Voice lines wait their turn in the game's two voice queues
+//! ([`QueueVoice`], [`VoiceQueues`]; `docs/frontend.md`, "The voice
+//! queues"): the heroes' own lines in one, the announcer's and the
+//! wizards' in the other.
+//!
 //! Anything missing or undecodable is logged and skipped — audio never
 //! stops the game from running.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,9 +36,194 @@ impl Plugin for GameAudioPlugin {
             .add_message::<PlaySound>()
             .add_message::<StopSound>()
             .add_message::<LoopSound>()
+            .add_message::<QueueVoice>()
             .init_resource::<AudioStatus>()
+            .init_resource::<VoiceQueues>()
             .add_systems(Startup, load_audio_tables)
-            .add_systems(Update, (level_music, audio_keys, play_sounds, stop_sounds, loop_sounds).chain());
+            .add_systems(
+                Update,
+                (level_music, audio_keys, step_voices, play_sounds, stop_sounds, loop_sounds).chain(),
+            );
+    }
+}
+
+/// The game's two voice queues.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceQueue {
+    /// The heroes' own lines (eating, hurt cries).
+    Heroes = 0,
+    /// The announcer's lines — hints, the tower's unlocks — and the tower's
+    /// and the bosses' wizards' speeches.
+    Announcer = 1,
+}
+
+/// Queues a voice line (or a sentence of them) by catalog name: it plays
+/// once the lines queued before it are done. The first line is dropped when
+/// what is queued ahead would keep it waiting more than `most_wait`
+/// seconds (never, for `None`), or when the queue is full; the lines after
+/// it wait as long as it takes, and go with it when it's dropped.
+#[derive(Message, Clone, Debug)]
+pub struct QueueVoice {
+    pub queue: VoiceQueue,
+    pub lines: Vec<String>,
+    pub most_wait: Option<f32>,
+    /// Refused once a boss level's end has begun (the announcer's lines;
+    /// the wizards' aren't).
+    pub gated: bool,
+}
+
+impl QueueVoice {
+    /// An announcer line.
+    pub fn announcer(line: impl Into<String>, most_wait: f32) -> Self {
+        Self { queue: VoiceQueue::Announcer, lines: vec![line.into()], most_wait: Some(most_wait), gated: false }
+    }
+
+    /// A hero's own line: dropped when it would wait more than a second.
+    pub fn hero(line: impl Into<String>) -> Self {
+        Self { queue: VoiceQueue::Heroes, lines: vec![line.into()], most_wait: Some(HERO_MOST_WAIT), gated: false }
+    }
+
+    /// A line said right after the last.
+    pub fn then(mut self, line: impl Into<String>) -> Self {
+        self.lines.push(line.into());
+        self
+    }
+
+    /// Refused once a boss level's end has begun.
+    pub fn gated(mut self) -> Self {
+        self.gated = true;
+        self
+    }
+}
+
+/// The heroes' lines' longest wait, seconds.
+const HERO_MOST_WAIT: f32 = 1.0;
+/// Lines a queue holds.
+const QUEUE_LINES: usize = 16;
+/// The voice queues count fields, 60 a second of real time.
+const FIELDS_PER_SECOND: f32 = 60.0;
+
+/// A queued line: its sound and how long it holds the queue, in fields.
+#[derive(Debug)]
+struct Line {
+    name: String,
+    fields: f32,
+}
+
+#[derive(Default)]
+struct Queue {
+    lines: VecDeque<Line>,
+    /// When the first line is done, once it has started.
+    ends: Option<f32>,
+}
+
+/// The voice queues: each plays its first line when that line's turn
+/// comes and takes it off `length` fields later, the length being the
+/// sound's catalog length. They run on real time (the game's field
+/// counter is a clock), so they go on under the message box and menus.
+#[derive(Resource, Default)]
+pub struct VoiceQueues {
+    queues: [Queue; 2],
+    /// Fields of real time.
+    now: f32,
+    /// A boss level's end has begun: the announcer's lines are refused.
+    closed: bool,
+}
+
+impl VoiceQueues {
+    /// Whether either queue holds a line (playing or waiting). A level
+    /// doesn't end while one does.
+    pub fn busy(&self) -> bool {
+        self.queues.iter().any(|q| !q.lines.is_empty())
+    }
+
+    /// Refuses the announcer's lines from now until the next level starts
+    /// (a boss level's end, from the wizard's appearance).
+    pub fn close_announcer(&mut self) {
+        self.closed = true;
+    }
+
+    /// Appends a line `fields` long; `false` when it's dropped: the queue
+    /// is full, or what's ahead of it runs more than `most_wait` seconds.
+    fn append(&mut self, queue: VoiceQueue, name: &str, fields: f32, most_wait: Option<f32>) -> bool {
+        let now = self.now;
+        let q = &mut self.queues[queue as usize];
+        if q.lines.len() >= QUEUE_LINES {
+            return false;
+        }
+        // When it would start: after the first line (from now, if that
+        // hasn't started) and all the others.
+        let starts = match q.lines.front() {
+            None => now,
+            Some(first) => q.ends.unwrap_or(now + first.fields) + q.lines.iter().skip(1).map(|l| l.fields).sum::<f32>(),
+        };
+        if most_wait.is_some_and(|w| w * FIELDS_PER_SECOND < starts - now) {
+            return false;
+        }
+        q.lines.push_back(Line { name: name.into(), fields });
+        true
+    }
+
+    /// One step at field `now`: a queue whose first line hasn't started
+    /// starts it; one whose first line is done takes it off (the next
+    /// starts on the following step). The lines to play now.
+    fn step(&mut self, now: f32) -> Vec<String> {
+        self.now = now;
+        let mut start = Vec::new();
+        for q in &mut self.queues {
+            let Some(first) = q.lines.front() else { continue };
+            match q.ends {
+                None => {
+                    q.ends = Some(now + first.fields);
+                    start.push(first.name.clone());
+                }
+                Some(ends) if ends <= now => {
+                    q.lines.pop_front();
+                    q.ends = None;
+                }
+                Some(_) => {}
+            }
+        }
+        start
+    }
+}
+
+/// Queues the lines asked for and steps the queues, starting the lines
+/// whose turn has come.
+fn step_voices(
+    real: Res<Time<Real>>,
+    stats: Option<Res<CurrentLevelStats>>,
+    tables: Res<AudioTables>,
+    mut voices: ResMut<VoiceQueues>,
+    mut requests: MessageReader<QueueVoice>,
+    mut play: MessageWriter<PlaySound>,
+) {
+    // A new level opens the announcer's queue again.
+    if stats.is_some_and(|s| s.is_changed()) {
+        voices.closed = false;
+    }
+    let now = voices.now + real.delta_secs() * FIELDS_PER_SECOND;
+    voices.now = now;
+    for QueueVoice { queue, lines, most_wait, gated } in requests.read() {
+        if *gated && voices.closed {
+            info!("voice {lines:?} refused: the level's end has begun");
+            continue;
+        }
+        for (i, name) in lines.iter().enumerate() {
+            // A line lasts its sound's catalog length (a looping sound's is
+            // negative: it's taken off at once); a sound the catalog
+            // doesn't have, none.
+            let length = tables.catalog.as_ref().and_then(|c| c.find_sound(name)).map_or(0.0, |s| s.length);
+            let wait = if i == 0 { *most_wait } else { None };
+            if !voices.append(*queue, name, length * FIELDS_PER_SECOND, wait) {
+                info!("voice {name} dropped: the {queue:?} queue is too long");
+                break;
+            }
+        }
+    }
+    for name in voices.step(now) {
+        info!("voice line {name} starts");
+        play.write(PlaySound(name));
     }
 }
 
@@ -466,5 +656,56 @@ mod tests {
     fn effect_loops_from_its_loop_segment() {
         let d = effect(&[(12000, 1), (12000, 2)], Some(1)).decoder();
         assert_eq!(d.take(7).collect::<Vec<_>>(), [1, 2, 2, 2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn voice_lines_play_one_after_another() {
+        use VoiceQueue::Announcer;
+        let mut v = VoiceQueues::default();
+        assert!(v.append(Announcer, "A", 60.0, None));
+        assert!(v.append(Announcer, "B", 30.0, None));
+        assert!(v.busy());
+        assert_eq!(v.step(0.0), ["A"]);
+        assert!(v.step(59.0).is_empty());
+        // A is taken off at its end; B starts on the next step.
+        assert!(v.step(60.0).is_empty());
+        assert_eq!(v.step(61.0), ["B"]);
+        assert!(v.step(91.0).is_empty());
+        assert!(!v.busy());
+    }
+
+    #[test]
+    fn voice_queues_run_side_by_side() {
+        let mut v = VoiceQueues::default();
+        v.append(VoiceQueue::Heroes, "H", 10.0, None);
+        v.append(VoiceQueue::Announcer, "A", 10.0, None);
+        assert_eq!(v.step(0.0), ["H", "A"]);
+    }
+
+    #[test]
+    fn voice_line_dropped_when_it_would_wait_too_long() {
+        use VoiceQueue::Announcer;
+        let mut v = VoiceQueues::default();
+        v.append(Announcer, "A", 120.0, None);
+        // 2 s ahead of it: a half-second line is dropped, a 10 s one isn't.
+        assert!(!v.append(Announcer, "B", 30.0, Some(0.5)));
+        assert!(v.append(Announcer, "C", 30.0, Some(10.0)));
+        // Once A has played a second: its last second and C's half wait.
+        v.step(0.0);
+        v.now = 60.0;
+        assert!(!v.append(Announcer, "D", 30.0, Some(1.4)));
+        assert!(v.append(Announcer, "E", 30.0, Some(1.5)));
+        // Nothing ahead: never dropped.
+        let mut empty = VoiceQueues::default();
+        assert!(empty.append(Announcer, "F", 30.0, Some(0.0)));
+    }
+
+    #[test]
+    fn voice_queue_holds_sixteen_lines() {
+        let mut v = VoiceQueues::default();
+        for _ in 0..QUEUE_LINES {
+            assert!(v.append(VoiceQueue::Heroes, "L", 1.0, None));
+        }
+        assert!(!v.append(VoiceQueue::Heroes, "L", 1.0, None));
     }
 }

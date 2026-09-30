@@ -347,8 +347,12 @@ string (−1 = the whole group), `VOICE1` sound id. The ones items use:
 A hint's voice id is `bank << 16 | call` in the audio catalog's numbering
 (`VOICE1` = 1, `VOICE2` = 2).
 
-A hint up blocks others of the same priority (all 50). Stand-ins: each
-is shown once per session, for 3 seconds.
+A hint up blocks others of the same priority (all 50). Its voice waits
+in the announcer's voice queue and is dropped past a 0.5 s wait (with
+one player, four hints are sentences naming the hero; none of those are
+raised here) — [frontend.md](frontend.md), "The voice queues". The
+eating lines above are the hero's own, in the heroes' queue (1 s).
+Stand-ins: each is shown once per session, for 3 seconds.
 
 ## Not done
 
@@ -553,7 +557,9 @@ class's `CLASS_RANK` group at (level ÷ 10) ÷ 2, `LEGEND` at 99 — typed
 at 0.667 in `font32` at y 312 (`FUN_80019f5c`); his line `S_EXP<tens><class>`
 (`0x80123540`: `WAR`, `VAL`, `WIZ`, `ARC`, `DWA`, `KNI`, `SOR`, `JES`,
 `MIN`, `FAL`, `JAC`, `TIG`, `OGR`, `UNI`, `MED`, `HYE`), `S_EXP99ALL` at 99
-(`FUN_8009c5b8`); after 239 fields the hero's `LEVELUP_<colour>` flash
+(`FUN_8009c5b8`: a sentence of the announcer's queue, the hero's name
+`S_<colour><class>2` — "Blue Warrior", `DWF` for the dwarf — then that
+line, dropped past a 5 s wait; the pieces' lines past 10 s); after 239 fields the hero's `LEVELUP_<colour>` flash
 (`FUN_80091ef4`, `0x80122628`, attached to the hero) and after 269 the
 `GETGEM<colour>` sparkle (`FUN_8009176c`, `0x8012454c`: yellow 6, blue 4,
 red 2, green 5 → effects `0x4B`, `0x49`, `0x47`, `0x4A` in `POWERUPS`); once
@@ -561,7 +567,8 @@ typed, 360 fields in and his line done, the next hero. The piece's words
 (if any) then start at once, the wizard and his cut staying; with none
 he goes 0.5 s later.
 
-Here (`tower_scenes.rs`): all of the above for one hero; the rank level
+Here (`tower_scenes.rs`): all of the above for one hero, his lines in
+the announcer's voice queue (`audio::QueueVoice`); the rank level
 is kept as a level (`Quest::rank_level`, saved; a record without one is
 checked from its level then). Stand-ins: the exits aren't made clear or
 faded in (they show as their open state says), the light comes on at

@@ -762,7 +762,8 @@ isn't traced).
      (`r13-0x7f9c`) when `0x8006299c` says so or the first skorne's
      `r13-0x77b0` is set (from state 9 on it's cut back to 120 whenever
      `0x8006299c` doesn't);
-  9. once the speech has finished (`0x8001538c`),
+  9. once both voice queues are empty (`0x8001538c(1)`: the speeches
+     done; the countdown keeps running meanwhile),
   10. at 35 fields left (`r13-0x7fa0`) each live player gets an effect
       (`0x80090a00`: the teleport out);
   11. the countdown runs out (`0x80054244`): `r13-0x72f0` = 1, the
@@ -776,7 +777,10 @@ isn't traced).
   (dragon to drider) or `S_RUNEVOX2<L>` (P-boss to lich), `<L>` the realm
   letter; the first skorne has `S_E2VOXA` or `S_E2VOXB`, the second
   skorne `S_ENDVOX`, garm `S_GRMDESTVOX`. They go through the voice queue
-  (`0x80015160`, queue 1), one after another. The messages are groups of
+  (`0x80015160`, queue 1, dropped past a 10 s wait), one after another.
+  From state 3 on (`r13-0x7790` ≥ 3) the announcer's other lines — hints,
+  taunts, health warnings — are refused ([frontend.md](frontend.md), "The
+  voice queues"). The messages are groups of
   the default text table, `TEXT/ENGLISH.ROM`, by number: 0x93
   `CHIMERA_SPEECH` … 0x9A `WRAITH_SPEECH` ("You have defeated the mighty
   Dragon and recovered his shard."), 0x9B–0x9E `RUNE_PHRASE0`, `1`, `1B`,
@@ -1431,11 +1435,13 @@ dragon.
   position + `TYPE +0xD0` with `S_BOSSKEY<L>`; 5 s later (10 s) the
   `WIZARD` appears between the boss's spot and the hero, 3 above; after
   his 64-tick fade he says `S_DEFEATVOX<L>`, then `S_RUNEVOX…` by the
-  realm's runestones the hero holds, queued one after the other; his
-  messages (`TEXT/ENGLISH.ROM`) show a page at a time through
-  `hints::ShowMessage`, each for as long as the game types and holds it
-  (a character every 2 fields, then 60 fields); the 2 s countdown then
-  sends the hero to `levelL1`.
+  realm's runestones the hero holds, in the announcer's voice queue
+  (`audio::QueueVoice`; from his appearance the hints' lines are
+  refused); his messages (`TEXT/ENGLISH.ROM`) are typed in the top bar
+  (`message_box::ShowCaption`), each page for as long as the game types
+  and holds it; the 2 s countdown then sends the hero to `levelL1` —
+  step 9 waits for the voice queues before the teleport's step, and the
+  level change waits for them too (`exits.rs`).
   - Stand-ins: the wizard doesn't fade in; the teleport-out effect,
     the HUD sprites and the next level's choice (`levelL1` for world
     13's first) aren't the game's; the shard doesn't drop to the floor

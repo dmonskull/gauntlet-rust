@@ -62,8 +62,9 @@ pub struct CatalogSound {
     /// Index into that bank's [`SoundBank::calls`](super::SoundBank::calls).
     pub call: usize,
     /// The call's length in seconds (all its samples, back to back), or -1
-    /// when it loops. Matches every call on the disc; what the game uses it
-    /// for isn't traced.
+    /// when it loops. Matches every call on the disc. The game holds a
+    /// voice-queue line for this long (× 60 fields), and counts a started
+    /// sound as playing for it (`docs/frontend.md`, "The voice queues").
     pub length: f32,
 }
 

@@ -3,18 +3,21 @@
 //! bank. Pickups, doors and transporters raise them by number through
 //! [`ShowHint`]; `docs/items.md` has the table they come from. (The longer
 //! messages — scrolls, the tower's notices — are the message box's,
-//! `message_box.rs`.) Stand-in: hints are drawn as plain centred text for a
-//! fixed time.
+//! `message_box.rs`.) The announcer's line waits in the announcer's voice
+//! queue, dropped if more than half a second is queued ahead of it.
+//! Stand-in: hints are drawn as plain centred text for a fixed time.
 
 use bevy::prelude::*;
 use gdl_formats::text::TextRom;
 
-use crate::audio::PlaySound;
+use crate::audio::QueueVoice;
 use crate::level::LoadedGame;
 use crate::message_box::MessageBox;
 
 /// How long a hint stays up. Stand-in: the game's hint timing isn't traced.
 const HINT_SECONDS: f32 = 3.0;
+/// A hint's line is dropped when it would wait longer than this, seconds.
+const VOICE_MOST_WAIT: f32 = 0.5;
 
 /// The hints items raise, by the game's hint number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -153,7 +156,7 @@ fn show_hints(
     mut hints: ResMut<Hints>,
     boxes: Res<MessageBox>,
     mut requests: MessageReader<ShowHint>,
-    mut voice: MessageWriter<PlaySound>,
+    mut voice: MessageWriter<QueueVoice>,
 ) {
     // Play is frozen under the message box.
     if boxes.is_open() {
@@ -180,6 +183,6 @@ fn show_hints(
         info!("hint: {}", hints.text.as_deref().unwrap_or_default());
         hints.left = HINT_SECONDS;
         hints.shown.push(hint);
-        voice.write(PlaySound(line.into()));
+        voice.write(QueueVoice::announcer(line, VOICE_MOST_WAIT).gated());
     }
 }
