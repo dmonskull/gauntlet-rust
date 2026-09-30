@@ -57,6 +57,12 @@ impl Plugin for ItemsPlugin {
 // Item flags (the record's `+0xC4`, starting from the type's `+0x46`).
 /// Activated: a door or chest opened, an exit in use.
 pub const USED: u16 = 0x1;
+/// Powerups flagged so (`+0xC4 & 0x8100`) are never held by a critter.
+const HOLD_REFUSED: u16 = 0x8100;
+/// How near a placed critter's spot a powerup must be for it to hold it:
+/// across, and up or down.
+const HOLD_ACROSS: f32 = 2.0;
+const HOLD_UP: f32 = 3.0;
 /// Collides even off screen (doors, exits, placements with flag bit 0).
 pub const ALWAYS_ACTIVE: u16 = 0x40;
 /// A locked container: a key opens it on touch.
@@ -301,6 +307,13 @@ struct Item {
     /// Picked up or opened for good: lingering `timer` fields, then gone.
     leaving: bool,
     gone: bool,
+    /// Held by a placed critter (the game's `+0xCD` = 10): hidden and out
+    /// of reach till the critter drops it.
+    held: bool,
+    /// A sleeping critter's statue (a golem's, a gargoyle's): it blocks,
+    /// and walking into it wakes the critter (the touch handler's placed
+    /// monster case).
+    statue: bool,
     atree: Option<Arc<Atree>>,
     model: Option<Entity>,
     /// A container's contents, resolved.
@@ -377,6 +390,8 @@ pub struct LevelItems {
     released: usize,
     /// The level's scroll texts (`SCROLLSA1`).
     scrolls: String,
+    /// Statues walked into since the critters last looked (placements).
+    woken: Vec<usize>,
 }
 
 /// What the level's other item code (`mechanics.rs`, `hazards.rs`,
@@ -430,7 +445,7 @@ impl LevelItems {
             action: item.action,
             done: item.done,
             actions: item.action_count(),
-            live: !item.gone && !item.leaving,
+            live: !item.gone && !item.leaving && !item.held,
             contents: item.contents.as_ref(),
             model: item.model,
         }
@@ -499,6 +514,48 @@ impl LevelItems {
         i.model.take()
     }
 
+    /// A placed golem, gargoyle or general holds the nearest powerup whose
+    /// centre is within [`HOLD_ACROSS`] across and [`HOLD_UP`] up or down
+    /// of its spot (the game's level-load pass): hidden and out of reach
+    /// till it's dropped. Returns its placement number.
+    pub fn hold_nearest(&mut self, at: [f32; 3]) -> Option<usize> {
+        let near = |i: &Item| {
+            let c = i.shape.centre;
+            ((c[0] - at[0]).powi(2) + (c[2] - at[2]).powi(2)).sqrt()
+        };
+        let item = self
+            .items
+            .iter_mut()
+            .filter(|i| i.class() == ItemClass::Powerup && !i.gone && !i.held && i.flags & HOLD_REFUSED == 0)
+            .filter(|i| near(i) < HOLD_ACROSS && (i.shape.centre[1] - at[1]).abs() < HOLD_UP)
+            .min_by(|a, b| near(a).total_cmp(&near(b)))?;
+        item.held = true;
+        Some(item.placement)
+    }
+
+    /// Its critter died at `at`: the held item is let go there (and can be
+    /// picked up after `delay` fields). Returns its model, for the caller
+    /// to move there and show.
+    pub fn drop_held(&mut self, placement: usize, at: [f32; 3], delay: i32) -> Option<Entity> {
+        let i = self.find_mut(placement)?;
+        i.held = false;
+        i.delay = delay;
+        i.shape = Shape::of(&i.ty, at, rotation_matrix([0.0; 3]));
+        i.model
+    }
+
+    /// The placement stands as a critter's statue (`critters.rs`).
+    pub fn mark_statue(&mut self, placement: usize) {
+        if let Some(i) = self.find_mut(placement) {
+            i.statue = true;
+        }
+    }
+
+    /// The statues walked into since the last call.
+    pub fn take_woken(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.woken)
+    }
+
     /// Frees the item at once, model and all (the game's `+0xC4 = 0xFFFF`).
     pub fn free(&mut self, placement: usize, commands: &mut Commands) {
         if let Some(i) = self.find_mut(placement) {
@@ -550,6 +607,8 @@ impl LevelItems {
             stage: 1,
             leaving: false,
             gone: false,
+            held: false,
+            statue: false,
             atree: None,
             model: None,
             contents: None,
@@ -665,6 +724,8 @@ pub(crate) fn build_items(
             stage,
             leaving: false,
             gone: false,
+            held: false,
+            statue: false,
             atree: None,
             model: None,
             contents,
@@ -840,12 +901,14 @@ fn action_texture(item: &Item, rig: &ItemRig) -> Option<(u16, Handle<Image>)> {
     shown
 }
 
-/// A safe rock not made yet (stage −1) isn't drawn: its parts are hidden
-/// (the model itself follows the population view).
+/// A safe rock not made yet (stage −1) and an item a critter holds aren't
+/// drawn: their parts are hidden (the model itself follows the population
+/// view).
 fn show_rocks(items: Res<LevelItems>, children: Query<&Children>, mut parts: Query<&mut Visibility>) {
-    for item in items.items.iter().filter(|i| i.is_safe_rock()) {
+    for item in items.items.iter().filter(|i| i.is_safe_rock() || i.class() == ItemClass::Powerup) {
         let Some(model) = item.model else { continue };
-        let want = if item.stage < 0 { Visibility::Hidden } else { Visibility::Inherited };
+        let hidden = item.held || item.is_safe_rock() && item.stage < 0;
+        let want = if hidden { Visibility::Hidden } else { Visibility::Inherited };
         for part in children.iter_descendants(model) {
             if let Ok(mut v) = parts.get_mut(part)
                 && *v != want
@@ -879,6 +942,8 @@ struct Out<'a> {
     /// and those placed.
     sparkle: Option<&'static str>,
     effects: Vec<(&'static str, [f32; 3])>,
+    /// Statues walked into (placements).
+    woken: Vec<usize>,
     seen: &'a Hints,
     /// The level's scroll texts.
     scrolls: String,
@@ -951,12 +1016,14 @@ fn tick(
         messages: Vec::new(),
         sparkle: None,
         effects: Vec::new(),
+        woken: Vec::new(),
         seen: &seen,
         scrolls,
         now,
     };
     update_items(items, dt, &mut commands);
     run(items, dt, &mut state, ground.as_deref(), &mut players, &cameras, &mut out, &mut change);
+    items.woken.append(&mut out.woken);
     // Poison eaten is a poison blow on the hero, through its armour powers
     // and its reactions (the gold armour's heal comes back negative).
     if let Ok(mut player) = players.single_mut() {
@@ -1059,7 +1126,7 @@ fn run(
     let mut on_exit = Vec::new();
     for i in 0..items.items.len() {
         let item = &items.items[i];
-        if item.gone || item.leaving || !(item.flags & ALWAYS_ACTIVE != 0 || visible(item.shape.centre)) {
+        if item.gone || item.leaving || item.held || !(item.flags & ALWAYS_ACTIVE != 0 || visible(item.shape.centre)) {
             continue;
         }
         if !touchable(item) {
@@ -1115,7 +1182,8 @@ fn touchable(item: &Item) -> bool {
         ItemClass::Door => !(item.state > 1 || (item.state == 1 && item.timer > 30)),
         ItemClass::Obstacle => !((43..46).contains(&item.ty.subtype) && item.state > 0),
         ItemClass::Container => !(item.ty.subtype == 0x2B && item.state == 2),
-        ItemClass::Sound | ItemClass::EnemyInfo => false,
+        ItemClass::Sound => false,
+        ItemClass::EnemyInfo => item.statue,
         _ => true,
     }
 }
@@ -1218,6 +1286,14 @@ fn touch(
             _ => Touch::Block,
         },
         ItemClass::Exit | ItemClass::Transporter => Touch::Stand,
+        // A sleeping critter's statue blocks; walking into it wakes the
+        // critter unless its placement's range is negative.
+        ItemClass::EnemyInfo => {
+            if matches!(item.params, PlacementParams::Enemy { range, .. } if range >= 0.0) {
+                out.woken.push(item.placement);
+            }
+            Touch::Block
+        }
         _ => Touch::Pass,
     }
 }

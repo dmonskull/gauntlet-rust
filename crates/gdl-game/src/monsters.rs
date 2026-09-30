@@ -198,7 +198,8 @@ fn load_level_tunings(mut commands: Commands, mut game: ResMut<LoadedGame>) {
                             Some((e.enemy, Arc::new(s)))
                         })
                         .collect();
-                    tunings.0.insert(level.folder().to_ascii_lowercase(), (level.tuning, LevelEnemies { loaded }, sounds));
+                    let gargoyle = realm_enemies.iter().find(|e| e.enemy == enemy::GARGOYLE).map(|e| e.variant.clone()).unwrap_or_default();
+                    tunings.0.insert(level.folder().to_ascii_lowercase(), (level.tuning, LevelEnemies { loaded, gargoyle }, sounds));
                 }
             }
             Err(e) => warn!("{path}: {e}"),
