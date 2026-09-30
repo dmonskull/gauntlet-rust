@@ -829,3 +829,23 @@ the game's table pairs them. The slot is freed (`FUN_8004ef4c`).
 Not traced: the tier of a Death from a generator or container beyond the
 usual tier rules; how a Death becomes dormant; `+0xC0` (1 for Death only,
 0 for every other type).
+
+**In this rewrite** (`monsters.rs`, `damage.rs`, `player.rs`): every level
+without a boss loads Death; placed Deaths appear (tier 2 with the count
+set, awareness 1000, a 30-field freeze, one contact's delay) with their
+100 unscaled hit points; the target pick skips haloed heroes and notes
+the nearest; AI 3 chases, runs from a haloed hero (× 0.9, the nudges
+while blocked) or walks unaware; the drain on contact (20 a second:
+health through `Player::take_blow` as the negative kind-`0x1000` blow, or
+experience with `PlayerState::lose_experience`; `S_DEATHSUCK`; the drain
+effect; its hint) and Death paying for it, leaving full with
+`S_DEATHLAUGH`; blows taking 1, magic killing it (the level-75 heal), the
+halo's share and the use-magic hint; rising and fading as it goes, then
+the leave hint; the halo's drain (the hero stands in DEATHGRABS →
+DEATHGRAB → DEATHGRABR, `S_HALO` once, `S_DEATHDIE` going on at it, the
+drain effect on the hero). Death moves by its AI whatever it plays (its
+atrees have READY and START only). Stand-ins: the drain effects play
+once per contact instead of holding until it ends; a hero killed by a
+drain doesn't empty the Death; the STUN2 while standing drained (the
+hero's `+0x898`) isn't done; dormant Deaths (the statue) and a Death
+with the suicide AI aren't.

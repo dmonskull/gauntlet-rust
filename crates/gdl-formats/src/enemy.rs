@@ -17,6 +17,8 @@ pub const FIELDS_PER_TICK: f32 = 2.0;
 /// Enemy type ids below this are regular monsters with tiers (the tier
 /// scales hit points and damage); from here up they're special types.
 pub const FIRST_SPECIAL_TYPE: i32 = 28;
+/// Death: a monster like the others (AI 3), which drains heroes.
+pub const DEATH: i32 = 30;
 
 /// Per-type stats of a regular monster.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -244,10 +246,17 @@ impl EnemyStats {
     }
 
     /// Hit points of a monster of `tier` (regular types: a third per tier;
-    /// special types always the full amount).
+    /// special types always the full amount — Death's not even scaled by
+    /// the level).
     pub fn hit_points_at(&self, tier: i32, ai: i16, scales: &EnemyScales) -> f32 {
         let hp = self.base_hit_points(scales);
-        if self.id < FIRST_SPECIAL_TYPE { 0.333 * hp * stat_tier(tier, ai) } else { hp }
+        if self.id == DEATH {
+            self.hit_points
+        } else if self.id < FIRST_SPECIAL_TYPE {
+            0.333 * hp * stat_tier(tier, ai)
+        } else {
+            hp
+        }
     }
 
     /// Everything the game derives when it creates a monster.
@@ -257,7 +266,7 @@ impl EnemyStats {
         let strength = strength_of(hit_points, full);
         // Damage scales with the same thirds, except for Death.
         let mut damage = self.damage * scales.damage;
-        if hit_points <= 0.667 * full && self.id != 30 {
+        if hit_points <= 0.667 * full && self.id != DEATH {
             damage *= if hit_points <= 0.333 * full { 0.333 } else { 0.667 };
         }
         EnemyInstance {
@@ -528,6 +537,14 @@ pub const ACTION_NAMES: [&str; 33] = [
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deaths_hit_points_ignore_the_level() {
+        let scales = EnemyScales { hit_points: 2.5, speed: 1.0, awareness: 1.0, damage: 3.0 };
+        let death = super::enemy_stats(super::DEATH).unwrap().instance(2, 3, &scales);
+        assert_eq!(death.hit_points, 100.0);
+        assert_eq!(death.damage, 3.0, "its damage scales, uncut by the thirds");
+    }
+
     use super::*;
 
     #[test]

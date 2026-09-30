@@ -68,6 +68,15 @@ pub enum Hint {
     GasSpoilsFood,
     /// 0x89: a CHESTEXP explodes.
     ChestsExplode,
+    /// 0: a blow that isn't magic lands on Death.
+    KillDeathWithMagic,
+    /// 0x80, 0x82: a Death drains experience, health.
+    DeathDrainsExperience,
+    DeathDrainsHealth,
+    /// 0x81, 0x83: a Death leaves after draining its fill (the game's
+    /// table pairs these texts the other way round).
+    DeathLeftAfterExperience,
+    DeathLeftAfterHealth,
     /// 0x71 + n: legendary item n (1–11) picked up — its name, spoken.
     Legendary(u8),
     /// A timed power-up picked up: the game's hint number
@@ -227,6 +236,11 @@ impl Hint {
             Self::ExplosionsDestroyItems => ("EXPDESTROY", "S_EXPDSTITMS", true),
             Self::GasSpoilsFood => ("GASPOISON", "S_GASFOODBAD", true),
             Self::ChestsExplode => ("CHESTSEXPL", "S_CHESTSEXPL", true),
+            Self::KillDeathWithMagic => ("USEMAGIC", "S_USEMAGIC", true),
+            Self::DeathDrainsExperience => ("DEATHDRAINEXP", "S_DEATHDRAINXP", true),
+            Self::DeathDrainsHealth => ("DEATHDRAINHEALTH", "S_DEATHDRAINS", true),
+            Self::DeathLeftAfterExperience => ("DEATHDIEEXP", "S_DIESAFTERXP", true),
+            Self::DeathLeftAfterHealth => ("DEATHDIEHEALTH", "S_DIESAFTER", true),
             Self::Legendary(_) | Self::Power(_) => unreachable!(),
         };
         (group.into(), line, once)

@@ -32,7 +32,9 @@ use gdl_formats::pdata::PlayerStats;
 
 use crate::actions::{self, Action, ActionState, Env, Strike};
 use crate::camera::FreeLook;
+use crate::audio::{LoopSound, PlaySound};
 use crate::character::{self, Animator, CharacterData};
+use crate::monsters::DeathMonster;
 use crate::combat::{self, Buttons, Hit, Intent, TargetKind, Targetable, button};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
@@ -40,7 +42,7 @@ use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
 use crate::player_state::{PlayerState, SpendPower, power};
 use crate::population::LevelPopulation;
-use crate::effects::{BreathAt, ChopAt, EffectAt, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
+use crate::effects::{BreathAt, ChopAt, EffectAt, EffectOn, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
 use crate::flash::{self, Flash, FlashColours};
 use crate::fade::BodyLook;
 use crate::hints::{Hint, ShowHint};
@@ -132,6 +134,10 @@ pub struct Player {
     /// `+0xA20`): each set while its power is on (the vampire's only
     /// while the hand's is off), both cleared once neither is.
     death_hand: [bool; 2],
+    /// The halo: it has drunk from a Death since it came on (`S_HALO`
+    /// once), and it's draining one now.
+    halo_drank: bool,
+    halo_draining: bool,
     /// Blows taken since the last tick: damage, kind flags, summed push
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
@@ -355,6 +361,18 @@ fn special_attack(special: u32, weapon: u32) -> Option<Action> {
     }
 }
 
+/// The halo (armour bit): its drain of a Death, a point a tick, with
+/// `S_HALO` the first time, `S_DEATHDIE` going on at it and Death's drain
+/// effect on the hero.
+const HALO: u32 = 0x8_0000;
+const HALO_DRAIN: f32 = 1.0;
+const HALO_SOUND: &str = "S_HALO";
+const HALO_LOOP: &str = "halo_drain";
+const DEATH_DIES: &str = "S_DEATHDIE";
+const DEATH_BANK: &str = "MONSTERS/DEATH";
+const DEATH_ARC: &str = "DEATH_ARC";
+const DEATH_EXP: &str = "DEATH_EXP";
+
 /// The hammer's weapon bit.
 const HAMMER: u32 = 0x1000_0000;
 /// The special bits of the breath powers (fire, acid, lightning).
@@ -531,6 +549,9 @@ type HeroWriters<'w> = (
     MessageWriter<'w, BreathAt>,
     MessageWriter<'w, SpendPower>,
     MessageWriter<'w, ChopAt>,
+    MessageWriter<'w, PlaySound>,
+    MessageWriter<'w, LoopSound>,
+    MessageWriter<'w, EffectOn>,
 );
 
 /// Player movement; the play camera ticks after it.
@@ -649,6 +670,8 @@ fn spawn_player(
         special_bits: 0,
         model_scale: 1.0,
         death_hand: [false; 2],
+        halo_drank: false,
+        halo_draining: false,
         pending_hit: (0.0, 0, Vec3::ZERO),
         left_wrist: hero.data.skeleton.node_index(crate::power_looks::left_wrist(hero.class)),
         blow_cooldowns: Vec::new(),
@@ -803,17 +826,17 @@ fn tick(
     mut players: Query<(Entity, &mut Player, &mut Animator)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
-    (mut shots, mut potions, mut effects, mut effects_breath, mut spent, mut chops): HeroWriters,
+    (mut shots, mut potions, mut effects, mut effects_breath, mut spent, mut chops, mut sounds, mut loops, mut riding): HeroWriters,
     mut hints: MessageWriter<ShowHint>,
     (colours, mut tags, mut commands): (Res<FlashColours>, Query<&mut MeshTag>, Commands),
     state: Option<Res<PlayerState>>,
     monster_level: Option<Res<crate::monsters::MonsterLevel>>,
-    boss: (Option<Res<crate::critters::CritterLevel>>, Query<&GlobalTransform>),
+    boss: (Option<Res<crate::critters::CritterLevel>>, Query<&GlobalTransform>, Query<&DeathMonster>),
 ) {
     let boss_level = monster_level.as_ref().is_some_and(|l| l.boss >= 0);
     // The boss intro's first wait (its state 2): the heroes stand still
     // and turn to face the boss (`docs/critters.md`).
-    let (critters, bodies) = boss;
+    let (critters, bodies, deaths) = boss;
     let face_boss = critters
         .as_ref()
         .filter(|c| c.intro == 2)
@@ -931,6 +954,41 @@ fn tick(
                 }
             }
         }
+        // The halo drains a Death the hero faces (under 90° off its
+        // heading): the hero stands and grabs it, a point a tick
+        // (`docs/monsters.md`, "Death").
+        let halo = p.armour_bits & HALO != 0;
+        if !halo {
+            p.halo_drank = false;
+        }
+        let drinking = found
+            .filter(|f| halo && wrap(combat::heading_of(f.direction) - facing).abs() < std::f32::consts::FRAC_PI_2)
+            .and_then(|f| deaths.get(f.entity).ok().map(|d| (f, d.experience)));
+        if let Some((f, experience)) = drinking {
+            intent = Intent::Idle;
+            hits.write(Hit {
+                target: f.entity,
+                attacker: entity,
+                damage: HALO_DRAIN,
+                kind: 0,
+                push: Vec3::ZERO,
+                at: f.position,
+                target_kind: f.kind,
+                ranged: false,
+            });
+            if !p.halo_drank {
+                p.halo_drank = true;
+                sounds.write(PlaySound(HALO_SOUND.into()));
+            }
+            if !p.halo_draining {
+                loops.write(LoopSound { key: HALO_LOOP, name: Some(DEATH_DIES.into()) });
+                let name = if experience { DEATH_EXP } else { DEATH_ARC };
+                riding.write(EffectOn { name, bank: Some(DEATH_BANK), on: entity, scale: 1.0 });
+            }
+        } else if p.halo_draining {
+            loops.write(LoopSound { key: HALO_LOOP, name: None });
+        }
+        p.halo_draining = drinking.is_some();
         // Charging (SHOVE) into a monster or a critter other than a boss:
         // 3, heavy, once a second each — in place of walking into it.
         let boss = |f: &combat::Found| targets.get(f.entity).is_ok_and(|(_, _, t)| t.boss);
@@ -978,6 +1036,9 @@ fn tick(
 
         let mut requested =
             combat::request(intent, p.actions.range, stick.magnitude, walked_into, p.actions.combo, p.request);
+        if p.halo_draining {
+            requested = Action::DEATHGRABS;
+        }
         // A power's own attack takes the place of every attack (not one
         // made by walking into something). Only the breath's and the
         // hammer's are done.

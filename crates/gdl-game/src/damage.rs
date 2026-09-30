@@ -37,7 +37,8 @@ use crate::critters::{Critter, CritterLevel, CritterSphere};
 use crate::deaths;
 use crate::effects::EffectAt;
 use crate::generators::Generator;
-use crate::monsters::{self, Monster, MonsterHit, MonsterLevel};
+use crate::hints::{Hint, ShowHint};
+use crate::monsters::{self, DeathDrain, Monster, MonsterHit, MonsterLevel};
 use crate::player::Player;
 use crate::player_state::{DamagePlayer, EnemyScale, HealPlayer, PlayerState};
 use crate::player::PlayerTick;
@@ -47,7 +48,7 @@ pub struct DamagePlugin;
 
 impl Plugin for DamagePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (apply_hits.after(PlayerTick), hurt_hero));
+        app.add_systems(FixedUpdate, (apply_hits.after(PlayerTick), hurt_hero, death_drains));
     }
 }
 
@@ -65,8 +66,8 @@ pub(crate) fn apply_hits(
     critter_level: Option<Res<CritterLevel>>,
     mut sounds: MessageWriter<PlaySound>,
     mut effects: MessageWriter<EffectAt>,
-    heroes: Query<(), With<Player>>,
-    enemies: Res<EnemyScale>,
+    heroes: Query<&Player>,
+    (enemies, mut hints): (Res<EnemyScale>, MessageWriter<ShowHint>),
 ) {
     for hit in hits.read() {
         // Only a hero's blows earn experience (a monster's bomb or blast
@@ -77,6 +78,19 @@ pub(crate) fn apply_hits(
                 let Ok(mut m) = monsters.get_mut(hit.target) else { continue };
                 // Already dead from an earlier blow this tick.
                 if m.hit_points <= 0.0 {
+                    continue;
+                }
+                if m.enemy == monsters::DEATH_TYPE {
+                    let hero = heroes.get(hit.attacker).ok();
+                    if blow_on_death(&mut m, hit, hero, state.as_deref_mut(), &mut hints) {
+                        sounds.write(PlaySound(DEATH_DIES.into()));
+                        if let Some(mut g) = m.generator.and_then(|g| generators.get_mut(g).ok()) {
+                            g.alive = g.alive.saturating_sub(1);
+                        }
+                        m.die(hit.kind, hit.at.to_array());
+                        commands.entity(hit.target).try_remove::<Targetable>();
+                        info!("Death dies");
+                    }
                     continue;
                 }
                 // Through its armour (only Death has any) and its
@@ -321,9 +335,97 @@ pub fn resist(damage: f32, kind: &mut u32, armour: f32, bits: u32, boss_level: b
     d
 }
 
-/// Death (monster type `0x1E`) is the one monster with armour.
+/// Death (monster type `0x1E`) is the one monster with armour (its blows
+/// are its own: [`blow_on_death`]).
 const DEATH: i32 = 0x1E;
 const DEATH_ARMOUR: f32 = 1.0;
+/// Any blow but magic takes this from Death, and the halo's drain gives it
+/// to the hero.
+const DEATH_BLOW: f32 = 1.0;
+/// A hero above this level is healed by a Death it kills with magic: its
+/// hit points × (0.2 + 0.032 a level above).
+const DEATH_HEAL_FROM: u32 = 75;
+const DEATH_HEAL_BASE: f32 = 0.2;
+const DEATH_HEAL_PER_LEVEL: f32 = 0.032;
+/// The halo's armour bit.
+const HALO: u32 = 0x8_0000;
+/// The sound of Death dying, and the kind of its drain on a hero.
+const DEATH_DIES: &str = "S_DEATHDIE";
+const DEATH_DRAIN_KIND: u32 = 0x1000;
+
+/// A blow on Death (the game's blow routine, Death's branch; no reaction
+/// or experience): magic kills it outright — healing a hero above level 75
+/// by its hit points' share — anything else takes exactly a point, which a
+/// hero wearing the halo drinks (a point of health, or for a tier-2 Death
+/// a drain's worth of experience) and any other hero is told to use magic.
+/// True when this blow killed it.
+fn blow_on_death(
+    m: &mut Monster,
+    hit: &Hit,
+    hero: Option<&Player>,
+    state: Option<&mut PlayerState>,
+    hints: &mut MessageWriter<ShowHint>,
+) -> bool {
+    if hit.kind & hit_kind::MAGIC != 0 {
+        if hero.is_some()
+            && let Some(state) = state
+            && state.level > DEATH_HEAL_FROM
+        {
+            let share = DEATH_HEAL_BASE + DEATH_HEAL_PER_LEVEL * (state.level - DEATH_HEAL_FROM) as f32;
+            state.heal(m.hit_points * share);
+        }
+        m.hit_points = 0.0;
+    } else {
+        m.hit_points -= DEATH_BLOW;
+        match (hero, state) {
+            (Some(p), Some(state)) if p.armour_bits & HALO != 0 => {
+                if m.strength == 2 {
+                    let step = state.drain_step();
+                    state.add_experience(step);
+                } else {
+                    state.health += DEATH_BLOW;
+                }
+            }
+            (Some(_), _) => {
+                hints.write(ShowHint(Hint::KillDeathWithMagic));
+            }
+            _ => {}
+        }
+    }
+    m.hit_points <= 0.0
+}
+
+/// A Death's drain lands on a hero: a tier-2 Death takes a drain's worth of
+/// experience (levels can go); any other one its damage in health as the
+/// game's negative blow of kind `0x1000` — through no armour, stopped only
+/// by gold and invulnerability. Each drain raises its hint.
+fn death_drains(
+    mut drains: MessageReader<DeathDrain>,
+    mut players: Query<&mut Player>,
+    mut state: Option<ResMut<PlayerState>>,
+    mut damage: MessageWriter<DamagePlayer>,
+    mut hints: MessageWriter<ShowHint>,
+) {
+    for d in drains.read() {
+        let Ok(mut p) = players.get_mut(d.hero) else { continue };
+        if d.experience {
+            if let Some(state) = state.as_mut() {
+                let step = state.drain_step();
+                if state.lose_experience(step) > 0 {
+                    info!("Death drains the hero down to level {}", state.level);
+                }
+            }
+            hints.write(ShowHint(Hint::DeathDrainsExperience));
+        } else {
+            let amount = p.take_blow(-d.amount, DEATH_DRAIN_KIND, Vec3::ZERO);
+            if amount != 0.0 {
+                damage.write(DamagePlayer { amount });
+            }
+            hints.write(ShowHint(Hint::DeathDrainsHealth));
+        }
+        debug!("Death {:?} drains the hero", d.death);
+    }
+}
 /// A hero's blow on a monster takes at least this.
 const HERO_BLOW_LEAST: f32 = 1.0;
 /// Shrunk (`EnemyScale`), monsters take twice the damage (and deal half:

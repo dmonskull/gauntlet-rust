@@ -31,6 +31,8 @@ pub const MAX_POTIONS: usize = 9;
 pub const POWER_SLOTS: usize = 11;
 /// Highest hero level.
 pub const MAX_LEVEL: u32 = 99;
+/// Rising a level (or several at once) heals the hero this much.
+const LEVEL_UP_HEALTH: f32 = 100.0;
 /// Below this much health the hero dies.
 const DEATH_BELOW: f32 = 1.0;
 
@@ -267,7 +269,8 @@ impl PlayerState {
     }
 
     /// Adds experience and raises the level while it's enough (at most 99),
-    /// as the game does; returns the levels gained.
+    /// as the game does; returns the levels gained. Rising heals the hero
+    /// by 100 (once, however many levels; uncapped).
     pub fn add_experience(&mut self, amount: u32) -> u32 {
         self.experience = self.experience.saturating_add(amount);
         let mut gained = 0;
@@ -275,7 +278,34 @@ impl PlayerState {
             self.level += 1;
             gained += 1;
         }
+        if gained > 0 && self.alive {
+            self.health += LEVEL_UP_HEALTH;
+        }
         gained
+    }
+
+    /// Takes experience away (a Death's drain; none at level 99): below
+    /// its level's threshold the hero drops levels. Returns the levels
+    /// lost.
+    pub fn lose_experience(&mut self, amount: u32) -> u32 {
+        if self.level >= MAX_LEVEL {
+            return 0;
+        }
+        self.experience = self.experience.saturating_sub(amount);
+        let mut lost = 0;
+        while self.level > 1 && self.experience < Self::experience_to_leave(self.level - 1) {
+            self.level -= 1;
+            lost += 1;
+        }
+        lost
+    }
+
+    /// The experience a Death's drain takes (and the halo's drain of one
+    /// gives) at a time: a hundredth of (level − 1) × 60 + 1000, or of
+    /// 4600 from level 61.
+    pub fn drain_step(&self) -> u32 {
+        let step = if self.level < 61 { (self.level.max(1) - 1) * 60 + 1000 } else { 4600 };
+        step / 100
     }
 
     /// Takes health away; returns `true` if this killed the hero. A
@@ -664,6 +694,21 @@ mod tests {
         assert_eq!(s.add_experience(10_000), 7);
         assert_eq!(s.level, 9);
         assert_eq!(PlayerState::experience_to_leave(60), 4600 + 165_200);
+        assert_eq!(s.health, START_HEALTH + 200.0, "each rise heals 100");
+    }
+
+    #[test]
+    fn deaths_drain_takes_levels_back() {
+        let mut s = PlayerState::default();
+        s.add_experience(2180);
+        assert_eq!((s.level, s.drain_step()), (3, 11));
+        // 2180 reaches level 3; 1060 level 2.
+        assert_eq!(s.lose_experience(11), 1);
+        assert_eq!(s.level, 2);
+        assert_eq!(s.lose_experience(5000), 1);
+        assert_eq!((s.level, s.experience), (1, 0));
+        s.level = MAX_LEVEL;
+        assert_eq!(s.lose_experience(100), 0, "nothing at 99");
     }
 
     #[test]

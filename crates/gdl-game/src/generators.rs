@@ -87,6 +87,8 @@ pub struct PlacedMonster {
 #[derive(Resource, Default)]
 pub struct PlacedMonsters(pub Vec<PlacedMonster>);
 
+/// A placed Death's awareness.
+const PLACED_DEATH_AWARENESS: f32 = 1000.0;
 /// Distance from the player within which a placed monster appears.
 const PLACED_RANGE: f32 = 50.0;
 /// Generators only make monsters when a player is within this.
@@ -160,9 +162,10 @@ pub fn from_population(
             PlacementParams::Enemy { level, .. } => enemies.substitute(named, level as i32),
             _ => enemies.substitute(named, 0),
         };
-        if !enemies.has(id) || enemy::enemy_stats(id).is_none_or(|s| s.id >= enemy::FIRST_SPECIAL_TYPE) {
+        if !enemies.has(id) || enemy::enemy_stats(id).is_none_or(|s| s.id >= enemy::FIRST_SPECIAL_TYPE && s.id != enemy::DEATH) {
             // Not loaded on this level (the game refuses these), or a boss
-            // or scripted type (the critter system drives those).
+            // or scripted type (the critter system drives those; Death is
+            // a monster like the others).
             continue;
         }
         let mut position = p.position;
@@ -202,7 +205,9 @@ pub fn from_population(
             PlacementParams::Enemy { level, ai, range, param } => placed.push(PlacedMonster {
                 placement: i,
                 enemy: id,
-                tier: level as i32,
+                // A placed Death is tier 2 (it drains experience) when the
+                // placement's count is set, else 1.
+                tier: if id == enemy::DEATH { if param != 0 { 2 } else { 1 } } else { level as i32 },
                 ai: if ai < 0 { default_ai } else { ai },
                 range,
                 position,
@@ -466,7 +471,12 @@ pub fn tick_placed(
             }
         }
         let random_bit = level.random(2) == 1;
-        let awareness = (p.range > 0.0).then(|| p.range * level.scales.awareness);
+        // A placed Death sees everything.
+        let awareness = if p.enemy == enemy::DEATH {
+            Some(PLACED_DEATH_AWARENESS)
+        } else {
+            (p.range > 0.0).then(|| p.range * level.scales.awareness)
+        };
         let new = NewMonster {
             enemy: p.enemy,
             tier: p.tier.max(1),

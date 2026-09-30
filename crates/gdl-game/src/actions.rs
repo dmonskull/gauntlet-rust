@@ -115,6 +115,8 @@ impl Action {
     pub const ATTBREATHE: Self = Self(0x6E);
     pub const ATTBREATHER: Self = Self(0x6F);
     pub const ATTCHOP: Self = Self(0x70);
+    /// Grabbing Death to drain it (the halo).
+    pub const DEATHGRABS: Self = Self(0x1D);
     pub const ATTCHOPR: Self = Self(0x71);
     pub const MAGICS: Self = Self(0x73);
     pub const MAGICR: Self = Self(0x74);
@@ -641,6 +643,9 @@ impl ActionState {
                 }
             }
             0x75 => next = Action::THROWPOTIONR,
+            // Death's grab (the halo draining a Death): held while it's
+            // asked for, then let go.
+            0x1D | 0x1E => next = if req.0 == 0x1D { Action(0x1E) } else { Action(0x1F) },
             // The breath and the chop hand over to their recoveries.
             0x6E | 0x70 => {
                 if knocked == 0 {
