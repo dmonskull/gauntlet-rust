@@ -497,9 +497,9 @@ by the frame's time (their animation clock, presumably, so they hold
 their pose); critters (`critters.rs`): no pattern chosen, only START or
 DEATH switches in, only DEATH plays on; generators make nothing
 (`generators.rs`); cycling tiles are held off, their wait at 30 fields
-(`hazards.rs`). Not yet: the held animation (the monsters' and critters'
-clips still play), dying monsters as targets, the music, animated
-objects.
+(`hazards.rs`); the frozen monsters' and critters' clips hold where they
+are (`Animator::hold`; the dying play on). Not yet: dying monsters as
+targets, the music, animated objects.
 
 `r13-0x7788`, mentioned with the damage halving elsewhere, is the boss
 being awake (the slots' × 3, above); the halving of monster damage is the

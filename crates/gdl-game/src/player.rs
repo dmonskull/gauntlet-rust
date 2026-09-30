@@ -311,7 +311,6 @@ const LIGHTNING_DAMAGE: f32 = 20.0;
 const LIGHTNING_KIND: u32 = 0x22;
 const LIGHTNING_COOLDOWN: f64 = 1.0;
 const LIGHTNING_SPARK: &str = "L_SHLD_ACTIVE";
-const LEFT_WRIST: &str = "L_WRIST";
 
 /// The hero's model scale: the ogre's (class 12) always; grown (the
 /// special power `0x100`); at level 99.
@@ -611,7 +610,7 @@ fn spawn_player(
         special_bits: 0,
         model_scale: 1.0,
         pending_hit: (0.0, 0, Vec3::ZERO),
-        left_wrist: hero.data.skeleton.node_index(LEFT_WRIST),
+        left_wrist: hero.data.skeleton.node_index(crate::power_looks::left_wrist(hero.class)),
         shield_cooldowns: Vec::new(),
         flash: Flash::default(),
         chrome: Flash::default(),

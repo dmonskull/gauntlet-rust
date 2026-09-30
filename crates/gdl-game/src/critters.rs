@@ -1841,6 +1841,11 @@ fn tick_critters(
             }
         }
 
+        // Held by the time stop (all but a death), its clip holds too.
+        let held = stopped && c.current.is_some() && c.move_kind(c.current) != Some(kind::DEATH);
+        if animator.hold != held {
+            animator.hold = held;
+        }
         let root = Affine3A::from_rotation_translation(Quat::from_rotation_y(c.yaw), Vec3::from(c.position));
         let bone_matrix = |n: Option<usize>| -> Affine3A {
             n.and_then(|n| animator.bone(n)).and_then(|b| bones.get(b).ok()).map_or(root, |g| g.affine())
@@ -1862,7 +1867,7 @@ fn tick_critters(
         }
 
         let Some(cur) = c.current else { continue };
-        if stopped && c.move_kind(Some(cur)) != Some(kind::DEATH) {
+        if held {
             continue;
         }
         let mv = c.moves()[cur].clone();
