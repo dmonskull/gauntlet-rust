@@ -22,6 +22,7 @@ use crate::font::{Draw2d, Flush2d, UiTextures};
 use crate::frontend::Frontend;
 use crate::items::ItemTick;
 use crate::message_box::DrawBox;
+use crate::play_camera::PlayCamera;
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
 use crate::quest;
@@ -150,12 +151,14 @@ struct Plates(Vec<Plate>);
 /// panel (under the message box). They're cleared as a level starts and
 /// as the hero's death ends (it's out of the level, or up again in the
 /// tower); under a menu or off the play screen they're neither moved nor
-/// drawn, and they stop with play's clock (the message box).
+/// drawn; they stop with play's clock (the message box) and, still drawn,
+/// under the level's opening shot.
 #[allow(clippy::too_many_arguments)]
 fn show_plates(
     mut plates: ResMut<Plates>,
     mut notices: MessageReader<PickupNotice>,
     frontend: Option<Res<Frontend>>,
+    camera: Option<Res<PlayCamera>>,
     state: Option<Res<PlayerState>>,
     population: Option<Res<LevelPopulation>>,
     mut was_alive: Local<bool>,
@@ -181,15 +184,17 @@ fn show_plates(
             && !out
             && let Some(picture) = picture(n.subtype, n.value, secret)
         {
-            debug!("pickup notice {picture} (subtype {}, {})", n.subtype, n.value);
+            info!("pickup notice {picture} (subtype {}, {})", n.subtype, n.value);
             plates.push(Plate::new(picture));
         }
     }
     if frontend.as_deref().is_some_and(|f| !f.playing() || f.menu_open()) {
         return;
     }
-    let fields = time.delta_secs() * 60.0;
-    plates.retain_mut(|p| p.step(fields));
+    if !camera.as_deref().is_some_and(PlayCamera::opening) {
+        let fields = time.delta_secs() * 60.0;
+        plates.retain_mut(|p| p.step(fields));
+    }
     let Some(tex) = tex.as_deref_mut() else { return };
     // Every strip lies behind every picture (the game's sort keys, 63980
     // and 63979, in front of the panel's 64000).
