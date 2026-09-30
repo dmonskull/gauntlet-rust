@@ -244,6 +244,63 @@ player is ready the game starts (`FUN_80053530`) in the tower level
 `0xD00` — realm 13 (`L`), level 0: **`levelL1`**. Backing out of the
 New/Load menu with nobody else joined returns to the title.
 
+## In-game HUD
+
+Implemented in [`game_hud.rs`](../crates/gdl-game/src/game_hud.rs); the old
+text line (`status_hud.rs`) only shows with F1 or `GDL_DEBUG_HUD=1`.
+
+Each player has a 128-wide panel along the bottom of the 2D screen, at x
+`0x8011fa00[player]` = 0, 128, 256, 384 (centres `0x8011fa08` = 64, 192,
+320, 448). `FUN_8007bb40` builds all four at level load (`FUN_8007bca4`
+per player) and loads `KEY_ICON` and the potion icons (`0x8011f49c`:
+`POTION_ICON_RED`, `RED`, `BLU`, `YEL`, `GRE`, indexed by the potion's
+kind). `FUN_80075cac` sets the panel's textures from the player's state
+(`FUN_8007605c`: 0 not in, 1 playing, 2 ready, 3 naming, 6 picking a
+class, 10 out of the level); `FUN_80074f0c` draws the per-frame parts
+(from the player update); `FUN_80074cf8` shows the legendary-key and
+rune rows; `FUN_80074850` hides a panel.
+
+Sprites (x from the panel's left, sprite depth: lower is in front):
+
+| sprite | position, size | texture |
+| --- | --- | --- |
+| `0x80275460` | (0, 304), 128 wide | `S3`; `BK_RUNE_STONE_02` while playing |
+| `0x80275464` | (0, 320), 128 wide | `S4` tinted `0x8011f9a0[colour]` (joined) / `0x8011f9b0` (not); `S4_<class>` while playing |
+| `0x80275468` | (0, 320), 128 wide | `S4_FRAME` |
+| `0x8027546c` | (0, 344), 148 wide | (not set here) |
+| `0x80275470` | (6, 357), 20 × 20, depth 63990 | `coin` |
+| `0x80275474` | (61, 357), 20 × 20 | `heart` |
+| `0x802753a0` × 12 | (15 + 8i + i/3, 306) | `SM_RUNE_<blu,red,yel,gre>_<01..03>`, shown for bit i of the runestones held (`+0x1ECA`) |
+| `0x80275320` × 8 | (12 + 12i, 300) | `SM_KEY_<colour>` (`0x8011fdc0`), per-class key bits; shown only while `r13-0x6fdc` (300 fields from a level's start) runs |
+| `0x802752e0` × 4 | (26, 322 + 3i) | — |
+| `0x80275270` × 7 | table `0x8011f414` (name, x, y, depth; stride `0x14`): `trbo_full_new` ×2 (0, 304), `trbo_glint`, `turbo_glow_new`, `black_bar` ×2, `trbo_gleem1` (80, 310) | the turbo meter |
+| `0x80275260` | centre x − 14, `BTMBK_LEVL` | the level plate |
+| `0x80274894` | (8, 340), 16 × 16 | `RUNE13` (in the 13th-rune modes) |
+| `0x802748a4` | (104, 338), 16 × 16 | `QUEST_ICON` (a quest item held, not in the tower) |
+
+Text (`FUN_80074f0c`, in the player's colour `0x8011f990`: `0xFFFF80`,
+`0x87CEEB`, `0xFFC0E0`, `0x80FF80`, unless noted):
+
+- the name (`+0xA80`) in `initials` × 0.667 centred on the panel at y 339;
+  `"LV %d"` in `8Hifonts` (white) centred at y 326;
+- gold (`FUN_8007572c`, `+0x1EC4`, capped 99,999) `"%d"` in the `score`
+  font right-aligned to x 60, y 359; health (`+0x1EB4`, shown ≤ 9999)
+  right-aligned to x 116, y 359;
+- keys (`+0x1EB8`) when any: `KEY_ICON` at (8, 323) and the count in
+  `score` × 0.8 at (26, 327); potions (`+0x1EBC`) when any: the last
+  potion's icon at (102, 323) and the count at (92, 327);
+- a player out of the level: "Wait In Tower" / "Quit Game" with the A/B
+  buttons (in play) or "IN TOWER".
+
+Turbo meter (`FUN_80075828`): the shown value (`+0x82C`) moves toward the
+meter (`+0x828`, 0–100) by the fields elapsed (down twice as fast). At
+f = value × 0.01: below 0.4 the bar is `trbo_full_new` scaled to f / 0.4
+of its width about its centre, tinted (v, v, 0) over the second bar in
+black; to 0.99 it is (f − 0.4) / 0.6 wide in red (v, 0, 0) over a yellow
+bar; full, red over yellow; v = 127 × fraction + 128. Crossing a level
+plays the `trbo_glint` flash (`0x8011f488` frames) or the
+`turbo_glow_new` pulse (120 fields).
+
 ## Death
 
 The player record's state `+0xE8`: 1 playing, 8 dying, `0xB` out of the
@@ -309,3 +366,8 @@ Start, triggers.
   the start values (no per-character points or levels); changing class
   starts that class fresh (the game keeps each class's progress in the
   character record).
+- HUD: only player 1's panel; the turbo meter's flash and glow, the
+  legendary-key row, the quest and rune-13 icons and the "Wait In Tower"
+  prompt aren't drawn; the panel is hidden while a menu is up (its numbers
+  would draw over the menu's parchment, text being drawn after images).
+  Runestones are lit by stone number 1–12.
