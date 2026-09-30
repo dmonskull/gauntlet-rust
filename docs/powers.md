@@ -715,6 +715,27 @@ Hint by bit (`FUN_8005de3c`; all priority 50, shown once but the Pojo's):
 | | | `0x80000` | `0x71` |
 | | | `0x100000`/`0x200000`/`0x400000` | `0x94`/`0x95`/`0x96` |
 
+The same routine gives the weapons theirs — `0x80000` `0x25`, `0x400000`
+`0x2F`, `0x200000` `0x26`, `0x100000` `0x30`, `0x10000000` `0x56`,
+`0x20000000` `0x57`, else by the element (`& 0xF`) 1–4 `0x28`–`0x2B`
+(the amulets) — and speed `0x20`, magic `0x21`; in each column the first
+bit held wins, in the table's order. A special pickup with any of
+`0xF000` (Skorne's pieces) while the hero's special bits hold any of them
+is refused: nothing is granted, no hint or sound, and the item stays.
+The hint's text group and line are the hint table's (`0x80124668`,
+`0x1C` bytes: priority, mode, group, string, voice); mode 0 (the Pojo's)
+shows every time, the rest once. Three hints (`0x32` IS NOW IT, `0x59`
+shrink, `0x5D` Pojo) fill their first line's "%s %s" with the hero's
+colour and class names (text groups `PLAYER_COLOR` by the player's
+`+0x04`, `PLAYER_CLASS` by `+0x0C`: "BLUE WARRIOR"), except that a hero
+who is the Pojo is named by group `POJO` ("POJO") in the other two
+(`FUN_800a4874`).
+
+Here: `hints.rs` (`Hint::Power(n)`, `Hint::for_power`, the table with
+each hint's group, announcer line and once-flag; `fill_hero` for the
+"%s %s"), raised by `items.rs::pick_up` for subtypes 5–9 after the grant,
+which also refuses the second Skorne piece.
+
 ## Open
 
 - The chrome's texture matrix (`FUN_800c60a4`) and whether it's an
