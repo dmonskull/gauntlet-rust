@@ -30,6 +30,7 @@ use gdl_formats::{LevelCollision, ModelFile, enemy};
 use crate::actions::Strike;
 use crate::character::{self, CharacterData, CharacterModel};
 use crate::combat::{Hit, TargetKind, Targetable};
+use crate::effects::{BlastAt, PotionBurst};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion;
@@ -352,7 +353,12 @@ pub struct Projectile {
     /// Heading it left along (for the spinning ones).
     yaw: f32,
     age: f32,
+    /// Seconds it flies before it's gone (a missile with a blast bursts
+    /// just before).
+    lifetime: f32,
     scale: f32,
+    /// A thrown potion: the magic blast it becomes where it lands.
+    pub potion: Option<PotionBurst>,
 }
 
 /// What a missile was let go with.
@@ -581,7 +587,7 @@ struct MissileModels(HashMap<(i32, MissileKind), Option<Arc<CharacterModel>>>);
 struct PlayerGuard(HashMap<Entity, f64>);
 
 /// Reads an atree (by name) with its folder's models and textures.
-fn load_atree(game: &mut LoadedGame, folder: &str, atree: &str) -> Option<CharacterData> {
+pub(crate) fn load_atree(game: &mut LoadedGame, folder: &str, atree: &str) -> Option<CharacterData> {
     let anim = AnimFile::parse(&game.install.read(&format!("{folder}/ANIM.PS2")).ok()?).ok()?;
     let tree = anim.atrees.into_iter().find(|a| a.name.eq_ignore_ascii_case(atree))?;
     let model = ModelFile::parse(&game.install.read(&format!("{folder}/objects.ngc")).ok()?).ok()?;
@@ -660,12 +666,12 @@ fn setup_level(
 }
 
 /// A monster or object as a missile sees it: an upright cylinder.
-struct Body {
-    entity: Entity,
-    kind: TargetKind,
-    centre: Vec3,
-    radius: f32,
-    half: f32,
+pub(crate) struct Body {
+    pub entity: Entity,
+    pub kind: TargetKind,
+    pub centre: Vec3,
+    pub radius: f32,
+    pub half: f32,
 }
 
 /// The monsters and objects this tick. A monster is its radius and, as
@@ -673,7 +679,7 @@ struct Body {
 /// game's `+0x54` point, taken to be that as for players); anything else
 /// targetable as a monster or object (the practice dummy) is its own
 /// extent.
-fn bodies(targets: &Query<(Entity, &GlobalTransform, &Targetable, Option<&Monster>)>) -> Vec<Body> {
+pub(crate) fn bodies(targets: &Query<(Entity, &GlobalTransform, &Targetable, Option<&Monster>)>) -> Vec<Body> {
     targets
         .iter()
         .filter(|(_, _, t, _)| matches!(t.kind, TargetKind::Monster | TargetKind::Object))
@@ -739,7 +745,9 @@ fn spawn_projectile(
         spin: t.spin,
         yaw: launch.velocity.x.atan2(launch.velocity.z),
         age: 0.0,
+        lifetime: LIFETIME,
         scale,
+        potion: None,
     };
     let transform = Transform::from_translation(launch.start).with_rotation(orientation(&p)).with_scale(Vec3::splat(scale));
     let entity = match model {
@@ -748,6 +756,42 @@ fn spawn_projectile(
     };
     commands.entity(entity).insert((p, LevelEntity));
     entity
+}
+
+/// A thrown potion (`effects.rs`): it tumbles (10π rad/s), falls at 100
+/// units/s², hits like a hero's missile (the burst's damage) and bursts
+/// into a magic blast where it stops, or when its 0.667 s are up.
+pub fn spawn_potion(
+    commands: &mut Commands,
+    model: Option<&CharacterModel>,
+    hero: Entity,
+    start: Vec3,
+    velocity: Vec3,
+    burst: PotionBurst,
+) -> Entity {
+    let t = missile(burst.kind, burst.damage, velocity.length(), POTION_RADIUS, 0.0, [POTION_SPIN, 0.0, 0.0], POTION_GRAVITY);
+    let launch = Launch { check: start, start, velocity };
+    let e = spawn_projectile(commands, model, Owner::Hero(hero), &launch, &t, POTION_RADIUS, burst.damage, 0, 1.0);
+    commands.queue(move |world: &mut World| {
+        if let Some(mut p) = world.get_mut::<Projectile>(e) {
+            p.lifetime = POTION_LIFETIME;
+            p.potion = Some(burst);
+        }
+    });
+    e
+}
+
+const POTION_RADIUS: f32 = 0.5;
+const POTION_SPIN: f32 = 10.0 * PI;
+const POTION_GRAVITY: f32 = 100.0;
+const POTION_LIFETIME: f32 = 0.667;
+/// A missile with a blast bursts this long before its time is up.
+const BURST_EARLY: f32 = 1.0 / 15.0;
+
+/// Whether a wall (any surface) lies between two points, for a sphere of
+/// `radius`.
+pub fn wall_between(collision: &LevelCollision, from: Vec3, to: Vec3, radius: f32) -> bool {
+    wall(collision, from, to, radius).is_some()
 }
 
 /// A critter's missile (`critters.rs`): it flies and hits like a
@@ -882,6 +926,7 @@ fn fly(
     mut guard: ResMut<PlayerGuard>,
     mut hits: MessageWriter<Hit>,
     mut damage: MessageWriter<DamagePlayer>,
+    mut potions: MessageWriter<BlastAt>,
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -970,7 +1015,11 @@ fn fly(
             debug!("missile hits the level at {to:?}");
             stop = Some(Stop::At(to));
         }
-        if stop.is_none() && (p.age >= LIFETIME || to.y < bottom) {
+        let bursts = p.blast > 0.0 || p.potion.is_some();
+        if stop.is_none() && bursts && p.age >= p.lifetime - BURST_EARLY {
+            stop = Some(Stop::At(to));
+        }
+        if stop.is_none() && (p.age >= p.lifetime || to.y < bottom) {
             stop = Some(Stop::Gone);
         }
         p.position = to;
@@ -980,7 +1029,9 @@ fn fly(
                 commands.entity(entity).despawn();
             }
             Some(Stop::At(at)) => {
-                if p.blast > 0.0 {
+                if let Some(b) = p.potion {
+                    potions.write(BlastAt { owner: p.owner.entity(), at, kind: b.kind, damage: b.damage, radius: b.radius });
+                } else if p.blast > 0.0 {
                     burst(p, at, now, &players, &bodies, &mut guard, &mut hits, &mut damage);
                 }
                 commands.entity(entity).despawn();
