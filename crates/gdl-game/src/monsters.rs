@@ -37,7 +37,7 @@ use crate::level_material::LevelMaterial;
 use crate::locomotion;
 use crate::play_camera::PlayCamera;
 use crate::player::{Player, PlayerTick};
-use crate::player_state::{EnemyScale, power};
+use crate::player_state::{EnemyScale, TimeStop, power};
 use crate::population::LevelPopulation;
 use crate::projectiles::{self, MonsterShot};
 use crate::texanim::{LevelTexAnims, TexAnim};
@@ -973,7 +973,7 @@ fn tick_monsters(
     death_textures: Option<Res<DeathTextures>>,
     mut effects: MessageWriter<EffectAt>,
     (mut explosions, mut sounds): (MessageWriter<ExplosionAt>, MessageWriter<PlaySound>),
-    (colours, mut tags): (Res<FlashColours>, Query<&mut MeshTag>),
+    (colours, mut tags, stop): (Res<FlashColours>, Query<&mut MeshTag>, Res<TimeStop>),
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     level.tick = level.tick.wrapping_add(1);
@@ -1042,6 +1042,16 @@ fn tick_monsters(
         }
         let r = m.stats.radius;
         m.near_screen = on_screen(frustum, m.position, 2.0 * r + 15.0);
+        // Time stopped, it stands frozen: no target, move or blow; only
+        // the blows it takes are still turned into reactions.
+        if stop.0 {
+            react(m, &mut animator);
+            if m.flash.step() {
+                let tag = if m.flash.on() { colours.body().unwrap_or(0) } else { 0 };
+                flash::tag_body(&animator, |_| true, tag, &mut tags, &mut commands);
+            }
+            continue;
+        }
         select_target(m, &targets, level.tick);
 
         // Blows taken: flinch or knockdown. While the reaction plays the

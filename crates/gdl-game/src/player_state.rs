@@ -142,6 +142,8 @@ pub mod power {
     /// power running.
     pub const LEVITATE: u32 = 0x1;
     pub const INVISIBLE: u32 = 0x4;
+    /// Stops time for the enemies ([`super::TimeStop`]).
+    pub const TIME_STOP: u32 = 0x8;
     pub const GROW: u32 = 0x100;
     /// Shrinks the enemies, not the hero ([`super::EnemyScale`]).
     pub const SHRINK: u32 = 0x200;
@@ -167,6 +169,13 @@ impl EnemyScale {
         self.0 < 1.0
     }
 }
+
+/// Time stopped (the game's `r13-0x731C`, set every frame while any
+/// playing hero has the time-stop power): monsters stand frozen, critters
+/// hold their moves, generators don't make any and damage tiles stay off
+/// (`docs/powers.md`, "`0x8` time stop").
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimeStop(pub bool);
 
 /// Each shrinking hero takes the enemies down to this much.
 const SHRINK_SCALE: f32 = 0.667;
@@ -391,6 +400,7 @@ impl Plugin for PlayerStatePlugin {
         app.add_message::<DamagePlayer>()
             .init_resource::<PlayerState>()
             .init_resource::<EnemyScale>()
+            .init_resource::<TimeStop>()
             // A new hero whenever the class choice changes.
             .add_systems(Update, new_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
             .add_systems(FixedUpdate, (take_damage, powers_and_warning.in_set(PowersTick)).chain().after(PlayerTick))
@@ -500,7 +510,7 @@ pub fn power_clock(in_tower: bool, cut: bool, boss_level: bool, boss_awake: bool
 const BOSS_POWER_CLOCK: f32 = 3.0;
 
 /// Counts powerups down ([`power_clock`]) and adds them up, sets the
-/// enemies' scale, plays the sounds of the levitation, growth and shrink
+/// enemies' scale and the time stop, plays the sounds of the levitation, growth and shrink
 /// running out, and sounds the low-health warning: at 200 health or less
 /// the game plays `S_WARN` every 120 fields (60 below 100, 30 below 25) —
 /// not in the tower, or while invulnerable.
@@ -512,7 +522,7 @@ fn powers_and_warning(
     camera: Option<Res<crate::play_camera::PlayCamera>>,
     level: Option<Res<crate::monsters::MonsterLevel>>,
     boss: Option<Res<crate::critters::BossWatch>>,
-    mut enemies: ResMut<EnemyScale>,
+    (mut enemies, mut stop): (ResMut<EnemyScale>, ResMut<TimeStop>),
     mut sound: MessageWriter<PlaySound>,
 ) {
     let in_tower = population.as_ref().and_then(|p| crate::quest::level_of(&p.level)).is_some_and(|(realm, _)| realm == TOWER_REALM);
@@ -534,6 +544,10 @@ fn powers_and_warning(
     }
     if *enemies != scale {
         *enemies = scale;
+    }
+    let stopped = TimeStop(state.alive && now & power::TIME_STOP != 0);
+    if *stop != stopped {
+        *stop = stopped;
     }
     if !state.alive || state.health > 200.0 {
         return;
