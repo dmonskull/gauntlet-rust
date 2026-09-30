@@ -430,6 +430,9 @@ pub struct Projectile {
     /// The hero whose reflect shield turned it back: it flies on at
     /// monsters (and past that hero).
     reflected: Option<Entity>,
+    /// The monsters' missiles pass most items (their flag `0x100`): a
+    /// critter's statue among them.
+    passes_items: bool,
 }
 
 /// What a missile was let go with.
@@ -950,6 +953,7 @@ fn spawn_projectile(
         potion: None,
         pierced: Vec::new(),
         reflected: None,
+        passes_items: matches!(owner, Owner::Monster(_)),
     };
     let transform = Transform::from_translation(launch.start).with_rotation(orientation(&p)).with_scale(Vec3::splat(scale));
     let entity = match model {
@@ -1036,7 +1040,10 @@ pub fn spawn_critter_missile(
 ) -> Entity {
     let t = missile(0, damage, velocity.length(), radius, 0.0, [0.0; 3], gravity);
     let launch = Launch { check: start, start, velocity };
-    spawn_projectile(commands, model, Owner::Monster(critter), &launch, &t, radius, damage, kind, scale)
+    let e = spawn_projectile(commands, model, Owner::Monster(critter), &launch, &t, radius, damage, kind, scale);
+    // A critter's missiles don't pass items as the monsters' do.
+    commands.entity(e).entry::<Projectile>().and_modify(|mut p| p.passes_items = false);
+    e
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1345,6 +1352,16 @@ fn fly(
         {
             to = from.lerp(to, s);
             debug!("missile strikes the safe rock at placement {placement}");
+            rocks.write(BlastItem { placement, kind: p.kind, damage: p.damage });
+            stop = Some(Stop::At(to));
+        }
+        // A sleeping critter's statue in the way wakes as the missile hits
+        // it (the monsters' missiles pass it, as they pass most items).
+        if stop.is_none()
+            && let Some((s, placement)) = items.as_deref().and_then(|i| i.statue_in_way(from.to_array(), to.to_array(), r, p.passes_items))
+        {
+            to = from.lerp(to, s);
+            debug!("missile strikes the statue at placement {placement}");
             rocks.write(BlastItem { placement, kind: p.kind, damage: p.damage });
             stop = Some(Stop::At(to));
         }

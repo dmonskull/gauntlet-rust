@@ -443,6 +443,8 @@ pub struct ItemView<'a> {
     pub armor: i8,
     /// A safe rock that's been made (standing or broken).
     pub rock: bool,
+    /// A sleeping critter's statue.
+    pub statue: bool,
     /// What it holds (containers).
     pub contents: Option<&'a ItemType>,
     /// Its model, while it has one.
@@ -476,6 +478,7 @@ impl LevelItems {
             live: !item.gone && !item.leaving && !item.held,
             armor: item.armor,
             rock: item.is_safe_rock() && item.stage >= 0,
+            statue: item.statue,
             contents: item.contents.as_ref(),
             model: item.model,
         }
@@ -614,6 +617,33 @@ impl LevelItems {
             .min_by(|x, y| x.0.total_cmp(&y.0))
     }
 
+    /// The nearest sleeping critter's statue a missile going from `from` to
+    /// `to` (its radius `radius`) runs into: how far along (0..1), and its
+    /// placement. Only a missile that doesn't pass most items (the
+    /// monsters', flag `0x100`) is stopped: `pass_items` false.
+    pub fn statue_in_way(&self, from: [f32; 3], to: [f32; 3], radius: f32, pass_items: bool) -> Option<(f32, usize)> {
+        if pass_items {
+            return None;
+        }
+        let (a, b) = (Vec3::from(from), Vec3::from(to));
+        let steps = ((b - a).length() / (0.5 * radius.max(0.25))).ceil().clamp(1.0, 64.0) as usize;
+        self.items
+            .iter()
+            .filter(|i| i.statue && !i.gone)
+            .filter_map(|i| {
+                (0..=steps).map(|k| k as f32 / steps as f32).find(|&t| i.shape.touches(a.lerp(b, t).to_array(), radius)).map(|t| (t, i.placement))
+            })
+            .min_by(|x, y| x.0.total_cmp(&y.0))
+    }
+
+    /// A blow landed on a critter's statue (the game's item damage
+    /// routine, the placed monster case): it wakes.
+    pub fn strike_statue(&mut self, placement: usize) {
+        if self.find(placement).is_some_and(|i| i.statue && !i.gone) {
+            self.woken.push(placement);
+        }
+    }
+
     /// A blow of `damage` on a safe rock (the game's item damage routine):
     /// its armour comes off, leaving at least 1 (armour −1: nothing), and
     /// that comes off its hit points; then it's restaged — 0 hit points
@@ -669,6 +699,27 @@ impl LevelItems {
             n += 1;
         }
         n
+    }
+
+    /// The level's safe rocks, in order: placement, centre, and whether it
+    /// stands (hit points and a stage above 0).
+    pub fn safe_rocks(&self) -> Vec<(usize, [f32; 3], bool)> {
+        self.items
+            .iter()
+            .filter(|i| i.is_safe_rock() && !i.gone)
+            .map(|i| (i.placement, i.shape.centre, i.stage > 0 && i.hit_points > 0))
+            .collect()
+    }
+
+    /// A rock the boss threw down lands (docs/critters.md "Safe rocks"):
+    /// shown, stage 3, three times its type's hit points, its type's armour.
+    /// Returns its type's name, for its model.
+    pub fn make_rock(&mut self, placement: usize) -> Option<String> {
+        let i = self.find_mut(placement).filter(|i| i.is_safe_rock())?;
+        i.stage = 3;
+        i.hit_points = i.ty.hit_points.saturating_mul(3);
+        i.armor = i.ty.armor;
+        Some(i.ty.name.clone())
     }
 
     pub fn release(&mut self, ty: ItemType, position: [f32; 3], rotation: [f32; 9], amount: Option<i32>, delay: i32) -> usize {

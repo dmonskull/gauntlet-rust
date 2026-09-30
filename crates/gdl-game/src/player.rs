@@ -680,6 +680,7 @@ fn spawn_player(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut warp_used: Local<bool>,
 ) {
     let (Some(hero), Some(ground)) = (hero, ground) else { return };
     let collision = &ground.0;
@@ -690,8 +691,10 @@ fn spawn_player(
             (std::array::from_fn(|i| (lo[i] + hi[i]) / 2.0), 0.0)
         }
     };
-    // `GDL_WARP="x,y,z"`: start somewhere else (testing).
-    let warped = std::env::var("GDL_WARP").ok().and_then(|s| {
+    // `GDL_WARP="x,y,z"`: start somewhere else (testing) — on the first
+    // level only: a later level (after dying, an exit) starts at its own
+    // start.
+    let warped = std::env::var("GDL_WARP").ok().filter(|_| !std::mem::replace(&mut *warp_used, true)).and_then(|s| {
         let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
         (v.len() == 3).then(|| [v[0], v[1], v[2]])
     });
