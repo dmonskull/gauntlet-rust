@@ -113,6 +113,11 @@ pub struct Player {
     pub strength: f32,
     /// Derived armour, 0–5: taken off every blow that armour stops.
     pub armor: f32,
+    /// Speed at its level, before what speed powers add.
+    base_speed: f32,
+    /// Its weapon powers' bits (`PowerBits::weapon`): its blows and
+    /// missiles carry them.
+    pub weapon: u32,
     /// Blows taken since the last tick: damage, kind flags, summed push
     /// directions (the game's `+0x8D0`, `+0x8D4`, `+0x8DC`).
     pending_hit: (f32, u32, Vec3),
@@ -162,9 +167,28 @@ fn level_stats(
     for mut p in &mut players {
         p.strength = strength;
         p.armor = armor;
+        p.base_speed = speed;
         p.mover.speed = speed;
     }
     info!("level {}: strength {strength:.1}, armour {armor:.2}, speed {speed:.2}", state.level);
+}
+
+/// What the hero's powerups add up to this tick (`PowerBits`), put to
+/// use: its weapon bits on its blows and missiles, speed powers on its
+/// speed (the game clamps the sum to its range), a turbo power's fill.
+fn apply_powers(state: Option<Res<PlayerState>>, mut players: Query<&mut Player>) {
+    let Some(state) = state else { return };
+    let b = state.bits;
+    for mut p in &mut players {
+        p.weapon = b.weapon;
+        let speed = (p.base_speed + b.speed).clamp(locomotion::SPEED_MIN, locomotion::SPEED_MAX);
+        if p.mover.speed != speed {
+            p.mover.speed = speed;
+        }
+        if b.turbo > 0.0 {
+            p.turbo = (p.turbo + b.turbo).min(TURBO_MAX);
+        }
+    }
 }
 
 /// Knockback speeds the hero's reactions add along the blow's push.
@@ -264,6 +288,7 @@ impl Plugin for PlayerPlugin {
             // character select); the next level spawn uses it.
             .add_systems(Update, load_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
             .add_systems(FixedUpdate, tick.in_set(PlayerTick))
+            .add_systems(FixedUpdate, apply_powers.after(crate::player_state::PowersTick))
             .add_systems(Update, level_stats)
             .add_systems(
                 Update,
@@ -347,6 +372,8 @@ fn spawn_player(
         move_factor: 1.0,
         strength: hero.strength,
         armor: hero.armor,
+        base_speed: hero.speed,
+        weapon: 0,
         pending_hit: (0.0, 0, Vec3::ZERO),
         flash: Flash::default(),
         turbo: 0.0,
@@ -819,6 +846,7 @@ fn strike_blow(
         return None;
     }
     let (damage, kind) = combat::blow(strike, p.strength, &found);
+    let kind = kind | p.weapon;
     let push = if sighted { combat::push(facing, damage) } else { Vec3::ZERO };
     let at = position + Vec3::new(facing.sin(), 0.0, facing.cos()) * (combat::REACH + p.radius);
     Some(Hit { target: found.entity, attacker, damage, kind, push, at, target_kind: found.kind, ranged: false })

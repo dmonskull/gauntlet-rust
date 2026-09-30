@@ -274,7 +274,7 @@ When `+0x900 & 0xFE` is set:
 
 1. Damage = the hero's strength (`+0x104`: 5 + 0.015 × strength stat,
    clamped 5–20, `FUN_8007c4f0`). Kind = the hero's weapon power-up bits
-   (`+0x11C`). Finisher (`0xF0`): kind `|= 0x20`, damage × 3
+   (`+0x11C`; ported — [items.md](items.md), "Timed powerups"). Finisher (`0xF0`): kind `|= 0x20`, damage × 3
    (`r2-0x5c88`), and any turbo cost is paid. Else strong (4): kind `|=
    0x10`, damage × 2. Else kick (8) on a monster ≤ 2 tall: kind `|= 0x20`.
 2. (With no stick and no generator lock, `FUN_80086e44` nudges the hero

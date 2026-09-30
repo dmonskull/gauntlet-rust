@@ -20,7 +20,18 @@ fn main() {
             continue;
         }
         if seen.insert((class.clone(), ty.subtype, ty.name.clone())) {
-            println!("{class:12} {:#04x} {:16} armour {:3} hp {:4} value {:#x} shape {} extent {:?}", ty.subtype, ty.name, ty.armor, ty.hit_points, ty.value, u16::from_le_bytes([ty.raw[8], ty.raw[9]]), ty.extent);
+            println!(
+                "{class:12} {:#04x} {:16} armour {:3} hp {:4} value {:#x} amount {} duration {} shape {} extent {:?}",
+                ty.subtype,
+                ty.name,
+                ty.armor,
+                ty.hit_points,
+                ty.value,
+                ty.amount,
+                ty.duration,
+                u16::from_le_bytes([ty.raw[8], ty.raw[9]]),
+                ty.extent
+            );
         }
     }
 }

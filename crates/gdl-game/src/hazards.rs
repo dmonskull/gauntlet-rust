@@ -249,7 +249,7 @@ fn tiles(
 
 /// The special powerup's levitation bit keeps the hero off damage tiles.
 fn levitating(state: &PlayerState) -> bool {
-    state.powers.iter().any(|p| p.subtype == 9 && p.value & 1 != 0)
+    state.bits.special & crate::player_state::power::LEVITATE != 0
 }
 
 /// Node flags that make a wall hurt, and those that only hurt while the

@@ -13,6 +13,7 @@ use gdl_formats::pdata::PlayerStats;
 use crate::audio::PlaySound;
 use crate::level::LoadedGame;
 use crate::player::{PlayerChoice, PlayerSpawn, PlayerTick};
+use crate::population::LevelPopulation;
 use crate::quest::Quest;
 
 /// Health a new hero starts with.
@@ -106,9 +107,48 @@ pub struct PlayerState {
     pub head_height: f32,
     /// The class's powerup duration factor.
     pub powerup_time: f32,
+    /// What its powerups add up to this tick.
+    pub bits: PowerBits,
     /// Fields until the next low-health warning.
     warning_timer: i32,
 }
+
+/// What a hero's powerups add up to (the game's stats routine, every
+/// tick): its weapon bits (player `+0x11C`, which its blows and missiles
+/// carry — one element, the longest-lasting, in the low four), armour
+/// (`+0x120`) and special bits (`+0x124`, with `0x10000` while a speed
+/// power runs), what speed and magic powers add to its speed (`+0x110`)
+/// and magic power (`+0x10C`), and the turbo a turbo power fills in.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PowerBits {
+    pub weapon: u32,
+    pub armour: u32,
+    pub special: u32,
+    pub speed: f32,
+    pub magic: f32,
+    pub turbo: f32,
+}
+
+/// Powerup subtypes: weapon, armour, speed, magic, special.
+pub mod power {
+    pub const WEAPON: i32 = 5;
+    pub const ARMOUR: i32 = 6;
+    pub const SPEED: i32 = 7;
+    pub const MAGIC: i32 = 8;
+    pub const SPECIAL: i32 = 9;
+    /// The element in a weapon's low four bits.
+    pub const ELEMENT: u32 = 0xF;
+    /// Special bits: levitation, the turbo refill, a speed power running.
+    pub const LEVITATE: u32 = 0x1;
+    pub const TURBO: u32 = 0x8_0000;
+    pub const SPEEDING: u32 = 0x1_0000;
+}
+
+/// The tower's realm id: powerups don't run down there.
+const TOWER_REALM: u32 = 13;
+
+/// A turbo power fills the meter by this, up to its top.
+const TURBO_FILL: f32 = 100.0;
 
 impl Default for PlayerState {
     fn default() -> Self {
@@ -128,6 +168,7 @@ impl PlayerState {
             keys: 0,
             potions: Vec::new(),
             powers: Vec::new(),
+            bits: PowerBits::default(),
             runestones: Vec::new(),
             quest: Quest::default(),
             popup: None,
@@ -263,15 +304,51 @@ impl PlayerState {
         }
     }
 
-    /// Runs the powerup clocks down by `dt` seconds, dropping the ones
-    /// that run out.
-    pub fn tick_powers(&mut self, dt: f32) {
+    /// The powerups' tick (the game's stats routine): their clocks run
+    /// down by `dt` seconds unless `held` (in the tower), and what they
+    /// add up to is worked out — a power counts on the tick it runs out,
+    /// then it's dropped; a turbo power is spent at once.
+    pub fn tick_powers(&mut self, dt: f32, held: bool) -> PowerBits {
+        let mut b = PowerBits::default();
+        let mut element_time = -1.0f32;
         for p in &mut self.powers {
-            if p.time > 0.0 {
+            if p.time == 0.0 {
+                continue;
+            }
+            if !held && p.time > 0.0 {
                 p.time = (p.time - dt).max(0.0);
+            }
+            match p.subtype {
+                power::WEAPON if p.value & power::ELEMENT == 0 => b.weapon |= p.value,
+                power::WEAPON => {
+                    // One element: the one that lasts longest.
+                    if element_time < 0.0 || (p.time > 0.0 && p.time > element_time) {
+                        b.weapon = (b.weapon & !power::ELEMENT) | p.value;
+                        element_time = p.time;
+                    }
+                    b.weapon |= p.value & !power::ELEMENT;
+                }
+                power::ARMOUR => b.armour |= p.value,
+                power::SPEED => {
+                    b.speed += p.amount;
+                    b.special |= power::SPEEDING;
+                }
+                power::MAGIC => b.magic += p.amount,
+                power::SPECIAL => {
+                    b.special |= p.value;
+                    if p.value & power::TURBO != 0 {
+                        b.turbo += TURBO_FILL;
+                        if p.time >= 0.0 {
+                            p.time = 0.0;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         self.powers.retain(|p| p.time != 0.0);
+        self.bits = b;
+        b
     }
 }
 
@@ -283,7 +360,8 @@ impl Plugin for PlayerStatePlugin {
             .init_resource::<PlayerState>()
             // A new hero whenever the class choice changes.
             .add_systems(Update, new_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
-            .add_systems(FixedUpdate, (take_damage, powers_and_warning).chain().after(PlayerTick));
+            .add_systems(FixedUpdate, (take_damage, powers_and_warning.in_set(PowersTick)).chain().after(PlayerTick))
+            .add_systems(Update, test_powers.run_if(resource_exists_and_changed::<LevelPopulation>));
     }
 }
 
@@ -335,11 +413,50 @@ fn take_damage(
 /// Fields (1/60 s) the game counts per 30 Hz tick.
 pub const FIELDS_PER_TICK: i32 = 2;
 
-/// Counts powerups down and sounds the low-health warning: at 200 health
-/// or less the game plays `S_WARN` every 120 fields (60 below 100, 30 below
-/// 25).
-fn powers_and_warning(time: Res<Time>, mut state: ResMut<PlayerState>, mut sound: MessageWriter<PlaySound>) {
-    state.tick_powers(time.delta_secs());
+/// The powerups' tick.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PowersTick;
+
+/// `GDL_POWERS="<subtype>:<value>[:<amount>[:<seconds>]],…"` (a testing
+/// aid): powerups granted at the first level start, as picking them up
+/// would (`0x…` values allowed; seconds default to 60, −1 for counted
+/// ones). E.g. `5:1` a fire weapon, `7:0:4:40` a speed boost.
+fn test_powers(mut state: ResMut<PlayerState>, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    *done = true;
+    let Ok(spec) = std::env::var("GDL_POWERS") else { return };
+    let num = |s: &str| -> Option<f32> {
+        match s.trim().strip_prefix("0x") {
+            Some(h) => u32::from_str_radix(h, 16).ok().map(|v| v as f32),
+            None => s.trim().parse().ok(),
+        }
+    };
+    for part in spec.split(',') {
+        let f: Vec<&str> = part.split(':').collect();
+        let (Some(subtype), Some(value)) = (f.first().and_then(|s| num(s)), f.get(1).and_then(|s| s.trim().strip_prefix("0x").map_or_else(|| s.trim().parse().ok(), |h| u32::from_str_radix(h, 16).ok())))
+        else {
+            continue;
+        };
+        let amount = f.get(2).and_then(|s| num(s)).unwrap_or(0.0);
+        let seconds = f.get(3).and_then(|s| num(s)).unwrap_or(60.0);
+        state.grant_power(subtype as i32, value, amount, seconds);
+        info!("GDL_POWERS: subtype {subtype} value {value:#x} amount {amount} for {seconds} s");
+    }
+}
+
+/// Counts powerups down (not in the tower) and adds them up, and sounds
+/// the low-health warning: at 200 health or less the game plays `S_WARN`
+/// every 120 fields (60 below 100, 30 below 25).
+fn powers_and_warning(
+    time: Res<Time>,
+    mut state: ResMut<PlayerState>,
+    population: Option<Res<LevelPopulation>>,
+    mut sound: MessageWriter<PlaySound>,
+) {
+    let in_tower = population.as_ref().and_then(|p| crate::quest::level_of(&p.level)).is_some_and(|(realm, _)| realm == TOWER_REALM);
+    state.tick_powers(time.delta_secs(), in_tower);
     if !state.alive || state.health > 200.0 {
         return;
     }
@@ -411,6 +528,27 @@ mod tests {
     }
 
     #[test]
+    fn powers_add_up_as_the_game_does() {
+        let mut s = PlayerState { powerup_time: 1.0, ..PlayerState::default() };
+        s.grant_power(power::WEAPON, 1, 0.0, 30.0);
+        s.grant_power(power::WEAPON, 2, 0.0, 90.0);
+        s.grant_power(power::WEAPON, 0x80000, 0.0, 45.0);
+        s.grant_power(power::SPEED, 0, 4.0, 40.0);
+        s.grant_power(power::SPECIAL, power::TURBO, 0.0, 1.0);
+        // The longest-lasting element wins; other weapon bits add.
+        let b = s.tick_powers(0.5, false);
+        assert_eq!(b.weapon, 0x80002);
+        assert_eq!((b.speed, b.special & power::SPEEDING), (4.0, power::SPEEDING));
+        // The turbo power fills the meter once and is spent.
+        assert_eq!(b.turbo, 100.0);
+        assert_eq!(s.tick_powers(0.5, false).turbo, 0.0);
+        // In the tower nothing runs down.
+        let before: Vec<f32> = s.powers.iter().map(|p| p.time).collect();
+        s.tick_powers(5.0, true);
+        assert_eq!(before, s.powers.iter().map(|p| p.time).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn powers_stack_and_expire() {
         let mut s = PlayerState { powerup_time: 1.3, ..PlayerState::default() };
         s.grant_power(5, 1, 0.0, 90.0);
@@ -420,7 +558,7 @@ mod tests {
         s.grant_power(5, 0x10_0000, 5.0, -1.0);
         s.grant_power(5, 0x10_0000, 5.0, -1.0);
         assert_eq!(s.powers[1].amount, 10.0);
-        s.tick_powers(200.0);
+        s.tick_powers(200.0, false);
         assert_eq!(s.powers.len(), 1, "timed power ran out, counted one stays");
         for v in 0..20 {
             s.grant_power(9, 1 << v, 0.0, v as f32 + 1.0);

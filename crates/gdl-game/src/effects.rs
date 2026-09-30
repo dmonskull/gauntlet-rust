@@ -224,6 +224,12 @@ pub fn magic_power(stat: f32) -> f32 {
     8.0 + 0.001 * stat * 24.0
 }
 
+/// The magic power with what magic powers add, clamped to its range as
+/// the game's stats routine does.
+fn powered_magic(stat: f32, state: Option<&PlayerState>) -> f32 {
+    (magic_power(stat) + state.map_or(0.0, |s| s.bits.magic)).clamp(magic_power(0.0), magic_power(1000.0))
+}
+
 /// A potion's effect: damage and radius, before it's spawned.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PotionEffect {
@@ -677,7 +683,7 @@ fn use_potions(
             cycle.0 += 1;
         }
         let stat = magic.as_ref().map_or(400.0, |m| locomotion::stat_at_level(m.stat[0], m.stat[1], level, 0.0));
-        let e = potion_effect(kind, u.mode, 0, magic_power(stat), level);
+        let e = potion_effect(kind, u.mode, 0, powered_magic(stat, state.as_deref()), level);
         let c = colour_index(kind);
         info!(
             "potion {} (mode {}): {:.1} damage out to {:.1}; {} left",
@@ -780,7 +786,7 @@ fn set_off_potions(
             let kind = colour();
             let level = state.as_ref().map_or(1, |s| s.level.max(1));
             let stat = magic.as_ref().map_or(400.0, |m| locomotion::stat_at_level(m.stat[0], m.stat[1], level, 0.0));
-            let e = potion_effect(kind, 0, 0, STRUCK_POWER * magic_power(stat), level);
+            let e = potion_effect(kind, 0, 0, STRUCK_POWER * powered_magic(stat, state.as_deref()), level);
             sounds.write(PlaySound(POTION_SOUND[colour_index(kind)].into()));
             blasts.write(BlastAt { owner: hero, at, kind: e.kind, damage: e.damage, radius: e.radius });
             hints.write(crate::hints::ShowHint(crate::hints::Hint::ShootPotion));

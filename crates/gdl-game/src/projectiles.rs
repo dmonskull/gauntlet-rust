@@ -853,6 +853,7 @@ fn launch_hero(
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
     (items, mut struck): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>),
+    players: Query<&Player>,
 ) {
     for shot in shots.read() {
         let Some(hero) = hero.as_deref() else { continue };
@@ -860,6 +861,8 @@ fn launch_hero(
         let t = hero.kind;
         let (offset, mult, kind, size) =
             if power { (hero.power_offset, 2.0, 0x200_0010, POWER_SIZE) } else { (hero.throw_offset, 1.0, 0, 1.0) };
+        // The throw starts from the hero's weapon bits.
+        let kind = kind | players.get(shot.hero).map_or(0, |p| p.weapon);
         let launch = hero_launch(shot, missile_class(hero.class), offset, hero.speed, t.gravity);
         let radius = t.radius * size;
         let damage = hero.damage * mult;
