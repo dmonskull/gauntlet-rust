@@ -66,8 +66,26 @@ SOR 1.3).
   lowers it by time. The only callers of the damage function are attacks,
   hazards, damage tiles and poisoned food.
 - **Levelling** (`FUN_80076144` → `FUN_800763d4`): experience for level
-  `L` is `(L − 1)(30L + 1000)` up to 60, then `(L − 60) × 4600 + 165200`;
-  each level gained adds 100 health. Nothing here awards experience yet.
+  `L` is `(L − 1)(30L + 1000)` up to 60, then `(L − 60) × 4600 + 165200`.
+  When a change of experience moves the level (`FUN_800763d4` returns 1
+  for a rise, −1 for a fall, however many levels): a rise raises hint
+  `0x22` LEVELUP ("LEVEL %d EXPERIENCE", `S_GAINEDLEVEL`, mode 0: every
+  time; `%d` is the hero's level, `r13-0x6E50` = `+0x3324`, set by
+  `FUN_800a4268`), puts the colour's `LEVELUP_<colour>` flash on the hero
+  (`FUN_80091ef4(0, +0x04)`: effect `0x80122628`[colour] = `0x39`–`0x3C`
+  YEL/BLU/RED/GRE, attached to the hero model `+0x74` by `FUN_80093858`)
+  and adds 100 health (`r2-0x5F88`); a fall (a Death's drain) has the
+  announcer say `FUN_8009c314(player, −1)` → the sentence
+  `FUN_8009f9e0(3 s, −1, player, S_LOSTLEVEL, −1)`: the hero's name
+  (`S_<colour><class>2`, `S_POJO2` for the Pojo) then `S_LOSTLEVEL`. (A
+  positive argument would say the name, `S_HAS`, `S_GAINEDLEVEL`; the
+  level-up doesn't call it.)
+
+  Here: `PlayerState::add_experience` (the heal) and `lose_experience`;
+  `levelup.rs` watches the level each tick — the hint and the flash
+  (`effects::EffectOn` on the hero) on a rise, the sentence on a fall —
+  taking it as it finds it at a level start or a new hero and for the
+  second after (the tests' `GDL_EXPERIENCE` lands then).
 
 The runtime: `PlayerState` (a resource — the record outlives levels)
 with `heal`, `damage`, `take_keys`, `use_key`, `take_potions`,
@@ -658,10 +676,19 @@ announced before; `GDL_ANNOUNCED="<shard marks>:<stone bits>"`). Stand-ins:
 a placed shard sprays its particle systems once from its place (the
 effects' bursts; the game runs them along the effect's nodes). The flash
 and sparkle ride the hero (`effects::EffectOn`: the model a child of the
-hero, the particles bursting where it starts). Open: `LEVELUP_<colour>`
-(one `FF_K` node, render flags `0x1001800`: turned about Y to the camera;
-ACTIVE 20 frames) doesn't show on screen at all, riding or placed — at
-the tick it spawns the hero looks the same; not traced why. Test with `GDL_BEATEN`/
+hero, the particles bursting where it starts). The flash
+(`LEVELUP_<colour>`: one `FF_K` node, render flags `0x1001800` — turned
+about Y to the camera — a 4.4 × 6.3 quad from the feet up, ACTIVE 20
+frames running a ten-frame flipbook of a dim blue sparkle, mean alpha
+15 of 255) is drawn **additively** at depth bias −512: its maker
+`FUN_80091ef4` gives the instance flags `0x880800` (`0x800000`: the
+additive blend) and the effect table has −512 for `0x39`–`0x3C`; drawn
+plainly blended at −128, as it was, it was a faint haze. In the rank
+scene the wizard's camera also leaves the hero at the bottom edge,
+mostly behind the panel. Not pinned: what the node's flag `0x1000`
+(with `0x4000`, `FUN_800c67a0`'s other lighting set and the
+draw context's bit 1) does to its light — ours lights it as any unlit
+vertex. Test with `GDL_BEATEN`/
 `GDL_RUNES`/`GDL_EXPERIENCE` on `levelL1` (a fresh hero gets the welcome
 first: `GDL_MENU="b@400,b@440,b@480,b@520,b@560,b@600"`).
 
