@@ -258,6 +258,16 @@ bank 0 is `COMMON`.
 A picked-up item gets flag `0x100` and a timer of 8 fields (15 if a
 player dropped it), after which the update frees it.
 
+**Blasts on powerups** ([mechanics.md](mechanics.md), "Blows on
+items"): the hero's blows never reach powerups (armour −1; food −2), but
+blasts do. An explosion (kind `0x400`) of 5 or more turns treasure into
+`TREAS_JUNK`, worth 10, and blows food and timed powerups to pieces
+(`ITEMEXP0` left, hint `0x87` EXPDESTROY); keys, potions (they go off)
+and the quest pieces stand. Poison gas (`0x800`) above 2 spoils food:
+meat becomes `BADMEAT` worth −100, fruit `GAPPLE` worth −50 — eaten as
+poisoned food — with hint `0x88` GASPOISON. Here: `breakables.rs`
+(`BlastItem`).
+
 ### Item animation
 
 There's no spin or bob in code: **items animate through their atree**
