@@ -690,6 +690,8 @@ struct Out<'a> {
     seen: &'a Hints,
     /// The level's scroll texts.
     scrolls: String,
+    /// Game seconds.
+    now: f32,
 }
 
 impl Out<'_> {
@@ -704,7 +706,7 @@ impl Out<'_> {
     }
 
     fn message(&mut self, group: &str, index: usize, voice: Option<&'static str>) {
-        self.messages.push(ShowMessage { group: group.into(), index, voice });
+        self.messages.push(ShowMessage { group: group.into(), index, voice, seconds: None });
     }
 }
 
@@ -726,7 +728,8 @@ fn tick(
     let dt = time.delta_secs();
     let items = &mut *items;
     let scrolls = items.scrolls.clone();
-    let mut out = Out { sounds: Vec::new(), hints: Vec::new(), messages: Vec::new(), seen: &seen, scrolls };
+    let now = time.elapsed_secs();
+    let mut out = Out { sounds: Vec::new(), hints: Vec::new(), messages: Vec::new(), seen: &seen, scrolls, now };
     update_items(items, dt, &mut commands);
     run(items, dt, &mut state, ground.as_deref(), &mut players, &cameras, &mut out, &mut change);
     sounds.write_batch(out.sounds.into_iter().map(PlaySound));
@@ -1058,13 +1061,15 @@ fn pick_up(
             out.sound("S_PICKUPRUNE");
             true
         }
-        // A realm's legendary item: its bit (the boss intro looks for it).
-        // Stand-in: its hint (0x71 + the item) isn't shown.
+        // A realm's legendary item (numbered by the realm whose boss it's
+        // for): its bit, for the boss intro, and its name spoken.
         LEGENDARY => {
             if (0..16).contains(amount) {
                 state.quest.legendary |= 1 << *amount;
             }
-            state.treasures.push((subtype, *amount));
+            if (1..=11).contains(amount) {
+                out.hint(Hint::Legendary(*amount as u8));
+            }
             out.sound("S_PICKUPMAGIC");
             true
         }
@@ -1081,6 +1086,7 @@ fn pick_up(
         GEM => {
             if let Some(c) = state.quest.add_gem(*amount) {
                 info!("{} crystals: {}/{}", quest::CRYSTAL_COLOURS[c], state.quest.crystals[c], quest::CRYSTALS_NEEDED[c]);
+                state.popup = Some((c as u16, out.now));
             }
             out.sound("S_PICKUPMAGIC");
             true
@@ -1088,6 +1094,7 @@ fn pick_up(
         GARGOYLE_PIECE => {
             if let Some(p) = state.quest.add_gargoyle(*amount) {
                 info!("gargoyle pieces {p}: {}/{}", state.quest.gargoyle[p], quest::GARGOYLE_NEEDED[p]);
+                state.popup = Some((0x100 + p as u16, out.now));
             }
             out.sound("S_PICKUPMAGIC");
             true

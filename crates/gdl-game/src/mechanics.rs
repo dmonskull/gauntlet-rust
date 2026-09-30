@@ -345,7 +345,7 @@ fn quest_gate(mech: &mut Mechanics, i: usize, state: Option<&PlayerState>, messa
             if let Some((group, index)) = need
                 && mech.need_again.get(&t.id).is_none_or(|&at| mech.clock >= at)
             {
-                messages.write(ShowMessage { group: group.into(), index, voice: None });
+                messages.write(ShowMessage::new(group, index));
                 mech.need_again.insert(t.id, mech.clock + quest::NEED_AGAIN_SECONDS);
             }
             mech.triggers[i].touches = 0;

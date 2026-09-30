@@ -370,4 +370,6 @@ Start, triggers.
   legendary-key row, the quest and rune-13 icons and the "Wait In Tower"
   prompt aren't drawn; the panel is hidden while a menu is up (its numbers
   would draw over the menu's parchment, text being drawn after images).
-  Runestones are lit by stone number 1–12.
+  Runestone slot i is lit by stone i (the stones are numbered 0–11 by
+  their item type's `+0x40`, RUNEA1 = 0 … RUNED3 = 11; RUNEE1 = 12 is
+  rune 13); slots used to be lit one stone late.

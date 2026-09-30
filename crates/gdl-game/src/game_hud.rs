@@ -6,10 +6,14 @@
 //!
 //! Only player 1 plays here, so only its panel is drawn.
 //!
+//! Above the panel, for 3 s after a gem or gargoyle piece is picked up,
+//! its icon and "count/needed" (the needed count once its realm or wing
+//! has opened; `docs/items.md`).
+//!
 //! Stand-ins: the turbo meter's flash and glint animations, the legendary
 //! key row shown for the first 300 fields of a level, the quest and
-//! rune-13 icons and the dead player's "Wait In Tower" / "Quit Game"
-//! prompt aren't drawn.
+//! rune-13 icons, the secret realm's coin count and the dead player's
+//! "Wait In Tower" / "Quit Game" prompt aren't drawn.
 
 use bevy::prelude::*;
 use gdl_formats::font::{FONT_8HI, INITIALS};
@@ -18,6 +22,7 @@ use crate::font::{Draw2d, GameFonts, TextStyle, UiTextures};
 use crate::frontend::Frontend;
 use crate::player::{Player, PlayerChoice};
 use crate::player_state::PlayerState;
+use crate::quest;
 
 pub struct GameHudPlugin;
 
@@ -52,6 +57,7 @@ fn draw(
     mut draw: ResMut<Draw2d>,
     mut shown_turbo: Local<f32>,
     real: Res<Time<Real>>,
+    game_time: Res<Time<Virtual>>,
 ) {
     let (Some(fonts), Some(tex)) = (fonts, tex.as_deref_mut()) else { return };
     // Not on the front end's screens, and not under a menu (text draws
@@ -74,9 +80,9 @@ fn draw(
     image(&mut p, "BK_RUNE_STONE_02", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
     image(&mut p, &format!("S4_{}", choice.class), x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
     image(&mut p, "S4_FRAME", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
-    // Twelve runestone slots, lit for the stones held.
+    // Twelve runestone slots, lit for the stones held (stone n in slot n).
     for i in 0..12usize {
-        let held = state.runestones.iter().any(|&n| n == i as i32 + 1);
+        let held = state.runestones.contains(&(i as i32));
         if held {
             let name = format!("SM_RUNE_{}_{:02}", RUNE_COLOURS[i / 3], i % 3 + 1);
             image(&mut p, &name, x + 8.0 * i as f32 + (i / 3) as f32 + 15.0, 306.0, None, Color::WHITE);
@@ -122,6 +128,27 @@ fn draw(
     // (The `BTMBK_LEVL` plate is made off screen and hidden; only a
     // special mode shows it.)
 
+    // The last gem or gargoyle piece: its icon and count for 3 s.
+    let popup = state.popup.filter(|&(_, at)| game_time.elapsed_secs() - at < POPUP_SECONDS).and_then(|(what, _)| {
+        let (icon, count, need) = if what < 0x100 {
+            let c = usize::from(what);
+            let need = *quest::CRYSTALS_NEEDED.get(c)?;
+            // The art names the colours by three letters (`SM_CRYSTAL_ORA`);
+            // the game asks for the whole word, which never matches.
+            let colour: String = quest::CRYSTAL_COLOURS[c].chars().take(3).collect();
+            (format!("SM_CRYSTAL_{colour}"), state.quest.crystals[c], need)
+        } else {
+            let g = usize::from(what - 0x100);
+            let need = *quest::GARGOYLE_NEEDED.get(g)?;
+            (format!("SM_{}", ["FANGS", "FEATHERS", "CLAWS"][g]), state.quest.gargoyle[g], need)
+        };
+        // An opened counter shows what it needed.
+        Some((icon, if count < 0 { need } else { count }, need))
+    });
+    if let Some((icon, _, _)) = &popup {
+        image(&mut p, icon, x + 28.0, 288.0, Some(Vec2::splat(16.0)), Color::WHITE);
+    }
+
     let draw = p.draw;
     let small = TextStyle::new(SCORE, 0.8, tint);
     if state.keys > 0 {
@@ -141,7 +168,13 @@ fn draw(
     let health = (state.health.clamp(0.0, 9999.0) as i32).to_string();
     let w = fonts.width(SCORE, 1.0, &health);
     draw.text(&fonts, &numbers, x + 116.0 - w, 359.0, &health);
+    if let Some((_, count, need)) = popup {
+        draw.text(&fonts, &TextStyle::new(FONT_8HI, 1.5, Color::WHITE), x + 48.0, 292.0, &format!("{count}/{need}"));
+    }
 }
+
+/// How long a pick-up's count shows.
+const POPUP_SECONDS: f32 = 3.0;
 
 struct Painter<'a> {
     draw: &'a mut Draw2d,
