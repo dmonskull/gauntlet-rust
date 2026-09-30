@@ -495,6 +495,8 @@ struct ItemPose {
     action: usize,
     frame: f32,
     tracks: Option<(usize, Vec<Option<Track>>)>,
+    /// Each flipbook node's frame on show: (action, frame).
+    shown: Vec<(usize, usize)>,
 }
 
 pub(crate) fn build_items(
@@ -628,7 +630,8 @@ fn attach_models(
             Some(item) => {
                 item.model = Some(entity);
                 item.atree = rig.map(|r| r.atree.clone());
-                commands.entity(entity).insert(ItemPose { action: 0, frame: 0.0, tracks: None });
+                let shown = vec![(0, 0); rig.map_or(0, |r| r.flipbooks.len())];
+                commands.entity(entity).insert(ItemPose { action: 0, frame: 0.0, tracks: None, shown });
             }
             None => commands.entity(entity).despawn(),
         }
@@ -642,8 +645,10 @@ pub const EXIT_OFF: &str = "EXIT_OFF";
 #[derive(Component)]
 struct ShutExitModel;
 
-/// Poses every animated item model at its item's action and frame.
+/// Poses every animated item model at its item's action and frame: its
+/// bones, and the frame each flipbook node shows (a barrel breaking).
 fn pose_items(
+    mut commands: Commands,
     items: Res<LevelItems>,
     mut models: Query<(&ItemRig, &mut ItemPose)>,
     mut bones: Query<&mut Transform>,
@@ -652,6 +657,24 @@ fn pose_items(
         let Some((rig, mut pose)) = item.model.and_then(|m| models.get_mut(m).ok()) else { continue };
         pose.action = item.action;
         pose.frame = item.frame;
+        for (k, (holder, frames, facing)) in rig.flipbooks.iter().enumerate() {
+            let action = if frames.get(pose.action).is_some_and(|f| !f.is_empty()) { pose.action } else { 0 };
+            let Some(list) = frames.get(action).filter(|f| !f.is_empty()) else { continue };
+            let frame = character::shown_frame(pose.frame, list.len());
+            if pose.shown.get(k) == Some(&(action, frame)) {
+                continue;
+            }
+            if let Some(s) = pose.shown.get_mut(k) {
+                *s = (action, frame);
+            }
+            commands.entity(*holder).despawn_related::<Children>();
+            for p in &list[frame] {
+                let e = commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(*holder))).id();
+                if let Some(b) = facing {
+                    commands.entity(e).insert((*b, Transform::default()));
+                }
+            }
+        }
         if pose.tracks.as_ref().is_none_or(|(a, _)| *a != pose.action) {
             let tracks = (0..rig.atree.nodes.len())
                 .map(|n| rig.atree.clip_bone(n).and_then(|b| rig.atree.track(b, pose.action).ok().flatten()))
