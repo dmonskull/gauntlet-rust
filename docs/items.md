@@ -251,7 +251,11 @@ placement's count) and duration (`+0x4A`):
 | 13–16 | legendary item, scroll, gem, gargoyle piece: quest counters | `S_PICKUPMAGIC` | |
 
 A Pojo (value `0x400`) hero eating a CHICKEN takes 100 damage instead
-(the hero flag `0x400`); not in the runtime. Sound ids are
+(the hero flag `0x400`). Poison food is a blow on the hero,
+`FUN_80078560(amount, player, 0, 0x800, 0)`: through the resistance
+routine with kind `0x800` (the gas mask and invulnerability stop it, the
+gold armour heals) and into the reaction queue. Here: `items.rs` deals it
+through `Player::take_blow` once the tick's pickups are done. Sound ids are
 `bank << 16 | call` in the catalog (`FUN_80015a30` → `FUN_80015cac`);
 bank 0 is `COMMON`.
 
