@@ -418,8 +418,8 @@ fn shield_blow(hero: Entity, f: &combat::Found, damage: f32, kind: u32, facing: 
 /// SHIELD_RUN for the walks and runs.
 fn shield_action(action: Action) -> Action {
     match action.0 {
-        0x00 => Action(0x15),
-        0x11..=0x14 => Action(0x16),
+        0x00 => Action::SHIELD_READY,
+        0x11..=0x14 => Action::SHIELD_RUN,
         _ => action,
     }
 }
@@ -1162,7 +1162,17 @@ fn tick(
         let mut next = p.actions.next(requested, &env);
         // With a shield on its arm the hero stands and moves behind it.
         if p.armour_bits & SHIELDS != 0 {
-            next.action = shield_action(next.action);
+            let action = shield_action(next.action);
+            // The shield run starts over at its end (the chooser's loop
+            // flag; its clip's own is off), taking over from itself only
+            // then.
+            if action == Action::SHIELD_RUN && next.action != action {
+                next.again = true;
+                if current == Action::SHIELD_RUN {
+                    next.switch = actions::Switch::AtEnd;
+                }
+            }
+            next.action = action;
         }
         let (move_factor, turn_factor) = actions::factors(current, p.class.unwrap_or(0));
         let clip = clip_for(&animator, next.action);

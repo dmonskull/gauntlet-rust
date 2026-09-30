@@ -42,6 +42,9 @@ impl Action {
     pub const IDLE2: Self = Self(0x02);
     pub const IDLE2_LOOP: Self = Self(0x03);
     pub const SHOVE: Self = Self(0x08);
+    /// Standing and running behind a shield.
+    pub const SHIELD_READY: Self = Self(0x15);
+    pub const SHIELD_RUN: Self = Self(0x16);
     pub const STRAFE_WLKF1: Self = Self(0x09);
     pub const STRAFE_WLKF2: Self = Self(0x0A);
     pub const STRAFE_WLKB1: Self = Self(0x0B);
