@@ -630,7 +630,17 @@ struct HeroMissile {
     damage: f32,
     speed: f32,
     model: Option<Arc<CharacterModel>>,
+    /// What the hero throws as the Pojo: the phoenix's fireball.
+    pojo_model: Option<Arc<CharacterModel>>,
 }
+
+/// The Pojo (special `0x400`) throws the phoenix's fireball (`WEAPONS`)
+/// in place of the class's weapon, from here in the hero's frame (from its
+/// centre) whatever the throw — still the class's missile otherwise: its
+/// size, fall, spin and damage.
+const POJO: u32 = 0x400;
+const POJO_MISSILE: &str = "PHOENIX_FBALL";
+const POJO_HAND: Vec3 = Vec3::new(0.0, -0.5, -1.25);
 
 /// Monster missile models, loaded the first time a type throws one.
 #[derive(Resource, Default)]
@@ -706,6 +716,8 @@ fn setup_level(
         }
         data.map(|d| Arc::new(CharacterModel::build(&d, &mut meshes, &mut materials, &mut images)))
     });
+    let pojo_model = load_atree(&mut game, "WEAPONS", POJO_MISSILE)
+        .map(|d| Arc::new(CharacterModel::build(&d, &mut meshes, &mut materials, &mut images)));
     let v = |a: [f32; 3]| Vec3::from(a);
     info!("{} throws: {damage:.1} damage at {speed:.1} units/s", choice.class);
     commands.insert_resource(HeroMissile {
@@ -716,6 +728,7 @@ fn setup_level(
         damage,
         speed,
         model,
+        pojo_model,
     });
 }
 
@@ -878,6 +891,28 @@ pub fn wall_between(collision: &LevelCollision, from: Vec3, to: Vec3, radius: f3
     wall(collision, from, to, radius).is_some()
 }
 
+/// A shot a hero's familiar or phoenix spits (`familiars.rs`): it flies
+/// and hits like the hero's own missiles — monsters, generators,
+/// breakables, potions on the floor, the level — from `start` at
+/// `velocity`, falling at `gravity`, pointing along its flight, for 3 s,
+/// with its own model and numbers.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_hero_missile(
+    commands: &mut Commands,
+    model: Option<&CharacterModel>,
+    hero: Entity,
+    start: Vec3,
+    velocity: Vec3,
+    gravity: f32,
+    radius: f32,
+    damage: f32,
+    kind: u32,
+) -> Entity {
+    let t = missile(0, damage, velocity.length(), radius, 0.0, [0.0; 3], gravity);
+    let launch = Launch { check: start, start, velocity };
+    spawn_projectile(commands, model, Owner::Hero(hero), &launch, &t, radius, damage, kind, 1.0)
+}
+
 /// A critter's missile (`critters.rs`): it flies and hits like a
 /// monster's, from `start` at `velocity`, with the critter's own model
 /// (drawn at `scale`) and numbers.
@@ -924,6 +959,8 @@ fn launch_hero(
         } else {
             hero.kind
         };
+        let pojo = players.get(shot.hero).is_ok_and(|p| p.special_bits & POJO != 0);
+        let (offset, model) = if pojo { (POJO_HAND, &hero.pojo_model) } else { (offset, &hero.model) };
         let launch = hero_launch(shot, missile_class(hero.class), offset, hero.speed, t.gravity);
         let radius = t.radius * size;
         let damage = hero.damage * mult;
@@ -958,7 +995,7 @@ fn launch_hero(
         for &(c, s) in &SPREAD[..count] {
             let v = launch.velocity;
             let turned = Launch { velocity: Vec3::new(v.x * c + v.z * s, v.y, -v.x * s + v.z * c), ..launch };
-            let e = spawn_projectile(&mut commands, hero.model.as_deref(), Owner::Hero(shot.hero), &turned, &t, radius, damage, kind, scale);
+            let e = spawn_projectile(&mut commands, model.as_deref(), Owner::Hero(shot.hero), &turned, &t, radius, damage, kind, scale);
             if count > 1 {
                 commands.entity(e).entry::<Projectile>().and_modify(|mut p| p.lifetime = SPREAD_LIFETIME);
             }
