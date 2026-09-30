@@ -183,8 +183,10 @@ only step table: the bosses' steps (`S_GEN%cSTEP1`/`2`, `S_GRG%cSTEP1`/`2`,
 Here (`footsteps.rs`, after each player tick): the action a hero was
 playing ends when `ActionState::action` changes, or when, the same action
 playing, its clip's frame goes back (a loop coming round or the clip
-played again); a stepping action's end plays the step by name
-(`PlaySound`, at the call's volume, no pan). Water is
+played again); a stepping action's end plays the step at the hero's feet,
+at the call's volume, panned and faded as the game's positional call does
+(`audio::PlaySoundAt::faded`, [audio-format.md](audio-format.md),
+"Positional sounds"). Water is
 `LevelCollision::player_water` above `PlayerGround::floor` — probed at
 the hero's feet after its move rather than at the move's destination
 before the floor check; stairs are the standing node's
