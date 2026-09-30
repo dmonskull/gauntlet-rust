@@ -13,11 +13,12 @@
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use gdl_formats::population::LocatorKind;
+use gdl_formats::population::{LocatorKind, PlacementParams};
 
 use crate::audio::{EffectName, PlaySound, QueueVoice};
 use crate::character::CharacterModel;
 use crate::effects::EffectAt;
+use crate::fade::Fade;
 use crate::level_material::LevelMaterial;
 use crate::mechanics::{LevelNodes, Mechanics};
 use crate::message_box::{Captions, ShowCaption, TextFile};
@@ -34,7 +35,8 @@ pub struct TowerScenesPlugin;
 impl Plugin for TowerScenesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Scene>()
-            .add_systems(FixedUpdate, run_scene.after(PlayerTick).before(crate::play_camera::tick));
+            .add_systems(FixedUpdate, run_scene.after(PlayerTick).before(crate::play_camera::tick))
+            .add_systems(Update, show_reveals);
     }
 }
 
@@ -253,10 +255,42 @@ const REVEAL_FIELDS: f32 = 180.0;
 const FIELDS: f32 = 2.0;
 const TICK: f32 = 1.0 / 30.0;
 
+/// The exits' destination codes the reveals work on: the Desecrated
+/// Temple's, the Underworld's, Garm's Citadel's.
+const TEMPLE_EXIT: i32 = 0x500;
+const UNDERWORLD_EXIT: i32 = 0x600;
+const CITADEL_EXIT: i32 = 0x803;
+
+/// What the scene has made see-through: exits (by destination code) and
+/// the window's light, each 0 whole … 1 clear.
+#[derive(Default)]
+struct Reveal {
+    exits: Vec<(i32, f32)>,
+    light: Option<f32>,
+}
+
+impl Reveal {
+    /// Makes an exit clear (the game's transparency 255).
+    fn clear(&mut self, code: i32) {
+        self.set(code, 1.0);
+    }
+
+    fn set(&mut self, code: i32, amount: f32) {
+        match self.exits.iter_mut().find(|(c, _)| *c == code) {
+            Some(e) => e.1 = amount,
+            None => self.exits.push((code, amount)),
+        }
+    }
+}
+
 /// The scene: what's announced and how far it's gone.
 #[derive(Resource, Default)]
 pub struct Scene {
     announce: Option<Announce>,
+    /// Exits and the light made clear, and fading in.
+    reveal: Reveal,
+    /// The exit the fade under way brings in (none: only the light).
+    fading: Option<i32>,
     /// Fields before the wizard appears.
     delay: f32,
     /// The wizard, while he's up.
@@ -510,6 +544,9 @@ fn run_scene(
         0x0B if done => {
             place_cut(&population, TEMPLE_CAMERA, &mut cuts);
             light.0 = true;
+            scene.reveal.light = Some(1.0);
+            scene.reveal.clear(TEMPLE_EXIT);
+            scene.fading = Some(TEMPLE_EXIT);
             scene.fade = REVEAL_FIELDS;
             0x74
         }
@@ -532,10 +569,16 @@ fn run_scene(
             sound("S_RUNEHIT", &mut sounds);
             f + 1
         }
-        0x15 if done => {
-            place_cut(&population, RUNES_CAMERA, &mut cuts);
-            scene.fade = REVEAL_FIELDS;
-            0x7E
+        0x15 => {
+            scene.reveal.clear(UNDERWORLD_EXIT);
+            if done {
+                place_cut(&population, RUNES_CAMERA, &mut cuts);
+                scene.fading = Some(UNDERWORLD_EXIT);
+                scene.fade = REVEAL_FIELDS;
+                0x7E
+            } else {
+                0x15
+            }
         }
         0x17 | 0x21 => 0,
         0x19 if done => {
@@ -557,6 +600,8 @@ fn run_scene(
             if let Some(mut m) = mechanics {
                 m.fire(0xFF, false);
             }
+            scene.reveal.clear(CITADEL_EXIT);
+            scene.fading = Some(CITADEL_EXIT);
             scene.fade = REVEAL_FIELDS;
             0x88
         }
@@ -564,10 +609,29 @@ fn run_scene(
             scene.again(Announce::Rune13Yes);
             0
         }
-        // A reveal fading in, then the step 100 below.
+        // A reveal fading in — the exit, and with the eighth shard the
+        // light: see-through by what's left of the 180 fields — then the
+        // step 100 below.
         f @ (0x74 | 0x7E | 0x88) => {
-            scene.fade -= FIELDS;
-            if scene.fade < 1.0 { f - 100 } else { f }
+            scene.fade = (scene.fade - FIELDS).max(0.0);
+            let clear = scene.fade / REVEAL_FIELDS;
+            if let Some(code) = scene.fading {
+                scene.reveal.set(code, clear);
+            }
+            if f == 0x74 {
+                scene.reveal.light = Some(clear);
+            }
+            if scene.fade < 1.0 {
+                if let Some(code) = scene.fading.take() {
+                    scene.reveal.set(code, 0.0);
+                }
+                if f == 0x74 {
+                    scene.reveal.light = Some(0.0);
+                }
+                f - 100
+            } else {
+                f
+            }
         }
         f => f,
     };
@@ -683,6 +747,7 @@ fn place(
             light.0 = false;
             if marks & quest::ALL_SHARDS == quest::ALL_SHARDS {
                 sound("S_SHRDS127", sounds);
+                scene.reveal.clear(TEMPLE_EXIT);
                 0x0A
             } else {
                 sound("S_SHRD8", sounds);
@@ -692,6 +757,7 @@ fn place(
         Announce::Rune(12) => {
             set_out(tower::rune_piece(12).1);
             place_cut(population, RUNE13_CAMERA, cuts);
+            scene.reveal.clear(CITADEL_EXIT);
             if runes & ALL_THIRTEEN == ALL_THIRTEEN { 0x1E } else { 0x20 }
         }
         Announce::Rune(_) | Announce::Rune13No | Announce::Underworld => {
@@ -707,7 +773,7 @@ fn place(
             }
             let nine = marks & SHARDS_AND_TEMPLE == SHARDS_AND_TEMPLE;
             let twelve = runes & ALL_TWELVE == ALL_TWELVE;
-            if !nine || !twelve {
+            let next = if !nine || !twelve {
                 if twelve { 0x18 } else { 0x16 }
             } else if stone < 13 {
                 0x14
@@ -715,12 +781,69 @@ fn place(
                 0x15
             } else {
                 0
+            };
+            // With a step to follow, the Underworld's exit is made clear.
+            if next != 0 {
+                scene.reveal.clear(UNDERWORLD_EXIT);
             }
+            next
         }
         // The words after a piece: nothing more goes anywhere.
         _ => 0,
     };
     info!("the wizard's scene placed {what:?}: step {:#x}", scene.follow);
+}
+
+/// An exit's destination as the game's code: realm × 0x100 + level.
+fn exit_code(destination: &str) -> Option<i32> {
+    crate::items::exit_destination(destination).map(|(realm, level)| (realm << 8 | level) as i32)
+}
+
+/// Draws what the scene made see-through: the exits by their destination
+/// code (every model of the placement), and the window's light.
+fn show_reveals(
+    mut commands: Commands,
+    scene: Res<Scene>,
+    items: Option<Res<crate::items::LevelItems>>,
+    models: Query<(Entity, &crate::population::PlacementIndex)>,
+    pieces: Query<(Entity, &quest::TowerPiece)>,
+    mut fades: Query<&mut Fade>,
+) {
+    if !scene.is_changed() {
+        return;
+    }
+    let mut fade = |e: Entity, amount: f32, commands: &mut Commands| match fades.get_mut(e) {
+        Ok(mut f) => {
+            if f.amount != amount {
+                f.amount = amount;
+            }
+        }
+        Err(_) if amount > 0.0 => {
+            commands.entity(e).try_insert(Fade::new(amount));
+        }
+        Err(_) => {}
+    };
+    if let Some(items) = items.as_deref() {
+        for &(code, amount) in &scene.reveal.exits {
+            let placements: Vec<usize> = items
+                .views()
+                .filter(|v| matches!(v.params, PlacementParams::Exit { destination: Some(d) } if exit_code(d) == Some(code)))
+                .map(|v| v.placement)
+                .collect();
+            for (e, p) in &models {
+                if placements.contains(&p.0) {
+                    fade(e, amount, &mut commands);
+                }
+            }
+        }
+    }
+    if let Some(amount) = scene.reveal.light {
+        for (e, piece) in &pieces {
+            if *piece == quest::TowerPiece::ShardLight {
+                fade(e, amount, &mut commands);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

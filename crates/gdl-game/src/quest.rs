@@ -79,6 +79,19 @@ pub(crate) fn enter_level(population: Res<LevelPopulation>, state: Option<ResMut
             state.runestones = (0..32).filter(|n| runes & (1 << n) != 0).collect();
             info!("GDL_RUNES: {:?}", state.runestones);
         }
+        // GDL_ANNOUNCED="<shard marks>:<stone bits>": what the tower's
+        // wizard has announced already (e.g. 0xFE:0 for seven shards).
+        if let Ok(v) = std::env::var("GDL_ANNOUNCED")
+            && let Some((shards, runes)) = v.split_once(':')
+        {
+            let num = |s: &str| {
+                let s = s.trim();
+                s.strip_prefix("0x").map_or_else(|| s.parse().ok(), |h| u32::from_str_radix(h, 16).ok())
+            };
+            state.quest.shards_announced = num(shards).unwrap_or(0);
+            state.quest.runes_announced = num(runes).unwrap_or(0);
+            info!("GDL_ANNOUNCED: shards {:#x}, stones {:#x}", state.quest.shards_announced, state.quest.runes_announced);
+        }
         if let Some(experience) = bits("GDL_EXPERIENCE") {
             let before = state.level;
             state.quest.rank_level.get_or_insert(before);
