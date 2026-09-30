@@ -549,8 +549,37 @@ setup-function numbers:
   Players between `+0x10` and `+0x0C` horizontally, within `+0x08` + their
   cylinder, and with a clear line (`0x8005fb34`) take the damage. The hit
   timer is as for kind 0.
-- **5, 6 — generator effects**: on the level's special generators
-  (`0x802409f0`, found by `0x80063efc`).
+- **5 — at every safe rock**: one projectile aimed at each of the
+  level's safe rocks (`0x802409f0`, up to 16, found by `0x80063efc`;
+  `0x80063c30` gives a rock's object).
+- **6 — throw down a safe rock**: a rock that isn't standing
+  (`0x80063cf8`: hit points or stage ≤ 0) — the one nearest the target
+  (`0x80035ae0`), without one the next after the last — gets the
+  projectile thrown at its spot and a timer of (projectile `+0x18` − 1) /
+  30 s; when it runs out the rock is made (below).
+
+### Safe rocks
+
+Boss levels place obstacles of subtype `0x29` (SAFEROCK) for the heroes to
+hide behind: A5 three, B6 six, I5 eight (13 with four players), K5 three.
+Made with the level (`0x800646e4`), a rock's stage (`+0xDE`) is its
+placement's count and its hit points are the type's × that; its model is
+`<type name><stage>` (`"%s%d"`, `r2-0x6618`) — the item banks have
+`SAFEROCK0`–`SAFEROCK3`. `0x80063d9c` restages it as it's damaged: 0 hit
+points → 0 (`SAFEROCK0`, walkable, armour `0xFF`, effect `0x1E` GENDEST),
+up to the type's → 1, up to twice → 2, more → 3; each stage's model is
+found by that name, then with `L1`, then `ROOT`, else the rock is hidden.
+The touch handler blocks for a rock only while its stage is above 0.
+The boss's update (`0x800399f0` → `0x8003a654`) first gathers the rocks;
+if the boss's file has a `DAMG` of kind 6 (`r13-0x74b0`, set as the
+file's records load) it hides them all (stage −1). Only the yeti has
+one, so I5 starts bare and the yeti throws its rocks down; a rock's timer
+running out makes it again (`0x80063d2c`: shown, hit points 3 × the
+type's, armour the type's `+0x42`, stage 3). A5's rocks start at stage 1,
+B6's and K5's at 3.
+
+Here: the stage models, the touch rule and I5's hidden start. Not done:
+rocks taking damage, the throw (kind 6) and the volley (kind 5).
 - **7 — grab**: bit 1 grabs the player (`0x800746c8`) into `+0x128`; bit 2
   throws them with damage (`0x800366e4`, kind `0x8050`).
 - **8 — projectile at a point**: aimed at `+0x1FC`.

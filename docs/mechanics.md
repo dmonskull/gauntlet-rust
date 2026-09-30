@@ -365,7 +365,8 @@ no damage (−2 when above 2.0, `r2-0x67f0`).
   placement's override): not dead → hit flash (`+0xE0` = 1); then
   - 0x2B BARREL and the rest: not dead → `S_WEAPONHITWOOD` (`0x3C`); dead →
     used, break sound; stays (broken);
-  - 0x29 SAFEROCK: `FUN_80063d9c` (breaks into its count of pieces);
+  - 0x29 SAFEROCK: `FUN_80063d9c` steps its model down by its hit points
+    (`docs/critters.md`, "Safe rocks");
   - 0x2A WALL (shootable walls, shape 4): `FUN_8009c128` — the level's
     hit sound, or `S_SECRETWALL` at 0 — and freed at 0 hit points;
   - 0x2C EXP BARREL: dead → used, explosion `FUN_80092bf4(30 × level

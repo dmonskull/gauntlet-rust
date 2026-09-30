@@ -86,6 +86,7 @@ use crate::damage::after_armor;
 use crate::effects::effect_life;
 use crate::exits::ChangeLevelTo;
 use crate::hints::ShowMessage;
+use crate::items::LevelItems;
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion;
@@ -104,7 +105,7 @@ impl Plugin for CrittersPlugin {
         app.add_systems(FixedUpdate, (tick_critters.after(MonsterTick), run_victory.after(tick_critters)))
             .add_systems(
             Update,
-            (setup_level.run_if(resource_added::<MonsterLevel>), interpolate).chain(),
+            (setup_level.run_if(resource_added::<MonsterLevel>).after(crate::items::build_items), interpolate).chain(),
         )
         .add_systems(Update, pose_parts.after(Animate));
     }
@@ -370,6 +371,8 @@ const DT: f32 = 1.0 / 30.0;
 /// Enemy type of the golem, and the first boss type.
 const GOLEM: i32 = 0x1D;
 const FIRST_BOSS: i32 = 0x22;
+/// A `DAMG` of this kind throws down a safe rock (the yeti's boulders).
+const MAKES_ROCK: i16 = 6;
 /// Boss types the intro and the end treat apart.
 const DRAGON: i32 = 0x22;
 const CHIMERA: i32 = 0x23;
@@ -1001,6 +1004,7 @@ fn setup_level(
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut standard: ResMut<Assets<StandardMaterial>>,
+    mut items: ResMut<LevelItems>,
 ) {
     let (Some(population), Some(ground)) = (population, ground) else { return };
     let realm_id = REALM_LETTERS.iter().find(|(l, _)| *l == monsters.realm).map_or(1, |r| r.1);
@@ -1020,6 +1024,11 @@ fn setup_level(
                 continue;
             }
         };
+        // A boss that makes its own safe rocks starts without the level's.
+        if enemy >= FIRST_BOSS && file.damage.iter().any(|d| d.kind == MAKES_ROCK) {
+            let n = items.hide_safe_rocks();
+            info!("{path}: the boss throws down the safe rocks; {n} hidden until then");
+        }
         let folder = format!("MONSTERS/{}", critter::model_folder(&file.desc, &realm_items, ""));
         let Some((anim, model, textures)) = read_folder(&mut game, &folder) else {
             warn!("{folder}: can't read the critter's models");

@@ -661,6 +661,14 @@ fn model_name(ty: &ItemType, placement: &gdl_formats::population::Placement) -> 
         let PlacementParams::Generator { strength, .. } = placement.params(ty.class) else { return None };
         return Some(format!("GEN_{}{}", monster_code(ty)?, strength.max(1)));
     }
+    // A safe rock starts at its placement's count as its stage, and shows
+    // it: `SAFEROCK3` (`docs/critters.md`, "Safe rocks").
+    if let PlacementParams::Obstacle { subtype, count } = placement.params(ty.class) {
+        let own = if subtype >= 1 { i32::from(subtype) } else { ty.subtype };
+        if own == crate::items::SAFE_ROCK {
+            return Some(format!("{}{count}", ty.name));
+        }
+    }
     Some(placement.model_name(ty).to_string())
 }
 
