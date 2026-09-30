@@ -1162,11 +1162,12 @@ the gargoyle and the general aren't run yet.
   `WIZARD` appears between the boss's spot and the hero, 3 above; after
   his 64-tick fade he says `S_DEFEATVOX<L>`, then `S_RUNEVOX…` by the
   realm's runestones the hero holds, queued one after the other; his
-  messages (from `TEXT/ENGLISH.ROM`) are logged and timed as the game
-  types them (a character every 2 fields, 60 fields a page); the 2 s
-  countdown then sends the hero to `levelL1`.
-  - Stand-ins: the messages aren't drawn (the hint system only shows
-    `SCROLL_E.ROM`); the wizard doesn't fade in; the teleport-out effect,
+  messages (`TEXT/ENGLISH.ROM`) show a page at a time through
+  `hints::ShowMessage`, each for as long as the game types and holds it
+  (a character every 2 fields, then 60 fields); the 2 s countdown then
+  sends the hero to `levelL1`.
+  - Stand-ins: the message box is the hints' plain text; the wizard
+    doesn't fade in; the teleport-out effect,
     the HUD sprites and the next level's choice (`levelL1` for world
     13's first) aren't the game's; the shard doesn't drop to the floor
     (flag 0x40 only acts on moving effects, and it has no velocity).
