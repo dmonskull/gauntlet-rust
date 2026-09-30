@@ -262,19 +262,19 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
 ## Work in progress
 
-- **Helper** (worktree branch `worktree-agent-aba24fd14c15b99a9`): was
-  building the familiars and the phoenix's shots (`familiars.rs`, from
-  projectiles.md "The familiars and the phoenix") when the session's
-  usage ran out; check its branch for a commit or uncommitted work before
-  merging. Merged this session: blasts on chests and items, CHESTEXP, the
-  blast models, poisoned food as a blow, the power-up looks, x-ray, the
-  lift, the hourglass, `Animator::hold`, the pickup hints (checked on
-  `levelT2`, a test level with every power-up laid out: `GDL_WARP="26,0,50"`
-  stands on the Pojo egg), and research on Death, the gauntlets, the
-  crossbow and the familiars.
+- **Helper** (worktree branch `worktree-agent-aba24fd14c15b99a9`): its
+  work so far is merged — this session the level-up flash (additive, at
+  the effect table's depth bias −512) and the game's level-up
+  (`levelup.rs`: hint `0x22` and the flash on a rise, the lost level's
+  sentence on a fall), before that the familiars and the phoenix's
+  shots, the Pojo's throws, the blasts on items, CHESTEXP, the power-up
+  looks, x-ray, the lift, the hourglass, `Animator::hold` and the pickup
+  hints (checked on `levelT2`, a test level with every power-up laid
+  out: `GDL_WARP="26,0,50"` stands on the Pojo egg). Check its branch
+  for new commits before merging anything else.
 - **Power-ups** (mine; `GDL_POWERS` grants them, e.g. `6:0x10000`,
-  `9:0x10:5:-1` for five fire breaths — [items.md](items.md) "Timed
-  powerups"):
+  `9:0x10:5:-1` for five fire breaths, `5:0x100000:5:-1` the crossbow,
+  `9:0x8000` the left gauntlet — [items.md](items.md) "Timed powerups"):
   - Stage C done: every blow goes through the resistance routine
     (`damage::resist`; heroes via `Player::take_blow`, monsters, critters;
     elemental blows × 1.5 on monsters) — invulnerability with its chrome
@@ -288,14 +288,17 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
     `SpendPower`), the hammer's chop (ATTCHOP).
   - Also done: Hand of Death and Health Vampire, the Pojo's turbo breath
     and knockdown, the charge's blow (bosses aren't walked into or
-    charged), the level-up flash and sparkle riding the hero
-    (`effects::EffectOn`).
-  - Next: **Death's AI and the halo** — fully decoded in monsters.md
-    "Death" (the drain, blows taking 1, magic killing it, leaving, the
-    halo's drain and run-away); the Skorne gauntlets' and the crossbow's
-    attacks (SSHOT chaining decoded in items.md/projectiles.md); rapid
-    fire's rate; footsteps (none are played at all). Open bug:
-    `LEVELUP_<colour>` never shows on screen (items.md).
+    charged), Death (type 30: the drain, blows taking 1, magic killing
+    it, leaving) and the halo's drain, the familiars and the phoenix,
+    **Skorne's gauntlets and the super crossbow** (ATTFIREL/ATTFIRELR
+    and SSHOT1/2/R with the chooser's loop flag `Next::again`; the
+    `BOSSG_ELEC`/`BOSSG_ACID`/`SUPERARROW` shots; every release's throw
+    sound — projectiles.md "Hero release").
+  - Next: rapid fire's rate (items.md "Attack overrides": how the 0.75
+    reaches the clip isn't pinned down); STUN2 for kind `0x1000`/`0x800`
+    blows (the hero's `+0x898`); the hero missiles' streaks
+    (`WEP_STREAK`, the crossbow's white one) and the magic classes'
+    element models; footsteps (none are played at all).
 - Also fixed on the way: effects whose clip has no frames lasted 0 s
   (particle effects: the breaths, blood sprays, `L_SHLD_ACTIVE`) — they
   last 30 frames, as the game's spawner has it.
@@ -313,12 +316,8 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
-0. Power-ups, what's left: the pickup hints by bit ([powers.md](powers.md)
-   "Pickup hints"; `items.rs` + `hints.rs`), Death's AI then the halo, the
-   Skorne gauntlets' and crossbow's attacks (SSHOT), phoenix and
-   familiars, the Pojo's turbo breath and throws, the head-2 sparkle, rapid
-   fire's rate. The tower's scenes: the rank flash riding the hero — [items.md](items.md) "The tower wizard's
-   scenes" (the exits' reveals are done, `ee73380`). The heroes' step cut under the boss
+0. Power-ups, what's left: the head-2 sparkle, rapid fire's rate, STUN2,
+   the missile streaks, footsteps (above). The heroes' step cut under the boss
    camera; the hand glows (and their banks' running modifiers); the
    node spheres' flashes (which model node a `NODE` names, `+0x500`).
    (The smoke test, `smoke.sh`: every level folder plus DEMO1,
