@@ -145,6 +145,31 @@ pub fn start_transform(start: &PlayerStart) -> Transform {
     Transform { translation: Vec3::from(start.position), rotation: game_rotation([0.0, start.yaw, 0.0]), ..default() }
 }
 
+/// Where a lookout (locator kinds 8 and 10) puts what stands on it: the
+/// game turns its X angle round and adds half a turn to its Y angle, then
+/// builds the matrix with its third Euler builder (sines negated), whose
+/// yaw turns +Z toward (sin, cos) — the other way round from placements'
+/// (`docs/level-population.md`, "Locators").
+pub fn lookout_transform(l: &gdl_formats::population::Locator) -> Transform {
+    let r = [-l.rotation[0], l.rotation[1] + std::f32::consts::PI, l.rotation[2]];
+    let (cx, sx) = (r[0].cos(), -r[0].sin());
+    let (cy, sy) = (r[1].cos(), -r[1].sin());
+    let (cz, sz) = (r[2].cos(), -r[2].sin());
+    // Row-major for row vectors; read as columns, the column-vector matrix.
+    let m = [
+        cy * cz - (sy * sx) * sz,
+        cx * sz,
+        sy * cz + (cy * sx) * sz,
+        -cy * sz - (sy * sx) * cz,
+        cx * cz,
+        -sy * sz + (cy * sx) * cz,
+        -sy * cx,
+        -sx,
+        cy * cx,
+    ];
+    Transform { translation: Vec3::from(l.position), rotation: Quat::from_mat3(&Mat3::from_cols_array(&m)), ..default() }
+}
+
 fn game_rotation(euler: [f32; 3]) -> Quat {
     // Row-major for row vectors, read as columns = the column-vector matrix.
     Quat::from_mat3(&Mat3::from_cols_array(&rotation_matrix(euler)))

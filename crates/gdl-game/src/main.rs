@@ -39,6 +39,7 @@ mod play_camera;
 mod player;
 mod player_state;
 mod texanim;
+mod tower;
 mod population;
 mod quest;
 mod saves;
@@ -171,7 +172,12 @@ fn main() {
                 hints::HintsPlugin,
                 status_hud::StatusHudPlugin,
             ))
-            .add_plugins((font::Screen2dPlugin, frontend::FrontendPlugin { skip: skip_menus }, game_hud::GameHudPlugin));
+            .add_plugins((
+                font::Screen2dPlugin,
+                frontend::FrontendPlugin { skip: skip_menus },
+                game_hud::GameHudPlugin,
+                tower::TowerPlugin,
+            ));
     }
     app.run();
 }
