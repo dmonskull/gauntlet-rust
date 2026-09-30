@@ -32,6 +32,8 @@ use gdl_formats::enemy;
 use crate::audio::PlaySound;
 use crate::combat::{Hit, TargetKind, Targetable};
 use crate::critters::{Critter, CritterLevel, CritterSphere};
+use crate::deaths;
+use crate::effects::EffectAt;
 use crate::generators::Generator;
 use crate::monsters::{self, Monster, MonsterHit, MonsterLevel};
 use crate::player::Player;
@@ -60,6 +62,7 @@ pub(crate) fn apply_hits(
     spheres: Query<&CritterSphere>,
     critter_level: Option<Res<CritterLevel>>,
     mut sounds: MessageWriter<PlaySound>,
+    mut effects: MessageWriter<EffectAt>,
 ) {
     for hit in hits.read() {
         match hit.target_kind {
@@ -100,6 +103,14 @@ pub(crate) fn apply_hits(
                             m.stats.damage
                         };
                     }
+                    // The blow's effect: a blood spray, or the element's.
+                    if hit.damage > 0.0
+                        && let Some(name) = deaths::hit_effect(m.enemy, hit.kind)
+                    {
+                        let at = deaths::effect_origin(m.stats.step, m.centre(), hit.at);
+                        let scale = deaths::die_effect_scale(m.enemy, m.stats.step);
+                        effects.write(EffectAt { name, at, facing: 0.0, scale });
+                    }
                     debug!("monster {:?} hit for {:.1}: {:.1} left", hit.target, hit.damage, m.hit_points);
                     continue;
                 }
@@ -108,7 +119,7 @@ pub(crate) fn apply_hits(
                 if let Some(mut g) = m.generator.and_then(|g| generators.get_mut(g).ok()) {
                     g.alive = g.alive.saturating_sub(1);
                 }
-                m.die(hit.kind);
+                m.die(hit.kind, hit.at.to_array());
                 commands.entity(hit.target).try_remove::<Targetable>();
                 debug!("monster {:?} dies", hit.target);
             }
