@@ -23,6 +23,7 @@ use gdl_formats::pdata::PlayerStats;
 use gdl_formats::texmod::TexMod;
 
 use crate::audio::PlaySound;
+use crate::breakables::BlastItem;
 use crate::character::{CharacterData, CharacterModel, clip_fps};
 use crate::deaths;
 use crate::combat::{self, Hit, TargetKind, Targetable, button};
@@ -300,8 +301,10 @@ struct Blast {
     radius: f32,
     life: f32,
     age: f32,
-    /// Until when each target is spared (fixed-clock seconds).
+    /// Until when each target is spared (fixed-clock seconds), and each
+    /// item by its placement number.
     spared: HashMap<Entity, f64>,
+    spared_items: HashMap<usize, f64>,
     /// What it does to heroes, and whether it hits generators and
     /// breakables (the game's effect flag 2: magic and gas do, a fireball
     /// doesn't).
@@ -366,10 +369,11 @@ struct NextStage {
     drop: f32,
 }
 
-/// A monster blows up (a suicide runner, `monsters.rs`): the fireball —
-/// EXPLOSION, its ring and the level's SUICIDEEXP — or, in the poison
-/// realms, the gas cloud and SUICIDEEXP; its sound; and a blast that hurts
-/// heroes as well as monsters (`docs/monsters.md`, "Suicide runners").
+/// Something blows up. A monster (a suicide runner, `monsters.rs`): the
+/// fireball — EXPLOSION, its ring and the level's SUICIDEEXP — or, in the
+/// poison realms, the gas cloud and SUICIDEEXP; its sound; and a blast that
+/// hurts heroes as well as monsters (`docs/monsters.md`, "Suicide
+/// runners"). Or a barrel or a CHESTEXP (`breakables.rs`).
 #[derive(Message, Clone, Debug)]
 pub struct ExplosionAt {
     pub owner: Entity,
@@ -378,10 +382,20 @@ pub struct ExplosionAt {
     pub poison: bool,
     /// The monster folder the level's SUICIDEEXP is in.
     pub folder: Option<String>,
-    /// An exploding or poison barrel's (the game's effects 0x18 and 0x19
-    /// through its other explosion routine): bigger, hitting items too,
-    /// no ring or sound of its own.
-    pub barrel: bool,
+    pub by: Exploder,
+}
+
+/// What blew up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Exploder {
+    Monster,
+    /// An exploding or poison barrel (the game's effects `0x18` and `0x19`
+    /// through its other explosion routine): bigger, hitting items too, no
+    /// ring or sound of its own.
+    Barrel,
+    /// A CHESTEXP turned `facing` (effect `0x1D`, a fireball only): the
+    /// barrel's fireball bigger still, and the chest's own EXPCHEST.
+    Chest { facing: f32 },
 }
 
 /// The fireball: EXPLOSION blasts out to 6 with fire (kind `0x421`), and
@@ -411,6 +425,11 @@ const BARREL_POISON_SCALE: Vec3 = Vec3::new(3.5, 1.0, 3.5);
 const BARREL_EXPLOSION_RADIUS: f32 = 12.0;
 const BARREL_EXPLOSION_SCALE: Vec3 = Vec3::new(1.75, 1.0, 1.75);
 const BARREL_EXPLOSION_LIFT: f32 = 2.0;
+/// A CHESTEXP's: out to 12 too, drawn 2.5 × wide and 3 higher, with
+/// EXPCHEST at the chest.
+const CHEST_EXPLOSION_SCALE: Vec3 = Vec3::new(2.5, 1.0, 2.5);
+const CHEST_EXPLOSION_LIFT: f32 = 3.0;
+const CHEST_EXPLOSION_FX: &str = "EXPCHEST";
 const SUICIDE_FX: &str = "SUICIDEEXP";
 const EXPLOSION_SOUND: &str = "S_SUICIDE_BOMB";
 
@@ -765,6 +784,7 @@ fn use_potions(
                         life: SHIELD_LIFE,
                         age: 0.0,
                         spared: HashMap::new(),
+                        spared_items: HashMap::new(),
                         heroes: Heroes::Spared,
                         items: true,
                         then: &[],
@@ -878,6 +898,7 @@ fn spawn_blasts(
                 life,
                 age: 0.0,
                 spared: HashMap::new(),
+                spared_items: HashMap::new(),
                 heroes: Heroes::Spared,
                 items: true,
                 then: &[],
@@ -906,16 +927,21 @@ fn spawn_explosions(
     mut images: ResMut<Assets<Image>>,
 ) {
     for e in requests.read() {
-        if !e.barrel {
+        let monster = e.by == Exploder::Monster;
+        if monster {
             sounds.write(PlaySound(EXPLOSION_SOUND.into()));
         }
-        let (fx, kind, radius, heroes, then, scale, drop) = match (e.poison, e.barrel) {
-            (true, false) => (POISON_FX, POISON_KIND, POISON_RADIUS, Heroes::Hurt, &POISON_STAGES[..], POISON_SCALE, POISON_DROP),
-            (false, false) => (EXPLOSION_FX, EXPLOSION_KIND, EXPLOSION_RADIUS, Heroes::Hurt, &[][..], Vec3::ONE, 0.0),
-            (true, true) => {
+        let (fx, kind, radius, heroes, then, scale, drop) = match (e.poison, e.by) {
+            (true, Exploder::Monster) => {
+                (POISON_FX, POISON_KIND, POISON_RADIUS, Heroes::Hurt, &POISON_STAGES[..], POISON_SCALE, POISON_DROP)
+            }
+            (false, Exploder::Monster) => {
+                (EXPLOSION_FX, EXPLOSION_KIND, EXPLOSION_RADIUS, Heroes::Hurt, &[][..], Vec3::ONE, 0.0)
+            }
+            (true, Exploder::Barrel) => {
                 (POISON_FX, POISON_KIND, BARREL_POISON_RADIUS, Heroes::Hurt, &BARREL_POISON_STAGES[..], BARREL_POISON_SCALE, 0.0)
             }
-            (false, true) => (
+            (false, Exploder::Barrel) => (
                 EXPLOSION_FX,
                 EXPLOSION_KIND,
                 BARREL_EXPLOSION_RADIUS,
@@ -923,6 +949,15 @@ fn spawn_explosions(
                 &[][..],
                 BARREL_EXPLOSION_SCALE,
                 -BARREL_EXPLOSION_LIFT,
+            ),
+            (_, Exploder::Chest { .. }) => (
+                EXPLOSION_FX,
+                EXPLOSION_KIND,
+                BARREL_EXPLOSION_RADIUS,
+                Heroes::Hurt,
+                &[][..],
+                CHEST_EXPLOSION_SCALE,
+                -CHEST_EXPLOSION_LIFT,
             ),
         };
         let effect = models.effect(fx, &mut game, &mut meshes, &mut materials, &mut images);
@@ -938,18 +973,24 @@ fn spawn_explosions(
             life,
             age: 0.0,
             spared: HashMap::new(),
+            spared_items: HashMap::new(),
             heroes,
-            items: e.poison || e.barrel,
+            items: e.poison || !monster,
             then,
             scale,
             drop,
         };
         spawn_blast(&mut commands, effect.as_ref(), blast, colour_index(kind));
         if !e.poison
-            && !e.barrel
+            && monster
             && let Some(ring) = models.effect(RING_FX, &mut game, &mut meshes, &mut materials, &mut images)
         {
             play_effect(&mut commands, &ring, e.at, 0.0, Vec3::splat(RING_SCALE), &mut seed, &mut meshes);
+        }
+        if let Exploder::Chest { facing } = e.by
+            && let Some(fx) = models.effect(CHEST_EXPLOSION_FX, &mut game, &mut meshes, &mut materials, &mut images)
+        {
+            play_effect(&mut commands, &fx, e.at, facing, Vec3::ONE, &mut seed, &mut meshes);
         }
         if let Some(folder) = &e.folder
             && let Some(fx) = models.effect_in(folder, SUICIDE_FX, &mut game, &mut meshes, &mut materials, &mut images)
@@ -971,6 +1012,7 @@ fn spawn_explosions(
             life,
             age: 0.0,
             spared: HashMap::new(),
+            spared_items: HashMap::new(),
             heroes: s.heroes,
             items: s.items,
             then: rest,
@@ -1010,7 +1052,11 @@ fn tick_blasts(
     targets: Query<(Entity, &GlobalTransform, &Targetable, Option<&Monster>)>,
     mut hits: MessageWriter<Hit>,
     (mut hurt, mut stages): (MessageWriter<DamagePlayer>, MessageWriter<NextStage>),
-    (items, mut struck): (Option<Res<crate::items::LevelItems>>, MessageWriter<StrikePotion>),
+    (items, mut struck, mut blasted): (
+        Option<Res<crate::items::LevelItems>>,
+        MessageWriter<StrikePotion>,
+        MessageWriter<BlastItem>,
+    ),
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -1092,17 +1138,36 @@ fn tick_blasts(
                 hit(e, t.kind, b);
             }
         }
-        // Potions lying in its reach go off too.
+        // Potions lying in its reach go off too, and it reaches chests and
+        // the powerups lying about (`breakables.rs`), each spared a while
+        // as the targets are.
         if b.items
             && let Some(items) = items.as_deref()
         {
             let by = players.contains(b.owner).then_some(b.owner);
-            for v in items.views().filter(is_floor_potion) {
+            let in_reach = |v: &crate::items::ItemView| {
                 let c = Vec3::from(v.shape.centre);
                 let across = Vec2::new(c.x - b.centre.x, c.z - b.centre.z).length();
-                if across <= v.shape.radius + reach && (b.centre.y - c.y).abs() <= v.shape.reach + reach {
+                across <= v.shape.radius + reach && (b.centre.y - c.y).abs() <= v.shape.reach + reach
+            };
+            for v in items.views().filter(is_floor_potion) {
+                if in_reach(&v) {
                     struck.write(StrikePotion { placement: v.placement, by });
                 }
+            }
+            let reached: Vec<usize> = items
+                .views()
+                .filter(|v| crate::breakables::blast_reaches(v, b.kind) && in_reach(v))
+                .map(|v| v.placement)
+                .collect();
+            for placement in reached {
+                if b.spared_items.get(&placement).is_some_and(|&until| until > now) {
+                    continue;
+                }
+                if damage > 2.0 {
+                    b.spared_items.insert(placement, now + spare as f64);
+                }
+                blasted.write(BlastItem { placement, kind: b.kind, damage });
             }
         }
         // A monster's explosion or a barrel's hurts heroes too

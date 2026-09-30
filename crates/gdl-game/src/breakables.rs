@@ -28,10 +28,8 @@
 //! Stand-ins: a monster inside (a Death) comes out at tier 1 straight away;
 //! a shootable wall's in-between hits are silent (the level's own hit sound
 //! isn't looked up); safe rocks (which break into pieces) aren't hittable;
-//! a CHESTEXP explodes as an exploding barrel does (the game's bigger
-//! chest explosion isn't in `effects.rs`); the hints these blows raise
-//! (`0x87`, `0x88`, `0x89`) are only logged; the junk, spoiled food and
-//! wreck models show only where the level built them (`ContentModels`).
+//! the junk, spoiled food and wreck models show only where the level
+//! built them (`ContentModels`).
 
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
@@ -39,7 +37,7 @@ use gdl_formats::population::{ItemClass, ItemType, PlacementParams, rotation_mat
 
 use crate::audio::PlaySound;
 use crate::combat::{Hit, TargetKind, Targetable};
-use crate::effects::{EffectAt, ExplosionAt};
+use crate::effects::{EffectAt, Exploder, ExplosionAt};
 use crate::flash::{self, FlashColours};
 use crate::hints::{Hint, ShowHint};
 use crate::items::{self, ItemTick, ItemView, LevelItems, USED};
@@ -134,10 +132,9 @@ const ITEM_WRECK: &str = "ITEMEXP0";
 const SILVER_CHEST_WRECK: &str = "CHESTSEXP0";
 const CHEST_WRECK: &str = "CHESTGEXP0";
 /// The effects played where something is blown apart (`WEAPONS`): the
-/// pieces and the smoke; and the CHESTEXP's own.
+/// pieces and the smoke.
 const PIECES_FX: &str = "CHESTDEST";
 const SMOKE_FX: &str = "DESTSMOKE";
-const CHEST_EXPLOSION_FX: &str = "EXPCHEST";
 /// Monster type of Death.
 const DEATH: i32 = 0x1E;
 
@@ -246,7 +243,7 @@ fn hits(
                 if blow != ItemBlow::Nothing {
                     let pose = items.view(b.placement).map_or_else(Transform::default, |v| item_pose(&v, &transforms));
                     let models = contents.as_deref();
-                    let writers = (&mut effects, &mut sounds);
+                    let writers = (&mut effects, &mut sounds, &mut hints);
                     apply_blow(blow, b.placement, pose, &mut items, models, level.as_deref_mut(), &mut commands, writers);
                     remove = true;
                 } else if breaking_open && flags & USED == 0 {
@@ -299,7 +296,7 @@ fn hits(
                             damage: damage * hazard_scale,
                             poison,
                             folder: None,
-                            barrel: true,
+                            by: Exploder::Barrel,
                         });
                         info!("barrel {} {}", b.placement, if subtype == EXP_BARREL { "explodes" } else { "lets out gas" });
                     }
@@ -433,7 +430,7 @@ fn apply_blow(
     models: Option<&ContentModels>,
     level: Option<&mut MonsterLevel>,
     commands: &mut Commands,
-    (effects, sounds): (&mut MessageWriter<EffectAt>, &mut MessageWriter<PlaySound>),
+    (effects, sounds, hints): (&mut MessageWriter<EffectAt>, &mut MessageWriter<PlaySound>, &mut MessageWriter<ShowHint>),
 ) {
     let Some(v) = items.view(placement) else { return };
     let (name, centre) = (v.ty.name.clone(), v.shape.centre);
@@ -450,13 +447,13 @@ fn apply_blow(
         ItemBlow::Destroyed => {
             pieces(pose.translation, effects);
             wreck(items, placement, ITEM_WRECK, pose, models, commands);
-            pending_hint("EXPDESTROY");
+            hints.write(ShowHint(Hint::ExplosionsDestroyItems));
         }
         ItemBlow::Spoiled { meat } => {
             let (model, amount) = if meat { BAD_MEAT } else { BAD_FRUIT };
             swap_model(items, placement, model, pose, models, commands);
             items.set_amount(placement, amount);
-            pending_hint("GASPOISON");
+            hints.write(ShowHint(Hint::GasSpoilsFood));
         }
         ItemBlow::ChestBlown { silver } => {
             // A Death inside comes out; anything else is lost with it.
@@ -535,14 +532,6 @@ fn let_out_monster(ty: &ItemType, pos: [f32; 3], level: Option<&mut MonsterLevel
     }
 }
 
-/// Stand-in for the hints `hints.rs` doesn't have yet (each shown once in
-/// the game): EXPDESTROY ("EXPLOSIONS DESTROY ITEMS", `S_EXPDSTITMS`),
-/// GASPOISON ("POISON GAS SPOILS FOOD", `S_GASFOODBAD`), CHESTSEXPL ("SOME
-/// CHESTS MAY EXPLODE WHEN OPENED", `S_CHESTSEXPL`).
-fn pending_hint(group: &str) {
-    info!("hint {group}");
-}
-
 /// Blasts on chests and on powerups lying about.
 fn blasted_items(
     mut commands: Commands,
@@ -551,7 +540,7 @@ fn blasted_items(
     contents: Option<Res<ContentModels>>,
     mut level: Option<ResMut<MonsterLevel>>,
     transforms: Query<&Transform>,
-    (mut effects, mut sounds): (MessageWriter<EffectAt>, MessageWriter<PlaySound>),
+    (mut effects, mut sounds, mut hints): (MessageWriter<EffectAt>, MessageWriter<PlaySound>, MessageWriter<ShowHint>),
 ) {
     let Some(mut items) = items else {
         blasts.clear();
@@ -571,43 +560,45 @@ fn blasted_items(
         }
         let pose = item_pose(&v, &transforms);
         let models = contents.as_deref();
-        apply_blow(blow, b.placement, pose, &mut items, models, level.as_deref_mut(), &mut commands, (&mut effects, &mut sounds));
+        let writers = (&mut effects, &mut sounds, &mut hints);
+        apply_blow(blow, b.placement, pose, &mut items, models, level.as_deref_mut(), &mut commands, writers);
     }
 }
 
-/// A CHESTEXP that is open (its animation has reached state 2) explodes:
-/// the blast (50 × the level's hazard scale), `EXPCHEST` and the realm's
-/// barrel explosion sound, and the chest is freed.
+/// A CHESTEXP that is open (its animation has reached state 2) explodes
+/// where it stands: the game's effect `0x1D` (50 × the level's hazard
+/// scale; `EXPCHEST` turned as the chest), the realm's barrel explosion
+/// sound and hint `0x89`, and the chest is freed.
 fn chest_explosions(
     mut commands: Commands,
     items: Option<ResMut<LevelItems>>,
     level: Option<Res<MonsterLevel>>,
+    transforms: Query<&Transform>,
     mut explosions: MessageWriter<ExplosionAt>,
-    (mut effects, mut sounds): (MessageWriter<EffectAt>, MessageWriter<PlaySound>),
+    (mut sounds, mut hints): (MessageWriter<PlaySound>, MessageWriter<ShowHint>),
 ) {
     let Some(mut items) = items else { return };
-    let open: Vec<(usize, [f32; 3])> = items
+    let open: Vec<(usize, Transform)> = items
         .views()
         .filter(|v| v.live && v.ty.class == ItemClass::Container && v.ty.subtype == items::CHEST_EXP && v.state >= 2)
-        .map(|v| (v.placement, v.shape.centre))
+        .map(|v| (v.placement, item_pose(&v, &transforms)))
         .collect();
     let hazard_scale = level.as_ref().map_or(1.0, |l| l.tuning.hazard_damage);
-    for (placement, centre) in open {
-        let at = Vec3::from(centre);
+    for (placement, pose) in open {
+        let (facing, _, _) = pose.rotation.to_euler(EulerRot::YXZ);
         explosions.write(ExplosionAt {
             owner: Entity::PLACEHOLDER,
-            at,
+            at: pose.translation,
             damage: CHEST_EXPLOSION_DAMAGE * hazard_scale,
             poison: false,
             folder: None,
-            barrel: true,
+            by: Exploder::Chest { facing },
         });
-        effects.write(EffectAt { name: CHEST_EXPLOSION_FX, bank: None, at, facing: 0.0, scale: 1.0 });
         if let Some(s) = barrel_sound("EXPLO", items.realm()) {
             sounds.write(PlaySound(s));
         }
         items.free(placement, &mut commands);
-        pending_hint("CHESTSEXPL");
+        hints.write(ShowHint(Hint::ChestsExplode));
         info!("CHESTEXP {placement} explodes");
     }
 }

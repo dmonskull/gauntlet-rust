@@ -30,7 +30,7 @@ use crate::character::{Animator, CharacterData, CharacterModel};
 use crate::deaths::{self, DeathSet, DeathTextures, Dissolve};
 use crate::flash::{self, Flash, FlashColours};
 use bevy::mesh::MeshTag;
-use crate::effects::{EffectAt, ExplosionAt};
+use crate::effects::{EffectAt, Exploder, ExplosionAt};
 use crate::generators::{self, Generator};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
@@ -1025,7 +1025,7 @@ fn tick_monsters(
                         damage: SUICIDE_DAMAGE * level.scales.damage,
                         poison: POISON_REALMS.contains(&level.realm),
                         folder: level.suicide_folder.clone(),
-                        barrel: false,
+                        by: Exploder::Monster,
                     });
                 }
             }

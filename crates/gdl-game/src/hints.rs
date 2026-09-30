@@ -59,6 +59,12 @@ pub enum Hint {
     PoisonedFood,
     /// 0x85: food at full health.
     HealthFull,
+    /// 0x87: an explosion blows a powerup to pieces.
+    ExplosionsDestroyItems,
+    /// 0x88: poison gas spoils food.
+    GasSpoilsFood,
+    /// 0x89: a CHESTEXP explodes.
+    ChestsExplode,
     /// 0x71 + n: legendary item n (1–11) picked up — its name, spoken.
     Legendary(u8),
 }
@@ -106,6 +112,9 @@ impl Hint {
             Self::SomeBarrels => ("WOODBARREL", "S_SOMEBARRELS", true),
             Self::PoisonedFood => ("POISONEDFOOD", "S_POISONEDFOOD", true),
             Self::HealthFull => ("HEALTHFULL", "S_HEALTHFULL", true),
+            Self::ExplosionsDestroyItems => ("EXPDESTROY", "S_EXPDSTITMS", true),
+            Self::GasSpoilsFood => ("GASPOISON", "S_GASFOODBAD", true),
+            Self::ChestsExplode => ("CHESTSEXPL", "S_CHESTSEXPL", true),
             Self::Legendary(_) => unreachable!(),
         };
         (group.into(), line, once)

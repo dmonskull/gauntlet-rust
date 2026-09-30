@@ -621,9 +621,14 @@ opened with a key ticks (`S_TICKY`) instead of giving its contents, and
 once open explodes: 50 × level `+0xDC`, `EXPCHEST`, the realm's
 `S_BARREL_EXPLO<letter>`, and it's freed.
 
-Stand-ins: the explosions' lights; a CHESTEXP's blast is an exploding
-barrel's (effect `0x18`; `0x1D` isn't in `effects.rs`); the hints `0x87`,
-`0x88`, `0x89` are only logged; the junk, spoiled food and left models
+The blasts (`effects.rs::tick_blasts`) send a `BlastItem` for every
+item in their reach that `blast_reaches` lets through, each spared as
+long as their targets are (the game's item cooldown `+0xD8` isn't
+traced). A CHESTEXP goes off as effect `0x1D` (`Exploder::Chest`: the
+fireball out to 12, drawn 2.5 × wide and 3 higher, and `EXPCHEST` turned
+as the chest), and the hints `0x87`, `0x88`, `0x89` show.
+
+Stand-ins: the explosions' lights; the junk, spoiled food and left models
 (`TREAS_JUNK`, `BADMEAT`, `GAPPLE`, `ITEMEXP0`, `CHESTSEXP0`,
 `CHESTGEXP0`) show only if the level built them (`ContentModels`); a
 released monster starts
