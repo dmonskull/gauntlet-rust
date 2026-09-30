@@ -3,9 +3,9 @@
 //! A level scatters camera points ("transmitters") over its map, each with a
 //! yaw and a downward pitch. The camera looks at the players from the
 //! nearest point's angles, switching points only when another is clearly
-//! nearer and then turning over 50 ticks; it looks at the players' centre,
-//! clamped to a box and smoothed over the last 9 ticks, from the level's
-//! distance.
+//! nearer to the players' feet and then turning over 50 ticks; it looks at
+//! the players' top points, clamped to a box and smoothed over the last 9
+//! ticks, from the level's distance.
 
 use crate::locomotion::wrap;
 
@@ -45,8 +45,9 @@ pub struct CameraRig {
 }
 
 impl CameraRig {
-    /// A camera at rest on `focus`, already facing its nearest point.
-    pub fn new(points: Vec<CameraPoint>, bounds: ([f32; 3], [f32; 3]), near: f32, focus: [f32; 3]) -> Self {
+    /// A camera at rest on `focus`, already facing the point nearest
+    /// `feet`.
+    pub fn new(points: Vec<CameraPoint>, bounds: ([f32; 3], [f32; 3]), near: f32, focus: [f32; 3], feet: [f32; 3]) -> Self {
         let p = clamp(focus, bounds);
         let mut rig = Self {
             points,
@@ -63,7 +64,7 @@ impl CameraRig {
             target: p,
             distance: near,
         };
-        rig.current = rig.nearest(p);
+        rig.current = rig.nearest(clamp(feet, bounds));
         (rig.yaw, rig.pitch) = rig.wanted();
         rig
     }
@@ -72,13 +73,14 @@ impl CameraRig {
         self.current.map(|i| self.points[i])
     }
 
-    /// One game tick following `focus` (the players' centre).
-    pub fn tick(&mut self, focus: [f32; 3]) {
-        let p = clamp(focus, self.bounds);
+    /// One game tick following `focus` (the players' top points' centre)
+    /// with points chosen by `feet` (their feet's centre).
+    pub fn tick(&mut self, focus: [f32; 3], feet: [f32; 3]) {
         self.slot = (self.slot + 1) % SMOOTHING;
-        self.samples[self.slot] = p;
+        self.samples[self.slot] = clamp(focus, self.bounds);
 
         // The nearest other point takes over only when clearly nearer.
+        let p = clamp(feet, self.bounds);
         let before = self.current;
         match (self.current, self.nearest(p)) {
             (None, next) => self.current = next,
@@ -154,7 +156,7 @@ mod tests {
 
     #[test]
     fn starts_on_the_nearest_point_looking_down_at_the_focus() {
-        let rig = CameraRig::new(vec![point(0.0, 0.0, 0.6), point(50.0, 1.0, 0.3)], WIDE, 24.0, [5.0, 0.0, 0.0]);
+        let rig = CameraRig::new(vec![point(0.0, 0.0, 0.6), point(50.0, 1.0, 0.3)], WIDE, 24.0, [5.0, 0.0, 0.0], [5.0, 0.0, 0.0]);
         assert_eq!(rig.current_point().unwrap().position[0], 0.0);
         assert!((rig.pitch + 0.6).abs() < 1e-6);
         let eye = rig.eye();
@@ -164,20 +166,34 @@ mod tests {
     }
 
     #[test]
+    fn looks_at_the_top_point_and_picks_points_by_the_feet() {
+        // The feet are nearer the first point, the top point (4.4 higher)
+        // the second: the feet choose, the top is looked at.
+        let high = CameraPoint { position: [5.0, 9.0, 0.0], yaw: 1.0, pitch: 0.3 };
+        let (feet, top) = ([5.0, 0.0, 0.0], [5.0, 4.4, 0.0]);
+        let mut rig = CameraRig::new(vec![point(0.0, 0.0, 0.6), high], WIDE, 24.0, top, feet);
+        assert_eq!(rig.current_point().unwrap().position, [0.0; 3]);
+        assert!((rig.target[1] - 4.4).abs() < 1e-6);
+        rig.tick(top, feet);
+        assert_eq!(rig.current_point().unwrap().position, [0.0; 3]);
+        assert!((rig.target[1] - 4.4).abs() < 1e-6);
+    }
+
+    #[test]
     fn switches_only_when_clearly_nearer_then_turns_over_fifty_ticks() {
-        let mut rig = CameraRig::new(vec![point(0.0, 0.0, 0.5), point(30.0, FRAC_PI_2, 0.5)], WIDE, 24.0, [0.0; 3]);
+        let mut rig = CameraRig::new(vec![point(0.0, 0.0, 0.5), point(30.0, FRAC_PI_2, 0.5)], WIDE, 24.0, [0.0; 3], [0.0; 3]);
         // At x = 16 the second point is 14 away vs 16: not 2/3 as far.
-        rig.tick([16.0, 0.0, 0.0]);
+        rig.tick([16.0, 0.0, 0.0], [16.0, 0.0, 0.0]);
         assert_eq!(rig.current_point().unwrap().position[0], 0.0);
         // At x = 20: 10 vs 20.
-        rig.tick([20.0, 0.0, 0.0]);
+        rig.tick([20.0, 0.0, 0.0], [20.0, 0.0, 0.0]);
         assert_eq!(rig.current_point().unwrap().position[0], 30.0);
         for _ in 0..25 {
-            rig.tick([20.0, 0.0, 0.0]);
+            rig.tick([20.0, 0.0, 0.0], [20.0, 0.0, 0.0]);
         }
         assert!((rig.yaw - FRAC_PI_2 * 26.0 / 50.0).abs() < 1e-4, "{}", rig.yaw);
         for _ in 0..40 {
-            rig.tick([20.0, 0.0, 0.0]);
+            rig.tick([20.0, 0.0, 0.0], [20.0, 0.0, 0.0]);
         }
         assert!((rig.yaw - FRAC_PI_2).abs() < 1e-4);
     }
@@ -185,12 +201,12 @@ mod tests {
     #[test]
     fn target_is_clamped_and_smoothed() {
         let bounds = ([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]);
-        let mut rig = CameraRig::new(vec![point(0.0, 0.0, 0.5)], bounds, 24.0, [0.0; 3]);
-        rig.tick([100.0, 0.0, 0.0]);
+        let mut rig = CameraRig::new(vec![point(0.0, 0.0, 0.5)], bounds, 24.0, [0.0; 3], [0.0; 3]);
+        rig.tick([100.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
         // One of nine samples moved to the clamp edge.
         assert!((rig.target[0] - 10.0 / 9.0).abs() < 1e-5, "{:?}", rig.target);
         for _ in 0..200 {
-            rig.tick([100.0, 0.0, 0.0]);
+            rig.tick([100.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
         }
         assert!((rig.target[0] - 10.0).abs() < 1e-3);
     }

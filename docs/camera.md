@@ -37,11 +37,15 @@ chosen by the level's `LEVL` `+0x58` ([chunk-files.md](chunk-files.md),
 
 ## Update (`FUN_8006df34`, each tick)
 
-1. Focus: the players' centre (`FUN_8006f8f0`), clamped to the target box.
-   It goes into a 9-slot ring (`r13-0x7e30` = 9).
-2. Point choice (`FUN_8006fcdc`): the nearest state-0 point other than the
-   current one takes over when its squared distance is ≤ 0.4444 (`r2-0x6280`,
-   (2/3)²) × the current point's. With no current point, the nearest wins.
+1. Focus: the centre of the box round the players' **top points**
+   (`FUN_8006f8f0(…, 5)`: player `+0x54`, the feet + the class's `PDAT
+   +0x50`, 4.4 for every class), clamped to the target box. It goes into a
+   9-slot ring (`r13-0x7e30` = 9).
+2. Point choice (`FUN_8006fcdc`), from the players' **feet** instead
+   (`FUN_8006f8f0(…, 2)`: `+0x44`, clamped the same way): the nearest
+   state-0 point other than the current one takes over when its squared
+   distance is ≤ 0.4444 (`r2-0x6280`, (2/3)²) × the current point's. With
+   no current point, the nearest wins.
 3. Angles (`FUN_80070144`): target yaw = point yaw, target pitch = −point
    pitch (with several players, no shallower than −pitch limit). When the
    point changes the camera turns linearly over 50 ticks (`r13-0x7e14`),
@@ -63,6 +67,8 @@ camera faces; [player-movement.md](player-movement.md)).
 ## What we do differently
 
 - The camera ticks at 30 Hz and is interpolated between ticks for drawing.
+- (Fixed: it had looked at the hero's feet, 4.4 lower than the game — the
+  tower's start showed the wizard's pedestal cut off at the top.)
 - At level start it snaps to the nearest point instead of turning from
   wherever it was.
 

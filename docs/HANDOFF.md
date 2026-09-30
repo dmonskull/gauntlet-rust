@@ -246,10 +246,10 @@ waits.
    announce new shards and runestones, the shard set in `L1WINDOWFRAME`, the
    stones in `L1RUNEPLACE`, his camera cuts and speeches, and his other
    idle actions (WELCOME, GOAWAY…) — decoded in [items.md](items.md) "The
-   tower's wizard". Then compare the tower start's camera with the
-   original's (the user's screenshot frames the wizard whole; ours looks
-   down steeper), and the HUD's four player panels (the original shows all
-   four, the empty ones waiting to join).
+   tower's wizard". (The tower start's camera now frames the wizard whole
+   as in the user's screenshot: the play camera looks at the hero's top
+   point, 4.4 above the feet, as the game's does — [camera.md](camera.md);
+   the HUD's four panels are done.)
    (The smoke test, `smoke.sh`: every level folder plus DEMO1,
    `GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400`, 120 s timeout,
    stop at the first panic; resume from the failing level.) Next: the
