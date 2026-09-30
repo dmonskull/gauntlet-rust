@@ -67,6 +67,7 @@ use std::sync::Arc;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use gdl_formats::anim::AnimFile;
+use gdl_formats::audio::AudioCatalog;
 use gdl_formats::collision::{node_flags, push_out};
 use gdl_formats::critter::{self, CritterDamage, CritterFile, CritterMove, Condition, class, kind};
 use gdl_formats::population::{ItemClass, LocatorKind, PlacementParams, REALM_LETTERS, rotation_matrix};
@@ -76,6 +77,8 @@ use crate::audio::PlaySound;
 use crate::character::{Animator, CharacterData, CharacterModel, advance_clip, clip_end};
 use crate::combat::{TargetKind, Targetable};
 use crate::damage::after_armor;
+use crate::effects::effect_life;
+use crate::exits::ChangeLevelTo;
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion;
@@ -84,14 +87,14 @@ use crate::monsters::{MonsterLevel, MonsterTick};
 use crate::player::Player;
 use crate::player_state::{DamagePlayer, PlayerState};
 use crate::population::LevelPopulation;
-use crate::projectiles::{cylinder_hit, spawn_critter_missile};
+use crate::projectiles::{cylinder_hit, load_atree, spawn_critter_missile};
 use crate::world::{LevelEntity, LevelGround};
 
 pub struct CrittersPlugin;
 
 impl Plugin for CrittersPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (tick_critters.after(MonsterTick), boss_victory.after(tick_critters)))
+        app.add_systems(FixedUpdate, (tick_critters.after(MonsterTick), run_victory.after(tick_critters)))
             .add_systems(
             Update,
             (setup_level.run_if(resource_added::<MonsterLevel>), interpolate).chain(),
@@ -99,42 +102,157 @@ impl Plugin for CrittersPlugin {
     }
 }
 
-/// Seconds after the boss dies before the level ends (stand-in: the
-/// game's heroes pick up the key and leave through their exit state,
-/// which isn't traced).
-const VICTORY_SECONDS: f32 = 5.0;
-
-/// A boss's death wins the realm for every hero (the game marks the realm
-/// in each player's record, `docs/critters.md`), then the party goes back
-/// to the tower.
-fn boss_victory(
-    level: Option<Res<CritterLevel>>,
-    population: Option<Res<crate::population::LevelPopulation>>,
-    mut state: Option<ResMut<crate::player_state::PlayerState>>,
-    mut since: Local<Option<f32>>,
-    mut change: MessageWriter<crate::exits::ChangeLevelTo>,
+/// The end of a boss level, once the boss is gone (the game's end
+/// sequence; its steps as the game numbers them):
+///
+/// - 0: the heroes win the realm; the key shows where the boss was made
+///   (not after the skornes or garm), with its sound, its second model
+///   taking over for 30 s when its clip is done;
+/// - 1–2: 5 s (10 s after the first skorne and garm);
+/// - 3–4: the wizard appears halfway between the boss's spot and the
+///   heroes, 3 above them (at a fixed spot for the skornes), and fades in;
+/// - 5: he speaks; half a second after, 6: his second speech (how many of
+///   the realm's runestones the heroes hold), and a second after that
+/// - 8: the last countdown, 2 s, ends the level.
+///
+/// Stand-ins: his messages aren't shown, so each speech's length stands in
+/// for its pages; he doesn't fade; the heroes' teleport-out effect isn't
+/// drawn; the next level is the tower's first.
+#[allow(clippy::too_many_arguments)]
+fn run_victory(
+    mut commands: Commands,
+    level: Option<ResMut<CritterLevel>>,
+    mut state: Option<ResMut<PlayerState>>,
+    players: Query<&Player>,
+    mut animators: Query<&mut Animator>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut change: MessageWriter<ChangeLevelTo>,
 ) {
-    let dead = level.as_ref().is_some_and(|l| l.boss_dead);
-    if !dead {
-        *since = None;
-        return;
+    let Some(mut level) = level else { return };
+    let level = &mut *level;
+    let Some(mut v) = level.victory.take() else { return };
+    let now = level.now;
+    let spawn = |model: &Arc<CharacterModel>, at: [f32; 3], commands: &mut Commands| {
+        let e = model.spawn(Transform::from_translation(Vec3::from(at)), commands);
+        commands.entity(e).insert(LevelEntity);
+        e
+    };
+
+    // The key: its clip, then the second model for 30 s.
+    if let Some((e, until, second)) = v.key
+        && now >= until
+    {
+        commands.entity(e).try_despawn();
+        v.key = match (&level.end.key_after, second) {
+            (Some(m), false) => Some((spawn(m, v.key_at, &mut commands), now + KEY_AFTER, true)),
+            _ => None,
+        };
+        debug!("the boss key {}", if v.key.is_some() { "turns to its second model" } else { "goes" });
     }
-    let t = since.get_or_insert_with(|| {
-        let realm = population
-            .as_ref()
-            .and_then(|p| p.level.strip_prefix("level").and_then(|s| s.chars().next()))
-            .and_then(|c| gdl_formats::population::REALM_LETTERS.iter().find(|(l, _)| l.eq_ignore_ascii_case(&c)))
-            .map_or(0, |(_, id)| *id);
-        if let Some(s) = state.as_mut() {
-            s.realms_beaten |= 1 << realm;
-            info!("realm {realm} beaten");
+
+    match v.step {
+        0 => {
+            if let Some(s) = state.as_deref_mut() {
+                s.realms_beaten |= 1 << level.realm_id;
+            }
+            info!("realm {} beaten", level.realm_id);
+            if let Some((m, life)) = &level.end.key {
+                v.key = Some((spawn(m, v.key_at, &mut commands), now + life, false));
+                sounds.write(PlaySound(format!("S_BOSSKEY{}", level.realm)));
+                info!("the boss key shows at {:?} for {life:.2} s", v.key_at);
+            }
+            v.step = 1;
         }
-        0.0
-    });
-    *t += DT;
-    if *t >= VICTORY_SECONDS && *t - DT < VICTORY_SECONDS {
-        change.write(crate::exits::ChangeLevelTo("levelL1".into()));
+        1 => {
+            let wait = if matches!(level.boss_type, SKORNE | GARM) { WIZARD_DELAY_LONG } else { WIZARD_DELAY };
+            v.timer = now + wait;
+            v.step = 2;
+        }
+        2 if now >= v.timer => v.step = 3,
+        3 => {
+            let at = if matches!(level.boss_type, SKORNE | SKORNE2) {
+                WIZARD_SKORNE_SPOT
+            } else {
+                let heroes: Vec<[f32; 3]> = if state.as_ref().is_none_or(|s| s.alive) {
+                    players.iter().map(|p| p.mover.position).collect()
+                } else {
+                    Vec::new()
+                };
+                let mut at = wizard_spot(level.boss_spot, &heroes);
+                at[1] += WIZARD_RISE;
+                at
+            };
+            v.wizard = level.end.wizard.as_ref().map(|m| spawn(m, at, &mut commands));
+            info!("the wizard appears at {at:?}");
+            v.fade = WIZARD_FADE;
+            v.step = 4;
+        }
+        4 => {
+            v.fade -= WIZARD_FADE_STEP;
+            if v.fade <= 0 {
+                let length = speak(level, 0, &mut sounds);
+                v.timer = now + length + AFTER_FIRST_SPEECH;
+                v.step = 5;
+            }
+        }
+        5 if now >= v.timer => {
+            let runes = state.as_ref().map_or(0, |s| runes_held(level.realm_id, &s.runestones));
+            let length = if level.boss_type < SKORNE { speak(level, runes + 1, &mut sounds) } else { 0.0 };
+            v.timer = now + length + AFTER_SECOND_SPEECH;
+            v.step = 6;
+        }
+        6 if now >= v.timer => {
+            v.countdown = COUNTDOWN;
+            v.step = 8;
+        }
+        8 | 10 => {
+            v.countdown -= DT;
+            if v.step == 8 && v.countdown <= TELEPORT_LEFT {
+                debug!("the heroes teleport out (the effect isn't drawn)");
+                v.step = 10;
+            }
+            if v.countdown <= 0.0 {
+                info!("the boss level is over: to {AFTER_BOSS_LEVEL}");
+                change.write(ChangeLevelTo(AFTER_BOSS_LEVEL.into()));
+                // The key and the wizard go with the level.
+                return;
+            }
+        }
+        _ => {}
     }
+    // The wizard plays his first clip over and over.
+    if let Some(mut a) = v.wizard.and_then(|w| animators.get_mut(w).ok())
+        && a.finished()
+    {
+        a.play(0);
+    }
+    level.victory = Some(v);
+}
+
+/// Plays the wizard's speech `n`: its length (0 when there's none).
+fn speak(level: &CritterLevel, n: usize, sounds: &mut MessageWriter<PlaySound>) -> f32 {
+    match level.end.speeches.get(n).cloned().flatten() {
+        Some((name, length)) => {
+            info!("the wizard says {name} ({length:.1} s)");
+            sounds.write(PlaySound(name));
+            length
+        }
+        None => 0.0,
+    }
+}
+
+/// Where the wizard stands: the mean of the boss's spot and the heroes,
+/// at the first hero's height (the game counts it twice in place of the
+/// spot's).
+fn wizard_spot(spot: [f32; 3], heroes: &[[f32; 3]]) -> [f32; 3] {
+    let mut sum = spot;
+    for (i, h) in heroes.iter().enumerate() {
+        sum = add(sum, *h);
+        if i == 0 {
+            sum[1] = 2.0 * h[1];
+        }
+    }
+    scale(sum, 1.0 / (1 + heroes.len()) as f32)
 }
 
 /// Seconds per 30 Hz tick: critters keep time in seconds.
@@ -142,15 +260,18 @@ const DT: f32 = 1.0 / 30.0;
 /// Enemy type of the golem, and the first boss type.
 const GOLEM: i32 = 0x1D;
 const FIRST_BOSS: i32 = 0x22;
-/// Boss types the intro treats apart.
+/// Boss types the intro and the end treat apart.
 const DRAGON: i32 = 0x22;
 const CHIMERA: i32 = 0x23;
 const DJINN: i32 = 0x24;
+const DRIDER: i32 = 0x25;
 const PBOSS: i32 = 0x26;
 const YETI: i32 = 0x27;
 const WRAITH: i32 = 0x28;
 const LICH: i32 = 0x29;
 const SKORNE: i32 = 0x2A;
+const SKORNE2: i32 = 0x2B;
+const GARM: i32 = 0x2C;
 /// Bosses up to this type have an intro (not the second skorne or garm).
 const LAST_INTRO_BOSS: i32 = 0x2A;
 /// The pickup kind of the realms' legendary items (its amount is the realm).
@@ -197,6 +318,29 @@ const DARKEN_STEP: f32 = -0.25;
 const BRIGHTEN_STEP: f32 = 0.05;
 const DARKEN_DECAY: f32 = 0.6;
 const DARKEN_SNAP: f32 = 0.05;
+
+/// The end of a boss level: the second key model shows this long; the
+/// wizard appears 5 s after the boss goes (10 s after the first skorne and
+/// garm), 3 above the heroes' centre (at a fixed spot for the skornes),
+/// fading in 4 of 255 a tick; half a second after his first speech and a
+/// second after his second the last countdown starts; the heroes teleport
+/// out 35 fields before its end.
+const KEY_AFTER: f32 = 30.0;
+const WIZARD_DELAY: f32 = 5.0;
+const WIZARD_DELAY_LONG: f32 = 10.0;
+const WIZARD_RISE: f32 = 3.0;
+const WIZARD_SKORNE_SPOT: [f32; 3] = [0.0, -12.0, 6.0];
+const WIZARD_FADE: i32 = 255;
+const WIZARD_FADE_STEP: i32 = 4;
+const AFTER_FIRST_SPEECH: f32 = 0.5;
+const AFTER_SECOND_SPEECH: f32 = 1.0;
+const COUNTDOWN: f32 = 2.0;
+const TELEPORT_LEFT: f32 = 35.0 / 60.0;
+/// A speech missing from the sound catalog counts as this long.
+const SPEECH_GUESS: f32 = 4.5;
+/// Where the heroes go after a boss (stand-in: the game picks the first
+/// level of world 13 flagged for it).
+const AFTER_BOSS_LEVEL: &str = "levelL1";
 
 /// A wake trigger wakes the nearest statue within this (horizontally,
 /// less the statue item's radius).
@@ -346,6 +490,11 @@ pub struct CritterLevel {
     legendary_used: bool,
     /// The scene light's darkening during the intro.
     light: Darkening,
+    /// The boss locator's position; the end's models; the end, once the
+    /// boss is gone.
+    boss_spot: [f32; 3],
+    end: EndModels,
+    victory: Option<Victory>,
     /// Events this tick, for `GDL_CRITTER_SHOT_ON`.
     events: Vec<&'static str>,
     /// Stand-in look for critter missiles: their effect models are drawn by
@@ -402,6 +551,31 @@ impl Darkening {
         }
         self.offset += (self.target - self.offset).clamp(DARKEN_STEP, BRIGHTEN_STEP);
     }
+}
+
+/// The models of a boss level's end, from the level's own item set
+/// (`ITEMS/<level>`): the key (and its clip's length), its second model,
+/// the wizard; and the wizard's speeches for this boss with their lengths.
+#[derive(Default)]
+struct EndModels {
+    key: Option<(Arc<CharacterModel>, f32)>,
+    key_after: Option<Arc<CharacterModel>>,
+    wizard: Option<Arc<CharacterModel>>,
+    speeches: Vec<Option<(String, f32)>>,
+}
+
+/// The end of a boss level, from the boss's removal: the game's end
+/// sequence, its steps numbered as the game numbers them.
+struct Victory {
+    step: u8,
+    timer: f32,
+    /// Where the key shows: the boss's spawn position plus `TYPE +0xD0`.
+    key_at: [f32; 3],
+    /// The key's model, until when it shows, and whether it's the second.
+    key: Option<(Entity, f32, bool)>,
+    wizard: Option<Entity>,
+    fade: i32,
+    countdown: f32,
 }
 
 /// The game's instance state (0 new, 1 dying, 3 active).
@@ -461,8 +635,9 @@ pub struct Critter {
     pub state: CritterState,
     pub hit_points: f32,
     pub full_hit_points: f32,
-    /// Root position (feet, plus its hover height).
+    /// Root position (feet, plus its hover height), and where it was made.
     pub position: [f32; 3],
+    spawned_at: [f32; 3],
     pub yaw: f32,
     home_yaw: f32,
     home: [f32; 3],
@@ -796,6 +971,9 @@ fn setup_level(
         intro_timer: 0.0,
         legendary_used: false,
         light: Darkening::default(),
+        boss_spot: [0.0; 3],
+        end: EndModels::default(),
+        victory: None,
         events: Vec::new(),
         glow: (
             meshes.add(Sphere::new(1.0)),
@@ -822,6 +1000,8 @@ fn setup_level(
             at[1] = h.point[1];
         }
         level.boss = spawn_critter(&level, &kind, at, yaw, &mut commands);
+        level.boss_spot = spot.position;
+        level.end = load_end_models(&mut game, &population.level, monsters.boss, monsters.realm, &mut meshes, &mut materials, &mut images);
         info!("boss {} at {at:?} facing {:.0}°", kind.file.desc.name, yaw.to_degrees());
         // The intro runs when a hero brings the realm's legendary item
         // (`GDL_LEGENDARY=1`, a testing aid, pretends one does); the second
@@ -841,6 +1021,96 @@ fn read_folder(game: &mut LoadedGame, folder: &str) -> Option<(AnimFile, ModelFi
     let model = ModelFile::parse(&game.install.read(&format!("{folder}/objects.ngc")).ok()?).ok()?;
     let textures = game.install.read(&format!("{folder}/textures.ngc")).ok()?;
     Some((anim, model, textures))
+}
+
+/// Loads the models of the boss level's end from the level's own item set:
+/// the key (bosses before the first skorne) and the wizard; and the lengths
+/// of the wizard's speeches (from the sound catalog).
+fn load_end_models(
+    game: &mut LoadedGame,
+    level: &str,
+    boss_type: i32,
+    letter: char,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<LevelMaterial>,
+    images: &mut Assets<Image>,
+) -> EndModels {
+    let folder = format!("ITEMS/{level}");
+    let mut build = |name: &str| -> Option<(Arc<CharacterModel>, f32)> {
+        let data = load_atree(game, &folder, name)?;
+        // A clip without frames plays 30.
+        let life = data.clips.actions.first().map_or(1.0, |a| effect_life(if a.frames == 0 { 30 } else { a.frames }, a.rate));
+        debug!(
+            "{folder}/{name}: {} actions {:?}",
+            data.clips.actions.len(),
+            data.clips.actions.iter().map(|a| (a.name.as_str(), a.frames, a.rate, a.loops())).collect::<Vec<_>>()
+        );
+        Some((Arc::new(CharacterModel::build(&data, meshes, materials, images)), life))
+    };
+    let has_key = boss_type < SKORNE;
+    let key = if has_key { build("BOSSKEY") } else { None };
+    let key_after = if has_key { build("BOSSKEY2").map(|m| m.0) } else { None };
+    let wizard = build("WIZARD").map(|m| m.0);
+    let catalog = game.install.read("AUDIO/AUDATPS2.ROM").ok().and_then(|b| AudioCatalog::parse(&b).ok());
+    let speeches = (0..5)
+        .map(|n| {
+            let name = wizard_speech(boss_type, letter, n)?;
+            let length = catalog.as_ref().and_then(|c| c.find_sound(&name)).map_or(SPEECH_GUESS, |s| s.length.max(0.0));
+            Some((name, length))
+        })
+        .collect();
+    info!(
+        "boss end from {folder}: key {}, second key {}, wizard {}",
+        key.is_some(),
+        key_after.is_some(),
+        wizard.is_some()
+    );
+    EndModels { key, key_after, wizard, speeches }
+}
+
+/// The wizard's speech `n` after the boss of this type falls, in realm
+/// `letter` (the game's table by boss type): 0 when he appears, then 1 +
+/// how many of the realm's runestones the heroes hold ([`runes_held`]).
+/// The skornes and garm have one each.
+fn wizard_speech(boss_type: i32, letter: char, n: usize) -> Option<String> {
+    let name = match (boss_type, n) {
+        (DRAGON..=LICH, 0) => format!("S_DEFEATVOX{letter}"),
+        (DRAGON..=LICH, 1) => format!("S_RUNEVOX0{letter}"),
+        (DRAGON..=LICH, 2) => format!("S_RUNEVOX1{letter}"),
+        (DRAGON..=DRIDER, 3 | 4) => format!("S_RUNEVOX1{letter}"),
+        (PBOSS..=LICH, 3 | 4) => format!("S_RUNEVOX2{letter}"),
+        (SKORNE, 0) => "S_E2VOXA".into(),
+        (SKORNE2, 0) => "S_ENDVOX".into(),
+        (GARM, 0) => "S_GRMDESTVOX".into(),
+        _ => return None,
+    };
+    Some(name)
+}
+
+/// How many of the realm's runestones the heroes hold (`held`: their stone
+/// numbers): 0 none, 1 some, 2 all, 3 all of a realm with two or more (the
+/// game's realm table: which stones, how many).
+fn runes_held(realm_id: u32, held: &[i32]) -> usize {
+    let (mask, count) = match realm_id {
+        1 => (0x1, 1),
+        2 => (0x8, 1),
+        3 => (0x40, 1),
+        4 => (0x200, 1),
+        7 => (0x180, 2),
+        8 => (0x1000, 1),
+        9 => (0x30, 2),
+        10 => (0xC00, 2),
+        11 => (0x6, 2),
+        _ => (0, 0),
+    };
+    let bits = held.iter().filter(|&&n| (0..32).contains(&n)).fold(0u32, |b, &n| b | 1 << n);
+    if bits & mask == mask {
+        if count < 2 { 2 } else { 3 }
+    } else if bits & mask == 0 {
+        0
+    } else {
+        1
+    }
 }
 
 /// Makes a critter of `kind` standing at `position` facing `yaw`: its
@@ -875,6 +1145,7 @@ fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 
         hit_points: hp,
         full_hit_points: hp,
         position,
+        spawned_at: position,
         yaw,
         home_yaw: yaw,
         home: t.fixed_home().unwrap_or(position),
@@ -1029,7 +1300,9 @@ fn tick_critters(
         if c.move_kind(c.current) == Some(kind::DEATH) && c.clock.ended && (!boss || now >= c.hold_until) {
             debug!("critter {entity:?} is gone");
             if level.boss == Some(entity) {
-                info!("the boss is gone (its key, drawn at {:?} from it, isn't shown yet)", c.kind.file.types[c.ty].key_offset);
+                let key_at = add(c.spawned_at, c.kind.file.types[c.ty].key_offset);
+                level.victory = Some(Victory { step: 0, timer: 0.0, key_at, key: None, wizard: None, fade: 0, countdown: 0.0 });
+                info!("the boss is gone");
             }
             for s in &c.spheres {
                 commands.entity(*s).try_despawn();
@@ -2254,6 +2527,9 @@ mod tests {
             intro_timer: 0.0,
             legendary_used: false,
             light: Darkening::default(),
+            boss_spot: [0.0; 3],
+            end: EndModels::default(),
+            victory: None,
             events: Vec::new(),
             glow: (Handle::default(), Handle::default()),
             rng: 1,
