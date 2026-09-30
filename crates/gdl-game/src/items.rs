@@ -22,6 +22,7 @@ use gdl_formats::population::{
 use gdl_formats::{LevelCollision, MoveParams};
 
 use crate::audio::{PlaySound, QueueVoice};
+use crate::combat::hit_kind;
 use crate::character;
 use crate::effects::EffectAt;
 use crate::exits::ChangeLevelTo;
@@ -29,7 +30,7 @@ use crate::hints::{Hint, Hints, ShowHint};
 use crate::message_box::ShowMessage;
 use crate::level_material::LevelMaterial;
 use crate::player::{Player, PlayerTick};
-use crate::player_state::{FIELDS_PER_TICK, Heal, PlayerState};
+use crate::player_state::{DamagePlayer, FIELDS_PER_TICK, Heal, PlayerState};
 use crate::quest;
 use crate::population::{ContentModels, ItemRig, LevelPopulation, PlacementIndex};
 use crate::world::LevelGround;
@@ -62,6 +63,11 @@ pub const ALWAYS_ACTIVE: u16 = 0x40;
 const LOCKED: u16 = 0x10;
 /// An exit the quest hasn't opened: it shows `EXIT_OFF` and goes nowhere.
 pub const CLOSED: u16 = 0x8000;
+
+/// The Pojo's special bit, and the food that poisons it (`CHICKEN`: 100).
+const POJO: u32 = 0x400;
+const POJO_POISON: &str = "CHICKEN";
+const POJO_POISON_AMOUNT: f32 = -100.0;
 
 /// The container that explodes once opened (CHESTEXP), and the tick it
 /// plays as it's set off.
@@ -863,6 +869,8 @@ struct Out<'a> {
     sounds: Vec<String>,
     /// The hero's own lines, for the heroes' voice queue.
     voices: Vec<String>,
+    /// Poison the hero has eaten, dealt as blows once the items are done.
+    poison: Vec<f32>,
     hints: Vec<Hint>,
     messages: Vec<ShowMessage>,
     /// The sparkle a pickup gives off (placed at the item by its caller),
@@ -927,6 +935,7 @@ fn tick(
     seen: Res<Hints>,
     mut change: MessageWriter<ChangeLevelTo>,
     mut effects: MessageWriter<EffectAt>,
+    mut hurt: MessageWriter<DamagePlayer>,
 ) {
     let dt = time.delta_secs();
     let items = &mut *items;
@@ -935,6 +944,7 @@ fn tick(
     let mut out = Out {
         sounds: Vec::new(),
         voices: Vec::new(),
+        poison: Vec::new(),
         hints: Vec::new(),
         messages: Vec::new(),
         sparkle: None,
@@ -945,6 +955,16 @@ fn tick(
     };
     update_items(items, dt, &mut commands);
     run(items, dt, &mut state, ground.as_deref(), &mut players, &cameras, &mut out, &mut change);
+    // Poison eaten is a poison blow on the hero, through its armour powers
+    // and its reactions (the gold armour's heal comes back negative).
+    if let Ok(mut player) = players.single_mut() {
+        for amount in out.poison.drain(..) {
+            let taken = player.take_blow(amount, hit_kind::POISON, Vec3::ZERO);
+            if taken != 0.0 {
+                hurt.write(DamagePlayer { amount: taken });
+            }
+        }
+    }
     sounds.write_batch(out.sounds.into_iter().map(PlaySound));
     voices.write_batch(out.voices.into_iter().map(QueueVoice::hero));
     hints.write_batch(out.hints.into_iter().map(ShowHint));
@@ -1264,16 +1284,19 @@ fn pick_up(
             *amount -= taken as i32;
             taken == want
         }
-        // Food: refused at full health; negative food is poison.
+        // Food: refused at full health; negative food is poison, a blow of
+        // kind poison on the hero (its gas mask or invulnerability stops
+        // it). The Pojo can't eat chicken: to it that's 100 of poison.
         3 => {
-            let health = *amount as f32;
+            let pojo = state.bits.special & POJO != 0 && name.eq_ignore_ascii_case(POJO_POISON);
+            let health = if pojo { POJO_POISON_AMOUNT } else { *amount as f32 };
             if health < 0.0 {
-                state.damage(-health);
+                out.poison.push(-health);
             } else if state.heal(health) == Heal::Refused {
                 out.hint(Hint::HealthFull);
                 return false;
             }
-            match *amount {
+            match health as i32 {
                 a if a >= 100 => out.hint(Hint::EatMeat),
                 a if a >= 50 => out.hint(Hint::EatFruit),
                 a if a < 0 => out.hint(Hint::PoisonedFood),
