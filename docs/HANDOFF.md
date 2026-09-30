@@ -46,6 +46,12 @@ What plays (details in [INDEX.md](INDEX.md)):
   - Exploding and poison barrels, secret walls, hit switches.
 - **Golems** (`critters.rs`): statues woken by their trigger fight, block,
   take hits and die.
+- **Tower progression** (`quest.rs`): gems count toward their colour's
+  realm, gargoyle pieces toward the tower's wings; the tower's realm gates
+  stay shut ("You need 15 Orange Crystals…") until the crystals are there,
+  when the tower announces the unlock with its voice; exits to levels not
+  reached yet show `EXIT_OFF` and their glow is hidden; scrolls show their
+  text ([items.md](items.md) "Quest items and the tower's gates").
 
 Test aids:
 
@@ -62,8 +68,8 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on master `27d92a9` (magic potions merged)
-passed all 67 real levels; only the two empty folders fail.
+The all-levels smoke test on master `006b7ee` (animation rates, deaths)
+passed all 67 real levels.
 
 ## Fixed from user reports (2026-09-30)
 
@@ -92,7 +98,8 @@ passed all 67 real levels; only the two empty folders fail.
 - **Magic potions**: merged. Tap for a blast, tap twice for the shield,
   hold to throw; the game's effect models are used (the light potion's
   starburst is verified). See [effects.md](effects.md).
-- **Test aids**: `GDL_LOOK_AT` (now with a yaw: `"x,y,z,dist,180"` looks
+- **Test aids**: `GDL_CRYSTALS="<counter>:<n>,…"` seeds crystal counts
+  (1 orange … 8 black); `GDL_LOOK_AT` (now with a yaw: `"x,y,z,dist,180"` looks
   from the other side), `GDL_PARTICLE_TEST`, `GDL_POTIONS`, `GDL_THROWER`
   (a monster in front of the hero), and screenshot bursts with `GDL_SHOTS`
   / `GDL_SHOT_EVERY`. Frame what's being tested instead of hunting for it
@@ -150,12 +157,10 @@ waits.
      nodes": ANIM.PS2 `0x138`-byte records, selected by the letter after
      `PSYS` in the node name.
    - Records are applied by `FUN_800ceeb8`; the update is `FUN_800cdfdc`.
-5. **Tower progression**, partly decoded in [items.md](items.md) "Quest
-   items and the tower's gates":
-   - gem colours and their requirements;
-   - gargoyle sections;
-   - quest triggers (flag 0x40) gating realms;
-   - UnlockLevel / UnlockSection.
+5. ~~Tower progression~~: done for one player. Left: the gem HUD pop-up
+   (`SM_CRYSTAL_<colour>` + n/need), pickup notices, the legendary items'
+   hints (`0x71+`), the tower's other messages (shards after a boss,
+   runestones: `NEWSHARDS`, `ALL12RUNES*`, `RUNE13*`), saving progress.
 6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**, **hit flashes**.
 7. **Hit effects**: the per-blow effect models (BLOODFX1, FIREHIT,
    HITCOL…, tables in [monsters.md](monsters.md) "Deaths") and the kill's
