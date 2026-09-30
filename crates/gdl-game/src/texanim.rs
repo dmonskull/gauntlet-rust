@@ -131,6 +131,11 @@ impl LevelTexAnims {
     pub fn new(anims: Vec<TexAnim>) -> Self {
         Self { anims, ticks: 0 }
     }
+
+    /// Adds animations for models made after the level (its monsters').
+    pub fn extend(&mut self, anims: impl IntoIterator<Item = TexAnim>) {
+        self.anims.extend(anims);
+    }
 }
 
 fn step_frames(anims: Option<ResMut<LevelTexAnims>>, mut materials: ResMut<Assets<LevelMaterial>>) {
