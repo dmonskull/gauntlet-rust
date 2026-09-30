@@ -250,6 +250,22 @@ missile set: it hits monsters and items), kind `0x8012264C[type]` (bits
 The phoenix's body look plays its action 1 (ATTACK) on the same event
 ([powers.md](powers.md), "The looks").
 
+Here: `familiars.rs` — the familiar by the hero's level from its effects
+bank (the secret classes fall back to the bank of the class eight before
+them, as their thrown weapons do), under the hero's root at PDAT `+0x164`
+(× 1.2 when put on at level 99), hidden under the phoenix, ATTACK on each
+`HeroShot` and READY once it's played; on the tick after each `HeroShot`
+the spit or the fireball from the mouth point (the hero's position and
+facing on that tick, × its model's scale), aimed with `hero_aim` (along
+the facing with the crossbow bit) at reach 21 and `lob`bed for 50,
+launched at 35, gravity 10 and drop −0.5 (none on boss levels), radius 1,
+through `projectiles::spawn_hero_missile` (flies and hits as a hero
+missile for 3 s). The bank's running flipbooks on the models are stepped
+by `familiars.rs`, their frames found by name in `WEAPONS` when the bank
+only names them (the spit's `PIXIE_<colour>`, `WIZ_HEAD_<colour>`), as
+the game resolves such 0 × 0 textures. Stand-in: the aim is the release
+tick's search, not the firing tick's.
+
 ## Flight (`FUN_80094418`)
 
 Per frame, `dt` = `r13-0x7570`: new position = position + velocity × dt,
