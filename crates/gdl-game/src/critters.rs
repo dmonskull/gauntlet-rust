@@ -61,8 +61,7 @@
 //! animation and its critter appears when that ends; ground rings (a
 //! damaging effect in the game) hurt players in their radius at once;
 //! critter missiles live the missiles' three seconds; the chimera's wake
-//! timer starts at once; the wizard's messages are logged, not shown, and
-//! the tower's first level follows a boss. The darkening isn't drawn; the
+//! timer starts at once; the tower's first level follows a boss. The darkening isn't drawn; the
 //! heroes' side of the intro, the boss camera, parts (the chimera's
 //! heads), breaking nodes, the health meter, effects and fading, its blows
 //! on other monsters and pushing players aside aren't done.
@@ -86,6 +85,7 @@ use crate::combat::{TargetKind, Targetable};
 use crate::damage::after_armor;
 use crate::effects::effect_life;
 use crate::exits::ChangeLevelTo;
+use crate::hints::ShowMessage;
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion;
@@ -124,10 +124,10 @@ impl Plugin for CrittersPlugin {
 /// - 8: the last countdown, 2 s (10 s after the first skorne when the
 ///   heroes hold all twelve runestones), ends the level.
 ///
-/// His speeches queue as the game's voice queue does. Stand-ins: the
-/// messages are logged, not shown (their pages are timed as the game types
-/// them); he doesn't fade; the heroes' teleport-out effect isn't drawn;
-/// the next level is the tower's first.
+/// His speeches queue as the game's voice queue does; his messages show a
+/// page at a time for as long as the game types each. Stand-ins: the
+/// message box is the hints' plain text; he doesn't fade; the heroes'
+/// teleport-out effect isn't drawn; the next level is the tower's first.
 #[allow(clippy::too_many_arguments)]
 fn run_victory(
     mut commands: Commands,
@@ -136,6 +136,7 @@ fn run_victory(
     players: Query<&Player>,
     mut animators: Query<&mut Animator>,
     mut sounds: MessageWriter<PlaySound>,
+    mut messages: MessageWriter<ShowMessage>,
     mut change: MessageWriter<ChangeLevelTo>,
 ) {
     let Some(mut level) = level else { return };
@@ -219,7 +220,7 @@ fn run_victory(
             if v.fade <= 0 {
                 let speech = if level.boss_type == SKORNE && all_twelve { 1 } else { 0 };
                 speak(level, &mut v, speech, now, &mut sounds);
-                let pages = show_message(level, first_message(level.boss_type));
+                let pages = show_message(level, first_message(level.boss_type), &mut messages);
                 v.timer = now + pages + AFTER_FIRST_SPEECH;
                 v.step = 5;
             }
@@ -229,7 +230,7 @@ fn run_victory(
             if level.boss_type < SKORNE {
                 speak(level, &mut v, held + 1, now, &mut sounds);
             }
-            let pages = show_message(level, second_message(level.boss_type, held, all_twelve));
+            let pages = show_message(level, second_message(level.boss_type, held, all_twelve), &mut messages);
             v.timer = now + pages + if pages > 0.0 { AFTER_SECOND_SPEECH } else { 0.0 };
             v.step = 6;
         }
@@ -275,18 +276,21 @@ fn speak(level: &CritterLevel, v: &mut Victory, n: usize, now: f32, sounds: &mut
     v.voice_until = at + length;
 }
 
-/// Logs one of the wizard's messages (stand-in for showing it): how long
-/// its pages take to type and read, 0 without one.
-fn show_message(level: &CritterLevel, group: Option<&str>) -> f32 {
-    let Some(pages) = group.and_then(|g| level.end.texts.get(g)) else { return 0.0 };
-    info!("the wizard's message {}: {:?}", group.unwrap_or_default(), pages.join(" "));
-    pages_time(pages)
+/// Shows one of the wizard's messages, a page at a time, each for as long
+/// as the game takes to type it and hold it: their total, 0 without one.
+fn show_message(level: &CritterLevel, group: Option<&'static str>, messages: &mut MessageWriter<ShowMessage>) -> f32 {
+    let Some((group, pages)) = group.and_then(|g| Some((g, level.end.texts.get(g)?))) else { return 0.0 };
+    info!("the wizard's message {group}: {:?}", pages.join(" "));
+    for (i, page) in pages.iter().enumerate() {
+        messages.write(ShowMessage::new(group, i).seconds(page_time(page)));
+    }
+    pages.iter().map(|p| page_time(p)).sum()
 }
 
-/// How long a message's pages show: each types out a character every 2
-/// fields and stays 60 fields once typed.
-fn pages_time(pages: &[String]) -> f32 {
-    pages.iter().map(|p| p.chars().count() as f32 / TYPE_RATE + PAGE_HOLD).sum()
+/// How long a page shows: it types out a character every 2 fields and
+/// stays 60 fields once typed.
+fn page_time(page: &str) -> f32 {
+    page.chars().count() as f32 / TYPE_RATE + PAGE_HOLD
 }
 
 /// The wizard's first message for the boss (a `TEXT/ENGLISH.ROM` group).
@@ -2738,7 +2742,7 @@ mod tests {
         // Without heroes, at the boss's spot.
         assert_eq!(wizard_spot([1.0, 2.0, 3.0], &[]), [1.0, 2.0, 3.0]);
         // A page of 60 characters takes 2 s to type and stays 1 s.
-        assert!((pages_time(&["x".repeat(60)]) - 3.0).abs() < 1e-5);
+        assert!((page_time(&"x".repeat(60)) - 3.0).abs() < 1e-5);
     }
 
     #[test]
