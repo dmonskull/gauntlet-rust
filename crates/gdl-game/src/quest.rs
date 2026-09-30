@@ -109,10 +109,10 @@ fn announce_unlocks(
     }
     let (counters, sections) = state.quest.newly_open();
     for s in &sections {
-        messages.write(ShowMessage { group: "UNLOCKSECTION".into(), index: *s, voice: Some(GARGOYLE_VOICES[*s]) });
+        messages.write(ShowMessage::new("UNLOCKSECTION", *s).voice(GARGOYLE_VOICES[*s]));
     }
     for c in &counters {
-        messages.write(ShowMessage { group: "UNLOCKLEVEL".into(), index: *c, voice: Some(CRYSTAL_VOICES[*c]) });
+        messages.write(ShowMessage::new("UNLOCKLEVEL", *c).voice(CRYSTAL_VOICES[*c]));
     }
     if !counters.is_empty() || !sections.is_empty() {
         info!("the tower opens: crystals {counters:?}, sections {sections:?}");

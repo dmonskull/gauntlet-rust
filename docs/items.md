@@ -297,6 +297,10 @@ string (−1 = the whole group), `VOICE1` sound id. The ones items use:
 | `0x11` | `COLLECTGOLD` | `S_COLLECTGOLD` |
 | `0x1C` | `POISONEDFOOD` | `S_POISONEDFOOD` |
 | `0x85` | `HEALTHFULL` | `S_HEALTHFULL` |
+| `0x71` + n | legendary item n (1–11): `LEGEND_ITEMS000`–`010` ("THE SCIMITAR OF DECAPITATION", "THE LEGENDARY ICE AXE"…; `0x71` itself is `TURBOBOOST`), once | `VOICE2`: `S_SCIMITARVOX`, `S_ICEAXEVOX`, `S_LAMPVOX`, `S_BELLOWSVOX`, `S_SAVIORVOX` (5, 6, 8), `S_BOOKVOX`, `S_PARCHVOX`, `S_LANTERNVOX`, `S_JAVELINVOX` |
+
+A hint's voice id is `bank << 16 | call` in the audio catalog's numbering
+(`VOICE1` = 1, `VOICE2` = 2).
 
 A hint up blocks others of the same priority (all 50). Stand-ins: each
 is shown once per session, for 3 seconds.
@@ -363,7 +367,10 @@ the session copies are the player's `+0x1EC8…`):
   (`FUN_8009176c`).
 - **16 gargoyle piece**: amount 0 fang, 1 feather, 2 claw; counts up to
   12, 20, 28 (`FUN_800a1850`, `0x8012455c`).
-- **13 legendary item**: sets its bit; hint `0x71 + amount`.
+- **13 legendary item**: sets its bit; hint `0x71 + amount`. The amount
+  (1–11: sword, ice axe, lamp, bellows, soul, …, book, parchment, sun lamp,
+  javelin) is the realm id of the boss it's for; the ice axe (2) lies in
+  levelA2 and is for the mountain's dragon.
 - **14 scroll**: the item's amount is the placement's `+0x30`; shows
   message amount − 1 of the level's `SCROLLS<level>` group
   (`FUN_8006d7f4`).
@@ -433,9 +440,16 @@ node — its glowing trail — is hidden (instance flag `0x2`). Loading a level
 
 **In this rewrite**: all of the above for one player. Stand-ins and gaps:
 the messages draw as plain centred text for 5 s (the game's message box
-isn't built); the gem HUD pop-up, the pickup notices and sparkles, and the
-legendary items' hints aren't shown; progress isn't saved between runs
-(there's no save yet); the level-record seen bits (`+0xDDC…`) aren't kept.
+isn't built); the pickup notices and sparkles aren't shown; progress isn't
+saved between runs (there's no save yet); the level-record seen bits
+(`+0xDDC…`) aren't kept. The gem/gargoyle count shows above the panel
+(`game_hud.rs`: `SM_CRYSTAL_<colour>` or `SM_FANGS`/`SM_FEATHERS`/
+`SM_CLAWS` at panel x + 28, y 288, 16 × 16; "n/need" in font 1 at scale
+1.5 at x + 48, y 292; `FUN_80074b08`). The game builds the icon's name
+as `SM_CRYSTAL_<colour word>` (`SM_CRYSTAL_ORANGE`), but the art is named
+with three letters (`SM_CRYSTAL_ORA`) and the lookup (`FUN_800b8354`) is a
+30-letter `strncmp`, so the retail game never finds it (it gets texture 0);
+we draw the matching icon.
 Test aids: `GDL_CRYSTALS="<counter>:<n>,…"` sets counts at the start; the
 town gate is at `GDL_WARP="21.9,-1.9,-79.4"` in levelL1 (frame it with
 `GDL_LOOK_AT="22,-1,-84,18,180"`, the exit circle with

@@ -159,10 +159,10 @@ waits.
      nodes": ANIM.PS2 `0x138`-byte records, selected by the letter after
      `PSYS` in the node name.
    - Records are applied by `FUN_800ceeb8`; the update is `FUN_800cdfdc`.
-5. ~~Tower progression~~: done for one player. Left: the gem HUD pop-up
-   (`SM_CRYSTAL_<colour>` + n/need), pickup notices, the legendary items'
-   hints (`0x71+`), the tower's other messages (shards after a boss,
-   runestones: `NEWSHARDS`, `ALL12RUNES*`, `RUNE13*`), saving progress.
+5. ~~Tower progression~~: done for one player, with the gem count above
+   the panel and the legendary items' hints. Left: pickup notices, the
+   tower's other messages (shards after a boss, runestones: `NEWSHARDS`,
+   `ALL12RUNES*`, `RUNE13*`), saving progress.
 6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**, **hit flashes**.
 7. ~~Hit effects~~: done — blood sprays (BLOODFX1 per blow, BLOODFX2 on
    kills) run as particle bursts from the effects' kind-4 nodes; FIREHIT,

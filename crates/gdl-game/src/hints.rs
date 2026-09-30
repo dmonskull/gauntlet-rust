@@ -51,13 +51,34 @@ pub enum Hint {
     PoisonedFood,
     /// 0x85: food at full health.
     HealthFull,
+    /// 0x71 + n: legendary item n (1–11) picked up — its name, spoken.
+    Legendary(u8),
 }
+
+/// The legendary items' announcer lines, items 1–11 (hints 0x72–0x7C).
+const LEGENDARY_VOICES: [&str; 11] = [
+    "S_SCIMITARVOX",
+    "S_ICEAXEVOX",
+    "S_LAMPVOX",
+    "S_BELLOWSVOX",
+    "S_SAVIORVOX",
+    "S_SAVIORVOX",
+    "S_BOOKVOX",
+    "S_SAVIORVOX",
+    "S_PARCHVOX",
+    "S_LANTERNVOX",
+    "S_JAVELINVOX",
+];
 
 impl Hint {
     /// Text group, announcer line, and whether it's shown only once (the
     /// game's mode 0 hints repeat; the rest are remembered once shown).
-    fn entry(self) -> (&'static str, &'static str, bool) {
-        match self {
+    fn entry(self) -> (std::borrow::Cow<'static, str>, &'static str, bool) {
+        if let Self::Legendary(n) = self {
+            let i = usize::from(n.clamp(1, 11) - 1);
+            return (format!("LEGEND_ITEMS{i:03}").into(), LEGENDARY_VOICES[i], true);
+        }
+        let (group, line, once) = match self {
             Self::UseKeyOnDoor => ("USEKEYOPENDOOR", "S_USEKEY", true),
             Self::UseKeyOnChest => ("USEKEYOPENCHEST", "S_USEKEY2", true),
             Self::MagicFull => ("FULLOFBOMBS", "S_MAGICFULL", true),
@@ -73,7 +94,9 @@ impl Hint {
             Self::CollectGold => ("COLLECTGOLD", "S_COLLECTGOLD", true),
             Self::PoisonedFood => ("POISONEDFOOD", "S_POISONEDFOOD", true),
             Self::HealthFull => ("HEALTHFULL", "S_HEALTHFULL", true),
-        }
+            Self::Legendary(_) => unreachable!(),
+        };
+        (group.into(), line, once)
     }
 }
 
@@ -81,13 +104,33 @@ impl Hint {
 #[derive(Message, Clone, Copy, Debug)]
 pub struct ShowHint(pub Hint);
 
-/// Asks for a message: string `index` of a `TEXT/SCROLL_E.ROM` group
-/// (`NEEDCRYSTALS`, `SCROLLSA1`…), with an announcer line.
+/// Asks for a message: string `index` of a text group — `TEXT/SCROLL_E.ROM`
+/// (`NEEDCRYSTALS`, `SCROLLSA1`…), else `TEXT/ENGLISH.ROM` (the wizard's
+/// `DRAGON_SPEECH`…) — with an announcer line, shown for `seconds` (the
+/// default 5 when none).
 #[derive(Message, Clone, Debug)]
 pub struct ShowMessage {
     pub group: String,
     pub index: usize,
     pub voice: Option<&'static str>,
+    pub seconds: Option<f32>,
+}
+
+impl ShowMessage {
+    pub fn new(group: impl Into<String>, index: usize) -> Self {
+        Self { group: group.into(), index, voice: None, seconds: None }
+    }
+
+    pub fn voice(mut self, line: &'static str) -> Self {
+        self.voice = Some(line);
+        self
+    }
+
+    #[allow(dead_code)] // for the boss victory's speeches (`critters.rs`)
+    pub fn seconds(mut self, seconds: f32) -> Self {
+        self.seconds = Some(seconds);
+        self
+    }
 }
 
 /// The hint or message on screen, for the status overlay.
@@ -153,7 +196,8 @@ fn show_messages(
         hints.text = None;
     }
     while let Some(m) = hints.queued.pop_front() {
-        let text = hints.messages.as_ref().and_then(|r| r.group(&m.group)).and_then(|g| g.strings.get(m.index));
+        let group = |rom: &Option<TextRom>| rom.as_ref().and_then(|r| r.group(&m.group)).and_then(|g| g.strings.get(m.index)).cloned();
+        let text = group(&hints.messages).or_else(|| group(&hints.rom));
         let Some(text) = text else {
             warn!("no message {} {}", m.group, m.index);
             continue;
@@ -161,7 +205,7 @@ fn show_messages(
         // The font is ASCII-only; the game's line breaks stay.
         hints.text = Some(text.replace('\r', "").chars().filter(|c| c.is_ascii()).collect());
         info!("message: {}", hints.text.as_deref().unwrap_or_default().replace('\n', " "));
-        hints.left = MESSAGE_SECONDS;
+        hints.left = m.seconds.unwrap_or(MESSAGE_SECONDS);
         hints.message_up = true;
         if let Some(line) = m.voice {
             voice.write(PlaySound(line.into()));
@@ -192,7 +236,7 @@ fn show_hints(
         if hints.text.is_some() || (once && hints.seen(hint)) {
             continue;
         }
-        let Some(text) = hints.rom.as_ref().and_then(|r| r.group(group)).map(|g| g.strings.join(" ")) else {
+        let Some(text) = hints.rom.as_ref().and_then(|r| r.group(&group)).map(|g| g.strings.join(" ")) else {
             continue;
         };
         // The font is ASCII-only.

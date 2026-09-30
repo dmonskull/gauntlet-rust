@@ -104,8 +104,9 @@ fn status_line(s: &PlayerState) -> String {
         "{}  LEVEL {} (XP {})   HEALTH {health}\nGOLD {}   KEYS {}   POTIONS {}",
         s.class, s.level, s.experience, s.gold, s.keys, s.potions.len()
     );
-    if !s.runestones.is_empty() || !s.treasures.is_empty() {
-        out += &format!("   RUNES {}   TREASURES {}", s.runestones.len(), s.treasures.len());
+    let crystals: i32 = s.quest.crystals.iter().map(|&c| i32::from(c.max(0))).sum();
+    if !s.runestones.is_empty() || crystals > 0 || s.quest.legendary != 0 {
+        out += &format!("   RUNES {}   CRYSTALS {crystals}   LEGENDARY {:#x}", s.runestones.len(), s.quest.legendary);
     }
     for p in &s.powers {
         out += &format!("\n{} {:#x}", power_name(p.subtype), p.value);

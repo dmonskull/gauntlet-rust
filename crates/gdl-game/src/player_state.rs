@@ -84,12 +84,12 @@ pub struct PlayerState {
     pub powers: Vec<Power>,
     /// Runestones held, by the stone's number (its item type's amount).
     pub runestones: Vec<i32>,
-    /// Legendary items picked up: (13, amount). Kept for the boss intro
-    /// (`critters.rs`) until it reads [`Quest::legendary`].
-    pub treasures: Vec<(i32, i32)>,
     /// Crystals, gargoyle pieces, legendary items and the levels entered
     /// (`quest.rs`).
     pub quest: Quest,
+    /// The last quest piece picked up, for the HUD's count: a crystal
+    /// counter, or `0x100` + a gargoyle piece; and when (game seconds).
+    pub popup: Option<(u16, f32)>,
     /// Realms whose boss this hero has beaten, a bit per realm id (the
     /// record's `+0x1EC8`, set by the boss's death for every player).
     pub realms_beaten: u32,
@@ -124,8 +124,8 @@ impl PlayerState {
             potions: Vec::new(),
             powers: Vec::new(),
             runestones: Vec::new(),
-            treasures: Vec::new(),
             quest: Quest::default(),
+            popup: None,
             realms_beaten: 0,
             alive: true,
             class: class.to_ascii_uppercase(),
