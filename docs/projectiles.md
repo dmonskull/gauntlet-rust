@@ -308,9 +308,27 @@ throw every two seconds.
   order; per-attacker cooldowns aren't kept (only piercing needs them).
 - No wall/hit/burst effects, sparks or sounds; the burst is applied at
   once with the analytic falloff instead of over the effect's life.
-- No pierce, bounce, multi-shot spreads, weapon powerups (`+0x11C` kind
-  bits, `0x800`/`0x6000` shots), reflect shield or the time-slow damage
-  halving; no push on missile hits.
+- Weapon powers ([items.md](items.md), "Timed powerups"): the throw
+  starts from the hero's weapon bits (`+0x11C`); `0x80000` / `0x400000`
+  fan it into three / five missiles turned 0°, ±15° (±30°) by the tables
+  at `0x80111580` (cosines) / `0x80111594` (sines), living 2 s
+  (`r2-0x73e4`) instead of 3 (`FUN_80030094`'s loop: it stops after the
+  first without `0x480000`, after the third without `0x400000`); with
+  `0x100000` and without `0x2000000` the throw uses the record at
+  `0x80119b28` — kind `0x20`, radius 5, no gravity or spin — and pierces:
+  a hit doesn't stop it, and it hits each target once (the game's
+  per-attacker cooldown of 3.25 s outlives it); `0x200000` bounces off the
+  level (`FUN_800bdaf8` reflects the velocity about the surface normal and
+  a rise keeps 0.4 of itself) — a missile already leaving the surface it
+  touches flies on (our sweep can touch it again). Stand-ins: the bounce
+  leaves the lifetime alone (the game trims what's left, constants not
+  traced); the `0x800` (a crossbow shot, which spends one of its five
+  from the slot through `FUN_8007ed38`) and `0x6000` strikes and the
+  actions that make them aren't traced; the spread's first missile's
+  effect (the record's `+0x2C` becomes 6 / 7), the element trails
+  (`0x8023fd34`) and the special powers' records (`0x80119b58`,
+  `0x80119b88`) aren't done; the reflect shield and the time-slow damage
+  halving aren't; no push on missile hits.
 - The kiting thrower's wall-bump angles and the leader logic aren't done;
   AIs `0x1C`/`0x1D`/`0x1F` (fireball casters) move like the chasers (their own
   movement isn't traced) and fire a fireball on each attack blow.
