@@ -11,6 +11,7 @@
 //! in a scene that plays their effects in full; stand-in: without the
 //! scenes, new pieces are set out with the rest.)
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::*;
@@ -31,6 +32,7 @@ use crate::player_state::PlayerState;
 use crate::population::{self, LevelPopulation};
 use crate::projectiles;
 use crate::quest;
+use crate::tower_scenes;
 use crate::world::LevelEntity;
 
 pub struct TowerPlugin;
@@ -40,16 +42,36 @@ impl Plugin for TowerPlugin {
         app.add_systems(
             Update,
             (
+                follow_levels.run_if(resource_exists_and_changed::<LevelPopulation>),
                 place_wizard.run_if(resource_exists_and_changed::<LevelPopulation>),
-                place_trophies.run_if(resource_exists_and_changed::<LevelPopulation>).after(quest::enter_level),
-                arm_speeches.run_if(resource_exists_and_changed::<LevelPopulation>).after(quest::enter_level),
+                place_trophies
+                    .run_if(resource_exists_and_changed::<LevelPopulation>)
+                    .after(quest::enter_level)
+                    .after(follow_levels),
+                arm_speeches
+                    .run_if(resource_exists_and_changed::<LevelPopulation>)
+                    .after(quest::enter_level)
+                    .after(follow_levels),
                 speeches,
                 wind_on.before(Animate),
                 idle_wizard,
             ),
         )
-        .init_resource::<TowerSpeeches>();
+        .init_resource::<TowerSpeeches>()
+        .init_resource::<LevelTrail>();
     }
+}
+
+/// The level before this one (`r13-0x724c`/`r13-0x7250`: the tower's
+/// speeches and scenes depend on where the heroes came back from).
+#[derive(Resource, Default)]
+pub struct LevelTrail {
+    pub previous: Option<String>,
+    current: Option<String>,
+}
+
+fn follow_levels(population: Res<LevelPopulation>, mut trail: ResMut<LevelTrail>) {
+    trail.previous = trail.current.replace(population.level.clone());
 }
 
 /// The tower's realm.
@@ -111,39 +133,104 @@ const RUNE13_PLACE: &str = "L1RUNE13";
 #[derive(Component)]
 struct WindOn;
 
-/// Sets out the shards (a bit each of [`quest::boss_marks`], 1–8) and the
-/// runestones (a bit each, 0–12) the hero has.
+/// A shard's effect (1–8) and where it goes.
+pub fn shard_piece(n: u8) -> (String, &'static str) {
+    (format!("SHARD{n}"), SHARD_PLACE)
+}
+
+/// A runestone's effect (0–12) and where it goes.
+pub fn rune_piece(stone: u8) -> (String, &'static str) {
+    if stone == 12 { ("RUNE13".into(), RUNE13_PLACE) } else { (format!("RUNE{}", stone + 1), RUNE_PLACE) }
+}
+
+/// Where a world node of the level stands.
+pub fn node_at(nodes: &LevelNodes, name: &str) -> Option<Vec3> {
+    nodes.nodes.iter().position(|n| n.name == name).map(|i| Vec3::from(nodes.origin[i]))
+}
+
+/// As the tower loads: sets out the shards (bits 1–8 of
+/// [`quest::boss_marks`]) and runestones (a bit each, 0–12) the wizard has
+/// announced, wound on; then marks everything held as announced, and
+/// arms the wizard's scene for the first piece that wasn't
+/// (`tower_scenes.rs`). The window's light shines if all eight shards were
+/// announced before.
 #[allow(clippy::too_many_arguments)]
 fn place_trophies(
     mut commands: Commands,
     population: Res<LevelPopulation>,
     nodes: Option<Res<LevelNodes>>,
-    state: Option<Res<PlayerState>>,
+    state: Option<ResMut<PlayerState>>,
+    (trail, mut scene, mut light): (Res<LevelTrail>, ResMut<tower_scenes::Scene>, ResMut<quest::ShardLight>),
     mut game: ResMut<LoadedGame>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
+    *scene = tower_scenes::Scene::default();
     if quest::level_of(&population.level).is_none_or(|(realm, _)| realm != TOWER_REALM) {
         return;
     }
-    let (Some(nodes), Some(state)) = (nodes, state) else { return };
-    let shards = quest::boss_marks(state.realms_beaten);
-    let runes = state.runestone_bits();
-    let mut wanted: Vec<(String, &str)> =
-        (1..=8).filter(|n| shards & (1 << n) != 0).map(|n| (format!("SHARD{n}"), SHARD_PLACE)).collect();
-    wanted.extend((0..12).filter(|n| runes & (1 << n) != 0).map(|n| (format!("RUNE{}", n + 1), RUNE_PLACE)));
-    if runes & (1 << 12) != 0 {
-        wanted.push(("RUNE13".into(), RUNE13_PLACE));
+    let (Some(nodes), Some(mut state)) = (nodes, state) else { return };
+    let (shards, runes) = (state.quest.shards_announced, state.quest.runes_announced);
+    light.0 = shards & quest::ALL_SHARDS == quest::ALL_SHARDS;
+    let (marks, held) = (quest::boss_marks(state.realms_beaten), state.runestone_bits());
+    let announce = tower_scenes::announcement(marks, shards, held, runes, trail.previous.as_deref());
+    state.quest.shards_announced |= marks;
+    state.quest.runes_announced |= held;
+    let mut wanted: Vec<(String, &str)> = (1..=8u8).filter(|n| shards & (1 << n) != 0).map(shard_piece).collect();
+    wanted.extend((0..13u8).filter(|n| runes & (1 << n) != 0).map(rune_piece));
+    let piece = match announce {
+        Some(tower_scenes::Announce::Shard(n)) => Some(shard_piece(n).0),
+        Some(tower_scenes::Announce::Rune(i)) => Some(rune_piece(i).0),
+        _ => None,
+    };
+    let mut names: Vec<&str> = wanted.iter().map(|(n, _)| n.as_str()).collect();
+    if announce.is_some() {
+        names.push(SCENE_WIZARD);
     }
-    if wanted.is_empty() {
+    names.extend(piece.as_deref());
+    if names.is_empty() {
         return;
     }
-    let Some((anim, texmods, model, textures)) = read_bank(&mut game, WIZARD_BANK) else {
-        warn!("{WIZARD_BANK} didn't load");
+    let mut built = build_models(&mut game, &names, &mut meshes, &mut materials, &mut images);
+    for (name, place) in wanted {
+        let (Some(at), Some(model)) = (node_at(&nodes, place), built.get(&name)) else {
+            warn!("{}: no {place} or {name} to set out", population.level);
+            continue;
+        };
+        let root = model.spawn(Transform::from_translation(at), &mut commands);
+        commands.entity(root).insert((WindOn, LevelEntity));
+        info!("{name} set out at {place} {at:?}");
+    }
+    let Some(what) = announce else { return };
+    let Some(wizard) = built.remove(SCENE_WIZARD) else {
+        warn!("{WIZARD_BANK} has no {SCENE_WIZARD}: no scene");
         return;
     };
-    let Some(first) = anim.atrees.first().cloned() else { return };
+    let wizard = tower_scenes::apparition(wizard, &mut materials);
+    let piece = piece.and_then(|p| built.remove(&p)).map(Arc::new);
+    info!("the wizard will announce {what:?}");
+    scene.arm(what, wizard, piece);
+}
+
+/// The wizard of the scenes: `WIZARD`, beside `GWIZ` in the tower's bank.
+const SCENE_WIZARD: &str = "WIZARD";
+
+/// Builds these atrees of the tower's items bank (reading it once), each
+/// running its texture modifiers.
+pub fn build_models(
+    game: &mut LoadedGame,
+    names: &[&str],
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<LevelMaterial>,
+    images: &mut Assets<Image>,
+) -> HashMap<String, CharacterModel> {
+    let mut out = HashMap::new();
+    let Some((anim, texmods, model, textures)) = read_bank(game, WIZARD_BANK) else {
+        warn!("{WIZARD_BANK} didn't load");
+        return out;
+    };
+    let Some(first) = anim.atrees.first().cloned() else { return out };
     // One set of files and one texture cache for them all.
     let mut data = CharacterData {
         name: String::new(),
@@ -155,11 +242,7 @@ fn place_trophies(
         textures,
     };
     let mut cache = TextureCache::new(&data.model, &data.textures).sharing_materials();
-    for (name, place) in wanted {
-        let Some(at) = nodes.nodes.iter().position(|n| n.name == place).map(|i| Vec3::from(nodes.origin[i])) else {
-            warn!("{}: no {place} for {name}", population.level);
-            continue;
-        };
+    for &name in names {
         let Some(tree) = anim.atrees.iter().find(|a| a.name == name) else {
             warn!("{WIZARD_BANK} has no {name}");
             continue;
@@ -167,12 +250,11 @@ fn place_trophies(
         data.name = format!("{WIZARD_BANK}/{name}");
         data.clips = Arc::new(tree.clone());
         data.skeleton = tree.clone();
-        let mut model = CharacterModel::build_with(&data, &mut cache, &mut meshes, &mut materials, &mut images);
-        model.run_texmods(&data, &texmods, &mut cache, &mut images);
-        let root = model.spawn(Transform::from_translation(at), &mut commands);
-        commands.entity(root).insert((WindOn, LevelEntity));
-        info!("{name} set out at {place} {at:?}");
+        let mut model = CharacterModel::build_with(&data, &mut cache, meshes, materials, images);
+        model.run_texmods(&data, &texmods, &mut cache, images);
+        out.insert(name.to_string(), model);
     }
+    out
 }
 
 /// A bank's animation file (its atrees and texture modifiers), model and
@@ -208,9 +290,8 @@ struct TowerSpeeches {
     pending: Vec<&'static str>,
     /// After the welcome's box: the wizard's gesture and its cut.
     gesture: bool,
-    /// Tower loads this session, and the level before this one.
+    /// Tower loads this session.
     tower_loads: u32,
-    previous: Option<String>,
 }
 
 const WELCOME: &str = "WELCOMEMESSAGE";
@@ -227,8 +308,13 @@ const GESTURE: usize = 6;
 /// welcomes a hero on the session's first tower load when no hero in the
 /// game has any of its 16 records at player `+0xA90` above 0
 /// — here, when the hero hasn't entered a realm's level.
-fn arm_speeches(population: Res<LevelPopulation>, state: Option<Res<PlayerState>>, mut speeches: ResMut<TowerSpeeches>) {
-    let previous = speeches.previous.replace(population.level.clone());
+fn arm_speeches(
+    population: Res<LevelPopulation>,
+    state: Option<Res<PlayerState>>,
+    trail: Res<LevelTrail>,
+    mut speeches: ResMut<TowerSpeeches>,
+) {
+    let previous = trail.previous.clone();
     if quest::level_of(&population.level).is_none_or(|(realm, _)| realm != TOWER_REALM) {
         return;
     }
@@ -266,7 +352,7 @@ fn speeches(
         });
         match point {
             Some(locator) => {
-                cuts.write(StartCut { locator, node: None, hold: Some(WELCOME_HOLD), delay: 0.0 });
+                cuts.write(StartCut { locator, node: None, hold: Some(WELCOME_HOLD), delay: 0.0, extra: 0.0 });
             }
             None => warn!("the tower has no camera point {WELCOME_CAMERA:#x}"),
         }

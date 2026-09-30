@@ -345,12 +345,10 @@ lookout with param 0 (`FUN_80067194(0)`): on `levelL1` the pedestal at
 (3.0, 2.0, −53.5), behind his podium, facing the heroes' start. In the
 tower's mode (`0x4010`) its update (`FUN_800a20c4`) plays his actions 0, 1
 and 2 in turn (READY, READING, THINKING), each to its end
-(`r13-0x6e68`). His other actions (WELCOME, GOAWAY, GESTLEFT…) and the
+(`r13-0x6e68`); after the welcome he gestures (action 6, below). The
 scenes where the `WIZARD` model appears at a lookout to announce new
-shards and runestones (`FUN_800a33c4`: `NewShards`, `MoreShards`,
-`AllShards`, `NewRunes`, `Rune13No/Yes`, `All12RunesNo/Yes`; then
-`FUN_800a39c4` sets the shard in `L1WINDOWFRAME` or the stone in
-`L1RUNEPLACE` with a camera cut) aren't done yet. The runtime: `tower.rs`.
+shards and runestones are below ("The tower wizard's scenes"). The
+runtime: `tower.rs`, `tower_scenes.rs`.
 
 ## The tower's welcome
 
@@ -414,17 +412,86 @@ stone and "all twelve" have their own codes): his text and voice
 twelfth stone — the reveals that follow (the light fading in, a realm's
 portal).
 
-Here (`tower.rs`, `quest.rs`): the shards and runestones are set out as the
-tower loads, wound on (`WindOn`), from the tower's items bank; the light
-shows only once all eight shards are in (`quest::TowerPiece`, bits by
-`quest::boss_marks`) — a new game's tower had it shining. Stand-in: there
-are no announced bits and no scenes yet, so pieces just won are set out
-wound on with the rest. Test with
+Here (`tower.rs`, `quest.rs`): the announced shards and runestones
+(`Quest::shards_announced`/`runes_announced`, saved with the character)
+are set out as the tower loads, wound on (`WindOn`), from the tower's
+items bank; the light shows once all eight shards were announced
+(`quest::ShardLight`) — a new game's tower had it shining. Test with
 `GDL_BEATEN=<realm bits>` and `GDL_RUNES=<stone bits>` (e.g. `0xE9E` for
 the eight main bosses, `0x1FFF` for all thirteen stones) and
 `GDL_LOOK_AT="3.5,0,-9.8,24"` (the rune place),
 `"2.6,11,-79.9,26,180"` (the window) or `"4.1,-28.5,31.2,16"` (the
 thirteenth).
+
+## The tower wizard's scenes
+
+`FUN_800a20c4(1)` (the end of the tower's load) picks what to announce:
+for each hero, the record's shards and stones `|=` the won words, the
+announced words (`+0x2220`/`+0x2222`) `|=` them too, and the first bit won
+but not announced before is the code `r13-0x6e8c`: shard n (1–8), then
+— overriding — stone i as 100 + i (0–12); with no new stone, 113
+(`Rune13No`) when the last level was `levelH3` (`r13-0x724c`/`-0x7250` =
+realm 8, level 2) and the thirteenth isn't announced, and 114 when all
+twelve were announced and E is beaten (bit 9) — which calls
+`FUN_800a39c4` at once. The timer `r13-0x6e90` is 3 s (`r2-0x5220`) for
+these, 2 s (`r2-0x5210`) for the follow-ups; `FUN_80032824` blocks the
+pads. The tower's wizard setup (`FUN_800a3fd8`) sets the start delay
+`r13-0x6e80` = 60 fields.
+
+`FUN_800a33c4`, each tower frame while the timer is up and no opening
+shot runs:
+
+- the delay counts down; then, once, the `WIZARD` atree
+  (`r2-0x520c`, `FUN_80012f78(…, 0xC00880)`: additive, no depth writes —
+  a glowing apparition, its READY a 49-frame flipbook loop) stands at the
+  lookout nearest the heroes' centre (`FUN_8006f678`, `FUN_80067234`: any
+  kind-8/10 locator), and the camera cuts to the lookout's point
+  (`FUN_80066aec(kind, lookout param)`: kind 0 the heroes' ranks, 1
+  shards, 2 stones; the tables `0xF0`/`0xDC`/`0xAA` + param, falling back
+  to a lower kind — `docs/camera.md`, "Scene camera points"), held until
+  ended;
+- 120 fields on, his words type (`FUN_80019e64`, bank 0 = `SCROLL_E.ROM`,
+  y 312 — `docs/frontend.md`, "Captions"): `NEWSHARDS` page n,
+  `NEWRUNES` page 0, else the group's pages in turn (`MORESHARDS`,
+  `ALLSHARDS`, `RUNE13NO`, `ALL12RUNESNO`/`YES`, `RUNE13YES`); his voice
+  (`FUN_8009bec0`/`FUN_8009bd28`, the voice queue): `S_SHRD4TWN` …
+  `S_SHRD4DRM` (`0x80123aa4`), `S_CONTINUEVOX`, `S_4KEYVOX`,
+  `S_FNDRUNEYOU`, `S_RUNE13NO`, `S_12RUNENO`, `S_12RUNEYES`,
+  `S_RUNE13YES`;
+- once typed, the timer runs down; at 0 `FUN_800a39c4` takes him away,
+  ends the cut (`FUN_8001be80`), frees the pads and places the piece: its
+  effect in full (not wound on, flag `0x80000`) with a cut to its place
+  (40 fields + 300 extra: `0xCA` window, `0xC9` rune place, `0xCB` the
+  thirteenth) and a sound (`FUN_8009bc98`: `S_SHRDS127` with all eight
+  shards, else `S_SHRD8`; `S_RUNEFALL` for a stone), and picks the next
+  step `r13-0x6e7c`:
+  - a shard: 10 (all eight in; the Desecrated Temple's exit, dest
+    `0x500`, is made clear) or 14;
+  - a stone (or codes 113/114, which place nothing): 22 without the eight
+    shards and E (`0x3FE`) or twelve stones, 24 with twelve but not the
+    rest, 20 with all, else 21 for 113/114 while F isn't beaten (`0x7FE`);
+    the Underworld's exit (`0x600`) is made clear for any step;
+  - the thirteenth (code 112): 30 with all thirteen, else 32; Garm's
+    Citadel's exit (`0x803`) is made clear.
+
+The steps (`FUN_800a20c4`), where "done" is the cut's hold and extra both
+under 5: 10/14 at extra < 250 play `S_STNDGLASS` and go to 11/15; 11 when
+done cuts to `0xCC`, shows the light (`L1XPLIGHTRAY01`) and fades it and
+the temple's exit in over 180 fields (116 → 16); 15/16 when done announce
+`MORESHARDS`/`ALLSHARDS`; 20/22/24 at extra < 250 play `S_RUNEHIT` and go
+on (23 and 33 end); 21 when done cuts to `0xC9` and fades the Underworld's
+exit in (126 → 26); 25/26 when done announce `ALL12RUNESNO`/`YES`;
+30/32 at extra < 220 play `S_RUNEHIT`; 31 when done cuts to `0xCD`, fires
+trigger `0xFF` (not snapped) and fades the citadel's exit in (136 → 36);
+36 when done announces `RUNE13YES`. Each announcement brings the wizard
+back at once (the delay is spent).
+
+Here (`tower_scenes.rs`): all of the above for one hero. Stand-ins: the
+exits aren't made clear or faded in (they show as their open state says),
+the light comes on at once; the pieces' particles aren't sprayed; the
+heroes' rank announcements (`FUN_800a3d78`, the first kind of lookout
+camera) aren't done. Test with `GDL_BEATEN`/`GDL_RUNES` on `levelL1` (a
+fresh hero gets the welcome first: `GDL_MENU="b@300,b@330,b@360,b@390,b@420"`).
 
 ## Quest items and the tower's gates
 

@@ -75,6 +75,8 @@ pub struct PlayCamera {
     boss: Option<BossCam>,
     boss_active: bool,
     start_point: Option<CameraPoint>,
+    /// The level-start shot is still on (not a glide back from a cut).
+    opening: bool,
 }
 
 /// Shakes the camera (`docs/camera.md` "Shakes"): `what` 0 moves the
@@ -105,12 +107,14 @@ pub struct StartCut {
     pub hold: Option<f32>,
     /// Fields before the view changes.
     pub delay: f32,
+    /// Fields it holds after that, which the tower's scenes wait on.
+    pub extra: f32,
 }
 
 impl StartCut {
     /// A trigger's cut to its camera point.
     pub fn trigger(locator: usize, node: Option<usize>) -> Self {
-        Self { locator, node, hold: None, delay: CUT_DELAY }
+        Self { locator, node, hold: None, delay: CUT_DELAY, extra: 0.0 }
     }
 }
 
@@ -124,6 +128,8 @@ struct Cut {
     eye: [f32; 3],
     target: [f32; 3],
     fields_left: f32,
+    /// Counted once `fields_left` is spent.
+    extra: f32,
     node: Option<usize>,
 }
 
@@ -198,6 +204,25 @@ impl PlayCamera {
     /// glide back.
     pub fn settled(&self) -> bool {
         self.cut.is_none() && self.intro.is_none()
+    }
+
+    /// Whether the level-start shot is still showing.
+    pub fn opening(&self) -> bool {
+        self.opening
+    }
+
+    /// The cut's hold and extra fields left (none without a cut).
+    pub fn cut_counts(&self) -> Option<(f32, f32)> {
+        self.cut.map(|c| (c.fields_left, c.extra))
+    }
+
+    /// Ends the cut: it's over on the next tick (unless another starts).
+    pub fn end_cut(&mut self) {
+        if let Some(c) = self.cut.as_mut() {
+            c.fields_left = 0.0;
+            c.extra = 0.0;
+            c.node = None;
+        }
     }
 
 }
@@ -307,6 +332,7 @@ fn start(
     commands.insert_resource(PlayCamera {
         rig,
         previous,
+        opening: intro.is_some(),
         intro,
         cut: None,
         shake: None,
@@ -325,7 +351,7 @@ fn top_point(feet: [f32; 3], state: Option<&PlayerState>) -> [f32; 3] {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn tick(
+pub(crate) fn tick(
     camera: Option<ResMut<PlayCamera>>,
     players: Query<&Player>,
     state: Option<Res<PlayerState>>,
@@ -402,16 +428,20 @@ fn tick(
         let Some(l) = population.as_ref().and_then(|p| p.population.locators.get(cut.locator)) else { continue };
         let (eye, target) = locator_view(l, player.mover.position);
         let fields = cut.hold.unwrap_or(if l.param == 0 { CUT_FIELDS } else { CUT_FIELDS_PER_STEP * f32::from(l.param) });
-        camera.cut = Some(Cut { delay: cut.delay, eye, target, fields_left: fields, node: cut.node });
+        camera.cut = Some(Cut { delay: cut.delay, eye, target, fields_left: fields, extra: cut.extra, node: cut.node });
     }
     if let Some(cut) = camera.cut.as_mut() {
         if cut.delay > 0.0 {
             cut.delay -= FIELDS_PER_TICK;
             return;
         }
-        cut.fields_left -= FIELDS_PER_TICK;
+        if cut.fields_left > 0.0 {
+            cut.fields_left -= FIELDS_PER_TICK;
+        } else {
+            cut.extra -= FIELDS_PER_TICK;
+        }
         let moving = cut.node.is_some_and(|n| mechanics.as_ref().is_some_and(|m| m.node_moving(n)));
-        if cut.fields_left > 0.0 || moving {
+        if cut.fields_left > 0.0 || cut.extra > 0.0 || moving {
             return;
         }
         // Back to play, gliding from the cut's view.
@@ -438,6 +468,7 @@ fn tick(
     let (d1, d2) = (glide(&mut intro.eye, eye), glide(&mut intro.target, target));
     if d1 < INTRO_DONE && d2 < INTRO_DONE {
         camera.intro = None;
+        camera.opening = false;
     }
 }
 

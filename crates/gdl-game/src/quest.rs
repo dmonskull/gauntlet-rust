@@ -24,7 +24,7 @@ pub struct QuestPlugin;
 
 impl Plugin for QuestPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<ShardLight>().add_systems(
             Update,
             (
                 enter_level.run_if(resource_exists_and_changed::<LevelPopulation>).before(crate::items::build_items),
@@ -123,12 +123,22 @@ pub fn boss_marks(realms_beaten: u32) -> u32 {
         .fold(0, |bits, (i, _)| bits | (1 << i))
 }
 
-fn show_tower_pieces(state: Option<Res<PlayerState>>, mut pieces: Query<(&TowerPiece, &mut Visibility)>) {
+/// Whether the light from the tower's window shines: set as the tower
+/// loads (all eight shards announced before) and when the wizard's scene
+/// brings it on (`tower_scenes.rs`).
+#[derive(Resource, Default)]
+pub struct ShardLight(pub bool);
+
+fn show_tower_pieces(
+    state: Option<Res<PlayerState>>,
+    light: Res<ShardLight>,
+    mut pieces: Query<(&TowerPiece, &mut Visibility)>,
+) {
     let Some(state) = state else { return };
     for (piece, mut v) in &mut pieces {
         let shown = match *piece {
             TowerPiece::ExitGlow { realm, level } => state.exit_open(realm, level),
-            TowerPiece::ShardLight => boss_marks(state.realms_beaten) & ALL_SHARDS == ALL_SHARDS,
+            TowerPiece::ShardLight => light.0,
         };
         v.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
     }
@@ -224,6 +234,13 @@ pub struct Quest {
     /// Per realm id, a bit for each level entered (the exit to level n + 1
     /// needs level n's).
     pub entered: [u8; 14],
+    /// The shards (bits of [`boss_marks`]) and runestones (a bit per
+    /// stone) the wizard has announced (the record's `+0x2220`/`+0x2222`):
+    /// the tower sets out only these as it loads.
+    #[serde(default)]
+    pub shards_announced: u32,
+    #[serde(default)]
+    pub runes_announced: u32,
 }
 
 impl Quest {

@@ -72,7 +72,6 @@ impl ShowMessage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextFile {
     /// `TEXT/SCROLL_E.ROM`: the tower's texts (the game's bank 0).
-    #[allow(dead_code, reason = "the tower wizard's announcements caption from it; not built yet")]
     Scroll,
     /// `TEXT/ENGLISH.ROM`: the bosses' speeches (the default bank).
     English,
@@ -81,12 +80,15 @@ pub enum TextFile {
 /// Asks for a caption: page `index` of a group (every page in turn when
 /// none), typed out centred at line `y` of the 384-line screen — 16 in the
 /// top bar for a boss's speech, 312 in the bottom one for the tower's.
+/// Each page is held a second once typed and then goes; with `stay`, the
+/// last stays until [`Captions::clear`].
 #[derive(Message, Clone, Debug)]
 pub struct ShowCaption {
     pub file: TextFile,
     pub group: String,
     pub index: Option<usize>,
     pub y: f32,
+    pub stay: bool,
 }
 
 /// Fields a page stays up before B can put it away.
@@ -148,11 +150,24 @@ impl MessageBox {
 }
 
 #[derive(Resource, Default)]
-struct Captions {
+pub struct Captions {
     queue: VecDeque<ShowCaption>,
     up: Option<Caption>,
     english: Option<TextRom>,
     scroll: Option<TextRom>,
+}
+
+impl Captions {
+    /// Whether a caption is up with its last page typed.
+    pub fn done(&self) -> bool {
+        self.up.as_ref().is_some_and(|c| c.done)
+    }
+
+    /// Takes the caption down (and any queued).
+    pub fn clear(&mut self) {
+        self.queue.clear();
+        self.up = None;
+    }
 }
 
 /// A caption being typed: its pages, the one up, ticks since it began and
@@ -164,6 +179,9 @@ struct Caption {
     page: usize,
     ticks: f32,
     held: f32,
+    stay: bool,
+    /// Its last page is typed (a staying caption then stays).
+    done: bool,
 }
 
 fn load_text(mut boxes: ResMut<MessageBox>, mut captions: ResMut<Captions>, mut game: ResMut<LoadedGame>) {
@@ -366,6 +384,11 @@ fn run_captions(
         c.ticks += fields / 2.0;
         let page = &c.pages[c.page];
         if typed(page, c.ticks).1 {
+            let last = c.page + 1 == c.pages.len();
+            c.done |= last;
+            if last && c.stay {
+                return;
+            }
             c.held += fields;
             if c.held >= CAPTION_HOLD {
                 c.page += 1;
@@ -395,7 +418,8 @@ fn run_captions(
             continue;
         }
         info!("caption: {} {}", r.group, pages.join(" ").replace(['\n', '\r', '\t'], " "));
-        captions.up = Some(Caption { y: r.y, scale: g.scale[0] * CAPTION_SCALE, pages, page: 0, ticks: 0.0, held: 0.0 });
+        let scale = g.scale[0] * CAPTION_SCALE;
+        captions.up = Some(Caption { y: r.y, scale, pages, page: 0, ticks: 0.0, held: 0.0, stay: r.stay, done: false });
         break;
     }
 }

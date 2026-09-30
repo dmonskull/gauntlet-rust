@@ -483,7 +483,7 @@ fn tick(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
-    (free_look, boxes): (Res<FreeLook>, Res<crate::message_box::MessageBox>),
+    (free_look, boxes, scene): (Res<FreeLook>, Res<crate::message_box::MessageBox>, Res<crate::tower_scenes::Scene>),
     play_camera: Option<Res<PlayCamera>>,
     ground: Option<Res<LevelGround>>,
     mut controls: ResMut<Controls>,
@@ -517,8 +517,9 @@ fn tick(
     let cut = play_camera.as_ref().is_some_and(|c| c.in_cut());
     controls.ticks += 1;
     // The pads aren't read during a camera cut (the game blocks them from
-    // its start to its end) or while the message box has them.
-    let deaf = free_look.0 || cut || boxes.holds_input();
+    // its start to its end), while the message box has them, or while the
+    // tower's wizard announces something.
+    let deaf = free_look.0 || cut || boxes.holds_input() || scene.holds_input();
     let raw = if deaf { Vec2::ZERO } else { read_stick(&keys, &pads) };
     let held = if deaf { 0 } else { read_buttons(&keys, &pads, &controls) };
     let buttons = Buttons::from_held(held, controls.held);

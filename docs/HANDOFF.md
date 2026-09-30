@@ -55,6 +55,14 @@ What plays (details in [INDEX.md](INDEX.md)):
     speeches are typed captions in the cut's top bar at the game's speed
     ([frontend.md](frontend.md) "Message box", "Captions"). The pads
     aren't read during camera cuts, as in the game.
+  - The tower wizard's scenes (`tower_scenes.rs`): the first shard or
+    stone won since he last spoke is announced — the glowing `WIZARD` at
+    the lookout nearest the heroes under a cut, his words typed in the
+    bottom bar with his voice, then the piece's effect in full at its
+    place under a cut, and the follow-ups (more shards, all eight with
+    the window's light coming on, all twelve stones, the thirteenth).
+    Only announced pieces are set out at load (saved with the character)
+    ([items.md](items.md) "The tower wizard's scenes").
   - The tower sets out what the heroes have won as it loads (`tower.rs`):
     each shard's pane in the window over the door (a starfield until
     then), each runestone in its slot on the rune place, the thirteenth
@@ -158,9 +166,10 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on the message box, captions, the tower's
-welcome and input blocked in cuts (the commit after `4565179`) passed all
-67 real levels (the tower's check has the welcome box up).
+The all-levels smoke test on the tower wizard's scenes (the commit after
+`6ca8c15`) passed all 67 real levels; so did `6ca8c15` (the message box,
+captions, the welcome, input blocked in cuts; the tower's check has the
+welcome box up).
 
 Before that, the all-levels smoke test on the texture-modifier nodes, flipbook runs and
 the tower's shards, runestones and gates at load (`2faf43c`) passed all
@@ -291,15 +300,12 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
-0. The tower's wizard scenes: the `WIZARD` model appearing at a lookout to
-   announce new shards and runestones, playing the new one's effect from
-   its start (dust, streak, fade-in) at `L1WINDOWFRAME` / `L1RUNEPLACE`
-   with a camera cut, his speeches, and his other idle actions (WELCOME,
-   GOAWAY…) — decoded in [items.md](items.md) "The tower's wizard". The
-   shards and runestones already won are set out as the tower loads
-   (done; kind-3 nodes and fades run). (The tower start's camera frames
-   the wizard whole as in the user's screenshot — [camera.md](camera.md);
-   the HUD's four panels are done.)
+0. The tower's scenes, what's left: the heroes' rank announcements
+   (`FUN_800a3d78`: every 10 levels, a composed caption, voice and
+   effects, before the wizard's), the exits' reveals (made clear, then
+   faded in), the pieces' sparkles — [items.md](items.md) "The tower
+   wizard's scenes". Done: the welcome, the announcements, the pieces set
+   out, the gates at load.
    (The smoke test, `smoke.sh`: every level folder plus DEMO1,
    `GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400`, 120 s timeout,
    stop at the first panic; resume from the failing level.) Next: the
