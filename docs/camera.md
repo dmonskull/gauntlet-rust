@@ -102,7 +102,15 @@ it (`FUN_8001be98(node, &point.pos, &point.rot, point byte, 0x1E, 0)`):
 
 - `r13-0x774c` = 2 (a cut is on). While it is, the hero's damage routine
   refuses every blow (`FUN_80078560` checks it first) and triggers keep
-  their touches.
+  their touches; the pads are cleared and not read (`FUN_80032824` sets
+  `r13-0x7500`, which the input read `FUN_80032b94` honours) until the cut
+  ends (`FUN_80032788`).
+- Its arguments (`FUN_8001be98(node, pos, rot, hold, delay, extra)`): the
+  hold is 6 × the given byte, 40 fields for 0, or for ever (1,000,000)
+  when negative, until `FUN_8001be80` ends it; `delay` fields pass before
+  the view changes; after the hold, `extra` fields more (`r13-0x7740`,
+  which the tower's scenes watch). The tower's scenes cut with their own
+  holds and no delay.
 - `r13-0x7748` = 30 fields: the delay before the view changes.
 - `r13-0x7744` = 6 × the point's byte, or 40 fields when it's 0: how long
   the view holds (counted down by fields in `FUN_8001bc14`-ish, the cut
@@ -117,10 +125,21 @@ it (`FUN_8001be98(node, &point.pos, &point.rot, point byte, 0x1E, 0)`):
 
 In this rewrite (`play_camera.rs`, `StartCut` sent by `mechanics.rs`): the
 same delay, time, hold while moving and bars; the hero takes no damage
-meanwhile; the way back glides like the level start (the game's own
+and his pads aren't read meanwhile (they were until now); the way back glides like the level start (the game's own
 return isn't traced). On levelA1 `GDL_WARP="-33.8,0,26.6"` stands the
 hero on the switch of `A1ELEV666`, which cuts to the elevator rising out
 of the water.
+
+### Scene camera points
+
+In the tower (realm 13) the locator loader gives some kind-9 points to the
+tower's scenes instead of triggers (`FUN_80066c7c`, by index): `0xC6` the
+welcome's (`r13-0x7214`), `0xCA` the window (`r13-0x71f0`, shards),
+`0xCC` the E realm's portal (`r13-0x71ec`), `0xC9` the rune place,
+`0xCB` the thirteenth rune, `0xCD` H's fourth level (`0x802587a0`…a8);
+`0xF0`–`0xFD`, `0xDC`–`0xE9` and `0xAA`–`0xB7` the wizard's lookouts, one
+table each for the heroes' ranks, shards and runes (`0x802586F8` + kind ×
+`0x38`, `FUN_80066aec`, falling back to a lower kind's).
 
 ## Shakes
 

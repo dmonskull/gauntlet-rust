@@ -16,7 +16,7 @@
 use bevy::prelude::*;
 use gdl_formats::population::REALM_LETTERS;
 
-use crate::hints::ShowMessage;
+use crate::message_box::ShowMessage;
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
 

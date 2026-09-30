@@ -32,6 +32,7 @@ mod level;
 mod level_material;
 mod locomotion;
 mod mechanics;
+mod message_box;
 mod model_mesh;
 mod options;
 mod monsters;
@@ -178,6 +179,7 @@ fn main() {
                 frontend::FrontendPlugin { skip: skip_menus },
                 game_hud::GameHudPlugin,
                 tower::TowerPlugin,
+                message_box::MessageBoxPlugin,
             ));
     }
     app.run();

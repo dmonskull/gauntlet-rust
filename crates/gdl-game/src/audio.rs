@@ -29,16 +29,26 @@ impl Plugin for GameAudioPlugin {
         app.add_audio_source::<MusicTrack>()
             .add_audio_source::<SoundEffect>()
             .add_message::<PlaySound>()
+            .add_message::<StopSound>()
             .add_message::<LoopSound>()
             .init_resource::<AudioStatus>()
             .add_systems(Startup, load_audio_tables)
-            .add_systems(Update, (level_music, audio_keys, play_sounds, loop_sounds).chain());
+            .add_systems(Update, (level_music, audio_keys, play_sounds, stop_sounds, loop_sounds).chain());
     }
 }
 
 /// Plays a sound effect by its catalog name (`S_WARN`).
 #[derive(Message)]
 pub struct PlaySound(pub String);
+
+/// Stops every sound effect of that name still playing (a message box
+/// cutting its voice line short, `docs/frontend.md`).
+#[derive(Message)]
+pub struct StopSound(pub String);
+
+/// A playing sound effect's name.
+#[derive(Component)]
+struct EffectName(String);
 
 /// Starts (`Some`) or stops (`None`) the looping sound on channel `key`:
 /// one loop per channel, left alone when asked for the one it's playing
@@ -219,6 +229,7 @@ fn play_sounds(
         match built {
             Ok(effect) => {
                 commands.spawn((
+                    EffectName(name.clone()),
                     SoundKind::Effect,
                     AudioPlayer(effects.add(effect)),
                     PlaybackSettings { volume: options.category(SoundKind::Effect), ..PlaybackSettings::DESPAWN },
@@ -229,6 +240,14 @@ fn play_sounds(
                 warn!("sound {name}: {e}");
                 status.last_sound = format!("{name} failed: {e}");
             }
+        }
+    }
+}
+
+fn stop_sounds(mut commands: Commands, mut requests: MessageReader<StopSound>, playing: Query<(Entity, &EffectName)>) {
+    for StopSound(name) in requests.read() {
+        for (e, _) in playing.iter().filter(|(_, n)| &n.0 == name) {
+            commands.entity(e).try_despawn();
         }
     }
 }

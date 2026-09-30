@@ -44,9 +44,14 @@ impl Plugin for Screen2dPlugin {
                 d.quads.clear();
                 d.texts.clear();
             })
-            .add_systems(PostUpdate, flush.before(UiSystems::Prepare));
+            .add_systems(PostUpdate, flush.in_set(Flush2d).before(UiSystems::Prepare));
     }
 }
+
+/// Where this frame's 2D draw list goes on screen: anything drawn in
+/// `PostUpdate` runs before it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Flush2d;
 
 /// A decoded texture for the 2D layer.
 #[derive(Clone, Debug)]

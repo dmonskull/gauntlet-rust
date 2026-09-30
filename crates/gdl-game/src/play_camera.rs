@@ -93,12 +93,25 @@ pub struct Shake {
 /// Radians the shake turns per field.
 const SHAKE_TURN: f32 = 0.663_225_1;
 
-/// Shows a trigger's camera point (`docs/camera.md` "Trigger cuts"): the
-/// locator index into the level's locators, and the node the trigger moved.
+/// Shows a camera point (`docs/camera.md` "Trigger cuts"): the locator
+/// index into the level's locators, and the node the trigger moved. A
+/// trigger's cut waits 30 fields and holds by the point's byte; the
+/// game's scenes give their own hold and delay (`docs/camera.md`).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct StartCut {
     pub locator: usize,
     pub node: Option<usize>,
+    /// Fields it holds (none: 6 × the point's byte, or 40).
+    pub hold: Option<f32>,
+    /// Fields before the view changes.
+    pub delay: f32,
+}
+
+impl StartCut {
+    /// A trigger's cut to its camera point.
+    pub fn trigger(locator: usize, node: Option<usize>) -> Self {
+        Self { locator, node, hold: None, delay: CUT_DELAY }
+    }
 }
 
 /// A camera cut: after 30 fields the view jumps to the camera point for its
@@ -179,6 +192,12 @@ impl PlayCamera {
     /// Whether a camera cut is showing (the hero can't be hurt then).
     pub fn in_cut(&self) -> bool {
         self.cut.is_some()
+    }
+
+    /// Whether plain play has the camera: no cut, no opening shot or
+    /// glide back.
+    pub fn settled(&self) -> bool {
+        self.cut.is_none() && self.intro.is_none()
     }
 
 }
@@ -382,8 +401,8 @@ fn tick(
     for cut in cuts.read() {
         let Some(l) = population.as_ref().and_then(|p| p.population.locators.get(cut.locator)) else { continue };
         let (eye, target) = locator_view(l, player.mover.position);
-        let fields = if l.param == 0 { CUT_FIELDS } else { CUT_FIELDS_PER_STEP * f32::from(l.param) };
-        camera.cut = Some(Cut { delay: CUT_DELAY, eye, target, fields_left: fields, node: cut.node });
+        let fields = cut.hold.unwrap_or(if l.param == 0 { CUT_FIELDS } else { CUT_FIELDS_PER_STEP * f32::from(l.param) });
+        camera.cut = Some(Cut { delay: cut.delay, eye, target, fields_left: fields, node: cut.node });
     }
     if let Some(cut) = camera.cut.as_mut() {
         if cut.delay > 0.0 {

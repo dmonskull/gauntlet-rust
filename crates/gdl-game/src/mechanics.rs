@@ -36,7 +36,7 @@ use crate::level_material::LevelMaterial;
 use crate::monsters::MonsterLevel;
 use crate::play_camera::{Shake, StartCut};
 use crate::player::{Player, PlayerTick};
-use crate::hints::ShowMessage;
+use crate::message_box::ShowMessage;
 use crate::player_state::PlayerState;
 use crate::population::LevelPopulation;
 use crate::quest;
@@ -710,7 +710,7 @@ fn tick(
             if m != 0
                 && let Some(locator) = t.cut
             {
-                cuts.write(StartCut { locator, node: target });
+                cuts.write(StartCut::trigger(locator, target));
             }
             if flags & WAKES != 0 {
                 let placement = t.placement;

@@ -45,6 +45,16 @@ What plays (details in [INDEX.md](INDEX.md)):
   - The light from the tower's window (`L1XPLIGHTRAY01`) shone in every
     game; the game shows it only once all eight shards are in
     ([items.md](items.md) "The tower's shards and runes").
+  - Messages show in the game's message box (`message_box.rs`): the
+    `Scroll_A` parchment with the page in dark brown and "Press [B]
+    Button when done.", play frozen until B puts each page away — scrolls
+    (which never showed their text before: their page is the placement's
+    `+0x30`), the tower's gate notices and unlocks, and a new hero's
+    five-page welcome in the tower, after which the wizard points the way
+    under a camera cut; `GARMMESSAGE` after `levelF2`. The bosses'
+    speeches are typed captions in the cut's top bar at the game's speed
+    ([frontend.md](frontend.md) "Message box", "Captions"). The pads
+    aren't read during camera cuts, as in the game.
   - The tower sets out what the heroes have won as it loads (`tower.rs`):
     each shard's pane in the window over the door (a starfield until
     then), each runestone in its slot on the rune place, the thirteenth
@@ -133,7 +143,8 @@ Test aids:
 - `GDL_FPS=1`: frame rate, plus a line for every frame over 20 ms.
 - `GDL_WAKE_STATUES`, `GDL_CRITTER_HP`: critter testing.
 - `GDL_MENU`, `GDL_BUTTONS`, `GDL_STICK`, `GDL_SHOT_AT` + `GDL_SCREENSHOT`:
-  scripted input and screenshots. `GDL_SHOT_CLOCK=ticks` counts shots in
+  scripted input and screenshots (`GDL_MENU="b@300,b@340"` turns message
+  box pages). `GDL_SHOT_CLOCK=ticks` counts shots in
   game ticks, so a burst lands on the same moment of play every run (frame
   counts drift with shader warm-up).
 - `GDL_BEATEN=<realm bits>` and `GDL_RUNES=<stone bits>` (decimal or
@@ -147,7 +158,11 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-The all-levels smoke test on the texture-modifier nodes, flipbook runs and
+The all-levels smoke test on the message box, captions, the tower's
+welcome and input blocked in cuts (the commit after `4565179`) passed all
+67 real levels (the tower's check has the welcome box up).
+
+Before that, the all-levels smoke test on the texture-modifier nodes, flipbook runs and
 the tower's shards, runestones and gates at load (`2faf43c`) passed all
 67 real levels; so did `c8fb3f9` (the turbo meter,
 the boss camera's stick) before it.

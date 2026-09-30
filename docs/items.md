@@ -352,6 +352,26 @@ shards and runestones (`FUN_800a33c4`: `NewShards`, `MoreShards`,
 `FUN_800a39c4` sets the shard in `L1WINDOWFRAME` or the stone in
 `L1RUNEPLACE` with a camera cut) aren't done yet. The runtime: `tower.rs`.
 
+## The tower's welcome
+
+In the tower, once play is running after the arrival's opening shot
+(`FUN_8007692c`: `r13-0x7000` armed at each level's load, a field counter
+`r13-0x6fe8` held at 0 while `r13-0x733c`/`r13-0x7340` are set):
+
+- a new game's first tower visit (`r13-0x6e98`, set by `FUN_800a32c0` on
+  the session's first tower load when no hero in the game has any of its
+  16 records at player `+0xA90` above 0) shows `WELCOMEMESSAGE`, all five
+  pages, in the message box; then the idle wizard plays action 6
+  (GESTRIGHT, `r13-0x6e68` = 6 with the restart flag `r13-0x6ea4`) and the
+  camera cuts to the tower's camera point `0xC6` (`r13-0x7214`,
+  `FUN_80066ab0`: hold 50 × 6 fields, no delay);
+- back from `levelF2` (the last level `r13-0x724c`/`r13-0x7250` = realm 6,
+  level 1) it shows `GARMMESSAGE`.
+
+Here (`tower.rs`): both, with "new" read as the hero having entered no
+realm's level (stand-in for the `+0xA90` records) and "play running" as
+the camera settled (no opening shot, glide or cut).
+
 ## The tower's shards and runes
 
 Beating a realm's boss (`FUN_8001b854` → `FUN_800a1d30`) sets, for every
@@ -441,9 +461,11 @@ the session copies are the player's `+0x1EC8…`):
   (1–11: sword, ice axe, lamp, bellows, soul, …, book, parchment, sun lamp,
   javelin) is the realm id of the boss it's for; the ice axe (2) lies in
   levelA2 and is for the mountain's dragon.
-- **14 scroll**: the item's amount is the placement's `+0x30`; shows
+- **14 scroll**: the item's amount is the placement's `+0x30`
+  (`FUN_800646e4`, unclamped; keys take theirs too, at least 1); shows
   message amount − 1 of the level's `SCROLLS<level>` group
-  (`FUN_8006d7f4`).
+  (`FUN_8006d7f4`). (The rewrite had given scrolls their type's amount,
+  0, so none showed its text.)
 
 In the tower, gems aren't placed at all once the orange counter is open
 (`FUN_800646e4`).
@@ -523,10 +545,10 @@ first level is always open, behind its gate). A shut exit's model becomes
 node — its glowing trail — is hidden (instance flag `0x2`). Loading a level
 (`FUN_800a1560`) sets that level's bit for each player.
 
-**In this rewrite**: all of the above for one player. Stand-ins and gaps:
-the messages draw as plain centred text for 5 s (the game's message box
-isn't built); the pickup notices and sparkles aren't shown; progress isn't
-saved between runs (there's no save yet); the level-record seen bits
+**In this rewrite**: all of the above for one player; the messages show
+in the game's message box (`docs/frontend.md`, "Message box"). Stand-ins
+and gaps: the pickup notices and sparkles aren't shown; the level-record
+seen bits
 (`+0xDDC…`) aren't kept. The gem/gargoyle count shows above the panel
 (`game_hud.rs`: `SM_CRYSTAL_<colour>` or `SM_FANGS`/`SM_FEATHERS`/
 `SM_CLAWS` at panel x + 28, y 288, 16 × 16; "n/need" in font 1 at scale
