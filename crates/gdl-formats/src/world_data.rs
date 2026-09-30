@@ -36,6 +36,7 @@ const LEVEL_LEN: usize = 0x10C;
 const AUDIO_LEN: usize = 0x3C;
 const CAMERA_LEN: usize = 0x6C;
 const ENEMY_LEN: usize = 0x18;
+const BOSS_CAMERA_LEN: usize = 0x54;
 const MAX_TRACKS: usize = 8;
 
 #[derive(Debug, Error)]
@@ -64,9 +65,64 @@ pub struct WorldLevel {
     pub camera: usize,
     pub light: LevelLight,
     pub tuning: LevelTuning,
+    /// The boss camera, on a boss level.
+    pub boss_camera: Option<BossCamera>,
     /// `+0x4C`: up to six indices into [`WorldData::enemies`] — the enemy
     /// types this level loads.
     pub enemies: Vec<usize>,
+}
+
+/// A boss level's camera record (`BCAM`, `0x54` bytes, the level's `LEVL
+/// +0x8C` index; `docs/critters.md`, "Boss camera").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BossCamera {
+    /// `+0x00`: 1 look at the boss where it is (else where it was made), 2
+    /// and 4 yaw rules, 8 and 0x10 count the boss among the players, 0x20
+    /// look at the players' centre instead of the boss.
+    pub flags: u32,
+    /// `+0x04`: how far (radians) the camera stays off the boss's facing
+    /// when the players are outside its cone.
+    pub yaw_offset: f32,
+    /// `+0x0C`, `+0x10`: the nearest the camera comes, the boss awake and
+    /// before it wakes.
+    pub near: f32,
+    pub near_asleep: f32,
+    /// `+0x14`, `+0x18`: the far distances, awake and before.
+    pub far: f32,
+    pub far_asleep: f32,
+    /// `+0x1C`, `+0x20`: how far it looks down at the near and far
+    /// distance (radians).
+    pub pitch_near: f32,
+    pub pitch_far: f32,
+    /// `+0x24`, `+0x30`: where it looks, off the boss, at the near and far
+    /// distance (`+0x30` is `+0x24` when its y is 999998 or more).
+    pub look_near: [f32; 3],
+    pub look_far: [f32; 3],
+    /// `+0x3C`, `+0x48`: off the key while it shows, off the wizard while
+    /// he does.
+    pub look_key: [f32; 3],
+    pub look_wizard: [f32; 3],
+}
+
+impl BossCamera {
+    fn parse(b: &[u8]) -> Self {
+        let far = vec3(b, 0x30);
+        let look_near = vec3(b, 0x24);
+        Self {
+            flags: le_u32(b, 0x00),
+            yaw_offset: le_f32(b, 0x04),
+            near: le_f32(b, 0x0C),
+            near_asleep: le_f32(b, 0x10),
+            far: le_f32(b, 0x14),
+            far_asleep: le_f32(b, 0x18),
+            pitch_near: le_f32(b, 0x1C),
+            pitch_far: le_f32(b, 0x20),
+            look_near,
+            look_far: if far[1] >= 999_998.0 { look_near } else { far },
+            look_key: vec3(b, 0x3C),
+            look_wizard: vec3(b, 0x48),
+        }
+    }
 }
 
 /// The level's light for anything not prelit: a grey ambient level and one
@@ -292,6 +348,12 @@ impl WorldData {
             None => Vec::new(),
         };
 
+        // Only realms with a boss level have the chunk.
+        let boss_cameras: Vec<BossCamera> = match chunks.get("BCAM") {
+            Some(_) => records("BCAM", BOSS_CAMERA_LEN)?.map(BossCamera::parse).collect(),
+            None => Vec::new(),
+        };
+
         let levels = records("LEVL", LEVEL_LEN)?
             .map(|l| {
                 let name = cstr(&l[0x08..0x18]);
@@ -315,7 +377,8 @@ impl WorldData {
                 };
                 let listed = (0..6).map(|i| le_u16(l, 0x4C + i * 2) as i16);
                 let enemies = listed.filter_map(|i| usize::try_from(i).ok()).filter(|&i| i < enemies.len()).collect();
-                Ok(WorldLevel { name, audio: audio_index, camera, light, tuning: LevelTuning::parse(l), enemies })
+                let boss_camera = usize::try_from(le_u16(l, 0x8C) as i16).ok().and_then(|i| boss_cameras.get(i).copied());
+                Ok(WorldLevel { name, audio: audio_index, camera, light, tuning: LevelTuning::parse(l), enemies, boss_camera })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -366,6 +429,32 @@ mod tests {
         assert_eq!(audio("castle6", 1, &[2]).stream_path(0, 1), "STREAMS/castle6_2.ads");
         assert_eq!(audio("desert2", 3, &[1, 2, 1]).stream_path(1, 0), "STREAMS/desert2b_1.ads");
         assert_eq!(audio("forest5", 2, &[1, 2, 0]).part_count(2), 1);
+    }
+
+    /// Every boss level has a boss camera; B6's is the one decoded.
+    #[test]
+    fn boss_levels_have_their_cameras() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT")
+            .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let Ok(dir) = std::fs::read_dir(std::path::Path::new(&root).join("WDATA")) else {
+            eprintln!("skipping: no WDATA folder");
+            return;
+        };
+        let mut levels = Vec::new();
+        for path in dir.flatten().map(|e| e.path()) {
+            let Ok(w) = WorldData::parse(&std::fs::read(&path).unwrap()) else { continue };
+            levels.extend(w.levels);
+        }
+        for boss in ["A5", "B6", "C5", "D5", "E2", "F2", "G5", "H4", "I5", "J5", "K5"] {
+            let level = levels.iter().find(|l| l.name == boss).unwrap_or_else(|| panic!("{boss} missing"));
+            assert!(level.boss_camera.is_some(), "{boss} has no boss camera");
+        }
+        let b6 = levels.iter().find(|l| l.name == "B6").unwrap().boss_camera.unwrap();
+        assert_eq!(b6.flags, 1);
+        assert!((b6.yaw_offset.to_degrees() - 18.0).abs() < 0.01, "{b6:?}");
+        assert_eq!((b6.near, b6.near_asleep, b6.far, b6.far_asleep), (40.0, 25.0, 85.0, 30.0));
+        assert!((b6.pitch_near.to_degrees() - 15.0).abs() < 0.01 && (b6.pitch_far.to_degrees() - 9.0).abs() < 0.01);
+        assert_eq!((b6.look_near, b6.look_far), ([0.0, -5.0, 10.0], [0.0, -20.0, 0.0]));
     }
 
     #[test]
