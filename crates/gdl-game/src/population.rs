@@ -146,11 +146,12 @@ pub struct LevelPopulation {
     pub entry: i16,
 }
 
-/// Where the heroes arrive in the tower: its start `i` is for coming back
-/// from realm `TOWER_ARRIVALS[i]` — the tower itself (a new game) at the
-/// centre, then G, B, A, K, D, C, I, J, E, F, H beside their gates. The
-/// realm is the last one played outside the tower.
-const TOWER_ARRIVALS: [u32; 12] = [13, 7, 2, 1, 11, 4, 3, 9, 10, 5, 6, 8];
+/// The tower's order of the realms: its start `i` is for arriving from
+/// realm `TOWER_ORDER[i]` — the tower itself (a new game) at the centre,
+/// then G, B, A, K, D, C, I, J, E, F, H beside their gates (the realm is
+/// the last one played outside the tower); a realm's boss beaten marks
+/// the bit of its place (`quest::boss_marks`).
+pub const TOWER_ORDER: [u32; 12] = [13, 7, 2, 1, 11, 4, 3, 9, 10, 5, 6, 8];
 const TOWER_REALM: u32 = 13;
 
 /// The start entry for arriving in `level` after last playing in realm
@@ -160,7 +161,7 @@ pub fn start_entry(level: &str, last_realm: Option<u32>) -> i16 {
         return 0;
     }
     let realm = last_realm.unwrap_or(TOWER_REALM);
-    TOWER_ARRIVALS.iter().position(|&r| r == realm).map_or(0, |i| i as i16)
+    TOWER_ORDER.iter().position(|&r| r == realm).map_or(0, |i| i as i16)
 }
 
 impl LevelPopulation {

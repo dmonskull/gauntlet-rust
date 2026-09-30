@@ -42,6 +42,9 @@ What plays (details in [INDEX.md](INDEX.md)):
     game's locator rotation (the C5 djinn faced away from the heroes)
     ([level-population.md](level-population.md), [items.md](items.md)
     "The tower's wizard").
+  - The light from the tower's window (`L1XPLIGHTRAY01`) shone in every
+    game; the game shows it only once all eight shards are in
+    ([items.md](items.md) "The tower's shards and runes").
   - Boss levels' safe rocks were missing (no `SAFEROCK` model): they show
     their stage, `SAFEROCK<placement count>` (A5 1, B6 and K5 3), block
     only while standing, and I5 starts without them because the yeti

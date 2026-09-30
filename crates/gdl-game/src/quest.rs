@@ -7,7 +7,8 @@
 //! progress does; there's one hero here.
 //!
 //! At run time: entering a level marks it; the tower's exit glows show
-//! only for open exits (shut exits themselves are `items.rs`'); in the
+//! only for open exits (shut exits themselves are `items.rs`'), and the
+//! light over its window only once all eight shards are in; in the
 //! tower, counters that have reached what they need are announced ("You
 //! now have enough Crystals…") and opened, at most one round every
 //! [`ANNOUNCE_SECONDS`]. The gates themselves are `mechanics.rs`'.
@@ -27,7 +28,7 @@ impl Plugin for QuestPlugin {
             Update,
             (
                 enter_level.run_if(resource_exists_and_changed::<LevelPopulation>).before(crate::items::build_items),
-                show_exit_glows,
+                show_tower_pieces,
                 announce_unlocks,
             ),
         );
@@ -64,29 +65,54 @@ fn enter_level(population: Res<LevelPopulation>, state: Option<ResMut<PlayerStat
     state.quest.enter_level(realm, level);
 }
 
-/// A tower exit's glow (`L1NSNC<realm letter><n>_ACTIVE`), drawn only
-/// while its exit is open.
+/// A piece of the tower drawn only when the quest calls for it: an exit's
+/// glow (`L1NSNC<realm letter><n>_ACTIVE`) while its exit is open, and the
+/// light over the window (`L1XPLIGHTRAY01`) once all eight shards are in
+/// (`docs/items.md`, "The tower's shards and runes").
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ExitGlow {
-    pub realm: u32,
-    pub level: u32,
+pub enum TowerPiece {
+    ExitGlow { realm: u32, level: u32 },
+    ShardLight,
 }
 
-impl ExitGlow {
+/// The light the shards bring.
+const SHARD_LIGHT: &str = "L1XPLIGHTRAY01";
+
+impl TowerPiece {
     pub fn named(name: &str) -> Option<Self> {
+        if name == SHARD_LIGHT {
+            return Some(Self::ShardLight);
+        }
         let code = name.strip_prefix("L1NSNC")?.strip_suffix("_ACTIVE")?;
         let letter = code.chars().next()?;
         let n: u32 = code.get(1..)?.parse().ok()?;
         let realm = REALM_LETTERS.iter().find(|(l, _)| *l == letter)?.1;
-        Some(Self { realm, level: n.checked_sub(1)? })
+        Some(Self::ExitGlow { realm, level: n.checked_sub(1)? })
     }
 }
 
-fn show_exit_glows(state: Option<Res<PlayerState>>, mut glows: Query<(&ExitGlow, &mut Visibility)>) {
+/// Bits 1–8 of [`boss_marks`]: the eight shards.
+pub const ALL_SHARDS: u32 = 0x1FE;
+
+/// The marks beating the realms' bosses leaves: each sets the bit of its
+/// realm's place in the tower's order (G, B, A, K, D, C, I, J — the eight
+/// shards — then E, F, H; `population::TOWER_ORDER`).
+pub fn boss_marks(realms_beaten: u32) -> u32 {
+    crate::population::TOWER_ORDER
+        .iter()
+        .enumerate()
+        .filter(|&(_, &realm)| realms_beaten & (1 << realm) != 0)
+        .fold(0, |bits, (i, _)| bits | (1 << i))
+}
+
+fn show_tower_pieces(state: Option<Res<PlayerState>>, mut pieces: Query<(&TowerPiece, &mut Visibility)>) {
     let Some(state) = state else { return };
-    for (g, mut v) in &mut glows {
-        let want = if state.exit_open(g.realm, g.level) { Visibility::Inherited } else { Visibility::Hidden };
-        v.set_if_neq(want);
+    for (piece, mut v) in &mut pieces {
+        let shown = match *piece {
+            TowerPiece::ExitGlow { realm, level } => state.exit_open(realm, level),
+            TowerPiece::ShardLight => boss_marks(state.realms_beaten) & ALL_SHARDS == ALL_SHARDS,
+        };
+        v.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
     }
 }
 
@@ -282,6 +308,16 @@ mod tests {
     use super::*;
 
     const ALL_MAIN: u32 = (1 << 7) | (1 << 2) | (1 << 1) | (1 << 11) | (1 << 4) | (1 << 3) | (1 << 9) | (1 << 10);
+
+    #[test]
+    fn the_eight_main_bosses_give_the_shards() {
+        // G is the first shard, J the eighth; E, F and H mark bits 9–11.
+        assert_eq!(boss_marks(1 << 7), 1 << 1);
+        assert_eq!(boss_marks(1 << 10), 1 << 8);
+        assert_eq!(boss_marks(ALL_MAIN), ALL_SHARDS);
+        assert_eq!(boss_marks((1 << 5) | (1 << 6) | (1 << 8)) & ALL_SHARDS, 0);
+        assert_eq!(boss_marks(0), 0);
+    }
 
     #[test]
     fn orange_gems_open_the_town() {
