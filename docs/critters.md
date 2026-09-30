@@ -617,47 +617,169 @@ is:
 ## Death and victory
 
 - **Removal:** `0x8003e964` removes an instance and its parts, effects,
-  shadow and models. For a boss it also calls `0x8002c450` and
-  `0x8001b854`:
-  - each player plays victory (`0x800a1d30`);
-  - the boss key effect (`BOSSKEY2`) appears at the boss's position +
-    `TYPE +0xD0` (`0x8009eb78`);
-  - `r13-0x7784` = 1.
+  shadow and models.
 - **When removal happens:** bosses are removed when DEATH's hold ends;
   other classes when DEATH's animation ends.
+- **A boss's DEATH** (`0x800399f0`): once its animation has ended the boss
+  counts as dead (`r13-0x7784` = 1). It holds DEATH for `MOVE +0x8C`
+  (2 s for every boss), fading out over the last 0.5 s (`r2-0x7230`):
+  transparency 255 − 2 × 255 × the time left (`0x800ba9b0`). Then
+  `0x8003e964` removes it; for the root of a boss (`+0xADC` = 0) that
+  calls `0x8002c450` and `0x8001b854`, the victory:
+  - `0x80019918` starts the end sequence (`r13-0x7790` = 1,
+    `r13-0x705c` = 1) and `r13-0x7784` = 1;
+  - players in state 1 or 8 get the realm's bit in their record
+    (`0x800a3360(realm)` → `0x800a1d30`, `+0x1EC8`);
+  - for bosses below 0x2A (not the skornes or garm) the **boss key**: an
+    effect with the `BOSSKEY` model of the level's own item set
+    (`r13-0x7184`, `ITEMS/level<name>`, loaded when that folder has an
+    `objects.ngc`, `0x8006776c`) at the boss's spawn position (`+0x418`)
+    plus `TYPE +0xD0`, lifetime 0 (its animation's length), flags
+    0x80000040 and 0x880 (`0x8009418c` → `0x8009423c`). When its
+    animation ends it becomes `BOSSKEY2` for 30 s (`0x80093594`: effect
+    flag 0x4000, second type `+0xB8`, life `+0x6C` = `r2-0x7bb0`), then
+    goes. A sound plays at it (`0x8009eb78`: the realm's entry of
+    `0x80122f4c`);
+  - it calls `0x800b2bd4(…, 1)` on the HUD sprites at `0x8023ddc8` and
+    `0x8023dde0` (3 × 2 each).
+- **No pick-up.** The heroes' action 0x1C (PICK) needs `r13-0x7768` ≥ 0
+  as well as a dead boss (`0x80080d3c`), and the only store to
+  `r13-0x7768` in the DOL is −1 (`0x80057090`; no other store and no
+  address taken): dead code in retail. The key is only shown.
+- **The end sequence** (`0x80019044`, run by the level update while
+  `r13-0x7790` ≠ 0; its state is `r13-0x7790`):
+  1. a timer: now + 5 s (`r2-0x7d28`), or 10 s (`r2-0x7d30`) for the
+     first skorne 0x2A and garm 0x2C;
+  2. when it runs out:
+  3. the **wizard** appears: the `WIZARD` model (`r2-0x7d20`) of the same
+     item set, flags 0x881880, at (0, −12, 6) (`r2-0x7d18`…) for the
+     skornes 0x2A–0x2B, otherwise 3 above (`r2-0x7d08`) the players'
+     centre (`0x80019b10`: the mean of the point `0x8023e034` and the
+     live players' positions, the first player's height counted twice);
+     its transparency `r13-0x77a8` starts at 255;
+  4. the transparency drops 4 a frame to 0; then the wizard speaks
+     (`0x8009bf48(boss, 0)`) and his message shows page by page
+     (`0x80019e64`, typed out by the fields since the page began, a
+     finished page held 60 fields):
+     message 0x94 for the dragon, 0x93 chimera, 0x95 djinn, 0x96 drider,
+     0x98 P-boss, 0x97 yeti, 0x9A wraith, 0x99 lich, 0x9F first skorne,
+     0xA2 second skorne, 0xA3 garm;
+  5. half a second (`r2-0x7d00`) after the last page, speech n + 1, where
+     n compares the realm's mask (`0x8008bdbc`) with the players'
+     `+0xDD6` bits: 0 none, 1 some, 2 or 3 all (by `0x8008bd74`);
+  6. a second message: 0x9B + n (the first skorne 0xA0 or 0xA1, the
+     second skorne and garm none);
+  7. a second (`r2-0x7cf8`) after its last page, speech 5, 6 or 7 (by
+     the players' `+0xDD4` and `+0xDD6` bits) and
+  8. the countdown `r13-0x72ec` = 120 fields (`r13-0x7f98`), or 600
+     (`r13-0x7f9c`) when `0x8006299c` says so or the first skorne's
+     `r13-0x77b0` is set (from state 9 on it's cut back to 120 whenever
+     `0x8006299c` doesn't);
+  9. once the speech has finished (`0x8001538c`),
+  10. at 35 fields left (`r13-0x7fa0`) each live player gets an effect
+      (`0x80090a00`: the teleport out);
+  11. the countdown runs out (`0x80054244`): `r13-0x72f0` = 1, the
+      players' update reports the level done, and `0x80054d18` picks the
+      next level: with no exit taken, the players' `+0x830` or else
+      `r13-0x72b0` (0xD00, set when the worlds load, `0x8005a094`), then
+      the first level of that world flagged 1 (`0x80057e68`).
 - **Boss wake-up** (`0x800399f0`, state 0):
   - Without `TYPE` flag `0x80`, a 2 s timer starts (`r13-0x74b4`).
-  - When it runs out, the boss wakes (state 3) once the nearest target is
-    within `TYPE +0xEC` (always, if that's ≤ 0).
-  - Waking calls `0x8001b7f8`, which starts the boss camera
+  - With it (the chimera), the timer starts only when the floor under the
+    boss (`0x8000d4b8`) hits a node whose byte `+0x16`, or its parent's,
+    has 0x10; that also calls `0x8001b7f8(boss, 0)`.
+  - When it runs out, the boss wakes (state 3, parts too) once its
+    furthest target is within `TYPE +0xEC` (always, if that's ≤ 0).
+  - Waking calls `0x8001b7f8(boss, 1)`, which starts the boss camera
     (`r13-0x7788`, `0x8002c4f0`) and sets `r13-0x720c`/`-0x7210`.
-  - The same happens when a boss stands on floor flagged `0x10`.
 
-## Boss intro and camera (pointers, not traced)
+## The boss intro (`r13-0x725c`)
 
-The intro state `r13-0x725c`:
+A boss fight opens with an intro only when a hero brings the realm's
+legendary item.
 
-- `0x80057020` sets it to 1 at level start for the first player who
-  hasn't seen this boss (`0x800a1cb0`).
-- The critter code moves it 1 → 2 when START ends.
-- The level update (around `0x80056c00`) moves 2 → 3 after a delay:
-  `r2-0x6ae0`, or `r2-0x6b00` for bosses 0x23, 0x29 and 0x2A.
-- ROAR moves it 3 → 4.
-- The level update moves 4 → 5, stamping the time.
-- After another delay it goes to 6; PBOSS swaps its eyeball model
-  (`PBOSSEYEBALL`).
-- A dead boss sets 99.
+- **Start** (`0x80057020`, level start): for boss types 0–0x2A (not the
+  second skorne 0x2B or garm 0x2C), the first player in state 1, 3 or 5
+  whose character record has the realm's bit in `+0xDD8` (`0x800a1cb0`;
+  pickup 13 sets it, see `items.md`) gets `+0x834` = 1, and the state is
+  1 with its timer `r13-0x7260` = 0. Otherwise it stays 0: no intro.
+- **1 → 2:** the boss leaves START without a follow-up (on the switch,
+  `0x8003c614`), or START's animation ends (`0x800399f0`).
+- **2** (the level update `0x80056748`, which runs before the critters):
+  the first update sets the timer to now + 1 s (`r2-0x6b00`) for the
+  chimera 0x23, the lich 0x29 and the first skorne 0x2A, or now + 3 s
+  (`r2-0x6ae0`) for the rest; once it runs out → 3, timer 0.
+- **3:** the boss's forced move is ROAR. Leaving ROAR, or its animation
+  ending, → 4.
+- **4 → 5** on the next level update, which notes the time.
+- **5 → 6** after 29 s (`r2-0x6a98`) for the djinn 0x24, the P-boss 0x26
+  (its eye texture goes back to `PBOSSEYEBALL` and its stun `+0xAC6`
+  ends), the yeti 0x27, the wraith 0x28 and the first skorne 0x2A (the
+  last three zero `+0xAC8`). The dragon 0x22, chimera 0x23, drider 0x25
+  and lich 0x29 stay in 5. Going to 6 stops the intro effect
+  `r13-0x7264` (the legendary weapon's) and plays the realm's sounds 3
+  and 4 (`0x8009c214`).
+- **99** once the boss is dead (`r13-0x7784`), every update.
 
-The forced-move code reads it (READY during 1–2, ROAR at 3, READY at 3–5
-for boss 0x23).
+**The boss's moves** (`0x8003bd0c`, when the current move has no
+follow-up): READY (nearest to ready) in 1–2; ROAR (nearest) in 3 unless
+it's playing ROAR; READY (only when ready) for the chimera in 3–5;
+otherwise a boss's READY after START. The rest of the choice runs as
+usual, so **every boss but the chimera fights from state 4** — the
+chimera idles until 6. The chimera's heads (`0x8003bb40`) take READY in
+3–5 and follow-ups otherwise; in 2–3 they always mirror the body's
+animation (`0x800399f0`).
 
-The boss camera reads `WDATA` `BCAM`:
+**Missiles** (where effects hit critters, `0x80094418`): a missile
+hitting a critter in 2–3 —
 
-- `"BossCamStartCalc called with no boss"` is at decompile line ≈ 11135.
-- The `"BCAM Y %.0f P %.0f D %.2f…"` and `"BCAM DY %.2f DD %.2f DP
-  %.2f"` debug prints follow at ≈ 11240–11900, from about `0x8001bbcc`
-  on.
-- [camera.md](camera.md) has the play camera it replaces.
+- the dragon turns see-through (`SEETHROUGH` texture, `+0xAC0`) and
+  freezes for 1200 fields (`+0xAC4`, counted down in `0x8003eaa4`: its
+  animation and switching stop, `0x8003c324`, and it doesn't look at
+  targets); the state → 4;
+- the djinn is stunned for 1800 fields (`+0xAC6`, counted down in
+  `0x80035c20`: it turns at 0.1 × its rate, `r2-0x7278`, and doesn't look
+  at targets) with an effect (`r13-0x7268`, faded over its last 3 s in
+  state 5); the state → 4;
+- the P-boss's eye texture becomes `PBOSSQEYEBALL` and it's stunned for
+  18000 fields;
+- a sound plays (`0x8009c214(3)`).
+
+A missile hitting a critter in state 5 on the chimera's level → 6.
+
+**Damage:** the player-count scale (`0x8011a920`) doesn't apply in states
+1–4 (`0x800382c0`).
+
+**The level darkens** in 2–3: each level update asks for a light offset
+of −0.8 for 0.1 s more (`0x80067acc`, plus a frame). Every frame
+(`0x80067988`) the offset `r13-0x7170` moves toward the target by at most
+−0.25 or +0.05 (`r2-0x6598`, `r2-0x65a0`); a target nobody asks for any
+more decays × 0.6 a frame (`r2-0x65a8`) and snaps to 0 below 0.05. The
+scene's brightness is clamp(`r13-0x7160` × `r13-0x715c` + offset, 0, 1)
+(`0x800b64cc`, 1 + offset normally): 0.2 at the darkest. Meanwhile the
+boss's highlight `+0xABE` is 0xFF.
+
+**The heroes** (player code, `0x8007692c`, `0x80080d3c`): in state 2 they
+stand still facing the boss; in 2–3 each hero's highlight `+0x7FC` is 2.0
+for the one with the item and 0.8 for the others; the item's owner goes
+`+0x834` 1 → 2, clearing the realm's bit (`0x800a1bc8`: the item is used
+up), then throws the legendary weapon (`+0x834` 3 after 60 fields, then
+4; action 0x73, 0x6B for the djinn and drider, 0x63 for the dragon,
+chimera, P-boss and yeti). Its hit takes 0.1 × the boss's hit points
+(1.5 × a chimera head's own, 0.25 for the lich) and sets the boss's
+`+0xAC8` to 0.5, 0.25 or 0.1 s, during which its blows flagged 0x4000 do
+nothing.
+
+## Boss camera (pointers)
+
+`r13-0x7788` is on from the boss's wake. `0x8001c42c` (from `0x80067f50`)
+starts it (`"BossCamStartCalc called with no boss"`) and then runs
+`0x8001d704` (camera off) or `0x8001c8e0` (on) every frame; it reads
+`WDATA` `BCAM` (`r13-0x7730`) and prints `"BCAM Y %.0f P %.0f D %.2f…"`.
+`0x8001c8e0` looks at the boss (its node or position), at the key effect
+while it exists (`r13-0x776c`), then at the wizard (`0x8023dd58`).
+`0x8001bf88` → `0x8001c084` move the players in this mode.
+[camera.md](camera.md) has the play camera it replaces.
 
 ## Record layouts
 
@@ -965,9 +1087,9 @@ the gargoyle and the general aren't run yet.
   behind. The critter's own animation clock (frame and end, at the clip's
   rate) drives the logic.
 
-## Boss work in progress
+## Bosses in this rewrite
 
-`critters.rs` now also runs one-part bosses. It was checked on levelB6's dragon.
+`critters.rs` also runs one-part bosses. It was checked on levelB6's dragon.
 
 **What runs:**
 - **Spawn.** The level's boss type (`LEVL +0x44`) loads its file and spawns
@@ -1009,8 +1131,13 @@ the gargoyle and the general aren't run yet.
 - **Bosses taking damage.** Damage is × `0x8011a920[players]` (1.0 for one
   player), experience is × players, and there is no knockback. The roar
   threshold is 50 × `0x8011a90c[players]`.
-- **Boss death** sets `CritterLevel::boss_dead` and logs where the key would
-  drop (`TYPE +0xD0`, `0x8001b854`).
+- **Boss death.** `CritterLevel::boss_dead` is set once DEATH's animation
+  has ended (the game's `r13-0x7784`); the boss is removed when DEATH's
+  hold ends.
+- **Waking.** The chimera's type flag 0x80 makes the game start the 2 s
+  wake timer only when the boss stands on floor whose node has flag 0x10
+  in byte `+0x16`; that byte isn't read, so the timer starts at once
+  (stand-in).
 
 **Checked on B6:**
 - The dragon wakes and plays START (its ROAR animation), then READY, then
@@ -1021,43 +1148,37 @@ the gargoyle and the general aren't run yet.
 - Screenshots were taken with `GDL_CRITTER_SHOT_ON=missile|hurt|death` and
   `GDL_CRITTER_SHOT_DELAY`.
 
+**The intro** (`update_intro`, `forced`, `switch`, `intro_reactions`):
+- It runs as decoded above when the hero carries the realm's legendary
+  item (`PlayerState::treasures` holds `(13, realm)`), or with
+  `GDL_LEGENDARY=1` (a testing aid), for bosses up to 0x2A. The level's
+  side runs at the start of each critter tick; the item is taken out of
+  `treasures` when the state reaches 2 or 3.
+- The forced moves, the 1 → 2 and 3 → 4 steps, the waits (1 or 3 s, 29 s),
+  the damage scale's gap in 1–4 and the missile reactions (the dragon
+  frozen 20 s, the djinn stunned 30 s, the P-boss 300 s; the chimera
+  5 → 6) follow the game. A hero's thrown weapon or missile (`Hit::ranged`)
+  counts as a missile.
+- `CritterLevel::light_offset()` follows the game's darkening (−0.8 at the
+  darkest), but nothing draws it yet: the renderer would scale the level's
+  brightness by clamp(1 + offset, 0, 1).
+- Not done: the heroes' side (standing still facing the boss in 2, their
+  highlights, the legendary weapon's throw and its `+0xAC8` window), the
+  boss's highlight `+0xABE`, the see-through and eye textures, the intro
+  effects and sounds, and the chimera's heads mirroring the body.
+- Checked on B6 (logs): the dragon wakes at 2 s; START → READY moves 1 → 2
+  at 4.7 s; 3 s later READY → ROAR (→ 3); ROAR → BREATH moves 3 → 4 → 5 at
+  10.4 s and it fights. A thrown axe in state 2 froze it for 20 s (→ 4 → 5).
+  On A5 the chimera wakes, waits 1 s after START, roars, and stays in
+  READY in state 5.
+
 **Next:**
 - Parts (`TYPE +0x11C` children, the chimera's heads). The spawn is
   `0x8003df60` with children linked by `+0xAD8`/`+0xADC`. They share the
   body (`0x80036d18`) and patterns (`0x8003b6f0`, `0x8003bb40`).
 - The boss key as a real item. This needs a hook to build extra item
   models.
-- The intro state machine (`r13-0x725c`, `0x80056c00`–`0x80057020`) and the
-  boss camera (`BCAM`, around `0x8001bbcc`).
+- The boss camera (`BCAM`, `0x8001c42c`).
 - Kinds 5, 6, 7 and 9, the look nodes, and breakable nodes.
 - Checking the golem against hit spheres: blows on its BALL/HANDR spheres
   run out at 0.25 × its hit points.
-
-## The boss intro and victory (partly decoded)
-
-`r13-0x725c` is the boss sequence, run from `FUN_80056748` (level
-update):
-
-- 1 → 2: the boss's START ends (`0x8003c614`).
-- 2: the first time, a timer: now + a per-boss wait (`r2-0x6b00` for 0x23
-  chimera and 0x29–0x2A, `r2-0x6ae0` otherwise); when it runs out → 3.
-- 3: the boss plays ROAR; its end moves 3 → 4.
-- 4 → 5: start time noted (`r13-0x7260`).
-- 5: per boss, once `r2-0x6a98` seconds have passed: 0x26 (P-boss)
-  swaps its eye texture (`PBOSSEYEBALL`) → 6; 0x24 (djinn), 0x2A
-  (skorne2), and anything below 0x29 → 6 (0x2A and below also zero the
-  boss's effect timer `+0xAC8`); an intro effect `r13-0x7264` is stopped
-  and sounds `FUN_8009c214(3/4)` play.
-- 6: the fight.
-- 99: set once the boss is dead (`r13-0x7784`).
-- States 2–5 keep calling `FUN_80067acc` (camera; the "BCAM" boss
-  camera around `0x8001bbcc` is not read).
-
-Victory (`FUN_8001b854`, when the boss dies): `r13-0x7784` = 1; every
-player gets the realm's bit in `+0x1EC8` (`FUN_800a1d30`); an effect
-with the `BOSSKEY` model (plus `BOSSKEY2`, scale 30) appears at the boss's
-position + `TYPE +0xD0` (bosses below 0x2A only), with a sound
-(`FUN_8009eb78`). The players then request action `0x1C` (PICK: they pick up the key) and
-leave through their exit state (`FUN_8007692c` case 4 → `FUN_80077ccc`,
-which starts the fade `r13-0x7344`). The runtime has the realm bit and a
-5-second return to the tower (stand-in).

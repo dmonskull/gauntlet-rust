@@ -175,9 +175,9 @@ pub(crate) fn apply_hits(
                     Err(_) => (hit.target, None),
                 };
                 let Ok(mut c) = critters.get_mut(target) else { continue };
-                let realm = critter_level.as_ref().map_or('A', |l| l.realm());
                 let mut hit_sounds = Vec::new();
-                let xp = c.take_hit(hit.damage, hit.kind, hit.push.to_array(), sphere, &mut hit_sounds, realm);
+                let level = critter_level.as_deref();
+                let xp = c.take_hit(hit.damage, hit.kind, hit.push.to_array(), sphere, hit.ranged, level, &mut hit_sounds);
                 info!("the hero hits a critter for {:.1}: {:.0} hit points left", hit.damage, c.hit_points);
                 for s in hit_sounds {
                     sounds.write(PlaySound(s));
