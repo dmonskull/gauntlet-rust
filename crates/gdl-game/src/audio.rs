@@ -850,9 +850,13 @@ fn follow_loops(
     let step = SLEW_PER_FRAME * GAME_FRAMES * time.delta_secs();
     for (_, mut l) in &mut playing {
         let target = aim(l.at);
+        let was = (l.pan.round(), l.volume.round());
         l.pan = slew_pan(l.pan, target, step);
         if let Some(t) = l.target_volume {
             l.volume = slew_volume(l.volume, t, step);
+        }
+        if (l.pan.round(), l.volume.round()) != was {
+            trace!("loop {} on {}: pan {:.0} (heading for {target}), volume {:.0}", l.name, l.key, l.pan, l.volume);
         }
         let gains = l.gains_now();
         l.gains.set(gains);
