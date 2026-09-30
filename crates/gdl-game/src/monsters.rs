@@ -1025,6 +1025,7 @@ fn tick_monsters(
                         damage: SUICIDE_DAMAGE * level.scales.damage,
                         poison: POISON_REALMS.contains(&level.realm),
                         folder: level.suicide_folder.clone(),
+                        barrel: false,
                     });
                 }
             }

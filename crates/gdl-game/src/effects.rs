@@ -333,6 +333,8 @@ struct Stage {
     model: &'static str,
     /// It still hurts.
     blast: bool,
+    /// How long it stays, when not its clip's length.
+    hold: Option<f32>,
 }
 
 /// A chained effect's next stage, where the last one ended.
@@ -362,6 +364,10 @@ pub struct ExplosionAt {
     pub poison: bool,
     /// The monster folder the level's SUICIDEEXP is in.
     pub folder: Option<String>,
+    /// An exploding or poison barrel's (the game's effects 0x18 and 0x19
+    /// through its other explosion routine): bigger, hitting items too,
+    /// no ring or sound of its own.
+    pub barrel: bool,
 }
 
 /// The fireball: EXPLOSION blasts out to 6 with fire (kind `0x421`), and
@@ -379,7 +385,18 @@ const POISON_KIND: u32 = 0x800;
 const POISON_RADIUS: f32 = 7.5;
 const POISON_SCALE: Vec3 = Vec3::new(2.5, 1.0, 2.5);
 const POISON_DROP: f32 = 1.0;
-static POISON_STAGES: [Stage; 2] = [Stage { model: "POISONEXP2", blast: true }, Stage { model: "POISONEXP3", blast: false }];
+static POISON_STAGES: [Stage; 2] =
+    [Stage { model: "POISONEXP2", blast: true, hold: None }, Stage { model: "POISONEXP3", blast: false, hold: None }];
+/// A poison barrel's cloud: out to 6.5, held 4 s, drawn 3.5 × wide.
+static BARREL_POISON_STAGES: [Stage; 2] =
+    [Stage { model: "POISONEXP2", blast: true, hold: Some(4.0) }, Stage { model: "POISONEXP3", blast: false, hold: None }];
+const BARREL_POISON_RADIUS: f32 = 6.5;
+const BARREL_POISON_SCALE: Vec3 = Vec3::new(3.5, 1.0, 3.5);
+/// An exploding barrel's fireball: out to 12, drawn 1.75 × wide and 2
+/// higher.
+const BARREL_EXPLOSION_RADIUS: f32 = 12.0;
+const BARREL_EXPLOSION_SCALE: Vec3 = Vec3::new(1.75, 1.0, 1.75);
+const BARREL_EXPLOSION_LIFT: f32 = 2.0;
 const SUICIDE_FX: &str = "SUICIDEEXP";
 const EXPLOSION_SOUND: &str = "S_SUICIDE_BOMB";
 
@@ -875,11 +892,24 @@ fn spawn_explosions(
     mut images: ResMut<Assets<Image>>,
 ) {
     for e in requests.read() {
-        sounds.write(PlaySound(EXPLOSION_SOUND.into()));
-        let (fx, kind, radius, heroes, then, scale, drop) = if e.poison {
-            (POISON_FX, POISON_KIND, POISON_RADIUS, Heroes::Hurt, &POISON_STAGES[..], POISON_SCALE, POISON_DROP)
-        } else {
-            (EXPLOSION_FX, EXPLOSION_KIND, EXPLOSION_RADIUS, Heroes::Thrown, &[][..], Vec3::ONE, 0.0)
+        if !e.barrel {
+            sounds.write(PlaySound(EXPLOSION_SOUND.into()));
+        }
+        let (fx, kind, radius, heroes, then, scale, drop) = match (e.poison, e.barrel) {
+            (true, false) => (POISON_FX, POISON_KIND, POISON_RADIUS, Heroes::Hurt, &POISON_STAGES[..], POISON_SCALE, POISON_DROP),
+            (false, false) => (EXPLOSION_FX, EXPLOSION_KIND, EXPLOSION_RADIUS, Heroes::Thrown, &[][..], Vec3::ONE, 0.0),
+            (true, true) => {
+                (POISON_FX, POISON_KIND, BARREL_POISON_RADIUS, Heroes::Hurt, &BARREL_POISON_STAGES[..], BARREL_POISON_SCALE, 0.0)
+            }
+            (false, true) => (
+                EXPLOSION_FX,
+                EXPLOSION_KIND,
+                BARREL_EXPLOSION_RADIUS,
+                Heroes::Thrown,
+                &[][..],
+                BARREL_EXPLOSION_SCALE,
+                -BARREL_EXPLOSION_LIFT,
+            ),
         };
         let effect = models.effect(fx, &mut game, &mut meshes, &mut materials, &mut images);
         let life = effect.as_ref().map_or(1.0, |e| e.life);
@@ -895,13 +925,14 @@ fn spawn_explosions(
             age: 0.0,
             spared: HashMap::new(),
             heroes,
-            items: e.poison,
+            items: e.poison || e.barrel,
             then,
             scale,
             drop,
         };
         spawn_blast(&mut commands, effect.as_ref(), blast, colour_index(kind));
         if !e.poison
+            && !e.barrel
             && let Some(ring) = models.effect(RING_FX, &mut game, &mut meshes, &mut materials, &mut images)
         {
             play_effect(&mut commands, &ring, e.at, 0.0, Vec3::splat(RING_SCALE), &mut seed, &mut meshes);
@@ -915,7 +946,7 @@ fn spawn_explosions(
     for s in next.read() {
         let Some((stage, rest)) = s.stages.split_first() else { continue };
         let effect = models.effect(stage.model, &mut game, &mut meshes, &mut materials, &mut images);
-        let life = effect.as_ref().map_or(1.0, |e| e.life);
+        let life = stage.hold.unwrap_or(effect.as_ref().map_or(1.0, |e| e.life));
         let blast = Blast {
             owner: s.owner,
             shape: BlastShape::Grow,

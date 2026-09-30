@@ -12,9 +12,12 @@
 //! switch is pressed down its chain. An obstacle a blow leaves standing
 //! flashes for one update (`flash.rs`).
 //!
-//! Stand-ins: the blast and the poison cloud hurt once, at once, with the
-//! missiles' blast falloff (the game's effects, which carry them, aren't
-//! ported); a monster inside (a Death) comes out at tier 1 straight away;
+//! The blast and the poison cloud are the game's explosion effects
+//! (`effects.rs`, `ExplosionAt`), owned by nobody: they grow over the
+//! effect's life and hurt heroes, monsters and items (a barrel's blast
+//! sets off the barrels near it).
+//!
+//! Stand-ins: a monster inside (a Death) comes out at tier 1 straight away;
 //! chests blown apart by explosive blows aren't done; a shootable wall's in-between hits are
 //! silent (the level's own hit sound isn't looked up); safe rocks (which
 //! break into pieces) aren't hittable.
@@ -25,17 +28,15 @@ use gdl_formats::population::{ItemClass, PlacementParams, rotation_matrix};
 
 use crate::audio::PlaySound;
 use crate::combat::{Hit, TargetKind, Targetable};
-use crate::damage::after_armor;
+use crate::effects::ExplosionAt;
 use crate::flash::{self, FlashColours};
 use crate::hints::{Hint, ShowHint};
 use crate::items::{self, LevelItems, USED};
 use crate::mechanics::{self, Mechanics};
-use crate::monsters::{Monster, MonsterLevel, NewMonster, spawn_monster};
+use crate::monsters::{MonsterLevel, NewMonster, spawn_monster};
 use gdl_formats::enemy;
 use crate::player::Player;
-use crate::player_state::DamagePlayer;
 use crate::population::{ContentModels, ItemRig, LevelPopulation, PlacementIndex};
-use crate::projectiles::blast_share;
 use crate::world::LevelEntity;
 
 pub struct BreakablesPlugin;
@@ -74,8 +75,10 @@ const NO_DAMAGE: u32 = 0x800;
 /// Fields before released contents can be picked up.
 const RELEASE_DELAY: i32 = 30;
 /// Blasts: damage (× the level's hazard scale) and radius.
-const EXPLOSION: (f32, f32) = (30.0, 6.0);
-const POISON: (f32, f32) = (10.0, 6.5);
+/// Blasts' damage (× the level's hazard scale): an exploding barrel's
+/// fireball, a poison barrel's cloud (`effects.rs` has their reach).
+const EXPLOSION_DAMAGE: f32 = 30.0;
+const POISON_DAMAGE: f32 = 10.0;
 
 /// Barrel sounds by realm id (A–K = 1–11): breaking, exploding, gas.
 fn barrel_sound(kind: &str, realm: usize) -> Option<String> {
@@ -122,20 +125,19 @@ fn setup(mut commands: Commands, items: Res<LevelItems>) {
 #[allow(clippy::too_many_arguments)]
 fn hits(
     mut commands: Commands,
-    mut messages: ParamSet<(MessageReader<Hit>, MessageWriter<Hit>)>,
+    mut messages: MessageReader<Hit>,
     mut breakables: Query<&mut Breakable>,
     items: Option<ResMut<LevelItems>>,
     contents: Option<Res<ContentModels>>,
     mut mechanics: Option<ResMut<Mechanics>>,
     mut level: Option<ResMut<MonsterLevel>>,
-    monsters: Query<(Entity, &Monster)>,
-    mut players: Query<(Entity, &mut Player)>,
-    mut hurt: MessageWriter<DamagePlayer>,
+    players: Query<(), With<Player>>,
+    mut explosions: MessageWriter<ExplosionAt>,
     mut sounds: MessageWriter<PlaySound>,
     mut hints: MessageWriter<ShowHint>,
 ) {
     let Some(mut items) = items else { return };
-    let incoming: Vec<Hit> = messages.p0().read().filter(|h| h.target_kind == TargetKind::Breakable).cloned().collect();
+    let incoming: Vec<Hit> = messages.read().filter(|h| h.target_kind == TargetKind::Breakable).cloned().collect();
     let realm = items.realm();
     let hazard_scale = level.as_ref().map_or(1.0, |l| l.tuning.hazard_damage);
     for hit in incoming {
@@ -228,12 +230,22 @@ fn hits(
                 EXP_BARREL | POI_BARREL => {
                     if dead {
                         items.set_flags(b.placement, USED);
-                        let (kind, (damage, radius)) = if subtype == EXP_BARREL { ("EXPLO", EXPLOSION) } else { ("GAS", POISON) };
+                        let poison = subtype == POI_BARREL;
+                        let (kind, damage) = if poison { ("GAS", POISON_DAMAGE) } else { ("EXPLO", EXPLOSION_DAMAGE) };
                         if let Some(s) = barrel_sound(kind, realm) {
                             sounds.write(PlaySound(s));
                         }
-                        let at = Vec3::from(centre);
-                        blast(at, damage * hazard_scale, radius, hit.attacker, &monsters, &mut players, &mut messages.p1(), &mut hurt);
+                        // The game's explosion effect, owned by nobody:
+                        // it hurts heroes, monsters and items (other
+                        // barrels go up with it).
+                        explosions.write(ExplosionAt {
+                            owner: Entity::PLACEHOLDER,
+                            at: Vec3::from(centre),
+                            damage: damage * hazard_scale,
+                            poison,
+                            folder: None,
+                            barrel: true,
+                        });
                         info!("barrel {} {}", b.placement, if subtype == EXP_BARREL { "explodes" } else { "lets out gas" });
                     }
                 }
@@ -316,45 +328,3 @@ fn view_hit_points(items: &LevelItems, placement: usize) -> i16 {
     items.view(placement).map_or(1, |v| v.ty.hit_points)
 }
 
-/// A blast at `at`: every monster and the hero within `radius` (plus their
-/// own radius) takes its share of `damage` (the missiles' falloff).
-#[allow(clippy::too_many_arguments)]
-fn blast(
-    at: Vec3,
-    damage: f32,
-    radius: f32,
-    attacker: Entity,
-    monsters: &Query<(Entity, &Monster)>,
-    players: &mut Query<(Entity, &mut Player)>,
-    hits: &mut MessageWriter<Hit>,
-    hurt: &mut MessageWriter<DamagePlayer>,
-) {
-    for (e, m) in monsters {
-        let d = Vec3::from(m.position).distance(at) - m.stats.radius;
-        if let Some(share) = blast_share(d, radius) {
-            debug!("the blast hits monster {e:?} for {:.1}", damage * share);
-            hits.write(Hit {
-                target: e,
-                attacker,
-                damage: damage * share,
-                kind: 0,
-                push: Vec3::ZERO,
-                at,
-                target_kind: TargetKind::Monster,
-                ranged: true,
-            });
-        }
-    }
-    for (_, mut p) in players.iter_mut() {
-        let d = Vec3::from(p.mover.position).distance(at) - p.radius;
-        if let Some(share) = blast_share(d, radius) {
-            let amount = after_armor(damage * share, p.armor);
-            if amount > 0.0 {
-                let away = (Vec3::from(p.mover.position) - at).with_y(0.0).normalize_or_zero();
-                p.queue_hit(amount, 0x10, away);
-                hurt.write(DamagePlayer { amount });
-                debug!("the blast hurts the hero for {amount:.1}");
-            }
-        }
-    }
-}

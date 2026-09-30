@@ -413,8 +413,9 @@ powerups, scrolls — and in 84 cases a Death (class 4, `DEATH`).
 `FUN_80092bf4` makes a blast through the projectile/effect records
 (`0x802855a8`, [projectiles.md](projectiles.md)): damage `+0x644`, flags
 `+0x64C` (`0x421` for explosions, `0x800` for the poison cloud), radius
-`+0x650`: 6 (`r2-0x566c`) for an exploding barrel, 6.5 (`r2-0x563c`)
-poison, 12 (`r2-0x5658`) for type `0x1D`. The damage reaches players
+`+0x650`: 12 (`r2-0x5658`) for an exploding barrel (effect `0x18`) and
+CHESTEXP (`0x1D`), 6.5 (`r2-0x563c`) poison (6, `r2-0x566c`, only for
+other ids). The damage reaches players
 through `FUN_80094418` → `FUN_80078560` with a falloff not traced here.
 
 **CHESTEXP** (container 0x2C, locked): opened with a key it ticks while
@@ -521,8 +522,19 @@ A monster inside (the 84 Deaths) comes out where the container stood, at
 tier 1 (its model is loaded with the level; on levelA2
 `GDL_WARP="9.69,2.5,-50.8"` + attack breaks one open).
 
-Stand-ins: blasts and gas hurt once, at once (no effect or lingering
-cloud); the hit effect `FUN_8002f400` isn't played; a released monster starts
+The barrels' blasts are the game's explosions (`effects.rs`,
+`ExplosionAt`): `FUN_80092bf4(damage, position, effect)` makes an area
+effect (flags `0x2B`: players, items, monsters) owned by nobody —
+effect `0x18` (EXPLOSION) for an exploding barrel, kind `0x421`, radius
+12 (`r2-0x5658`), drawn 1.75 × wide (`r2-0x5648`) and 2 higher
+(`r2-0x5660`); `0x19` (POISONEXP1 → POISONEXP2 held 4 s, `r2-0x5640` →
+POISONEXP3) for a poison barrel, kind `0x800`, radius 6.5 (`r2-0x563c`),
+drawn 3.5 × wide (`r2-0x5638`); `0x1D` (EXPLOSION's model with EXPCHEST)
+for CHESTEXP, radius 12, drawn 2.5 × wide and 3 higher. (A default of 6
+and 1.5 × is for other ids.) So a barrel's blast sets off the barrels
+and floor potions near it, and earns nobody experience.
+
+Stand-ins: the explosions' lights; CHESTEXP; a released monster starts
 right away (the game wakes a placed-monster item); a shootable wall's in-between hits are silent;
 safe rocks aren't hittable; walls' own collision (item shape 4) isn't
 ported, so shootable walls never blocked the hero in the first place.
