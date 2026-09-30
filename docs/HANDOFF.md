@@ -313,6 +313,15 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
   realm's coins (the first Skorne his four pieces — where the heroes get
   them) that bounce to rest, and an unseen sweep breaks the level's
   items (critters.md "The boss's loot").
+- **Safe rocks** take blows (every missile but magic stops on a standing
+  rock; blasts too): hit points, armour, restaging with the stage models
+  and GENDEST (critters.md "Safe rocks"). Left: the yeti's throw (kind 6)
+  and the P-boss's volley (kind 5); grabs (kind 7) are decoded, not ported.
+- **Pickup notices** (the helper's `pickup_notices.rs`, merged): each
+  pickup's plate rises over the panel (checked: a key's KEY_RING plate on
+  A1); a new runestone has the announcer count the stones (unit-tested;
+  not seen on screen — a pickup in a level's first second counts as
+  already held).
   - Next: rapid fire's rate (items.md "Attack overrides": how the 0.75
     reaches the clip isn't pinned down); the hero missiles' streaks
     (`WEP_STREAK`, the crossbow's white one) and the magic classes'
@@ -362,9 +371,9 @@ waits.
      `PSYS` in the node name.
    - Records are applied by `FUN_800ceeb8`; the update is `FUN_800cdfdc`.
 5. ~~Tower progression~~: done for one player, with the gem count above
-   the panel and the legendary items' hints. Left: pickup notices, the
-   tower's other messages (shards after a boss, runestones: `NEWSHARDS`,
-   `ALL12RUNES*`, `RUNE13*`). Saving is done (a file for the card).
+   the panel, the legendary items' hints, the wizard's messages
+   (NEWSHARDS … RUNE13*) and the pickup notices. Left: the secret realm's
+   coins and ALLCOINS (items.md). Saving is done (a file for the card).
 6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**. (Hit flashes
    are done but for node spheres', whose model node isn't traced.)
 7. ~~Hit effects~~: done — blood sprays (BLOODFX1 per blow, BLOODFX2 on
