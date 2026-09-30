@@ -308,7 +308,9 @@ the looks' (above).
 ### `0x80000` halo (anti-Death)
 
 `HALOICON` (120 s; hint HALO "ANTI DEATH POWER", `S_ANTIDEATHVOX`).
-Death is monster type `0x1E`. Confirmed:
+Death is monster type `0x1E`; its whole behaviour — the target, the
+chase and the flight, the grab and its drain, blows on it, leaving — is
+in [monsters.md](monsters.md), "Death". Confirmed:
 
 - **Death doesn't drain the hero** (`FUN_800460a8`, Death's grab: its
   drain — `FUN_80078560` with kind `0x1000`, or the experience drain
@@ -332,12 +334,14 @@ Death is monster type `0x1E`. Confirmed:
   `S_DEATHSUCK` loops at the hero (`FUN_800a045c`) and `S_DEATHDIE` at
   Death (`FUN_800a035c`); `+0x128` bits 1 (and 2 for an experience Death)
   make `FUN_8007c4f0` put the drain effect on the hero
-  (`FUN_800911c4(model, 1 or 2, 0x10)`: runtime effect `0x5F` or `0x60`,
-  names not traced) and stop `S_DEATHSUCK` when it ends.
+  (`FUN_800911c4(model, 1 or 2, 0x10)`: runtime effect `0x5F`
+  `DEATH_ARC` or `0x60` `DEATH_EXP`, from `MONSTERS/DEATH`) and stop
+  `S_DEATHSUCK` when it ends. While draining, the hero's intent is forced
+  to stand and it plays DEATHGRABS (`+0x95C` = 2 → intent `0x1B`).
 - `HEAD_HALO` on the head.
 
-To build: Death's grab and drain (monsters.md lists Death as not run),
-then the halo's three checks.
+To build: Death itself (monsters.md, "Death"), then the halo's three
+checks.
 
 ### `0x2008` gas mask
 
@@ -570,6 +574,9 @@ Confirmed:
   `0x8012265C`), from the familiar's mouth offset (class PDAT `+0x170` ×
   the model's scale). A familiar's spit (the player's entry of
   `0x8023FDD4`, `FAMILIAR_SPIT`) does 0.1 × (level − 25) + 2.5, kind 0.
+  The details to build them — the familiar's model and place, the event,
+  the mouth offsets, the aim and lob, the shot — are in
+  [projectiles.md](projectiles.md), "The familiars and the phoenix".
 
 ### `0x100` grow
 
@@ -660,8 +667,11 @@ the hero holds one (`FUN_8005de3c`). Confirmed:
   are ATTFIRELR / ATTFIREL and the throw uses the record `0x80119B88`
   (kind 4 acid, radius 2) with `BOSSG_ACID` for the right, `0x80119B58`
   (kind 2 lightning, radius 2) with `BOSSG_ELEC` for the left (both
-  `+0x04`/`+0x08` = 50/40), the missile flagged `0x10000` (meaning not
-  traced). `S_GAUNTLET1/2` are in the catalog; their calls weren't found.
+  `+0x04`/`+0x08` = 50/40, not read by the hero's path), the missile
+  flagged `0x10000` (meaning not traced); `S_GAUNTLET1` (`0x5C`) for the
+  left, `S_GAUNTLET2` (`0x5D`) for the right as the shot goes. The shot
+  itself (the hand-over event, reach, damage, from where) is in
+  [projectiles.md](projectiles.md), "Hero release".
 
 ### Other special bits
 
@@ -710,7 +720,8 @@ Hint by bit (`FUN_8005de3c`; all priority 50, shown once but the Pojo's):
 - The chrome's texture matrix (`FUN_800c60a4`) and whether it's an
   environment map.
 - The breath effects' damage shape in `FUN_80094418`.
-- The drain effects `0x5F`/`0x60` and the missile flag `0x10000`.
+- The missile flag `0x10000` (the drain effects `0x5F`/`0x60` are
+  `DEATH_ARC`/`DEATH_EXP`, monsters.md "Death").
 - Mikey's state machine; who sets Skorne's items; where `S_FIRESHIELD`,
-  `S_LIGHTNGSHIELD`, `S_SHIELD1`–`4`, `S_GAUNTLET1/2` play.
+  `S_LIGHTNGSHIELD`, `S_SHIELD1`–`4` play.
 - Whether health is capped after the gold heal.

@@ -48,6 +48,32 @@ ATTPWRATHROW ends — [combat.md](combat.md)), after the melee blow block:
 | `0x6000` | 0.06 | 1 | 0 (no offset) | — |
 | `0x800` | 0 | 1 (1.5/2 with a powerup, `FUN_8007ed38`) | 0 | `0x100000` |
 
+- **`0x6000`, Skorne's gauntlets** (ATTFIREL → 0x69 raises `0x2000`,
+  0x68 → 0x6A `0x4000`; [items.md](items.md), "Attack overrides"): w =
+  0.06 (`r2-0x5AE0`) — reach 27 — damage × 1, no hand offset (from the
+  centre `+0x64`, feet + 2.5), the kind the hero's weapon bits
+  (`+0x11C`). The spawn picks the record by the **special** bits, not
+  the event: `0x8000` (left) → `0x80119B58`, `0x4000` (right) →
+  `0x80119B88` (below). Sound `S_GAUNTLET1` (`0x5C`, `FUN_8009ec48`) for
+  the left, `S_GAUNTLET2` (`0x5D`, `FUN_8009ec08`) for the right (volume
+  `0xE0`), in place of the throw sound.
+- **`0x800`, the super crossbow** (SSHOT1/SSHOT2 handing over; SSHOT2
+  repeats while held, a bolt each — items.md): `FUN_8007ed38(1, player,
+  5, 0x100000)` spends a shot from the first weapon slot with the
+  crossbow bit and returns the amount it had (1 for an unlimited one, 0
+  with no such slot). With a shot: damage × 2 (`r2-0x5C18`; × 1.5,
+  `r2-0x5ADC`, on a boss level) and kind |= `0x100000`, which picks the
+  bolt record `0x80119B28` and model `SUPERARROW` (`WEAPONS`) and makes
+  it pierce; without, × 1 and the class's own missile. w = 0 (reach 15,
+  unused: a `0x100000` shot isn't lobbed, it flies along the aim), no
+  hand offset (the centre `+0x64`). The throw sound (`FUN_8009ee70`)
+  plays `S_SUPERSHOT` (`0x42`) because the weapon bits hold `0x100000`
+  (any of `0x580000`: the multi-shots too), else the element's.
+
+After any release the event word loses `0xFF00` and gains `0x10000000`
+— the throw event the phoenix, the familiars and the body looks read
+on the next tick (below, "The familiars and the phoenix").
+
 `+0x8FC` is the time the latest attack started: the `0xFF` block (which
 runs *before* this one) sets it whenever bit 1 (attack started) is set. So
 a strafe attack chaining into the next one, which sets both in the same
@@ -81,10 +107,25 @@ units, 27 for the power throw.
 
 ### Spawn (`FUN_80030094`, `FUN_800307ec`)
 
-- Missile record (`0x30` bytes): per class at `0x801189A8` + class (player
-  `+0x08`) × `0x30`; `0x80119b28` for kind `0x100000` without `0x2000000`,
-  `0x80119b88` / `0x80119b58` for two other powers (`+0x124` `0x4000` /
-  `0x8000`).
+- Missile record (`0x30` bytes), the first of: special `0x8000` (Skorne's
+  left gauntlet) → `0x80119B58`; special `0x4000` (right) →
+  `0x80119B88`; kind `0x100000` without `0x2000000` → `0x80119B28`; else
+  per class at `0x801189A8` + class (player `+0x08`) × `0x30`. The three
+  power records (the "special" ones: no element trail, `0x8023FD34`):
+
+  | record | kind `+0x00` | radius `+0x0C` | gravity, spin, blast | `+0x04`/`+0x08` | `+0x2C` | model | flags |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `0x80119B28` crossbow | `0x20` | 5 | 0 | 50 / 40 | 5 | `SUPERARROW` | — |
+  | `0x80119B58` left gauntlet | 2 (lightning) | 2 | 0 | 50 / 40 | 5 | `BOSSG_ELEC` | `0x10000` |
+  | `0x80119B88` right gauntlet | 4 (acid) | 2 | 0 | 50 / 40 | 5 | `BOSSG_ACID` | `0x10000` |
+
+  The missile's kind is the passed kind | the record's `+0x00`
+  (`FUN_80093768`); the models are loaded from `WEAPONS` by
+  `FUN_80030c38` (`r13-0x7540`, `-0x7544`, `-0x7548`); flag `0x10000`
+  (meaning not traced) goes on the gauntlets' missiles and the Pojo's
+  (`PHOENIX_FBALL`, `0x8023FDE4`, with the class record). A crossbow bolt
+  gets a white streak (`0xFFFFFF`, alpha `0x40`) instead of the class
+  colours.
 - Damage = player `+0x114` × the multiplier. Speed v = player `+0x118`
   clamped to 1 … 100 (`r2-0x7408`, `r2-0x7378`). Both are set by
   `FUN_8007c4f0` from the strength stat (`+0xF4`), or the magic stat
@@ -150,6 +191,64 @@ objects (`BOW_THROW1` + `ARC_A`). Monster missiles: `FUN_80030b54` loads
 `"%s_%s"` — the type's name and `ARROW` / `BOMB` / `FBALL`
 (`0x80118b50`) — from the type's anim file (`GRU_ARROW`, `GRU_BOMB`,
 `DEM_FBALL`, `SOR_FBALL`…).
+
+### The familiars and the phoenix
+
+Confirmed from the decompile, constants from the DOL.
+
+**Who has one** (`FUN_8007ddd0`, every tick from the stats routine): a
+hero of level 30–79 wears `FAMILIAR1`, from 80 `FAMILIAR2` (below 30
+none; the slot `+0x748` is freed). Both come from the hero's effects bank
+(`PLAYERS/<class>/SFX<colour>`, `0x80274DDC`; loaded with `FAMILIAR_SPIT`
+by `FUN_80030c38` into `0x8023FDE8`/`0x8023FDEC` + player × 8 and
+`0x8023FDD4` + player × 4). The secret classes' folders have no `SFX`
+banks of their own; which bank the game gives them isn't traced. It's an atree instance (flags
+`0x800`, `+0x10` set, transparency 0) under the hero model `+0x74`, at
+PDAT `+0x164` (× 1.2, `r2-0x5D20`, at level 99): (0, 0, 0) for most
+classes, (−1, 1.7, 0) for the valkyrie (and the falconess), (0, −1, 0)
+for the ogre. `FAMILIAR1`'s own joint sits at (−0.91, 5.08, −0.61) — over
+the left shoulder. Each tick it's hidden in play (flag 2) while the hero
+has the phoenix (special `0x80`), else shown, playing action 1 (ATTACK)
+in mode 2 on the throw-event tick, else action 0 (READY).
+
+**When it fires** (the player update `FUN_80080d3c`, before this tick's
+release): when the event word holds the throw event `0x10000000` —
+raised by the previous tick's release of any hero missile (a throw, a
+power throw, a gauntlet shot or a crossbow bolt; "Hero release") — and
+the hero has the phoenix or a familiar. The event is cleared right after,
+so each hero missile brings one shot, a tick later.
+
+**From where**: the mouth, PDAT `+0x170` (per axis × the hero model's
+scale, `+0x74` `+0x40..+0x48`: the ogre's 1.6, growth's 1.3, level 99's
+1.2) through the hero's matrix (`+0x14`, `FUN_800bdff4`: rotation and
+position — the feet). The offsets: WAR (−1, 5, −1), VAL (−1, 6, −1), WIZ
+(−1.2, 5, −1), ARC (−1.3, 5.5, −1.5), DWF (−1.7, 4.2, −1), KNI (−1.5, 6,
+−1), SOR (−1.2, 6.5, −1), JES (−1.5, 6, −1); the secret classes repeat
+them (the ogre (−1.7, 3.2, −1)).
+
+**The aim**: `FUN_800857d8` (the aim above) with this tick's search
+(distance, aim vector, target) and w = 0.03 (`r2-0x5AF4`): reach 200 ×
+0.03 + 15 = 21; T = aim × 21. Then `FUN_80030a9c(50, 0.02, g, y0, T)`
+(`r2-0x5B5C`, `r2-0x5AF0`) turns T into a direction for speed 50: with d
+= |T horizontal|, (T.x / d, (0.5 × g × d / 50 + (T.y + y0) × 50 / d) / 50,
+T.z / d) — g = 10, y0 = −0.5 (`r2-0x5B24`, `r2-0x5AEC`) outside boss
+levels, g = 0, y0 = 0 on them.
+
+**The shot** (`FUN_80093150(35, damage, g, type, player, mouth, dir)`,
+`r2-0x5B00`): an effect missile of the model `0x8023FDD4[type]`,
+velocity = dir × **35** (the lob's slope was worked out for 50, so it
+lands short of T — the game's own mismatch), acceleration g down (10, 0
+on boss levels), life 3 s (`r2-0x56B8`), flags `0x101000E` (the players'
+missile set: it hits monsters and items), kind `0x8012264C[type]` (bits
+`0xC` cleared for an element above 4), owner the player:
+
+| who | type | model | damage | kind |
+| --- | --- | --- | --- | --- |
+| a familiar | the player (0–3) | `FAMILIAR_SPIT` | 0.1 × (level − 25) + 2.5 (`r2-0x5BD0`, `r2-0x5AE8`): 3 at 30, 8 at 80, 9.9 at 99 | 0 |
+| the phoenix | 4 | `PHOENIX_FBALL` (`WEAPONS`) | 10 (`r2-0x5B24`) | `0x11` (fire, strong) |
+
+The phoenix's body look plays its action 1 (ATTACK) on the same event
+([powers.md](powers.md), "The looks").
 
 ## Flight (`FUN_80094418`)
 
@@ -327,12 +426,10 @@ throw every two seconds.
   a rise keeps 0.4 of itself) — a missile already leaving the surface it
   touches flies on (our sweep can touch it again). Stand-ins: the bounce
   leaves the lifetime alone (the game trims what's left, constants not
-  traced); the `0x800` (a crossbow shot, which spends one of its five
-  from the slot through `FUN_8007ed38`) and `0x6000` strikes and the
-  actions that make them aren't traced; the spread's first missile's
-  effect (the record's `+0x2C` becomes 6 / 7), the element trails
-  (`0x8023fd34`) and the special powers' records (`0x80119b58`,
-  `0x80119b88`) aren't done; the time-slow damage halving isn't; no push
+  traced); the `0x800` (crossbow) and `0x6000` (gauntlet) strikes and
+  their actions are decoded above but not ported; the spread's first
+  missile's effect (the record's `+0x2C` becomes 6 / 7), the element
+  trails (`0x8023fd34`) and the gauntlets' records aren't done; the time-slow damage halving isn't; no push
   on missile hits on monsters. The reflect shield is (`fly`: velocity ×
   −1, moved on at once, damage at most 15 (`r2-0x5570`), it then hits
   monsters and objects and passes the hero it glanced off; `S_RICOCHET`
