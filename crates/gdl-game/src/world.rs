@@ -314,7 +314,15 @@ fn spawn_level(
     let emitters = level.nodes.iter().enumerate().filter(|(_, n)| {
         n.flags & gdl_formats::collision::node_flags::PARTICLES != 0 && n.name.contains("PSYS")
     });
-    let emitters: Vec<(String, Vec3)> = emitters.map(|(i, n)| (n.name.clone(), Vec3::from(origins[i]))).collect();
+    let mut emitters: Vec<(String, Vec3)> = emitters.map(|(i, n)| (n.name.clone(), Vec3::from(origins[i]))).collect();
+    // `GDL_PARTICLE_TEST=<letter>`: that record's system 6 units in front of
+    // the player start, in the open (test with `GDL_LOOK_AT` on it).
+    if let (Ok(letter), Some(start)) = (std::env::var("GDL_PARTICLE_TEST"), level.population.player_start(0)) {
+        let ahead = Vec3::new(start.yaw.sin(), 0.0, start.yaw.cos()) * 6.0;
+        let at = Vec3::from(start.position) + ahead + Vec3::Y * 3.0;
+        info!("GDL_PARTICLE_TEST: record {letter} at {at}");
+        emitters.push((format!("TESTPSYS{letter}"), at));
+    }
     let find = |model: &gdl_formats::ModelFile, name: &str| {
         model.texture_names.iter().find(|t| t.name.eq_ignore_ascii_case(name)).map(|t| t.binding)
     };

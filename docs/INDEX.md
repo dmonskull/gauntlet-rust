@@ -67,6 +67,8 @@ One file per system, written only once it's confirmed against the actual
 - The hero's record (health, gold, keys, potions, timed powerups) and the
   items it touches: pickups, keyed doors and chests, exits, transporters,
   item animation and the game's hints.
+- Magic potions ([effects.md](effects.md)): blast, shield and thrown potion with the game's effect models.
+- World particle systems ([rendering.md](rendering.md)): torch flames, smoke, pool fires, mist.
 - Level mechanics ([mechanics.md](mechanics.md)): trigger pads, switches
   and chains; lifts, elevators, trap walls, fading bridges and rotators
   (moving their collision and meshes, carrying the hero), with their
