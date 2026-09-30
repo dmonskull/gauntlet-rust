@@ -358,8 +358,9 @@ near the screen (+ 15). Then for each active monster:
      blocked (`FUN_8004c834`) turns the heading a quarter at once and, if
      the timer is out, sets it to 20. **Most AIs hand an unaware frame
      over to them**: with no target or not `aware` (`+0x2DE`), AIs 0, 1,
-     3, 7, 8, 10, `0xD`, `0xE`, the throwers `0x13`–`0x16` and the running
-     suicide runner switch to 5 or 6 by slot parity for the frame — so a
+     3, 7, 8, 10, `0xD`, `0xE`, `0x13`–`0x16` (`0x13` the golem's) and the
+     running suicide runner switch to 5 or 6 by slot parity for the frame
+     (`0x13` only once it has spotted a player near the screen) — so a
      chaser near the screen that hasn't noticed a player walks about, and
      chases once it has.
    - **Running from a charging runner**: the frame loop names a leader
@@ -464,9 +465,9 @@ tool text. Nothing else named.
   stand still instead of gliding. The crowd penalty in target choice isn't
   applied (one player).
 - **Unaware** monsters walk and turn as the game's AI 5/6 do, and the AIs
-  above hand them unaware frames; the throwers (`0x13`–`0x16`) don't yet
-  (they face and throw or stand). Monsters run from a charging suicide
-  runner (the blocked-frame nudges aren't done).
+  above hand them unaware frames (`0x13`'s spotting gate isn't done).
+  Monsters run from a charging suicide runner (the blocked-frame nudges
+  aren't done).
 - Zero level scales are read as 1 (above).
 - Spot tests skip items (`FUN_8005ef98`); the placed-monster distance is
   from the player.
