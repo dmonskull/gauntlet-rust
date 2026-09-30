@@ -269,10 +269,10 @@ fn spawn_level(
         .filter(|&(i, _)| !emitter(i))
         .partition(|&(i, &(_, _, flags))| group_of(i).is_none() && Billboard::from_flags(flags).is_some());
     let (moving, fixed): (Vec<_>, Vec<_>) = fixed.into_iter().partition(|&(i, _)| group_of(i).is_some());
-    // The tower's exit glows (`L1NSNC<realm><n>_ACTIVE`) are drawn apart
-    // too, so a shut exit can hide its own (`quest.rs`).
-    let glows: HashMap<usize, quest::ExitGlow> =
-        level.nodes.iter().enumerate().filter_map(|(n, node)| quest::ExitGlow::named(&node.name).map(|g| (n, g))).collect();
+    // The tower's exit glows (`L1NSNC<realm><n>_ACTIVE`) and the shards'
+    // light are drawn apart too, so the quest can hide them (`quest.rs`).
+    let glows: HashMap<usize, quest::TowerPiece> =
+        level.nodes.iter().enumerate().filter_map(|(n, node)| quest::TowerPiece::named(&node.name).map(|g| (n, g))).collect();
     let glow_roots: HashSet<usize> = glows.keys().copied().collect();
     let glow_of = |i: usize| level.placement_nodes.get(i).and_then(|&n| nodes.group_of(n, &glow_roots));
     let (glowing, fixed): (Vec<_>, Vec<_>) = fixed.into_iter().partition(|&(i, _)| glow_of(i).is_some());

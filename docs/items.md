@@ -352,6 +352,28 @@ shards and runestones (`FUN_800a33c4`: `NewShards`, `MoreShards`,
 `FUN_800a39c4` sets the shard in `L1WINDOWFRAME` or the stone in
 `L1RUNEPLACE` with a camera cut) aren't done yet. The runtime: `tower.rs`.
 
+## The tower's shards and runes
+
+Beating a realm's boss (`FUN_8001b854` → `FUN_800a1d30`) sets, for every
+hero in the game, the bit of the realm's place in the tower's order
+(`0x801244dc`, found by `FUN_800a3360`): G, B, A, K, D, C, I, J are bits
+1–8 — the eight shards — and E, F, H bits 9–11. As the tower loads,
+`FUN_800a2ba8`, with the bits of every hero in the game:
+
+- places each shard held: the effect `SHARD<n>` at the window frame's node
+  (`L1WINDOWFRAME`, over the tower's door), wound on to its last frame;
+- unless all eight are held, hides the light shining from the window
+  (`L1XPLIGHTRAY01`) with everything under it: render flag 2, which the
+  draw walk (`FUN_800c7d6c`) skips along with the node's children (flag
+  1 hides only the node's own model);
+- places each runestone held (the next word): `RUNE<n>` at `L1RUNEPLACE`
+  for 1–12, and for the thirteenth (bit 12) fires trigger `0xFF` and
+  shows `RUNE13` at `L1RUNE13`.
+
+Here: the light shows only once all eight shards are in
+(`quest::TowerPiece`, bits by `quest::boss_marks`) — a new game's tower
+had it shining. Not done: the shards and runestones in their places.
+
 ## Quest items and the tower's gates
 
 Implemented in [`quest.rs`](../crates/gdl-game/src/quest.rs) (the rules and
