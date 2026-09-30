@@ -139,8 +139,8 @@ pub mod shot_kind {
 }
 
 /// The spread's turns (cosine, sine): straight, ±15°, ±30° (the game's
-/// tables at `0x80111580`/`0x80111594`, in docs only). Three missiles
-/// with the multi-shot, five with the five-way one.
+/// two tables of them, `docs/projectiles.md`). Three missiles with the
+/// multi-shot, five with the five-way one.
 const SPREAD: [(f32, f32); 5] = [(1.0, 0.0), (0.966, 0.259), (0.966, -0.259), (0.866, 0.5), (0.866, -0.5)];
 
 /// How many missiles a throw of `kind` makes.
