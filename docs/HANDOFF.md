@@ -148,8 +148,8 @@ the levelA2 Death barrel).
 ## Latest check
 
 The all-levels smoke test on the texture-modifier nodes, flipbook runs and
-the tower's shards, runestones and gates at load (the commit after
-`544d1fb`) passed all 67 real levels; so did `c8fb3f9` (the turbo meter,
+the tower's shards, runestones and gates at load (`2faf43c`) passed all
+67 real levels; so did `c8fb3f9` (the turbo meter,
 the boss camera's stick) before it.
 
 Before that, the all-levels smoke test on master `f83e379` (item, monster and boss
