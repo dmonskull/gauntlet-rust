@@ -83,7 +83,7 @@ use gdl_formats::{LevelCollision, ModelFile};
 
 use crate::audio::PlaySound;
 use crate::character::{Animate, Animator, CharacterData, CharacterModel, advance_clip, clip_end};
-use crate::combat::{TargetKind, Targetable};
+use crate::combat::{CritterAim, SphereAim, TargetKind, Targetable};
 use crate::damage::after_armor;
 use crate::effects::effect_life;
 use crate::exits::ChangeLevelTo;
@@ -579,12 +579,15 @@ struct Statue {
 #[derive(Component)]
 struct StatueModel;
 
-/// One of a critter's hit spheres (its type's `NODE` records): the hero
-/// hits these instead of the body.
+/// A target on a critter: one of its hit spheres (its type's `NODE`
+/// records, numbered across the body and its parts), or — `node` none —
+/// the body of the critter or of its part `part`, at its centre, which the
+/// game falls back on when none of its spheres will do.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct CritterSphere {
     pub critter: Entity,
-    pub node: usize,
+    pub node: Option<usize>,
+    pub part: Option<usize>,
 }
 
 /// The level's critter state.
@@ -847,9 +850,12 @@ pub struct Critter {
     node_at: Option<[f32; 3]>,
     node_was: Option<[f32; 3]>,
     /// Per hit sphere: damage taken (it stops counting at its share of hit
-    /// points), and its entity.
+    /// points), its entity, and whether it's spent (no longer a target).
     sphere_damage: Vec<f32>,
     spheres: Vec<Entity>,
+    spent: Vec<bool>,
+    /// Its body's target, at its centre.
+    aim: Entity,
     blows_dealt: u32,
     /// Hit points at the start of the last tick.
     hp_before: f32,
@@ -892,11 +898,11 @@ impl Critter {
     }
 
     /// A blow from the hero, on hit sphere `sphere` (numbered across a body
-    /// and its parts) or the body (`ranged`: a missile or thrown weapon):
-    /// returns the experience it earns. `sounds` gets the names of the
-    /// sounds to play. A part's blow also comes off its body while the part
-    /// lives on; a body's is shared out over its living parts, half of it
-    /// split between them.
+    /// and its parts), or the body of part `part`, or the body (`ranged`: a
+    /// missile or thrown weapon): returns the experience it earns. `sounds`
+    /// gets the names of the sounds to play. A part's blow also comes off
+    /// its body while the part lives on; a body's is shared out over its
+    /// living parts, half of it split between them.
     #[allow(clippy::too_many_arguments)]
     pub fn take_hit(
         &mut self,
@@ -904,14 +910,19 @@ impl Critter {
         kind_bits: u32,
         push: [f32; 3],
         sphere: Option<usize>,
+        part: Option<usize>,
         ranged: bool,
         level: Option<&CritterLevel>,
         sounds: &mut Vec<String>,
     ) -> u32 {
         let owner = sphere.and_then(|g| self.sphere_owner.get(g).copied());
-        if let Some((Some(k), local)) = owner {
+        let on_part = match owner {
+            Some((k, local)) => k.map(|k| (k, Some(local))),
+            None => part.map(|k| (k, None)),
+        };
+        if let Some((k, local)) = on_part {
             let Some(p) = self.parts.get_mut(k) else { return 0 };
-            let (mut xp, dealt) = p.hit_self(damage, kind_bits, push, Some(local), ranged, level, sounds);
+            let (mut xp, dealt) = p.hit_self(damage, kind_bits, push, local, ranged, level, sounds);
             if dealt > 0.0 && p.hit_points > 0.0 && self.state == CritterState::Active {
                 self.hit_points -= dealt;
                 if self.hit_points <= 0.0 {
@@ -1435,11 +1446,7 @@ fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 
         guard += 1;
     }
     c.sphere_owner = owners;
-    let bare = c.spheres.is_empty();
     commands.entity(root).insert((c, LevelEntity));
-    if bare {
-        commands.entity(root).insert(Targetable::new(TargetKind::Object, t.radius, t.height));
-    }
     Some(root)
 }
 
@@ -1488,13 +1495,20 @@ fn new_critter(
     let hp = t.hit_points * level.hit_point_scale;
     let moves = kind.file.type_moves(ty).len();
     let nodes = kind.file.type_nodes(ty);
+    // Its body's target at its centre (its cylinder's radius and height),
+    // then its spheres, grouped with it.
+    let centre = centre_at(position, yaw, t.center);
+    let aim = commands.spawn((Transform::from_translation(Vec3::from(centre)), CritterSphere { critter: root, node: None, part }, LevelEntity)).id();
+    let body = CritterAim { body: aim, sphere: None };
+    commands.entity(aim).insert(Targetable::new(TargetKind::Object, t.radius, t.height).of_critter(body));
     let spheres: Vec<Entity> = if t.flags & TYPE_SPHERES != 0 {
         nodes
             .iter()
             .enumerate()
             .map(|(i, n)| {
-                let target = Targetable::new(TargetKind::Object, n.radius, n.radius);
-                let sphere = CritterSphere { critter: root, node: owners.len() };
+                let sphere = SphereAim { index: i, reach: n.reach, weight: n.weight };
+                let target = Targetable::new(TargetKind::Object, n.radius, n.radius).of_critter(CritterAim { body: aim, sphere: Some(sphere) });
+                let sphere = CritterSphere { critter: root, node: Some(owners.len()), part };
                 owners.push((part, i));
                 commands.spawn((Transform::from_translation(Vec3::from(position)), target, sphere, LevelEntity)).id()
             })
@@ -1541,6 +1555,8 @@ fn new_critter(
         node_at: None,
         node_was: None,
         sphere_damage: vec![0.0; nodes.len()],
+        spent: vec![false; spheres.len()],
+        aim,
         blows_dealt: 0,
         hp_before: hp,
         now: level.now,
@@ -1718,7 +1734,7 @@ fn tick_critters(
                 });
                 info!("the boss is gone");
             }
-            for s in c.spheres.iter().chain(c.parts.iter().flat_map(|p| &p.spheres)) {
+            for s in c.spheres.iter().chain([&c.aim]).chain(c.parts.iter().flat_map(|p| p.spheres.iter().chain([&p.aim]))) {
                 commands.entity(*s).try_despawn();
             }
             commands.entity(entity).try_despawn();
@@ -1777,13 +1793,12 @@ fn tick_critters(
         }
         c.hp_before = hp_now;
         if c.state == CritterState::Dying {
-            commands.entity(entity).try_remove::<Targetable>();
-            for s in &c.spheres {
+            for s in c.spheres.iter().chain([&c.aim]) {
                 commands.entity(*s).try_remove::<Targetable>();
             }
         }
         for p in c.parts.iter().filter(|p| p.state == CritterState::Dying) {
-            for s in &p.spheres {
+            for s in p.spheres.iter().chain([&p.aim]) {
                 commands.entity(*s).try_remove::<Targetable>();
             }
         }
@@ -1818,7 +1833,7 @@ fn tick_critters(
         // The parts' moves: target, node, blows and sounds; their hit
         // spheres follow their nodes.
         for p in &mut c.parts {
-            follow_spheres(p, &bone_matrix, &mut spheres);
+            follow_spheres(p, &bone_matrix, &mut spheres, &mut commands);
             if !p.mirrored
                 && let Some(pcur) = p.current
             {
@@ -1849,7 +1864,7 @@ fn tick_critters(
             c.hold_until = now + mv.hold;
         }
 
-        follow_spheres(c, &bone_matrix, &mut spheres);
+        follow_spheres(c, &bone_matrix, &mut spheres, &mut commands);
         act(c, entity, &mv, cur, &bone_matrix, &heroes, level, &mut blows, &mut to_play, &mut commands);
 
         // Walk and turn.
@@ -1929,14 +1944,25 @@ fn anger_of(c: &Critter) -> f32 {
     (1.0 - c.hit_points.max(0.0) / (1.0 + c.full_hit_points)) * ANGER_SPAN + ANGER_BASE
 }
 
-/// Its hit spheres follow their nodes.
+/// Its hit spheres follow their nodes, and its body's target its centre;
+/// a sphere whose share of hit points is spent stops being a target (the
+/// game's searches pass it over).
 fn follow_spheres(
-    c: &Critter,
+    c: &mut Critter,
     bone_matrix: &dyn Fn(Option<usize>) -> Affine3A,
     spheres: &mut Query<&mut Transform, (With<CritterSphere>, Without<Critter>)>,
+    commands: &mut Commands,
 ) {
+    let centre = centre_at(c.position, c.yaw, c.kind.file.types[c.ty].center);
+    if let Ok(mut t) = spheres.get_mut(c.aim) {
+        t.translation = Vec3::from(centre);
+    }
     for (i, s) in c.spheres.iter().enumerate() {
         let Some(n) = c.kind.file.type_nodes(c.ty).get(i) else { continue };
+        if !c.spent[i] && c.sphere_damage[i] >= n.hit_points * c.full_hit_points {
+            c.spent[i] = true;
+            commands.entity(*s).try_remove::<Targetable>();
+        }
         let m = bone_matrix(c.body().spheres[i]);
         if let Ok(mut t) = spheres.get_mut(*s) {
             t.translation = m.transform_point3(Vec3::from(n.offset));
@@ -2311,9 +2337,14 @@ fn knockback(c: &mut Critter) {
 
 /// Its centre: the root plus the type's centre offset, turned with it.
 fn centre_of(c: &Critter, ty: &TypeInfo) -> [f32; 3] {
-    let (s, co) = c.yaw.sin_cos();
-    let o = ty.center;
-    [c.position[0] + o[0] * co + o[2] * s, c.position[1] + o[1], c.position[2] - o[0] * s + o[2] * co]
+    centre_at(c.position, c.yaw, ty.center)
+}
+
+/// A critter's centre: its root plus its type's centre offset, turned
+/// with it (the game's `+0x5C`).
+fn centre_at(position: [f32; 3], yaw: f32, o: [f32; 3]) -> [f32; 3] {
+    let (s, co) = yaw.sin_cos();
+    [position[0] + o[0] * co + o[2] * s, position[1] + o[1], position[2] - o[0] * s + o[2] * co]
 }
 
 /// Whether the critter's anger is outside a condition's range.
@@ -3279,14 +3310,14 @@ mod tests {
 
         // A blow on the eagle's head comes off the body too.
         let (body, heads) = hp(&c);
-        c.take_hit(100.0, 0, [0.0; 3], Some(5), false, None, &mut sounds);
+        c.take_hit(100.0, 0, [0.0; 3], Some(5), None, false, None, &mut sounds);
         let (body2, heads2) = hp(&c);
         let dealt = heads[0] - heads2[0];
         assert!(dealt > 0.0 && (body - body2 - dealt).abs() < 1e-3, "{dealt} {body} {body2}");
         assert_eq!(heads[1..], heads2[1..]);
 
         // A blow on the body: half of it over the three heads.
-        c.take_hit(90.0, 0, [0.0; 3], Some(0), false, None, &mut sounds);
+        c.take_hit(90.0, 0, [0.0; 3], Some(0), None, false, None, &mut sounds);
         let (body3, heads3) = hp(&c);
         let dealt = body2 - body3;
         for k in 0..3 {
@@ -3294,12 +3325,12 @@ mod tests {
         }
 
         // The killing blow on a head doesn't reach the body.
-        c.take_hit(1.0e6, 0, [0.0; 3], Some(5), false, None, &mut sounds);
+        c.take_hit(1.0e6, 0, [0.0; 3], Some(5), None, false, None, &mut sounds);
         assert_eq!(c.parts[0].state, CritterState::Dying);
         assert_eq!(c.hit_points, body3);
 
         // The body's death takes the heads with it.
-        c.take_hit(1.0e6, 0, [0.0; 3], Some(0), false, None, &mut sounds);
+        c.take_hit(1.0e6, 0, [0.0; 3], Some(0), None, false, None, &mut sounds);
         assert_eq!(c.state, CritterState::Dying);
         assert!(c.parts.iter().all(|p| p.state == CritterState::Dying));
     }

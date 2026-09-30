@@ -301,6 +301,11 @@ pub struct CritterNode {
     pub break_damage: i16,
     /// `+0x16`: passed to the model (not traced).
     pub model_flag: i16,
+    /// `+0x18`: how far away the hero's attack search finds it (0: as far
+    /// as the search looks).
+    pub reach: f32,
+    /// `+0x1C`: how much the search favours it among its body's spheres.
+    pub weight: f32,
     /// `+0x20`: the sphere's centre, in the node's space.
     pub offset: [f32; 3],
     /// `+0x2C`: the sphere's radius.
@@ -515,6 +520,8 @@ impl CritterNode {
             flags: i16_at(r, 0x10) as u16,
             break_damage: i16_at(r, 0x12),
             model_flag: i16_at(r, 0x16),
+            reach: f32_at(r, 0x18),
+            weight: f32_at(r, 0x1C),
             offset: vec3_at(r, 0x20),
             radius: f32_at(r, 0x2C),
             model_node: node_name_at(r, 0x30),

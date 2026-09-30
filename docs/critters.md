@@ -647,6 +647,56 @@ is:
 | dead | 20 |
 | golem | 5 less (`r2-0x7188`) |
 
+## Found and hit
+
+A critter — a body, and each of a boss's parts on its own, each needing
+hit points and state ≥ 2 — is found and hit **once**: through its first
+suitable live `NODE` sphere when its type has them (flag 2; a sphere is
+live while its damage taken `+0x550` is under its hit points `+0x54C`),
+else through its body, the cylinder of `TYPE +0x7C` radius and `+0x78`
+height around its centre `+0x5C`.
+
+- **The hero's search** (`0x80037e9c`, every object and its parts →
+  `0x80038008(cone, range, object, dir, pos, out)`): for each live sphere
+  with a model node (`+0x4FC`), v = centre `+0x534` − the hero's
+  position, L = |v| (3D); within the range (L ≤ 30, or no range) and its
+  own reach (`NODE +0x18`: L ≤ it, or 0 for no limit) the surface
+  distance is d = L − `NODE +0x2C`; with n = v / L, the cone threshold
+  t = |n.xz| × (cone + d × (1 − cone) / range) (`r2-0x7298` = 1); inside
+  it (n·dir > t) the sphere scores d / (`NODE +0x1C` × (n·dir − t)), and
+  the least score wins — the critter is then at that sphere's d. With no
+  sphere so, the body: L to the centre, d = L − `TYPE +0x7C`, the same
+  cone. The nearest critter (by d) competes with the monsters and items
+  as in [combat.md](combat.md). Reaches on the disc: the gargoyles' heads
+  100, torsos 80, wings 10; the golem's ball and hand 10; the djinn's
+  1000 and 20; weights 0.1–20 (0 never wins).
+- **Missiles** (`0x80037414`): the spheres in order (`0x800377e0`: a
+  quick reject — horizontal distance² ≤ (r + R)², the sphere at most r +
+  R above the missile — then `0x8002fa24`, the swept cylinder of radius
+  and half-height r + R around its centre), the first that's met winning;
+  else the body's cylinder around its centre (radius r + `+0x7C`,
+  half-height r + `+0x78`).
+- **Blasts** (`0x80037928` → `0x80037b20`): the first live sphere whose
+  centre is within the blast's radius + its own (and, for a directional
+  blast, ahead), else the body within the blast's radius + `+0x7C` — one
+  hit per critter.
+
+The sphere chosen is left in `+0xAB8` for the damage routine (node
+scaling, node flashes).
+
+Here (`combat.rs`, `critters.rs`, `projectiles.rs`, `effects.rs`): each
+critter and part has a body target at its centre (`Critter::aim`) and its
+spheres' targets grouped with it (`CritterAim`); a spent sphere stops
+being a target; the search scores the spheres as above, and missiles,
+bombs and potion blasts keep one target per critter
+(`combat::one_per_critter`: its first sphere met, else its body). Before
+this a potion blast hit a boss once for every sphere it reached — the
+dragon up to eight times a step. Stand-ins: which of a missile's
+candidates is met first is by distance along its path, not the game's
+per-tick order; a melee blow lands on the sphere the search found (the
+game passes the blow's point to the damage routine, whose sphere choice
+isn't traced).
+
 ## Death and victory
 
 - **Removal:** `0x8003e964` removes an instance and its parts, effects,
@@ -896,7 +946,7 @@ other retail boss has parts.
   otherwise. Missiles hit spheres by `0x800377e0`/`0x8002fa24`: the
   sphere's horizontal distance within its radius plus the missile's,
   and the sphere at most that much above the missile. The heads don't
-  come down otherwise.
+  come down otherwise. The details are in "Found and hit" below.
 
 ## Boss camera (`BCAM`)
 
@@ -1310,8 +1360,8 @@ the gargoyle and the general aren't run yet.
   - look nodes, the health meter (`GMETER`), hit effects, node spheres'
     flashes (the body's and parts' are done),
     fading, shadows;
-  - breakable `NODE`s: blows land on the body, and `TYPE` flag 2's node
-    spheres aren't used;
+  - breakable `NODE`s' own breaking (flags 2 and 4: `DAMG +0x12`, the
+    model subtree hidden);
   - dropping `+0xACC` items;
   - critter blows on monsters (`0x80035908`);
   - pushing players aside (`0x800350c8`) — the golem only stops short;
@@ -1455,11 +1505,10 @@ dragon.
   A real-data unit test checks the shared wounds.
 - Not done: the stump effects on a dead head, the parts' look nodes and
   turning (a part keeps its body's place and facing), spreading parts
-  over several players, a part's target falling back to its body's.
-- In this rewrite the hero's search (`player.rs`) picks the nearest
-  target by its own rules; the game's picks the living sphere by 3D
-  distance to its surface (see "Parts"), which puts a head in melee reach
-  only while it bites.
+  over several players.
+- The hero's search picks spheres, and falls back to a part's or the
+  body's centre, as the game does ("Found and hit"), which puts a head in
+  melee reach only while it bites.
 
 **Smoke test** (each boss level once, one game at a time, 400 frames,
 `GDL_CRITTER_HP=0.02`, the hero warped 12 in front of the boss attacking,

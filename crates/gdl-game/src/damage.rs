@@ -185,14 +185,14 @@ pub(crate) fn apply_hits(
             TargetKind::Object => {
                 // Critters (`critters.rs`), on the body or a hit sphere:
                 // block, armour, experience.
-                let (target, sphere) = match spheres.get(hit.target) {
-                    Ok(s) => (s.critter, Some(s.node)),
-                    Err(_) => (hit.target, None),
+                let (target, sphere, part) = match spheres.get(hit.target) {
+                    Ok(s) => (s.critter, s.node, s.part),
+                    Err(_) => (hit.target, None, None),
                 };
                 let Ok(mut c) = critters.get_mut(target) else { continue };
                 let mut hit_sounds = Vec::new();
                 let level = critter_level.as_deref();
-                let xp = c.take_hit(hit.damage, hit.kind, hit.push.to_array(), sphere, hit.ranged, level, &mut hit_sounds);
+                let xp = c.take_hit(hit.damage, hit.kind, hit.push.to_array(), sphere, part, hit.ranged, level, &mut hit_sounds);
                 info!("the hero hits a critter for {:.1}: {:.0} hit points left", hit.damage, c.hit_points);
                 for s in hit_sounds {
                     sounds.write(PlaySound(s));

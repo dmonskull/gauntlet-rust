@@ -25,7 +25,7 @@ use gdl_formats::texmod::TexMod;
 use crate::audio::PlaySound;
 use crate::character::{CharacterData, CharacterModel, clip_fps};
 use crate::deaths;
-use crate::combat::{Hit, TargetKind, Targetable, button};
+use crate::combat::{self, Hit, TargetKind, Targetable, button};
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion;
@@ -934,10 +934,11 @@ fn tick_blasts(
                 ranged: true,
             });
         };
-        for body in &bodies {
-            if (body.centre - b.centre).length() <= reach + body.radius {
-                hit(body.entity, body.kind, b);
-            }
+        // A critter once: its first sphere in reach, else its body.
+        let reached: Vec<&projectiles::Body> =
+            bodies.iter().filter(|body| (body.centre - b.centre).length() <= reach + body.radius).collect();
+        for body in combat::one_per_critter(reached, |body| body.aim) {
+            hit(body.entity, body.kind, b);
         }
         for (e, g, t, _) in &targets {
             if !b.items || !matches!(t.kind, TargetKind::Generator | TargetKind::Breakable) {
