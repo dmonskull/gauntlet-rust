@@ -113,7 +113,7 @@ pub(crate) fn apply_hits(
                     {
                         let at = deaths::effect_origin(m.stats.step, m.centre(), hit.at);
                         let scale = deaths::die_effect_scale(m.enemy, m.stats.step);
-                        effects.write(EffectAt { name, at, facing: 0.0, scale });
+                        effects.write(EffectAt { name, bank: None, at, facing: 0.0, scale });
                     }
                     debug!("monster {:?} hit for {:.1}: {:.1} left", hit.target, hit.damage, m.hit_points);
                     continue;

@@ -476,7 +476,7 @@ fn start_death(
     {
         let scale = deaths::die_effect_scale(m.enemy, m.stats.step);
         let at = deaths::effect_origin(m.stats.step, m.centre(), Vec3::from(d.blow));
-        effects.write(EffectAt { name, at, facing: 0.0, scale });
+        effects.write(EffectAt { name, bank: None, at, facing: 0.0, scale });
     }
     let frames = d.set.and_then(|s| textures.and_then(|t| t.frames(s)));
     if let Some(frames) = frames {

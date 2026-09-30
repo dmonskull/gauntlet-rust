@@ -150,10 +150,10 @@ pub fn node_at(nodes: &LevelNodes, name: &str) -> Option<Vec3> {
 
 /// As the tower loads: sets out the shards (bits 1–8 of
 /// [`quest::boss_marks`]) and runestones (a bit each, 0–12) the wizard has
-/// announced, wound on; then marks everything held as announced, and
-/// arms the wizard's scene for the first piece that wasn't
-/// (`tower_scenes.rs`). The window's light shines if all eight shards were
-/// announced before.
+/// announced, wound on; then checks the hero's rank, marks everything held
+/// as announced, and readies the wizard's scene for the rank and the
+/// first piece that wasn't (`tower_scenes.rs`). The window's light shines
+/// if all eight shards were announced before.
 #[allow(clippy::too_many_arguments)]
 fn place_trophies(
     mut commands: Commands,
@@ -161,6 +161,7 @@ fn place_trophies(
     nodes: Option<Res<LevelNodes>>,
     state: Option<ResMut<PlayerState>>,
     (trail, mut scene, mut light): (Res<LevelTrail>, ResMut<tower_scenes::Scene>, ResMut<quest::ShardLight>),
+    choice: Option<Res<crate::player::PlayerChoice>>,
     mut game: ResMut<LoadedGame>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
@@ -174,6 +175,10 @@ fn place_trophies(
     let (shards, runes) = (state.quest.shards_announced, state.quest.runes_announced);
     light.0 = shards & quest::ALL_SHARDS == quest::ALL_SHARDS;
     let (marks, held) = (quest::boss_marks(state.realms_beaten), state.runestone_bits());
+    let (keep, rank) = tower_scenes::check_rank(&state, choice.as_deref());
+    if let Some(level) = keep {
+        state.quest.rank_level = Some(level);
+    }
     let announce = tower_scenes::announcement(marks, shards, held, runes, trail.previous.as_deref());
     state.quest.shards_announced |= marks;
     state.quest.runes_announced |= held;
@@ -184,14 +189,11 @@ fn place_trophies(
         Some(tower_scenes::Announce::Rune(i)) => Some(rune_piece(i).0),
         _ => None,
     };
+    // The scenes' wizard is always ready: a hero can reach a new rank in
+    // the tower.
     let mut names: Vec<&str> = wanted.iter().map(|(n, _)| n.as_str()).collect();
-    if announce.is_some() {
-        names.push(SCENE_WIZARD);
-    }
+    names.push(SCENE_WIZARD);
     names.extend(piece.as_deref());
-    if names.is_empty() {
-        return;
-    }
     let mut built = build_models(&mut game, &names, &mut meshes, &mut materials, &mut images);
     for (name, place) in wanted {
         let (Some(at), Some(model)) = (node_at(&nodes, place), built.get(&name)) else {
@@ -202,15 +204,16 @@ fn place_trophies(
         commands.entity(root).insert((WindOn, LevelEntity));
         info!("{name} set out at {place} {at:?}");
     }
-    let Some(what) = announce else { return };
     let Some(wizard) = built.remove(SCENE_WIZARD) else {
-        warn!("{WIZARD_BANK} has no {SCENE_WIZARD}: no scene");
+        warn!("{WIZARD_BANK} has no {SCENE_WIZARD}: no scenes");
         return;
     };
     let wizard = tower_scenes::apparition(wizard, &mut materials);
     let piece = piece.and_then(|p| built.remove(&p)).map(Arc::new);
-    info!("the wizard will announce {what:?}");
-    scene.arm(what, wizard, piece);
+    if rank.is_some() || announce.is_some() {
+        info!("the wizard will announce {rank:?} {announce:?}");
+    }
+    scene.arm(wizard, rank, announce, piece);
 }
 
 /// The wizard of the scenes: `WIZARD`, beside `GWIZ` in the tower's bank.

@@ -46,9 +46,9 @@ pub struct PlaySound(pub String);
 #[derive(Message)]
 pub struct StopSound(pub String);
 
-/// A playing sound effect's name.
+/// A playing sound effect's name (it's gone once the sound ends).
 #[derive(Component)]
-struct EffectName(String);
+pub struct EffectName(pub String);
 
 /// Starts (`Some`) or stops (`None`) the looping sound on channel `key`:
 /// one loop per channel, left alone when asked for the one it's playing
