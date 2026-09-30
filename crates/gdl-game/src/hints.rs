@@ -24,6 +24,8 @@ pub enum Hint {
     MagicFull,
     /// 4: key ring full.
     KeysFull,
+    /// 6: magic pressed without a potion.
+    CollectMagicFirst,
     /// 7, then 0x5E, then 0x5F: picking up potions.
     UseMagic,
     ThrowMagic,
@@ -53,6 +55,7 @@ impl Hint {
             Self::UseKeyOnChest => ("USEKEYOPENCHEST", "S_USEKEY2", true),
             Self::MagicFull => ("FULLOFBOMBS", "S_MAGICFULL", true),
             Self::KeysFull => ("FULLOFKEYS", "S_KEYFULL", true),
+            Self::CollectMagicFirst => ("COLLECTMAGICFIRST", "S_COLLECTPOT", true),
             Self::UseMagic => ("USEMAGIC2", "S_USEMAGIC2", true),
             Self::ThrowMagic => ("THROWMAGIC", "S_THROWMAGIC", true),
             Self::MagicShield => ("MAGICSHIELD", "S_SHIELDMAGIC", true),
