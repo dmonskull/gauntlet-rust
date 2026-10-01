@@ -85,16 +85,17 @@ type HudTexts = Or<(With<StatusText>, With<HintText>)>;
 fn show_in_play(
     frontend: Option<Res<crate::frontend::Frontend>>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut debug: Local<Option<bool>>,
+    mut options: ResMut<crate::options::GameOptions>,
+    mut env: Local<Option<bool>>,
     mut texts: Query<&mut Visibility, HudTexts>,
 ) {
-    let debug = debug.get_or_insert_with(|| std::env::var("GDL_DEBUG_HUD").is_ok_and(|v| !v.is_empty() && v != "0"));
+    let env = *env.get_or_insert_with(|| std::env::var("GDL_DEBUG_HUD").is_ok_and(|v| !v.is_empty() && v != "0"));
     if crate::dev_keys() && keys.just_pressed(KeyCode::F1) {
-        *debug = !*debug;
+        options.debug_overlay = !options.debug_overlay;
     }
     let playing = frontend.is_none_or(|f| f.playing());
     for mut v in &mut texts {
-        let want = if playing && *debug { Visibility::Inherited } else { Visibility::Hidden };
+        let want = if playing && (env || options.debug_overlay) { Visibility::Inherited } else { Visibility::Hidden };
         v.set_if_neq(want);
     }
 }

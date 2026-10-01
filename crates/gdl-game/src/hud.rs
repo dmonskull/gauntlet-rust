@@ -20,12 +20,12 @@ impl Plugin for HudPlugin {
 #[derive(Component)]
 struct HudText;
 
-fn toggle_hud(keys: Res<ButtonInput<KeyCode>>, mut hud: Query<&mut Visibility, With<HudText>>) {
-    if crate::dev_keys()
-        && keys.just_pressed(KeyCode::F1)
-        && let Ok(mut v) = hud.single_mut()
-    {
-        *v = if *v == Visibility::Hidden { Visibility::Inherited } else { Visibility::Hidden };
+/// Shown with the settings' Debug Overlay (F1 with the developer keys) or
+/// `GDL_DEBUG_HUD=1`.
+fn toggle_hud(options: Res<crate::options::GameOptions>, mut hud: Query<&mut Visibility, With<HudText>>) {
+    let shown = options.debug_overlay || std::env::var("GDL_DEBUG_HUD").is_ok_and(|v| !v.is_empty() && v != "0");
+    if let Ok(mut v) = hud.single_mut() {
+        v.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
     }
 }
 
