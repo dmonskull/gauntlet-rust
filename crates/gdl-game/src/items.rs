@@ -547,10 +547,15 @@ impl Item {
             self.done = true;
             return;
         };
+        // A powerup turns round and round: the key's, key ring's, scroll's
+        // and the reflect and boost icons' ACTIVE carry no loop flag, but
+        // they keep turning in the original (the user's report; how the
+        // game replays them isn't traced).
+        let loops = a.loops() || self.class() == ItemClass::Powerup;
         // A looping action finishing a cycle counts as its end for whatever
         // waits on it.
-        let wrapped = character::advance_clip(&mut self.frame, dt, a.frames, a.rate, a.loops());
-        if wrapped || (!a.loops() && self.frame >= character::clip_end(a.frames)) {
+        let wrapped = character::advance_clip(&mut self.frame, dt, a.frames, a.rate, loops);
+        if wrapped || (!loops && self.frame >= character::clip_end(a.frames)) {
             self.done = true;
         }
     }
