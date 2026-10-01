@@ -520,12 +520,13 @@ fn build_model(
         .iter()
         .filter_map(|&(node, object)| {
             // Each atree node draws with its render flags (blending, facing),
-            // like a character's; hidden nodes and glows (whose texture the
-            // effects system sets at run time) don't draw.
+            // like a character's; hidden nodes, glows (whose texture the
+            // effects system sets at run time) and a chest's contents node
+            // (a placeholder card the game hides) don't draw.
             let flags = match &r.atree {
                 Some(atree) => {
                     let n = &atree.nodes[node];
-                    if n.hidden() || n.name.ends_with("GLOW") {
+                    if n.hidden() || n.name.ends_with("GLOW") || n.name == CONTENTS_NODE {
                         return None;
                     }
                     n.render_flags
@@ -690,6 +691,26 @@ const BLAST_MODELS: &[(&str, Wanted)] = &[
     ("CHESTSEXP0", |t| t.class == ItemClass::Container && t.subtype == 0x30),
     ("CHESTGEXP0", |t| t.class == ItemClass::Container && !matches!(t.subtype, 0x2C | 0x30)),
 ];
+
+/// The node of a container's model that its contents hang on once it's
+/// opened (`docs/items.md`, "Containers"): the game looks up the object
+/// `<model>NULL1`, hides that node and keeps it for the contents. Only the
+/// chests' models (`CHEST`, `CHESTS`) have one; its own part is a
+/// placeholder card, never drawn.
+pub const CONTENTS_NODE: &str = "NULL1";
+
+/// The entity of a container model's contents node, if it has one.
+pub fn contents_bone(rig: &ItemRig) -> Option<Entity> {
+    rig.bones.get(rig.atree.node_index(CONTENTS_NODE)?).copied()
+}
+
+/// What a silver chest (`CHESTS`) holding gold becomes as it's opened: the
+/// realm items' gold-filled silver chest.
+pub const SILVER_GOLD_CHEST: &str = "CHESTSG";
+/// The silver chest's container subtype.
+const SILVER_CHEST: i32 = 0x30;
+/// The gold powerup subtype.
+const GOLD: i32 = 1;
 
 /// Models of what the level's containers hold, by item type name, for
 /// contents released at run time.
@@ -932,6 +953,20 @@ pub fn spawn(
         }
         let model = build_model(&sources, &mut caches, &inside.name, None, meshes, level_materials, images);
         contents.models.insert(inside.name.clone(), model);
+    }
+    // A silver chest holding gold turns into the gold-filled one as it's
+    // opened (`items.rs`).
+    let silver_gold = pop.placements.iter().any(|p| {
+        let ty = pop.resolved_type(p);
+        let PlacementParams::Container { contents: Some(c), .. } = p.params(ty.class) else { return false };
+        let inside = (c < pop.item_types.len()).then(|| pop.resolve(c));
+        ty.class == ItemClass::Container
+            && ty.subtype == SILVER_CHEST
+            && inside.is_some_and(|t| t.class == ItemClass::Powerup && t.subtype == GOLD)
+    });
+    if silver_gold && !contents.models.contains_key(SILVER_GOLD_CHEST) {
+        let model = build_model(&sources, &mut caches, SILVER_GOLD_CHEST, None, meshes, level_materials, images);
+        contents.models.insert(SILVER_GOLD_CHEST.to_string(), model);
     }
     // A dead gargoyle leaves a gargoyle piece of its kind (`critters.rs`).
     let gargoyles = pop.placements.iter().any(|p| {
