@@ -69,7 +69,7 @@ pub(crate) fn apply_hits(
     mut sounds: MessageWriter<PlaySoundAt>,
     mut effects: MessageWriter<EffectAt>,
     heroes: Query<&Player>,
-    (enemies, mut hints): (Res<EnemyScale>, MessageWriter<ShowHint>),
+    (enemies, mut hints, mut items): (Res<EnemyScale>, MessageWriter<ShowHint>, Option<ResMut<crate::items::LevelItems>>),
 ) {
     for hit in hits.read() {
         // Only a hero's blows earn experience (a monster's bomb or blast
@@ -195,6 +195,11 @@ pub(crate) fn apply_hits(
                         }
                     }
                     commands.entity(hit.target).try_despawn();
+                    // The game frees its item: nothing of it is left to
+                    // walk into.
+                    if let Some(items) = items.as_deref_mut() {
+                        items.free(g.placement, &mut commands);
+                    }
                     debug!("generator {} destroyed", g.placement);
                 } else if g.hit_points_per_tier > 0.0 {
                     let tier = (g.hit_points / g.hit_points_per_tier).ceil().clamp(1.0, 3.0) as i32;
