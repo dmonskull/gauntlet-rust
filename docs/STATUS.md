@@ -1,15 +1,16 @@
 # Status: how close the rewrite is to the original
 
-Assessed 2026-10-01 on `master` after the level audit's first round
-(`ef1f596`). Update this file when an area moves; [HANDOFF.md](HANDOFF.md)
-has the day-to-day state and the job queue.
+Assessed 2026-10-01 on `master` after the level audit's second round
+(`04b2745`; the first estimate, on `ef1f596`, was 81 % / 76 %). Update
+this file when an area moves; [HANDOFF.md](HANDOFF.md) has the
+day-to-day state and the job queue.
 
 ## The numbers
 
 | measure | estimate |
 | --- | --- |
-| **Faithful to the original, one player** (what a single hero plays through) | **≈ 81 %** |
-| **Done overall** (everything the original does, 2–4 player co-op included, every level checked, no known issues) | **≈ 76 %** |
+| **Faithful to the original, one player** (what a single hero plays through) | **≈ 82 %** |
+| **Done overall** (everything the original does, 2–4 player co-op included, every level checked, no known issues) | **≈ 77 %** |
 
 These are judgements, not measurements. Each area below gets a weight (how
 much of the game it is) and a share done (what's confirmed against the
@@ -25,9 +26,9 @@ leaves co-op out.
 | Hero combat, magic, power-ups | 10 | 88 % | rapid fire's rate, missile streaks, magic element models, the legendary weapon's throw |
 | Monsters and generators | 9 | 75 % | most AIs run the chase stand-in; no actor-vs-actor collision |
 | Bosses and critters | 9 | 72 % | grabs, effect-slot contact damage, missile lifetimes, the boss key, stumps, the health meter |
-| Items, pickups, doors, exits, hazards | 6 | 90 % | random item types, the shop, the secret realm's coins |
-| Level mechanics (triggers, lifts, animated objects, secret walls, falls) | 8 | 80 % | a regression on A1's lifts, unexplained trigger failures, bursting objects |
-| What each level places and hides | 5 | 80 % | 61 of 67 levels not yet audited; the user's stray objects not pinned down |
+| Items, pickups, doors, exits, hazards | 6 | 91 % | random item types, the shop, the secret realm's coins, the keys' turning traced |
+| Level mechanics (triggers, lifts, animated objects, secret walls, falls) | 8 | 84 % | bursting objects, E2's debris, subtype 1 rotators; the tour's re-run pending |
+| What each level places and hides | 5 | 82 % | 47 of 67 levels not yet audited; the stray objects likely the debug markers (now off) |
 | Every level checked start to exit | 5 | 25 % | only A1's exit to A6 checked; triggers toured on A1–C1 and D1–D4 |
 | Quest, tower, saving | 5 | 88 % | the secret realm's coins, per-class records, memory card screens |
 | Front end, menus, HUD, hints | 7 | 75 % | shop, inventory, options, attract loop, the hints' plates |
@@ -41,33 +42,37 @@ In order, top first. Each line names its doc, where the decoding is.
 
 ### 1. Now: regressions and blockers
 
-- **A1's lifts 402 and 403 don't switch on** since the level audit's merge
-  (`ef1f596`): the hero lands on the same spots as before, the triggers
-  never fire. They did on `6cffb3a`. Find what changed (the merge's trigger
-  registration or camera-cut wait) and fix; re-run the tour.
-- **Trigger tour failures to explain or fix**, from the tour before and
-  after the merge ([mechanics.md](mechanics.md); the helper has these):
-  A4 267/268 (pads 3.4 under the lowered lifts), B1 96 (after the merge),
-  B5 275/278/280, C1 432/433, C2 43, C3 415, C4 556/575/669, D2 307/406,
-  D3 46/48/51/324/363, D4 338/342/355.
-- Run the tour on C2–T3 again on the merged build (`tools/tour.sh`), then
-  the all-levels smoke test (`tools/smoke.sh`).
+Fixed 2026-10-01: A1's lifts 402/403 (a teleport swept the item touch
+test across secret walls, `8c39b5f`); the crystal pickup's sparkle that
+never ended (effect emitters now stop with their effect, `9aa1881`);
+keys that turned once and stopped (`d2fa6d4`, a stand-in: see
+[items.md](items.md) "Item animation"); the developer keys (`I` swapped
+every item for a debug marker — a likely source of the user's "stray
+objects" —, `K`, `C`, `[`/`]`, `M`, `N`, F1) are off unless
+`GDL_DEV_KEYS=1` (`04b2745`). The second audit round (`728a4ff`)
+explained or fixed every tour lead from A4 to D4: items now drop with
+the movers at their start heights and ride them, touches reach from the
+hero's centre; C1 433 and D2 307 are unreachable in the original too.
+
+- Re-run the tour on every level on `04b2745` (`tools/tour.sh`; running),
+  then the all-levels smoke test (`tools/smoke.sh`).
 - Check the secret walls block and break in game (A1: `GDL_WARP=
   "55.5,0.15,59.1"`, A1SHOOTW1; the first try's camera sat inside a
   pillar).
 - Look at characters after the track-flag fix (`flags & 0x0FFF`), which
   changed 32 character bones ([animation-format.md](animation-format.md)).
 - Measure the frame rate with the 1,608 animated objects (`GDL_FPS=1`).
+- Trace how the game keeps keys turning (the helper has it).
 
 ### 2. Level fidelity (the user's top priority)
 
 - Static audit, level by level, of what the level build makes, skips and
   hides, and every trigger's link ([level-population.md](level-population.md),
-  [mechanics.md](mechanics.md); `level_audit` example): B1, B4–B6, C1–C5,
-  D1–D5, E1–E2, F1–F2, G1–G5, H1–H4, I1–I5, J1–J6, K1–K5, L1–L3, S1–S9,
-  T1–T3, DEMO1 (done: A1–A4, B2, B3).
-- Pin down the stray objects the user saw on the early levels (ask where;
-  nothing found by the data checks yet).
+  [mechanics.md](mechanics.md); `level_audit` example): E1–E2, F1–F2,
+  G1–G5, H1–H4, I1–I5 (the helper, round 3), then A5, A6, J1–J6, K1–K5,
+  L1–L3, S1–S9, T1–T3, DEMO1 (done: A1–A4, B1–B6, C1–C5, D1–D5).
+- Pin down the stray objects the user saw on the early levels: likely
+  the debug markers (`I`, now off in play); ask the user to confirm.
 - Walk each level from its start to its exit: levers, lifts, doors, keys,
   the exit to the next level. Done so far: A1's exit leads to A6.
 - Bursting animated objects (node type `0x50000`: H1's fire, the I realm's

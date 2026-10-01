@@ -451,8 +451,15 @@ load sets, and `GDL_RUNES`, count as held), queues its lines.
 
 There's no spin or bob in code: **items animate through their atree**
 (item `+0x6C`, `FUN_80011104(anim, action, mode)`). Every powerup's atree
-has one looping action `ACTIVE` (potions 30 frames, gems 60, shields ~30;
-treasure piles are still), so they turn and bob as keyframed. Doors have
+has one action `ACTIVE` (potions 30 frames, gems 60, shields ~30;
+treasure piles are still), so they turn and bob as keyframed. Most are
+flagged to loop (`+0x24` = 1); the key's, key ring's, scroll's and the
+reflect and boost icons' aren't (0), yet the user reports the original's
+keys keep turning. The item update passes mode 0 while the item's state
+(`+0xC8`) matches its action (`+0xCA`), else 2, and `FUN_8000eb70`
+restarts a finished clip only in modes 1 and 2 (or for another action),
+so how the game replays those isn't traced; the rewrite loops every
+powerup's action. Doors have
 `CLOSE` / `ACTIV` (12 frames: the gate slides 6.5 units down) / `OPEN`;
 chests `CLOSED` / `ACTIVE` / `OPEN`; exit portals `IDLE`, `READY`,
 `ACTIVE1..3`; transporters a looping `ACTIVE`.
@@ -591,7 +598,40 @@ in the announcer's voice queue and is dropped past a 0.5 s wait (with
 one player, four hints are sentences naming the hero; none of those are
 raised here) — [frontend.md](frontend.md), "The voice queues". The
 eating lines above are the hero's own, in the heroes' queue (1 s).
-Stand-ins: each is shown once per session, for 3 seconds.
+
+**The record** (`0x80124664 + hint × 0x1C`): a freeze (`−1`: play stops
+60 fields, `1`: 30 — `r13-0x738c`, held like the message box's
+`r13-0x7598`; 0 on every item hint), priority, mode, text group, string
+(−1: every string), voice id, and a word not traced. **Modes** (by the
+"seen" bytes in each player's record, `+0x1CCC + hint`, which go to the
+memory card with it; `FUN_800a4eec`): 0 always; 1 unless any player has
+seen it; 2 unless this player has; 3 unless every player in the game
+has. No hint shows during a camera cut (`r13-0x774c`).
+
+**The cool-down** (`r13-0x6e54`, fields): after each hint the next of
+hints 0–0x1C, 0x2C–0x2D, 0x37 and 0x50 waits `0x80124620[n]` — 0, 120,
+240, 420, 600, then 600 each time (the table ends in −1 and the count
+stops short of it) — counted from each level's load (`FUN_800a4d5c`
+clears it); the attract loop's modes (`0x8003`, `0x8006`) wait 60.
+
+**The box** (`FUN_800a4268`, drawn by `FUN_800a4874`; per player
+`p` = 0–3, or 4 for all): the `SCROLL_A` sprite (`FUN_800b3090`)
+`FUN_800b20cc(0x40)` — alpha `0x80 − 0x40/2` = 0x60 of 0x80 — the text's
+widest line (`FUN_800a4dac`) + 64 wide and its height (`FUN_8001ed84`,
+lines × (font height × scale + 8); 12 in the mode `r13-0x7338`) + 16
+high, centred on the player's panel (`0x8011fa08[p]` = 64, 192, 320, 448;
+y 250 — 256, 192 for all — or above a world point, 62 up, when one is
+given) and moved to keep within x 0–511 and y 2–304, its text with it.
+The lines are drawn in the group's font and scale (−1 font: the
+group's; hints use `8Hi_fonts5`, slot 0's 8 × 8) 2 apart, centred on
+the box (`FUN_8001f440`, y flag `0x1000`), in the player's ink
+`0x8012464c[p]`: `0x1F1F00`, `0x00001F`, `0x1F0000`, `0x001F00` (dark
+yellow, blue, red, green), `0x160C03` for all. It stays up (`r13-0x6e2c`)
+60 fields a line + 30, counted outside cuts, where it's hidden.
+
+Here (`hints.rs`): the box, ink, font, timing, cut rule and cool-down
+for player 1. Stand-in: once-only hints are remembered for the session,
+not in the character's record.
 
 ## Not done
 
