@@ -336,7 +336,10 @@ pub struct Monster {
     pub aware: bool,
     /// Its bounds are on screen, with a margin.
     pub near_screen: bool,
-    floor: f32,
+    pub(crate) floor: f32,
+    /// The collision node of the floor it stands on: a moving one carries
+    /// it, as it does the heroes (`mechanics.rs`).
+    pub(crate) ground_node: Option<usize>,
     previous: ([f32; 3], f32),
     /// Frozen for this many video fields (just placed).
     freeze: f32,
@@ -734,6 +737,7 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         aware: false,
         near_screen: true,
         floor: new.position[1],
+        ground_node: None,
         previous: (new.position, new.facing),
         freeze: new.freeze,
         action: START,
@@ -1228,8 +1232,13 @@ fn tick_monsters(
             }
         }
 
-        // Asleep unless a player is in range or it's near the screen.
+        // Asleep unless a player is in range or it's near the screen —
+        // still standing on its floor, which carries it if it moves (a
+        // ship under way, `mechanics.rs`).
         if m.target_distance > m.stats.awareness && !m.near_screen {
+            if m.ground_node.is_none() {
+                find_ground(collision, m);
+            }
             continue;
         }
         let target = m.target.and_then(|t| targets.iter().find(|p| p.entity == t)).copied();
@@ -2054,6 +2063,15 @@ struct MonsterMove {
     fell: bool,
 }
 
+/// The floor under a monster standing still, as its mover's probe finds it.
+fn find_ground(collision: &LevelCollision, m: &mut Monster) {
+    let start = [m.position[0], m.position[1] + 2.0, m.position[2]];
+    if let Some(h) = collision.floor_probe(start, m.stats.step, -m.stats.step - 5.0, 0.5 * m.stats.radius, 2) {
+        m.floor = h.point[1];
+        m.ground_node = Some(h.node);
+    }
+}
+
 /// The game's monster mover: like the players' (`LevelCollision::
 /// move_actor`), but the wall test starts 2 units up with 1.5 × the
 /// monster's radius, the floor probe has half its radius and searches
@@ -2090,9 +2108,13 @@ fn monster_move(collision: &LevelCollision, m: &mut Monster, velocity: [f32; 3],
             if rise <= allowance {
                 ok = true;
                 m.floor = hit.point[1];
+                m.ground_node = Some(hit.node);
                 if 0.1 * len < rise {
                     match probe(add(start, v)) {
-                        Some(h) => m.floor = h.point[1],
+                        Some(h) => {
+                            m.floor = h.point[1];
+                            m.ground_node = Some(h.node);
+                        }
                         None => ok = false,
                     }
                 }
@@ -2105,8 +2127,12 @@ fn monster_move(collision: &LevelCollision, m: &mut Monster, velocity: [f32; 3],
     }
     if v[0] == 0.0 && v[2] == 0.0 {
         // Standing: follow the floor under it.
-        if let Some(h) = probe(start) {
-            m.floor = h.point[1];
+        match probe(start) {
+            Some(h) => {
+                m.floor = h.point[1];
+                m.ground_node = Some(h.node);
+            }
+            None => m.ground_node = None,
         }
     }
     let dy = m.floor - m.position[1];
