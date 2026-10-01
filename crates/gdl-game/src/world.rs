@@ -127,6 +127,7 @@ fn change_level(
     // The realm last played outside the tower (where the heroes come back).
     mut last_realm: Local<Option<u32>>,
     mut flash_colours: ResMut<FlashColours>,
+    tunings: Option<Res<crate::monsters::LevelTunings>>,
 ) {
     let Some(step) = requests.read().map(|r| r.0).reduce(|a, b| a + b) else {
         return;
@@ -172,6 +173,7 @@ fn change_level(
                 &mut materials,
                 &mut marker_materials,
                 &mut images,
+                tunings.as_deref().and_then(|t| t.enemies(&level.name)),
             );
             stats.population = spawned.summary;
             info!("{} texture animations on the level's items", spawned.texanims.len());
