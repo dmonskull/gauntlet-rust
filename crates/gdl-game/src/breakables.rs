@@ -8,8 +8,9 @@
 //! the item: a container breaks open and releases what it holds (a new
 //! item on the floor, with its model, that can't be picked up for 30
 //! fields), a barrel breaks, an exploding barrel blasts everything near it,
-//! a poison barrel lets out a cloud, a shootable wall is freed, and a hit
-//! switch is pressed down its chain. An obstacle a blow leaves standing
+//! a poison barrel lets out a cloud, a shootable wall is freed, a falling
+//! obstacle (a wall that falls once shot down, a rock fall) falls
+//! (`items.rs`), and a hit switch is pressed down its chain. An obstacle a blow leaves standing
 //! flashes for one update (`flash.rs`).
 //!
 //! The blast and the poison cloud are the game's explosion effects

@@ -70,7 +70,7 @@ type indices. `FUN_800646e4` loops while the class is −1, picking
 | +0x00 | i16 item type index (`"NewItem: bad index"` if negative) |
 | +0x02 | player count gate (`FUN_80065d84`): 0 always; 1–10 at least n players; >10 exactly n−10 |
 | +0x03 | flags: bit 0 → item flag `0x40` (the item updates off screen too); bit 1 → no model; bit 2 → model flag `0x80000` |
-| +0x04, +0x06 | i16 × 2 → item `+0xC0/+0xC2` |
+| +0x04, +0x06 | i16 × 2 → item `+0xC0/+0xC2`: a secret wall's (shape 4) first collision triangle and count |
 | +0x08 | name[16]: overrides the type's model name (walls name a level object; sounds name the sound) |
 | +0x18 | position (vec3) |
 | +0x24 | rotation, Euler radians (vec3) |
@@ -114,6 +114,26 @@ digit gives the level: `realm << 8 | digit − '1'`.
 Transporters: `FUN_80064600` links each to the transporter whose id is its
 destination (`"Transporter id %d no dest %d"`). Triggers: `FUN_8006437c`
 checks ids are unique and chains `next` ids (`"Linked Triggers loop"`).
+
+What the build leaves out or changes (`population.rs`, `items.rs`): an
+obelisk (powerup subtype 12) is freed as it's made — never in a level; a
+KEY placed with a count above 1 is made the level's `KEYRING` type; a
+random type picks one of its choices (`((seed >> 5) + slot) % count`;
+the rewrite takes the first); every trigger's target is registered as a
+mover, for the party or not ([mechanics.md](mechanics.md)).
+
+### Auditing the levels
+
+`cargo run -p gdl-formats --example level_audit -- <game>/Gauntlet [level]
+[--triggers] [--anim]` checks every level against these rules: movers
+only triggers for more players register (held at their off height, or a
+bridge hidden), trigger links (chains to missing ids, quest gates, odd
+flags), placements built differently (obelisks, key rings, random types,
+rotators), blocking items without a model, secret walls, and trigger
+targets under an animated object with no animation of their own;
+`--triggers` lists the party's triggers with a warp point on the floor
+under each and what it moves (or plays), `--anim` where each animated
+target's collision is at rest, at its first frame and at its last.
 
 ## Monster names
 
