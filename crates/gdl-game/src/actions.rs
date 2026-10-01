@@ -145,6 +145,8 @@ impl Action {
     /// A stunning blow (kind `0x80`: the damage tiles).
     pub const STUN1: Self = Self(0x7F);
     pub const WEBREACT: Self = Self(0x80);
+    /// Held by a critter's grab (looping; `docs/critters.md`, "7 — grab").
+    pub const GRABBED: Self = Self(0x94);
     /// A blow of kind `0x2000` (its clip is HITREACT, as 0x1B's and
     /// 0x82's are).
     pub const STUNREACT: Self = Self(0x81);

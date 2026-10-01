@@ -43,7 +43,7 @@ use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
-use crate::player_state::{PlayerState, SpendPower, power};
+use crate::player_state::{Cry, HurtHero, PlayerState, SpendPower, power};
 use crate::options::GameOptions;
 use crate::party::{Inputs, MAX_PLAYERS, Party, SlotInput};
 use crate::population::LevelPopulation;
@@ -103,6 +103,13 @@ pub struct Player {
     pub slot: usize,
     /// The buttons it held last tick (for presses).
     held: u32,
+    /// Held by a critter's grab: the node it hangs from (none: where the
+    /// grab found it) and where its model hangs, in that node's space and
+    /// in the world's (`GrabHero`).
+    pub grabbed: Option<(Option<Entity>, Vec3, Vec3)>,
+    /// Thrown by a grab: the blow that lands once it's on a floor, and how
+    /// far along it is (`ThrowHero`).
+    thrown: Option<(f32, Throw)>,
     /// The magic controls: the double tap, the lock after a use, the
     /// throw's wind-up.
     pub magic: MagicState,
@@ -641,6 +648,72 @@ type HeroWriters<'w> = (
     MessageWriter<'w, EffectOn>,
 );
 
+/// A critter's grab holds the hero (`critters.rs`; `docs/critters.md`,
+/// "7 — grab"): its model hangs at `offset` in the node's space (at `at`
+/// with no node), and it neither moves, attacks nor reacts, playing
+/// GRABBED, until thrown or let go. Its own place doesn't change.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct GrabHero {
+    pub hero: Entity,
+    pub node: Option<Entity>,
+    pub offset: Vec3,
+    pub at: Vec3,
+}
+
+/// The grab throws the hero it holds: let go where it was taken, knocked
+/// along `push` (the knockback set to it, FALLDOWN), and `damage` lands
+/// once it's within 0.2 of a floor, the tick after.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct ThrowHero {
+    pub hero: Entity,
+    pub damage: f32,
+    pub push: Vec3,
+}
+
+/// A grab lets the hero go without a throw (its critter dying).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct ReleaseHero {
+    pub hero: Entity,
+}
+
+/// A throw's course: the fall to start, in the air, landed (its blow
+/// lands this tick).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Throw {
+    Starts,
+    Flies,
+    Landed,
+}
+
+/// A thrown hero has landed this close to a floor.
+const THROWN_LANDS: f32 = 0.2;
+
+fn take_grabs(
+    mut grabs: MessageReader<GrabHero>,
+    mut throws: MessageReader<ThrowHero>,
+    mut releases: MessageReader<ReleaseHero>,
+    mut players: Query<&mut Player>,
+) {
+    for g in grabs.read() {
+        if let Ok(mut p) = players.get_mut(g.hero) {
+            p.grabbed = Some((g.node, g.offset, g.at));
+            p.thrown = None;
+        }
+    }
+    for t in throws.read() {
+        if let Ok(mut p) = players.get_mut(t.hero) {
+            p.grabbed = None;
+            p.mover.knockback = t.push.to_array();
+            p.thrown = Some((t.damage, Throw::Starts));
+        }
+    }
+    for r in releases.read() {
+        if let Ok(mut p) = players.get_mut(r.hero) {
+            p.grabbed = None;
+        }
+    }
+}
+
 /// Player movement; the play camera ticks after it.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlayerTick;
@@ -691,9 +764,15 @@ impl Plugin for PlayerPlugin {
             // Loaded again whenever a player's choice changes (the front
             // end's character select); the next level spawn uses it.
             .add_systems(Update, load_heroes.run_if(resource_changed::<Party>).before(PlayerSpawn))
+            .add_message::<GrabHero>()
+            .add_message::<ThrowHero>()
+            .add_message::<ReleaseHero>()
             .add_systems(
                 FixedUpdate,
-                ((gather_inputs.run_if(crate::online::lockstep_off), hop).before(PlayerTick), tick.in_set(PlayerTick)),
+                (
+                    (gather_inputs.run_if(crate::online::lockstep_off), hop).before(PlayerTick),
+                    (take_grabs, tick).chain().in_set(PlayerTick),
+                ),
             )
             // Online the controls come from the session's bundles; this
             // machine's go out every frame (`online.rs`).
@@ -903,6 +982,8 @@ fn spawn_hero(
         halo_drank: false,
         halo_draining: false,
         pending_hit: (0.0, 0, Vec3::ZERO),
+        grabbed: None,
+        thrown: None,
         stun_until: 0.0,
         pending_stun: None,
         came_round: false,
@@ -1152,7 +1233,7 @@ fn tick(
     mut hits: MessageWriter<Hit>,
     (mut shots, mut potions, mut effects, mut effects_breath, mut spent, mut chops, mut sounds, mut loops, mut riding): HeroWriters,
     mut hints: MessageWriter<ShowHint>,
-    (colours, mut tags, mut commands, mut hero_pad): (Res<FlashColours>, Query<&mut MeshTag>, Commands, ResMut<HeroPad>),
+    (colours, mut tags, mut commands, mut hero_pad, mut hurt): (Res<FlashColours>, Query<&mut MeshTag>, Commands, ResMut<HeroPad>, MessageWriter<HurtHero>),
     party: Res<Party>,
     monster_level: Option<Res<crate::monsters::MonsterLevel>>,
     boss: (Option<Res<crate::critters::CritterLevel>>, Query<&GlobalTransform>, Query<&DeathMonster>),
@@ -1234,6 +1315,30 @@ fn tick(
         let facing = p.mover.facing;
         let current = p.actions.action;
 
+        // Held by a grab: GRABBED loops and the hero does nothing else (its
+        // movement, floor check and attacks are skipped; blows don't make
+        // it react).
+        if p.grabbed.is_some() {
+            p.pending_hit = (0.0, 0, Vec3::ZERO);
+            p.mover.knockback = [0.0; 3];
+            let clip = clip_for(&animator, Action::GRABBED);
+            if animator.action != clip || animator.finished() {
+                animator.play(clip);
+                p.actions.switched(Action::GRABBED, p.class);
+            }
+            continue;
+        }
+        // A throw's blow lands the tick after the hero came down on a floor
+        // (through the damage routine: kind 0, no push, the hurt sound).
+        if let Some((damage, Throw::Landed)) = p.thrown {
+            p.thrown = None;
+            let amount = p.take_blow(damage, 0, Vec3::ZERO);
+            if amount != 0.0 {
+                hurt.write(HurtHero { slot: p.slot, amount, kind: 0, cry: Cry::Hurt });
+            }
+            info!("the thrown hero lands: {amount:.1}");
+        }
+
         // What the controls ask for. The action playing may hold the stick
         // back (magic, defending); lunges drift on without it.
         let magnitude = if face_boss.is_some() { 0.0 } else { stick.magnitude * actions::stick_scale(current) };
@@ -1286,6 +1391,15 @@ fn tick(
         let pojo = p.special_bits & power::POJO != 0;
         let (reaction, knock, reaction_face) = hit_reaction(hit_damage, hit_flags, hit_push, facing, pojo);
         let reaction = stun_class(reaction, current, now < p.stun_until && intent == Intent::Idle);
+        // Thrown: FALLDOWN at once (the reaction class 301, played as
+        // class 21's).
+        let reaction = match p.thrown {
+            Some((damage, Throw::Starts)) => {
+                p.thrown = Some((damage, Throw::Flies));
+                21
+            }
+            _ => reaction,
+        };
         let stunned = matches!(reaction, 2 | 3 | 100);
         // A blow of more than a point flashes the hero.
         if hit_damage > HIT_FLASH_DAMAGE {
@@ -1660,6 +1774,12 @@ fn tick(
             None => d,
         };
         p.mover.position = std::array::from_fn(|i| feet[i] + d[i]);
+        // A thrown hero is down once it's within 0.2 of a floor.
+        if let Some((damage, Throw::Flies)) = p.thrown
+            && p.mover.position[1] - p.ground.floor <= THROWN_LANDS
+        {
+            p.thrown = Some((damage, Throw::Landed));
+        }
         // Fell out of the level: back to the start (the game kills the
         // player here; lives aren't implemented yet).
         if ground.as_ref().is_some_and(|g| p.mover.position[1] <= g.0.kill_height()) {
@@ -1699,9 +1819,20 @@ fn strike_blow(
     Some(Hit { target: found.entity, attacker, damage, kind, push, at, target_kind: found.kind, ranged: false })
 }
 
-fn interpolate(fixed: Res<Time<Fixed>>, mut players: Query<(&Player, &mut Transform)>) {
+fn interpolate(fixed: Res<Time<Fixed>>, mut players: Query<(&Player, &mut Transform)>, nodes: Query<&GlobalTransform, Without<Player>>) {
     let t = fixed.overstep_fraction();
     for (player, mut transform) in &mut players {
+        // Held, it hangs from the critter's node (turning with it).
+        if let Some((node, offset, at)) = player.grabbed {
+            let hang = node.and_then(|n| nodes.get(n).ok()).map(|g| g.affine());
+            let (_, rotation, place) = match hang {
+                Some(a) => (a * bevy::math::Affine3A::from_translation(offset)).to_scale_rotation_translation(),
+                None => (Vec3::ONE, transform.rotation, at),
+            };
+            transform.translation = place;
+            transform.rotation = rotation;
+            continue;
+        }
         let (p0, f0) = player.previous;
         let (p1, f1) = (player.mover.position, player.mover.facing);
         transform.translation = Vec3::from(p0).lerp(Vec3::from(p1), t);
