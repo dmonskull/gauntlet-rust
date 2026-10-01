@@ -12,6 +12,6 @@ name=gauntlet-dark-legacy-$os-$arch
 rm -rf dist/$name dist/$name.zip
 mkdir -p dist/$name
 cp target/release/gdl-game dist/$name/
-cp PLAYING.md dist/$name/
+cp PLAYING.md LICENSE dist/$name/
 (cd dist && zip -qr $name.zip $name)
 echo "dist/$name.zip"

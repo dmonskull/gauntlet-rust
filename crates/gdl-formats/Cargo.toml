@@ -3,6 +3,7 @@ name = "gdl-formats"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 # Pure-Rust Zstandard decoder for RVZ disc images (already in the tree via bevy).
