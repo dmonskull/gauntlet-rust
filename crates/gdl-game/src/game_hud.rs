@@ -99,7 +99,7 @@ fn draw_hourglass(
     // A grant (or top-up) of a power with bit 8 sets the time it's
     // measured out of, as the game's grant does.
     let slots: Vec<((i32, u32), f32)> =
-        state.powers.iter().filter(|p| p.value & TIME_STOP != 0).map(|p| ((p.subtype, p.value), p.time)).collect();
+        state.active_powers().filter(|p| p.value & TIME_STOP != 0).map(|p| ((p.subtype, p.value), p.time)).collect();
     for (key, t) in &slots {
         if g.seen.iter().find(|(k, _)| k == key).is_none_or(|(_, before)| t > before) {
             g.total = *t;

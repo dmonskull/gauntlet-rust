@@ -70,6 +70,7 @@ follows the level's own camera points and distances.
 | key | |
 | --- | --- |
 | WASD / left stick | move (Shift walks) |
+| arrows / D-pad | the power menu: Up opens it and turns the power shown on or off, Left/Right pick, Down closes (a power picked up is held until turned on) |
 | `J` / A | attack (hold or tap for combos) |
 | `L` / Y | power attack (finishes a combo) |
 | `H` / B | defend (turbo when held with attack) |

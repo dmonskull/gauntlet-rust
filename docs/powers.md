@@ -52,6 +52,51 @@ dies he throws `BHORN_IC`, `BMASK_IC`, `BGNTR_IC` and `BGNTL_IC`, powerups
 of subtype 9 lasting 240 s ([critters.md](critters.md), "The boss's
 loot").
 
+## Held powers (`FUN_8007fbcc`)
+
+A power picked up isn't on yet. The grant (`FUN_8007ee10`) gives a new
+slot state byte `+0x1E0 + slot` = 1 (held); the stats routine
+(`FUN_8007c4f0`) runs and adds up only slots whose byte is 2 (on) — the
+only code that sets 2 is the D-pad's power menu, below, which turns a
+held or switched-off power on (2) and one that's on off (3). So a power
+is carried until the hero turns it on, and one turned off keeps the time
+it has left for later. Topping up a carried power (same subtype and
+value) leaves its byte alone.
+
+**The menu** (`FUN_8007fbcc`, from the player update in play, mode
+`0x4010`, not under the message box; per player at `0x802751c0 + p ×
+0x28`: the slot shown, state, progress): the raw pad's D-pad bits —
+left `0x10000000`, right `0x20000000`, up `0x40000000`, down
+`0x80000000` ([combat.md](combat.md)).
+
+- Closed: Up plays sound `0xD` and, with no slot remembered, takes the
+  highest of slots 9…0 carrying a power (`FUN_80080004` from −1); with a
+  slot, the menu opens (state 2, progress 0).
+- Opening (2) and closing (3) count progress up by 4 a field to 128,
+  then it's open (1) or closed (0).
+- Open: if the slot shown has run out or Left is pressed, sound `0xE` and
+  the previous slot carrying a power (`FUN_80080004`: downward, round
+  from 9); none left: closing. Right: sound `0xE`, the next
+  (`FUN_8008008c`: upward, round from 0); none left: no slot, closing. Up:
+  sound `0x11`, the slot's byte 2 → 3, else → 2. Down: sound `0xD`,
+  closing.
+- Only the first ten of the eleven slots are shown.
+- Drawn (`FUN_8007ff50`) while open: the power's name — the first entry
+  of the table at `0x8011f4b0` (75 × {subtype, bits, name}, `r13-0x7d98`)
+  with the slot's subtype whose bits the slot all has: "Levitate",
+  "3Way Shot", "Gold Invuln", "Weapon" for an element… — at the panel's
+  centre − 52 + 12, y 335 + 103 − progress (310 when open; player 1:
+  x 24), scale 0.45 (`r2-0x5cb8`): glowing (`FUN_8001eb80`) while the
+  power is on, plain white `font32` (`FUN_80020970`) while held or off.
+- The sounds (`FUN_800157ec`, centred, 0x7F) are the menus':
+  `0xD` `S_OPTMENUMOVVRT`, `0xE` `S_OPTMENUMOVHRZ`, `0x11`
+  `S_OPTMENUSEL`.
+
+Here (`player_state.rs` `SlotState`, `power_menu.rs`): all of the above
+for player 1; the keyboard's arrows are the D-pad. `GDL_POWERS` turns its
+powers on at once. Unconfirmed: whether the memory card's record keeps
+the slots (the rewrite's save doesn't).
+
 ## Timing (`FUN_8007c4f0`)
 
 Confirmed, and more exact than items.md: a slot's time (`+0x130` + 0x10 ×

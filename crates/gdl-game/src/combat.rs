@@ -29,6 +29,12 @@ pub mod button {
     pub const MAGIC_SHIELD: u32 = 0x8000;
     pub const THROW_MAGIC: u32 = 0x10000;
     pub const COMBO_MOVE: u32 = 0x20000;
+    /// The D-pad (the power menu, `power_menu.rs`): the game's raw pad
+    /// bits for it.
+    pub const DPAD_LEFT: u32 = 0x1000_0000;
+    pub const DPAD_RIGHT: u32 = 0x2000_0000;
+    pub const DPAD_UP: u32 = 0x4000_0000;
+    pub const DPAD_DOWN: u32 = 0x8000_0000;
 }
 
 /// One tick of the controls: buttons held, and those that went down this
