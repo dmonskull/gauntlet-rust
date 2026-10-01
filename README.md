@@ -5,6 +5,14 @@ Legacy* (game ID `GUNE5D`), built from reverse engineering the original
 `main.dol` with Ghidra and reading public technical references on the
 GameCube disc/DOL format.
 
+**The goal: a 1:1 rewrite** — every level, monster, boss, item and
+mechanic working exactly as in the original — **plus convenient extras**
+the original never had: online co-op for up to four players with invite
+codes (each with their own camera, or the classic overhead one), Windows,
+macOS and Linux builds, widescreen, rebindable keyboard and mouse or any
+pad (switch at will), and reading your disc image directly. How close it
+is today is under [Progress](#progress).
+
 This project ships no game assets and no code copied from the original
 binary. Point it at a copy of the game you already own and it reads that
 copy's own data at runtime.
