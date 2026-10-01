@@ -43,6 +43,7 @@ use crate::level_material::LevelMaterial;
 use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
 use crate::player_state::{PlayerState, SpendPower, power};
+use crate::options::GameOptions;
 use crate::population::LevelPopulation;
 use crate::effects::{BreathAt, ChopAt, EffectAt, EffectOn, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
 use crate::flash::{self, Flash, FlashColours};
@@ -53,11 +54,6 @@ use crate::world::{LevelEntity, LevelGround};
 
 /// The hero's radius if the class data can't be read (every class has 1.5).
 const DEFAULT_RADIUS: f32 = 1.5;
-/// The game's "attack aim" and "walk-into attack" pad options, both on by
-/// default: attacking in place turns the hero toward the target, and walking
-/// into a monster attacks it.
-const ATTACK_AIM: bool = true;
-const WALK_INTO_ATTACK: bool = true;
 /// The turbo meter (player `+0x828`): fills at 2 a second up to 100 while
 /// the hero isn't in a turbo-class action, drains at 20 a second while
 /// charging; a turbo attack needs 40 (ATTPWRB) or a full meter (ATTPWRC)
@@ -828,26 +824,14 @@ fn hop(
 }
 
 /// The stick, in the camera's frame: +Y away from the camera, +X right.
-fn read_stick(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Vec2 {
+fn read_stick(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, options: &GameOptions) -> Vec2 {
     if let Some(v) = std::env::var("GDL_STICK").ok().and_then(|s| {
         let (x, y) = s.split_once(',')?;
         Some(Vec2::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
     }) {
         return v;
     }
-    for pad in pads {
-        let v = pad.left_stick();
-        if v.length() > 0.0 {
-            return v.clamp_length_max(1.0);
-        }
-    }
-    let axis = |pos: [KeyCode; 2], neg: [KeyCode; 2]| {
-        (pos.iter().any(|k| keys.pressed(*k)) as i32 - neg.iter().any(|k| keys.pressed(*k)) as i32) as f32
-    };
-    // The arrows are the D-pad (`read_buttons`).
-    let v = Vec2::new(axis([KeyCode::KeyD; 2], [KeyCode::KeyA; 2]), axis([KeyCode::KeyW; 2], [KeyCode::KeyS; 2])).normalize_or_zero();
-    // Keyboard runs; Shift walks.
-    if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) { v * 0.5 } else { v }
+    crate::controls::stick(keys, pads, options)
 }
 
 /// The logical buttons a named control (for `GDL_BUTTONS`) holds.
@@ -894,50 +878,16 @@ fn button_script() -> Vec<(u32, Option<(u64, u64)>)> {
         .collect()
 }
 
-/// The logical buttons held now, from the keyboard, pads and script. The
-/// game's default scheme puts turbo and defend on the same button.
-fn read_buttons(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, controls: &Controls) -> u32 {
-    const KEYS: [(KeyCode, u32); 11] = [
-        (KeyCode::KeyJ, button::QUICK),
-        (KeyCode::KeyL, button::POWER),
-        (KeyCode::KeyH, button::TURBO | button::DEFEND),
-        (KeyCode::KeyU, button::MAGIC),
-        (KeyCode::KeyP, button::CHARGE),
-        (KeyCode::KeyO, button::STRAFE),
-        (KeyCode::KeyG, button::COMBO_MOVE),
-        (KeyCode::ArrowUp, button::DPAD_UP),
-        (KeyCode::ArrowDown, button::DPAD_DOWN),
-        (KeyCode::ArrowLeft, button::DPAD_LEFT),
-        (KeyCode::ArrowRight, button::DPAD_RIGHT),
-    ];
-    // By position on the pad: A south, B west, X east, Y north.
-    const PAD: [(GamepadButton, u32); 12] = [
-        (GamepadButton::South, button::QUICK),
-        (GamepadButton::North, button::POWER),
-        (GamepadButton::West, button::TURBO | button::DEFEND),
-        (GamepadButton::East, button::MAGIC),
-        (GamepadButton::LeftTrigger2, button::CHARGE),
-        (GamepadButton::LeftTrigger, button::CHARGE),
-        (GamepadButton::RightTrigger2, button::STRAFE),
-        (GamepadButton::RightTrigger, button::COMBO_MOVE),
-        (GamepadButton::DPadUp, button::DPAD_UP),
-        (GamepadButton::DPadDown, button::DPAD_DOWN),
-        (GamepadButton::DPadLeft, button::DPAD_LEFT),
-        (GamepadButton::DPadRight, button::DPAD_RIGHT),
-    ];
-    let mut held = 0;
-    for (key, bits) in KEYS {
-        if keys.pressed(key) {
-            held |= bits;
-        }
-    }
-    for pad in pads {
-        for (b, bits) in PAD {
-            if pad.pressed(b) {
-                held |= bits;
-            }
-        }
-    }
+/// The logical buttons held now: the keyboard, mouse and pads as bound
+/// (`controls.rs`), and the script.
+fn read_buttons(
+    keys: &ButtonInput<KeyCode>,
+    mouse: &ButtonInput<MouseButton>,
+    pads: &Query<&Gamepad>,
+    controls: &Controls,
+    options: &GameOptions,
+) -> u32 {
+    let mut held = crate::controls::held(keys, mouse, pads, options);
     for &(bits, range) in &controls.script {
         if range.is_none_or(|(a, b)| (a..=b).contains(&controls.ticks)) {
             held |= bits;
@@ -962,7 +912,7 @@ fn clip_for(animator: &Animator, action: Action) -> usize {
 #[allow(clippy::too_many_arguments)]
 fn tick(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    (keys, mouse, options): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>, Res<GameOptions>),
     pads: Query<&Gamepad>,
     (free_look, boxes, scene): (Res<FreeLook>, Res<crate::message_box::MessageBox>, Res<crate::tower_scenes::Scene>),
     play_camera: Option<Res<PlayCamera>>,
@@ -1001,8 +951,8 @@ fn tick(
     // its start to its end), while the message box has them, or while the
     // tower's wizard announces something.
     let deaf = free_look.0 || cut || boxes.holds_input() || scene.holds_input();
-    let raw = if deaf { Vec2::ZERO } else { read_stick(&keys, &pads) };
-    let held = if deaf { 0 } else { read_buttons(&keys, &pads, &controls) };
+    let raw = if deaf { Vec2::ZERO } else { read_stick(&keys, &pads, &options) };
+    let held = if deaf { 0 } else { read_buttons(&keys, &mouse, &pads, &controls, &options) };
     let buttons = Buttons::from_held(held, controls.held);
     controls.held = held;
     // For what else reads the pad (the power menu): presses wait until
@@ -1017,6 +967,10 @@ fn tick(
     let right = Vec3::new(forward.z, 0.0, -forward.x);
     let dir = right * raw.x + forward * raw.y;
     let stick = Stick { heading: dir.x.atan2(dir.z), magnitude: raw.length().min(1.0) };
+    // The Robotron style's right stick (the GameCube's C-stick).
+    let c_raw = if deaf || options.scheme != crate::controls::ROBOTRON { Vec2::ZERO } else { crate::controls::c_stick(&pads) };
+    let c_dir = right * c_raw.x + forward * c_raw.y;
+    let c_stick = Stick { heading: c_dir.x.atan2(c_dir.z), magnitude: c_raw.length().min(1.0) };
     let body = PlayerCollision::default();
     let candidates = || targets.iter().map(|(e, t, target)| (e, t.translation(), target));
 
@@ -1042,6 +996,23 @@ fn tick(
             // No potion: the hint, and the hero moves as the stick says.
             hints.write(ShowHint(Hint::CollectMagicFirst));
             intent = combat::classify(Buttons::default(), stick.magnitude, 0.0, p.turbo);
+        }
+        // The Robotron style (`docs/combat.md`, "Intents"): after magic,
+        // turbo and defend, the right stick pushed attacks toward it — the
+        // power attack with its button held — or, with the left stick
+        // pushed too, strafe-attacks to its side of the left stick.
+        let mut c_aim = None;
+        if c_stick.magnitude > 0.0 && !matches!(intent, Intent::Magic | Intent::Turbo | Intent::Defend) {
+            intent = if stick.magnitude > 0.0 {
+                Intent::StrafeAttack(combat::Side::from_offset(wrap(c_stick.heading - stick.heading)))
+            } else if magic_buttons.held & button::POWER != 0 {
+                Intent::Power
+            } else {
+                Intent::Quick
+            };
+            if stick.magnitude == 0.0 {
+                c_aim = Some(c_stick.heading);
+            }
         }
         p.actions.observe_buttons(buttons.held);
         let keeps_facing = intent.keeps_facing();
@@ -1168,7 +1139,9 @@ fn tick(
         // type 0x25 or 0x29.
         let boss_walkable = monster_level.as_ref().is_some_and(|l| matches!(l.boss, 0x25 | 0x29));
         let mut walked_into = false;
-        if WALK_INTO_ATTACK
+        // The game's "walk-into attack" pad option (Auto Attack): walking
+        // into a monster attacks it.
+        if options.auto_attack
             && !shielded
             && !charged
             && reaction == 0
@@ -1189,7 +1162,9 @@ fn tick(
             || (0x09..=0x10).contains(&current.0)
             || (0x47..=0x4E).contains(&current.0);
         let aim = match found {
-            _ if strafing || !ATTACK_AIM => wanted,
+            // The C-stick attacks where it points.
+            _ if c_aim.is_some() => c_aim.unwrap_or(wanted),
+            _ if strafing || !options.auto_aim => wanted,
             Some(f) => combat::heading_of(f.direction),
             None => facing,
         };
@@ -1399,7 +1374,9 @@ fn tick(
         let category = p.actions.action.category().0;
         let drive = if stunned { 0.0 } else { drive };
         let mut face = (magnitude > 0.0 && !keeps_facing && !stunned).then_some(stick.heading);
-        if ATTACK_AIM && (1..=10).contains(&category) && category != 7 && !strafing && drive == 0.0 {
+        // The "attack aim" option (Auto Aim): attacking in place turns the
+        // hero toward the target.
+        if options.auto_aim && (1..=10).contains(&category) && category != 7 && !strafing && drive == 0.0 {
             face = Some(aim);
         }
         if reaction_face.is_some() {

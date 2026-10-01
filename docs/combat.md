@@ -349,7 +349,12 @@ When `+0x900 & 0xFE` is set:
   start-frame offset for interrupted throws, and animation speed (DEFEND2
   plays at 0.2 × armour) aren't done. The attack-sound indices in `PDAT`
   (`+0x0C`–`+0x1E`) aren't played.
-- Only the Default scheme; the C-stick isn't used.
+- The four schemes' buttons follow the game's table (`controls.rs`); the
+  Robotron style's C-stick is the right stick: pushed alone, an attack
+  (the power attack with its button held) toward it, aimed where it
+  points; with the left stick pushed too, a strafe attack to its side of
+  the left stick's heading (the hero's facing then isn't traced: it's
+  kept).
 
 ## What a blow does to its target
 

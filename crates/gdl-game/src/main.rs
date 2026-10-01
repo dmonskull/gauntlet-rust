@@ -14,6 +14,7 @@ mod camera_rig;
 mod character;
 mod collision_debug;
 mod combat;
+mod controls;
 mod critters;
 mod damage;
 mod deaths;
@@ -24,6 +25,7 @@ mod familiars;
 mod flash;
 mod font;
 mod footsteps;
+mod frame_rate;
 mod frontend;
 mod game_hud;
 mod gamma;
@@ -54,6 +56,7 @@ mod tower;
 mod tower_scenes;
 mod population;
 mod quest;
+mod rumble;
 mod saves;
 mod scene_light;
 mod projectiles;
@@ -67,15 +70,15 @@ use bootstrap::Args;
 use level::LoadedGame;
 
 /// With `GDL_FPS`, names every frame over 20 ms (hitches).
-/// Whether the developer keys work (`GDL_DEV_KEYS=1`): `I` cycles the
+/// Whether the developer keys work (`GDL_DEV_KEYS=1`, or the settings'
+/// Debug page): `I` cycles the
 /// population view, `K` the collision overlay, `C` the free camera, `F1`
 /// the debug readouts, `M` mutes, `N` plays the bank's next sound, `[`/`]`
 /// (Page Up/Down) change level. The original has none of these, and in
 /// play they sit among the keyboard controls (`I` between magic and
 /// strafe), so they're off unless asked for.
 pub(crate) fn dev_keys() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("GDL_DEV_KEYS").is_ok_and(|v| !v.is_empty() && v != "0"))
+    options::dev_keys_on()
 }
 
 fn log_slow_frames(time: Res<Time<Real>>, mut frame: Local<u64>) {
@@ -132,13 +135,11 @@ fn main() {
         autoshot::AutoShotPlugin,
     ));
 
-    // GDL_FPS=1 logs frame rate and frame time every second.
+    // The frame rate, for the settings' readout; GDL_FPS=1 also logs it
+    // and its frame time every second.
+    app.add_plugins((bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(), frame_rate::FrameRatePlugin));
     if std::env::var("GDL_FPS").is_ok_and(|v| !v.is_empty() && v != "0") {
-        app.add_plugins((
-            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
-            bevy::diagnostic::LogDiagnosticsPlugin::default(),
-        ))
-        .add_systems(Last, log_slow_frames);
+        app.add_plugins(bevy::diagnostic::LogDiagnosticsPlugin::default()).add_systems(Last, log_slow_frames);
     }
     // GDL_MEMSTATS=1 logs what's alive every 2 s (entities and assets), to
     // find anything a level change leaves behind.
@@ -200,6 +201,7 @@ fn main() {
                 footsteps::FootstepsPlugin,
                 loot::LootPlugin,
                 power_menu::PowerMenuPlugin,
+                rumble::RumblePlugin,
             ))
             .add_plugins((
                 font::Screen2dPlugin,

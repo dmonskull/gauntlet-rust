@@ -76,10 +76,19 @@ follows the level's own camera points and distances.
 | `H` / B | defend (turbo when held with attack) |
 | `U` / X, `P` / L, `O` / R, `G` / Z | magic, charge, strafe, combo move |
 | `-` / `=` | master volume down / up (5% steps; starts at 25%) |
-| `Esc` or `Enter` / Start | pause menu (and the front end: arrows move, Enter/`J` accept, Esc/`H` back) |
+| `Esc` or `Enter` / Start | pause menu (and the front end: arrows move, Enter/`J` accept, Esc/`H` back; on a pad A accepts, B or X backs) |
 
-Developer keys, only with `GDL_DEV_KEYS=1` (the original has none, and
-they sit among the controls, so a stray press would change the game):
+Options → Controls has the game's own control styles (with its
+controller diagram), rumble, auto aim and auto attack. Options or
+Settings → **PC Settings** rebinds the keyboard, mouse and pad, and has
+video (full screen, vsync) and debug switches; everything is saved with
+the options. An Xbox pad works out of the box: A attack, Y power attack,
+X turbo/defend, B magic, LT/LB charge, RT strafe, RB combo move, Start
+pause, D-pad power menu.
+
+Developer keys, only with `GDL_DEV_KEYS=1` or PC Settings → Debug →
+Developer Keys (the original has none, and they sit among the controls,
+so a stray press would change the game):
 
 | key | |
 | --- | --- |

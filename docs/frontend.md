@@ -186,6 +186,57 @@ GAME OVER; Quit Level → Yes sets `r13-0x7008`, which takes every hero out
 of the level (`FUN_80078de8`: state `0xB`) so the level ends and the party
 returns to the tower.
 
+### The Controls menu (id `0xD`, `FUN_80070c24` cases `0xD`–`0x11`)
+
+Each line opens a menu of its own, for the pad's player (per pad at
+`0x802407a8 + pad × 0x3C`: `+0x24` style, `+0x28` rumble, `+0x2C` auto aim,
+`+0x30` auto attack; `FUN_80032974` sets 0, 1, 1, 1; a loaded character
+brings its own from its record — style `+0x76C`, rumble `+0x1DB1`, auto
+attack `+0x1DB2`):
+
+- **Style** (`0x21`) → Control Style (record `0x8011ea34`, id `0xE`): one
+  line, the style's name (`0x8011e810`: Default, Arcade, Robotron, One
+  Handed) centred at y 265; left / right step it round the first three
+  (sound `0xE`), Select keeps it, Back doesn't. Over it, the controller's
+  pictures `CONTROLER_1..3` at (96, 104), (352, 104), (128, 232) at their
+  own sizes, labelled (`FUN_800721ac`) with the 16 strings of
+  `CONTROLS1..3` (the style's; `ENGLISH.ROM`, font `initials` × 0.4, line
+  gap 2) at the table `0x8011f200` — {alignment (0 left edge, 1 centred,
+  2 right edge, at x + 256), x, the block's middle y}: "CHARGE",
+  "MOVEMENT", "CONTROL", "INV. OPEN", "INV. SELECT", "INV. CLOSE" (the
+  D-pad: the power menu, [powers.md](powers.md) "Held powers"),
+  "START/PAUSE MENU", "N/A" (the C-stick; Robotron's "FIRE"), "STRAFE",
+  "2P COMBO", "SLOW ATTACK", "MAGIC", "QUICK ATTACK", "TURBO DEFEND".
+- **Rumble Feature** (`0x22`) → its menu (`0x8011eb88`): Off, On;
+  **Auto Aim** (`0x23`, `0x8011ecdc`) and **Auto Attack** (`0x24`,
+  `0x8011ee30`): On, Off. The current one is marked: the menu draw appends
+  `r2-0x6184` " ~" to it (item word 7), `~` being a tick in `font32`
+  (an item with a value text reads label + `r2-0x6188` " ~ " + value).
+  Choosing one sets it and closes the menu. Compass (id `0xC`) works the
+  same way: Hide, Show.
+
+**Rumble** (`FUN_80031938(pad, level, fields)`, while the pad's option
+is on): the hero's damage routine (`FUN_80078560`) shakes the pad for
+every blow that does damage: kind `0x10040` level 3, 30 fields; `0x120`
+level 2, 20; `0x90` level 1, 15; else level 0, 10 — the motor at
+`0x8011a8ec[level]` (0.2, 0.4, 0.6, 0.8, 1.0) × 255.
+
+Here (`frontend.rs`, `controls.rs`, `rumble.rs`, `options.rs`): all of
+that for player 1, saved with the options rather than the character.
+**PC Settings** (not the game's), under Options and both Settings menus:
+Keyboard & Mouse (every action's keys and mouse buttons; Accept, then
+press one, Escape cancels), Controller (the style, and any action moved
+to another pad button by Xbox name; Start cancels), Video (full screen,
+vsync) and Debug (developer keys, the debug overlay, a frame-rate
+readout, the collision overlay). Their lines are plain light letters on
+a dark backing, values in a column. Defaults: WASD moves (Shift walks),
+J/L/H/U/P/O/G the game's buttons (the mouse's left and right attack and
+power attack), the arrows the D-pad; the pad's buttons sit where the
+GameCube's do (A south, B west, X east, Y north, L the left trigger and
+bumper, R the right trigger, Z the right bumper) — on an Xbox pad A
+attacks, X turbo/defends, B magic, Y power. In the menus an Xbox pad's B
+(east) also backs out.
+
 ## Character select (`0x400B`)
 
 `FUN_8008ffec` (enter), `FUN_8008be04` (update, per player),
@@ -659,8 +710,8 @@ Start, triggers.
   through `FUN_800157ec`; their names aren't mapped).
 - The menus' spinning 3D arrow (`ICON_ARROW`) is drawn as the flat
   `MENU_MARKER` texture, 24 px, 16 left of the items.
-- Options, Game Options, Compass and Controls list their items but change
-  nothing; Shop and Inventory aren't implemented.
+- Game Options lists its items but changes nothing; Shop and Inventory
+  aren't implemented; Compass keeps its setting, but no compass is drawn.
 - Saving: a file stands in for the memory card, so the card's screens
   ("Accessing Memory Card in Slot A.", "Save File?", the save/load
   confirmations) aren't shown, the load list is plain text in the

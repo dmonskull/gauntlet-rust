@@ -12,11 +12,18 @@
 //!
 //! `--level` / `--character` skip straight to play.
 //!
+//! The game's Controls menu works as the game's does (the style with its
+//! controller pictures, rumble, auto aim and attack, `docs/frontend.md`),
+//! and so does Compass (the setting; its pointer isn't drawn). PC
+//! Settings (not the game's) sits under Options and Settings: keys, mouse
+//! and pad bindings (`controls.rs`), the window, and debugging aids, all
+//! saved with the options.
+//!
 //! Stand-ins (see the doc): the title's attract mode (movies, credits,
 //! demo play) isn't run; menu sounds aren't played; the menus' spinning
-//! 3D arrow is drawn as the flat `MENU_MARKER` texture; Options, Settings
-//! and their sub-menus, Shop, Inventory and memory-card Save/Load open or
-//! list what the game lists but change nothing.
+//! 3D arrow is drawn as the flat `MENU_MARKER` texture; Game Options,
+//! Shop, Inventory and memory-card Save/Load open or list what the game
+//! lists but change nothing.
 
 use bevy::prelude::*;
 use gdl_formats::font::{FONT8X8, FONT32, INITIALS};
@@ -24,6 +31,7 @@ use gdl_formats::pdata::PlayerStats;
 use gdl_formats::text::TextRom;
 
 use crate::character::Animator;
+use crate::controls::{self, Action, Input};
 use crate::exits::ChangeLevelTo;
 use crate::font::{Draw2d, FontTexture, GameFonts, TextStyle, UiTextures};
 use crate::level::LoadedGame;
@@ -89,6 +97,15 @@ struct Pressed {
     hold_right: bool,
 }
 
+/// A key, mouse button or pad button pressed while the settings wait for
+/// one (rebinding), or the wait given up (Escape, or the pad's Start).
+#[derive(Clone, Copy, Debug)]
+enum Captured {
+    Key(Input),
+    Pad(GamepadButton),
+    Cancel,
+}
+
 /// `GDL_MENU="start@40,down@60,accept@70"`: presses on those frames, to
 /// drive the menus for screenshots.
 fn menu_script() -> Vec<(String, u64)> {
@@ -103,10 +120,26 @@ fn menu_script() -> Vec<(String, u64)> {
 
 pub(crate) fn read_input(
     keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     pads: Query<&Gamepad>,
     mut fe: ResMut<Frontend>,
     mut sticks: Local<[bool; 4]>,
 ) {
+    // Waiting for a key or button to bind: nothing else counts.
+    if let Some((page, _)) = fe.capture {
+        let got = if keys.just_pressed(KeyCode::Escape) || pads.iter().any(|p| p.just_pressed(GamepadButton::Start)) {
+            Some(Captured::Cancel)
+        } else if page == Page::Keys {
+            controls::just_pressed_input(&keys, &mouse).map(Captured::Key)
+        } else {
+            controls::just_pressed_pad(&pads).map(Captured::Pad)
+        };
+        if got.is_some() {
+            fe.captured = got;
+        }
+        fe.input = Pressed::default();
+        return;
+    }
     let key = |ks: &[KeyCode]| ks.iter().any(|k| keys.just_pressed(*k));
     let pad = |bs: &[GamepadButton]| pads.iter().any(|p| bs.iter().any(|b| p.just_pressed(*b)));
     // The stick counts as a press when it crosses half way.
@@ -121,7 +154,8 @@ pub(crate) fn read_input(
         right: key(&[KeyCode::ArrowRight, KeyCode::KeyD]) || pad(&[GamepadButton::DPadRight]) || edge[3],
         accept: key(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space, KeyCode::KeyJ])
             || pad(&[GamepadButton::South]),
-        back: key(&[KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyH]) || pad(&[GamepadButton::West]),
+        // The GameCube's B (west); an Xbox pad's B (east) backs out too.
+        back: key(&[KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyH]) || pad(&[GamepadButton::West, GamepadButton::East]),
         start: key(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Escape]) || pad(&[GamepadButton::Start]),
         l: key(&[KeyCode::KeyQ, KeyCode::KeyP])
             || pad(&[GamepadButton::LeftTrigger, GamepadButton::LeftTrigger2]),
@@ -180,6 +214,21 @@ enum Item {
     Controls,
     /// Items whose settings aren't modelled.
     Setting,
+    /// The game's Controls sub-menus: the style (its one line), rumble,
+    /// auto aim and attack; a choice in one of the On / Off menus.
+    Style,
+    StyleLine,
+    Rumble,
+    AutoAim,
+    AutoAttack,
+    Choose(Setting, bool),
+    /// PC Settings (not the game's): its pages, a switch on one, a binding
+    /// to change, the defaults back.
+    PcSettings,
+    Page(Page),
+    Toggle(Setting),
+    Bind(Action),
+    ResetBindings,
     /// The Audio menu's sliders (left/right move them).
     Volume(Volume),
     /// Character select.
@@ -192,6 +241,154 @@ enum Item {
     Quit,
     Done,
     Yes,
+}
+
+/// A setting the menus switch ([`GameOptions`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Setting {
+    Rumble,
+    AutoAim,
+    AutoAttack,
+    Compass,
+    Fullscreen,
+    Vsync,
+    DevKeys,
+    DebugOverlay,
+    FrameRate,
+    Collision,
+}
+
+impl Setting {
+    fn get(self, o: &GameOptions) -> bool {
+        match self {
+            Self::Rumble => o.rumble,
+            Self::AutoAim => o.auto_aim,
+            Self::AutoAttack => o.auto_attack,
+            Self::Compass => o.compass,
+            Self::Fullscreen => o.fullscreen,
+            Self::Vsync => o.vsync,
+            Self::DevKeys => o.dev_keys,
+            Self::DebugOverlay => o.debug_overlay,
+            Self::FrameRate => o.frame_rate,
+            Self::Collision => o.collision,
+        }
+    }
+    fn set(self, o: &mut GameOptions, v: bool) {
+        match self {
+            Self::Rumble => o.rumble = v,
+            Self::AutoAim => o.auto_aim = v,
+            Self::AutoAttack => o.auto_attack = v,
+            Self::Compass => o.compass = v,
+            Self::Fullscreen => o.fullscreen = v,
+            Self::Vsync => o.vsync = v,
+            Self::DevKeys => o.dev_keys = v,
+            Self::DebugOverlay => o.debug_overlay = v,
+            Self::FrameRate => o.frame_rate = v,
+            Self::Collision => o.collision = v,
+        }
+    }
+    /// The game's choice menus: their titles and their two lines (the
+    /// game's order).
+    fn choices(self) -> (&'static str, [(&'static str, bool); 2]) {
+        match self {
+            Self::Rumble => ("Rumble Feature", [("Off", false), ("On", true)]),
+            Self::AutoAim => ("Auto Aim", [("On", true), ("Off", false)]),
+            Self::AutoAttack => ("Auto Attack", [("On", true), ("Off", false)]),
+            Self::Compass => ("Compass", [("Hide", false), ("Show", true)]),
+            _ => ("", [("On", true), ("Off", false)]),
+        }
+    }
+    /// Its line on a PC Settings page.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fullscreen => "Full Screen",
+            Self::Vsync => "VSync",
+            Self::DevKeys => "Developer Keys",
+            Self::DebugOverlay => "Debug Overlay",
+            Self::FrameRate => "Frame Rate",
+            Self::Collision => "Collision Overlay",
+            other => other.choices().0,
+        }
+    }
+}
+
+/// The PC Settings pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Page {
+    Keys,
+    Pad,
+    Video,
+    Debug,
+}
+
+/// What a menu of run-time lines shows, to make them again after a change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dynamic {
+    Style,
+    Choice(Setting),
+    Page(Page),
+}
+
+/// The game's mark on the current choice (`docs/frontend.md`, "Menus";
+/// `~` is a tick in its menu font), and the PC Settings pages' break
+/// between an item and its value, which is drawn in a column
+/// ([`VALUE_COLUMN`]).
+const CURRENT: &str = " ~";
+const VALUE: &str = "\t";
+const VALUE_COLUMN: f32 = 220.0;
+
+/// The lines a menu of run-time lines shows now.
+fn dynamic_lines(kind: Dynamic, o: &GameOptions, style_pick: usize, capture: Option<Action>) -> Vec<(String, Item)> {
+    let on_off = |v: bool| if v { "On" } else { "Off" };
+    match kind {
+        Dynamic::Style => vec![(controls::SCHEME_NAMES[style_pick].to_string(), Item::StyleLine)],
+        Dynamic::Choice(setting) => setting
+            .choices()
+            .1
+            .iter()
+            .map(|&(label, v)| {
+                let mark = if setting.get(o) == v { CURRENT } else { "" };
+                (format!("{label}{mark}"), Item::Choose(setting, v))
+            })
+            .collect(),
+        Dynamic::Page(Page::Keys) => {
+            let mut lines: Vec<(String, Item)> = Action::ALL
+                .iter()
+                .map(|&a| {
+                    let value = if capture == Some(a) {
+                        "Press a key".to_string()
+                    } else {
+                        let names: Vec<&str> = o.bindings.keys(a).iter().map(|&i| controls::input_name(i)).collect();
+                        if names.is_empty() { "-".to_string() } else { names.join(", ") }
+                    };
+                    (format!("{}{VALUE}{value}", a.label()), Item::Bind(a))
+                })
+                .collect();
+            lines.push(("Reset Defaults".to_string(), Item::ResetBindings));
+            lines
+        }
+        Dynamic::Page(Page::Pad) => {
+            let mut lines = vec![(format!("Style{VALUE}{}", controls::SCHEME_NAMES[o.scheme]), Item::Style)];
+            lines.extend(Action::ON_PAD.iter().map(|&a| {
+                let value = if capture == Some(a) {
+                    "Press a button".to_string()
+                } else {
+                    let names: Vec<&str> = o.bindings.pad(a, o.scheme).iter().map(|&b| controls::pad_name(b)).collect();
+                    if names.is_empty() { "-".to_string() } else { names.join(", ") }
+                };
+                (format!("{}{VALUE}{value}", a.label()), Item::Bind(a))
+            }));
+            lines.push(("Reset to Style".to_string(), Item::ResetBindings));
+            lines
+        }
+        Dynamic::Page(page) => {
+            let settings: &[Setting] = match page {
+                Page::Video => &[Setting::Fullscreen, Setting::Vsync],
+                _ => &[Setting::DevKeys, Setting::DebugOverlay, Setting::FrameRate, Setting::Collision],
+            };
+            settings.iter().map(|&s| (format!("{}{VALUE}{}", s.label(), on_off(s.get(o))), Item::Toggle(s))).collect()
+        }
+    }
 }
 
 /// Which volume a slider sets ([`GameOptions`]).
@@ -249,6 +446,8 @@ struct MenuDef {
     logo: bool,
     /// Fades in over 30 fields (flag `0x20`).
     fade: bool,
+    /// A dark backing behind the lines (PC Settings' pages, not the game's).
+    backdrop: bool,
     /// Plain, and selected (glow colour; the letters go white).
     normal: [u8; 3],
     glow: [u8; 3],
@@ -286,6 +485,7 @@ const fn game_menu(title: &'static str, logo: bool, items: &'static [Entry]) -> 
         hints: true,
         logo,
         fade: true,
+        backdrop: false,
         normal: INK,
         glow: PURPLE,
         items,
@@ -306,6 +506,7 @@ const fn confirm(title: &'static str, items: &'static [Entry]) -> MenuDef {
         hints: false,
         logo: false,
         fade: true,
+        backdrop: false,
         normal: INK,
         glow: PURPLE,
         items,
@@ -325,6 +526,7 @@ static TITLE_MENU: MenuDef = MenuDef {
     hints: false,
     logo: false,
     fade: false,
+    backdrop: false,
     normal: EMBER,
     glow: PURPLE,
     items: &[e("Start", Item::Start), e("Options", Item::Options)],
@@ -332,7 +534,13 @@ static TITLE_MENU: MenuDef = MenuDef {
 static OPTIONS_MENU: MenuDef = game_menu(
     "Options",
     true,
-    &[e("Audio", Item::Audio), e("Game Options", Item::GameOptions), e("Compass", Item::Compass), e("Controls", Item::Controls)],
+    &[
+        e("Audio", Item::Audio),
+        e("Game Options", Item::GameOptions),
+        e("Compass", Item::Compass),
+        e("Controls", Item::Controls),
+        e("PC Settings", Item::PcSettings),
+    ],
 );
 static TOWER_MENU: MenuDef = game_menu(
     "Tower Menu",
@@ -347,9 +555,13 @@ static TOWER_MENU: MenuDef = game_menu(
 );
 static GAME_MENU: MenuDef = game_menu("Game Menu", true, &[e("Settings", Item::Settings), e("Quit Level", Item::QuitLevel)]);
 /// Settings from the Tower Menu has a Compass entry; from the Game Menu not.
-static TOWER_SETTINGS: MenuDef =
-    game_menu("Settings", true, &[e("Audio", Item::Audio), e("Compass", Item::Compass), e("Controls", Item::Controls)]);
-static LEVEL_SETTINGS: MenuDef = game_menu("Settings", true, &[e("Audio", Item::Audio), e("Controls", Item::Controls)]);
+static TOWER_SETTINGS: MenuDef = game_menu(
+    "Settings",
+    true,
+    &[e("Audio", Item::Audio), e("Compass", Item::Compass), e("Controls", Item::Controls), e("PC Settings", Item::PcSettings)],
+);
+static LEVEL_SETTINGS: MenuDef =
+    game_menu("Settings", true, &[e("Audio", Item::Audio), e("Controls", Item::Controls), e("PC Settings", Item::PcSettings)]);
 static GAME_OPTIONS: MenuDef =
     game_menu("Game Options", false, &[e("Difficulty", Item::Setting), e("Multiplayer Mode", Item::Setting)]);
 /// The game's Audio menu is Music Volume and Sfx Volume sliders (52 below
@@ -371,17 +583,61 @@ static AUDIO_MENU: MenuDef = MenuDef {
     )
 };
 const SLIDER_GAP: f32 = 40.0;
-static COMPASS_MENU: MenuDef = game_menu("Compass", true, &[e("Hide", Item::Setting), e("Show", Item::Setting)]);
 static CONTROLS_MENU: MenuDef = game_menu(
     "Controls",
     false,
     &[
-        e("Style ", Item::Setting),
-        e("Rumble Feature ", Item::Setting),
-        e("Auto Aim ", Item::Setting),
-        e("Auto Attack ", Item::Setting),
+        e("Style ", Item::Style),
+        e("Rumble Feature ", Item::Rumble),
+        e("Auto Aim ", Item::AutoAim),
+        e("Auto Attack ", Item::AutoAttack),
     ],
 );
+/// The game's On / Off menus (Rumble Feature, Auto Aim, Auto Attack) and
+/// Compass: two lines, the current marked; choosing one sets it and closes.
+static RUMBLE_MENU: MenuDef = game_menu("Rumble Feature", false, &[]);
+static AUTO_AIM_MENU: MenuDef = game_menu("Auto Aim", false, &[]);
+static AUTO_ATTACK_MENU: MenuDef = game_menu("Auto Attack", false, &[]);
+static COMPASS_MENU: MenuDef = game_menu("Compass", true, &[]);
+/// The game's Control Style menu (`docs/frontend.md`): the style's name
+/// centred at y 265, left / right change it, Select keeps it; the
+/// controller pictures above ([`STYLE_PICTURES`]).
+static STYLE_MENU: MenuDef = MenuDef { x: -256.0, y: 265.0, logo: false, ..game_menu("Control Style", false, &[]) };
+/// The pictures the Control Style menu shows: name, left, top (their own
+/// size).
+const STYLE_PICTURES: [(&str, f32, f32); 3] = [("CONTROLER_1", 96.0, 104.0), ("CONTROLER_2", 352.0, 104.0), ("CONTROLER_3", 128.0, 232.0)];
+static PC_MENU: MenuDef = game_menu(
+    "PC Settings",
+    true,
+    &[
+        e("Keyboard & Mouse", Item::Page(Page::Keys)),
+        e("Controller", Item::Page(Page::Pad)),
+        e("Video", Item::Page(Page::Video)),
+        e("Debug", Item::Page(Page::Debug)),
+    ],
+);
+/// A PC Settings page: its lines smaller, from the panel's top.
+const fn page_menu(title: &'static str) -> MenuDef {
+    MenuDef {
+        x: 48.0,
+        y: 96.0,
+        item_scale: 0.5,
+        title_scale: 0.9,
+        hints: false,
+        logo: false,
+        gar: false,
+        parch: false,
+        backdrop: true,
+        normal: PAGE_INK,
+        ..game_menu(title, false, &[])
+    }
+}
+/// The pages' plain lines, light over their backing.
+const PAGE_INK: [u8; 3] = [236, 222, 196];
+static KEYS_PAGE: MenuDef = page_menu("Keyboard & Mouse");
+static PAD_PAGE: MenuDef = page_menu("Controller");
+static VIDEO_PAGE: MenuDef = MenuDef { x: 128.0, y: -1.0, item_scale: 1.0, ..page_menu("Video") };
+static DEBUG_PAGE: MenuDef = MenuDef { x: 96.0, y: -1.0, item_scale: 0.8, ..page_menu("Debug") };
 static QUIT_GAME: MenuDef = confirm("Quit Game?", &[e("No", Item::No), e("Yes", Item::ConfirmQuitGame)]);
 static ABORT_LEVEL: MenuDef = confirm("Abort Level?", &[e("No", Item::No), e("Yes", Item::ConfirmAbortLevel)]);
 
@@ -401,6 +657,7 @@ const fn select_menu(items: &'static [Entry]) -> MenuDef {
         hints: false,
         logo: false,
         fade: false,
+        backdrop: false,
         normal: EMBER,
         glow: PURPLE,
         items,
@@ -450,11 +707,17 @@ struct Menu {
     disabled: Vec<Item>,
     /// The column the select screen's menus sit in.
     column: f32,
+    /// What its run-time lines show, to make them again.
+    kind: Option<Dynamic>,
 }
 
 impl Menu {
     fn new(def: &'static MenuDef) -> Self {
-        Self { def, lines: None, selected: 0, t: 0.0, disabled: Vec::new(), column: 0.0 }
+        Self { def, lines: None, selected: 0, t: 0.0, disabled: Vec::new(), column: 0.0, kind: None }
+    }
+    /// A menu of run-time lines showing `kind`.
+    fn dynamic(def: &'static MenuDef, kind: Dynamic, o: &GameOptions, style_pick: usize) -> Self {
+        Self { kind: Some(kind), ..Self::with_lines(def, dynamic_lines(kind, o, style_pick, None)) }
     }
     /// A menu of run-time lines in the style of `def`.
     fn with_lines(def: &'static MenuDef, lines: Vec<(String, Item)>) -> Self {
@@ -593,6 +856,12 @@ pub struct Frontend {
     leaving: bool,
     /// A new hero was made: its record is the snapshot from now on.
     fresh_hero: bool,
+    /// PC Settings waits for a key or button for an action (on the keys or
+    /// the pad page), and what came.
+    capture: Option<(Page, Action)>,
+    captured: Option<Captured>,
+    /// The style the Control Style menu shows (kept only on Select).
+    style_pick: usize,
 }
 
 impl Frontend {
@@ -621,6 +890,9 @@ impl Frontend {
             out: false,
             leaving: false,
             fresh_hero: false,
+            capture: None,
+            captured: None,
+            style_pick: 0,
         }
     }
 
@@ -753,7 +1025,7 @@ pub(crate) fn run(
     }
     fe.select.t += fields;
     fe.select.menu.t += fields;
-    let p = fe.input;
+    let mut p = fe.input;
     let in_tower = game.current_name().eq_ignore_ascii_case(TOWER);
 
     // A volume slider under the cursor moves while left or right is held.
@@ -764,6 +1036,10 @@ pub(crate) fn run(
         let step = fields.max(1.0) * SLIDER_PER_FIELD * if p.hold_left { -1.0 } else { 1.0 };
         let now = v.get(&options);
         v.set(&mut options, now + step);
+    }
+    // What the settings act on isn't the menus' to act on again.
+    if settings(&mut fe, &p, &mut options) {
+        p.accept = false;
     }
 
     match fe.screen {
@@ -860,12 +1136,125 @@ fn open_submenu(menus: &mut Vec<Menu>, item: Item) {
     let def = match item {
         Item::Audio => &AUDIO_MENU,
         Item::GameOptions => &GAME_OPTIONS,
-        Item::Compass => &COMPASS_MENU,
         Item::Controls => &CONTROLS_MENU,
+        Item::PcSettings => &PC_MENU,
         // Stand-in: the settings themselves aren't modelled.
         _ => return,
     };
     menus.push(Menu::new(def));
+}
+
+/// The settings' own work before a menu's choice is acted on: what came
+/// for a binding, left / right on the style and the pages' switches, and
+/// the choices that change options (which then remake the menus' lines).
+/// Whether it took this frame's accept.
+fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions) -> bool {
+    let mut changed = false;
+    let mut took = false;
+    if let (Some((_, action)), Some(got)) = (fe.capture, fe.captured.take()) {
+        match got {
+            Captured::Key(input) => options.bindings.bind_key(action, input),
+            Captured::Pad(b) => options.bindings.bind_pad(action, b),
+            Captured::Cancel => {}
+        }
+        fe.capture = None;
+        changed = true;
+    }
+    let top = fe.menus.last().map(|m| (m.kind, m.item(m.selected)));
+    match top {
+        // Left / right change the style shown; Select keeps it.
+        Some((Some(Dynamic::Style), _)) if p.left || p.right => {
+            let n = controls::MENU_SCHEMES;
+            fe.style_pick = (fe.style_pick + if p.right { 1 } else { n - 1 }) % n;
+            changed = true;
+        }
+        // Left / right flip a page's switch too.
+        Some((Some(Dynamic::Page(_)), Item::Toggle(s))) if p.left || p.right => {
+            s.set(options, !s.get(options));
+            changed = true;
+        }
+        _ => {}
+    }
+    if p.accept
+        && let Some(m) = fe.menus.last()
+        && m.enabled(m.selected)
+    {
+        match m.item(m.selected) {
+            Item::Style => {
+                fe.style_pick = options.scheme.min(controls::MENU_SCHEMES - 1);
+                let menu = Menu::dynamic(&STYLE_MENU, Dynamic::Style, options, fe.style_pick);
+                fe.menus.push(menu);
+                took = true;
+            }
+            Item::StyleLine => {
+                options.scheme = fe.style_pick;
+                fe.menus.pop();
+                changed = true;
+                took = true;
+            }
+            Item::Rumble | Item::AutoAim | Item::AutoAttack | Item::Compass => {
+                let (def, setting) = match m.item(m.selected) {
+                    Item::Rumble => (&RUMBLE_MENU, Setting::Rumble),
+                    Item::AutoAim => (&AUTO_AIM_MENU, Setting::AutoAim),
+                    Item::AutoAttack => (&AUTO_ATTACK_MENU, Setting::AutoAttack),
+                    _ => (&COMPASS_MENU, Setting::Compass),
+                };
+                let current = setting.get(options);
+                let mut menu = Menu::dynamic(def, Dynamic::Choice(setting), options, fe.style_pick);
+                menu.selected = setting.choices().1.iter().position(|&(_, v)| v == current).unwrap_or(0);
+                fe.menus.push(menu);
+                took = true;
+            }
+            Item::Choose(setting, v) => {
+                setting.set(options, v);
+                fe.menus.pop();
+                changed = true;
+                took = true;
+            }
+            Item::Page(page) => {
+                let def = match page {
+                    Page::Keys => &KEYS_PAGE,
+                    Page::Pad => &PAD_PAGE,
+                    Page::Video => &VIDEO_PAGE,
+                    Page::Debug => &DEBUG_PAGE,
+                };
+                let menu = Menu::dynamic(def, Dynamic::Page(page), options, fe.style_pick);
+                fe.menus.push(menu);
+                took = true;
+            }
+            Item::Toggle(s) => {
+                s.set(options, !s.get(options));
+                changed = true;
+                took = true;
+            }
+            Item::Bind(action) => {
+                let page = if m.kind == Some(Dynamic::Page(Page::Pad)) { Page::Pad } else { Page::Keys };
+                fe.capture = Some((page, action));
+                fe.captured = None;
+                changed = true;
+                took = true;
+            }
+            Item::ResetBindings => {
+                if m.kind == Some(Dynamic::Page(Page::Pad)) {
+                    options.bindings.pad.clear();
+                } else {
+                    options.bindings.keys = controls::Bindings::default().keys;
+                }
+                changed = true;
+                took = true;
+            }
+            _ => {}
+        }
+    }
+    if changed {
+        let (pick, capture) = (fe.style_pick, fe.capture.map(|(_, a)| a));
+        for m in &mut fe.menus {
+            if let Some(kind) = m.kind {
+                m.lines = Some(dynamic_lines(kind, options, pick, capture));
+            }
+        }
+    }
+    took
 }
 
 /// Starts the select screen: a new player at New / Load, or (Manage
@@ -1261,6 +1650,62 @@ fn draw(
     // Only the innermost menu is up: opening a sub-menu closes its parent.
     if let Some(m) = fe.menus.last() {
         draw_menu(&mut d, m, &options);
+        if m.kind == Some(Dynamic::Style) {
+            for (name, x, y) in STYLE_PICTURES {
+                d.image(name, x, y, Color::WHITE);
+            }
+            style_labels(&mut d, &strings, fe.style_pick);
+        }
+    }
+}
+
+/// Where the Control Style screen labels the controller (the game's
+/// table, `docs/frontend.md`): each label's alignment (0 left edge, 1 centred, 2 right edge,
+/// at x + 256) and its middle's y.
+const STYLE_LABELS: [(u8, f32, f32); 16] = [
+    (2, -125.0, 108.0),
+    (2, -142.0, 128.0),
+    (2, -155.0, 145.0),
+    (2, -155.0, 174.0),
+    (2, -152.0, 200.0),
+    (2, -136.0, 223.0),
+    (1, -26.0, 256.0),
+    (1, 30.0, 256.0),
+    (2, -72.0, 245.0),
+    (0, 72.0, 245.0),
+    (0, 127.0, 110.0),
+    (0, 140.0, 128.0),
+    (0, 136.0, 148.0),
+    (0, 156.0, 168.0),
+    (0, 136.0, 191.0),
+    (0, 160.0, 222.0),
+];
+/// The labels' scale (their text groups' 0.4) and line gap.
+const STYLE_LABEL_SCALE: f32 = 0.4;
+const STYLE_LABEL_GAP: f32 = 2.0;
+
+/// The Control Style screen's labels: the strings of `CONTROLS1..3` for
+/// the style shown, in their group's font, each line centred on the
+/// label's block (`docs/frontend.md`).
+fn style_labels(d: &mut Painter, strings: &Strings, style: usize) {
+    let group = format!("CONTROLS{}", style + 1);
+    let height = d.fonts.line_height(INITIALS, STYLE_LABEL_SCALE).trunc();
+    let ink = TextStyle::new(INITIALS, STYLE_LABEL_SCALE, rgb(INK));
+    for (i, &(align, x, y)) in STYLE_LABELS.iter().enumerate() {
+        let Some(text) = strings.get(&group, i) else { continue };
+        let lines: Vec<&str> = text.split('\n').map(str::trim_end).collect();
+        let width = lines.iter().map(|l| d.fonts.width(INITIALS, STYLE_LABEL_SCALE, l)).fold(0.0, f32::max);
+        let centre = match align {
+            1 => x + 256.0,
+            2 => x + 256.0 - (width / 2.0).trunc(),
+            _ => x + 256.0 + (width / 2.0).trunc(),
+        };
+        let block = lines.len() as f32 * (height + STYLE_LABEL_GAP);
+        let mut top = y - (block / 2.0).trunc();
+        for line in lines {
+            d.draw.text(d.fonts, &ink, -centre, top, line);
+            top += height + STYLE_LABEL_GAP;
+        }
     }
 }
 
@@ -1321,11 +1766,16 @@ fn draw_menu(d: &mut Painter, m: &Menu, options: &GameOptions) {
         y => -y - (total / 2.0).trunc(),
     };
     let x = if def.x < 0.0 { def.x - m.column } else { def.x };
+    if def.backdrop {
+        let alpha = 0.6 * fade;
+        d.draw.fill(x - 24.0, top - 6.0, 512.0 - 2.0 * (x - 24.0), total + 12.0, Color::srgba(0.0, 0.0, 0.0, alpha));
+    }
     // Letters flicker through the GAR frames 10..22 fields after opening.
     let gar = (def.gar && (10.0..22.0).contains(&m.t)).then(|| ((m.t - 10.0) / 2.0) as u8);
     let mut y = top;
     for i in 0..m.len() {
-        let (label, item) = (m.label(i), m.item(i));
+        let (full, item) = (m.label(i), m.item(i));
+        let (label, value) = full.split_once('\t').unwrap_or((full, ""));
         let alpha = fade * if m.enabled(i) { 1.0 } else { 0.5 };
         let selected = i == m.selected;
         if selected {
@@ -1352,6 +1802,10 @@ fn draw_menu(d: &mut Painter, m: &Menu, options: &GameOptions) {
             };
             let style = TextStyle::new(FONT32, def.item_scale, colour.with_alpha(alpha)).with_texture(tex);
             d.draw.text(d.fonts, &style, x, y, label);
+        }
+        if !value.is_empty() {
+            let colour = if selected { Color::WHITE } else { rgb(def.normal) };
+            d.draw.text(d.fonts, &TextStyle::new(FONT32, def.item_scale, colour.with_alpha(alpha)), x + VALUE_COLUMN, y, value);
         }
         if let Item::Volume(v) = item {
             slider(d, x, y + line, v.get(options), if selected { fade } else { 0.6 * fade });

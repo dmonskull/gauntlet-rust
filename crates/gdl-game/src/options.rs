@@ -2,11 +2,20 @@
 //! (`gdl-artifacts/options.txt`, one `key=value` per line) and applied live,
 //! so a settings menu only has to change [`GameOptions`]. `GDL_MUTE=1`
 //! silences one run (tests) without touching the saved volumes.
+//!
+//! Besides the game's own (volumes, the control style, rumble, auto aim
+//! and attack, the compass) they hold the PC settings the game doesn't
+//! have: key, mouse and pad bindings (`controls.rs`), the window (full
+//! screen, vsync) and the debugging aids.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy::audio::{AudioSink, AudioSinkPlayback, GlobalVolume, Volume};
 use bevy::prelude::*;
+use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode};
 
 use crate::bootstrap::artifacts_dir;
+use crate::controls::{self, Action, Bindings};
 
 pub struct OptionsPlugin;
 
@@ -14,6 +23,7 @@ impl Plugin for OptionsPlugin {
     fn build(&self, app: &mut App) {
         let options = GameOptions::load();
         let mute = Mute(std::env::var("GDL_MUTE").is_ok_and(|v| !v.is_empty() && v != "0"));
+        DEV_KEYS.store(dev_keys_env() || options.dev_keys, Ordering::Relaxed);
         app.insert_resource(GlobalVolume::new(Volume::Linear(mute.master(&options))))
             .insert_resource(options)
             .insert_resource(mute)
@@ -32,18 +42,64 @@ impl Mute {
     }
 }
 
+/// Whether the developer keys work: the option, or `GDL_DEV_KEYS=1`.
+static DEV_KEYS: AtomicBool = AtomicBool::new(false);
+
+fn dev_keys_env() -> bool {
+    std::env::var("GDL_DEV_KEYS").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+pub fn dev_keys_on() -> bool {
+    DEV_KEYS.load(Ordering::Relaxed)
+}
+
 /// Volumes are linear, 0 (silent) to 1 (the game's own level).
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct GameOptions {
     pub master_volume: f32,
     pub music_volume: f32,
     pub effects_volume: f32,
+    /// The game's Controls menu: the style (`controls::SCHEME_NAMES`), the
+    /// pad's rumble, attack aim (attacking in place turns toward the
+    /// target) and walk-into attack — on by default, as the game's.
+    pub scheme: usize,
+    pub rumble: bool,
+    pub auto_aim: bool,
+    pub auto_attack: bool,
+    /// The game's Compass menu (Show / Hide).
+    pub compass: bool,
+    pub bindings: Bindings,
+    /// The window (not the game's): full screen and vsync.
+    pub fullscreen: bool,
+    pub vsync: bool,
+    /// Debugging aids (not the game's): the developer keys, the status
+    /// overlay, the frame rate, the collision overlay.
+    pub dev_keys: bool,
+    pub debug_overlay: bool,
+    pub frame_rate: bool,
+    pub collision: bool,
 }
 
 impl Default for GameOptions {
     fn default() -> Self {
-        // The game's mix is loud at full scale; start at a quarter.
-        Self { master_volume: 0.25, music_volume: 1.0, effects_volume: 1.0 }
+        Self {
+            // The game's mix is loud at full scale; start at a quarter.
+            master_volume: 0.25,
+            music_volume: 1.0,
+            effects_volume: 1.0,
+            scheme: 0,
+            rumble: true,
+            auto_aim: true,
+            auto_attack: true,
+            compass: false,
+            bindings: Bindings::default(),
+            fullscreen: false,
+            vsync: true,
+            dev_keys: false,
+            debug_overlay: false,
+            frame_rate: false,
+            collision: false,
+        }
     }
 }
 
@@ -64,23 +120,78 @@ impl GameOptions {
         let Ok(text) = std::fs::read_to_string(Self::file()) else { return o };
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
-            let Ok(v) = v.trim().parse::<f32>() else { continue };
-            let v = v.clamp(0.0, 1.0);
-            match k.trim() {
-                "master_volume" => o.master_volume = v,
-                "music_volume" => o.music_volume = v,
-                "effects_volume" => o.effects_volume = v,
-                _ => {}
-            }
+            o.set(k.trim(), v.trim());
         }
         o
     }
 
+    /// Reads one saved `key=value`.
+    fn set(&mut self, k: &str, v: &str) {
+        let num = |v: &str| v.parse::<f32>().ok().map(|x| x.clamp(0.0, 1.0));
+        let flag = |v: &str| match v {
+            "1" | "on" | "true" => Some(true),
+            "0" | "off" | "false" => Some(false),
+            _ => None,
+        };
+        match k {
+            "master_volume" => self.master_volume = num(v).unwrap_or(self.master_volume),
+            "music_volume" => self.music_volume = num(v).unwrap_or(self.music_volume),
+            "effects_volume" => self.effects_volume = num(v).unwrap_or(self.effects_volume),
+            "scheme" => self.scheme = v.parse::<usize>().ok().filter(|&s| s < controls::SCHEME_NAMES.len()).unwrap_or(0),
+            "rumble" => self.rumble = flag(v).unwrap_or(self.rumble),
+            "auto_aim" => self.auto_aim = flag(v).unwrap_or(self.auto_aim),
+            "auto_attack" => self.auto_attack = flag(v).unwrap_or(self.auto_attack),
+            "compass" => self.compass = flag(v).unwrap_or(self.compass),
+            "fullscreen" => self.fullscreen = flag(v).unwrap_or(self.fullscreen),
+            "vsync" => self.vsync = flag(v).unwrap_or(self.vsync),
+            "dev_keys" => self.dev_keys = flag(v).unwrap_or(self.dev_keys),
+            "debug_overlay" => self.debug_overlay = flag(v).unwrap_or(self.debug_overlay),
+            "frame_rate" => self.frame_rate = flag(v).unwrap_or(self.frame_rate),
+            "collision" => self.collision = flag(v).unwrap_or(self.collision),
+            _ => {
+                if let Some(name) = k.strip_prefix("key.")
+                    && let Some(action) = Action::ALL.into_iter().find(|a| a.key() == name)
+                {
+                    let inputs: Vec<_> = v.split(',').filter_map(|n| controls::input_from_name(n.trim())).collect();
+                    if let Some(slot) = self.bindings.keys.iter_mut().find(|(a, _)| *a == action) {
+                        slot.1 = inputs;
+                    }
+                } else if let Some(name) = k.strip_prefix("pad.")
+                    && let Some(action) = Action::ALL.into_iter().find(|a| a.key() == name)
+                    && let Some(b) = controls::pad_from_name(v)
+                {
+                    self.bindings.bind_pad(action, b);
+                }
+            }
+        }
+    }
+
     pub fn save(&self) {
-        let body = format!(
-            "master_volume={}\nmusic_volume={}\neffects_volume={}\n",
-            self.master_volume, self.music_volume, self.effects_volume
+        let flag = |b: bool| if b { "1" } else { "0" };
+        let mut body = format!(
+            "master_volume={}\nmusic_volume={}\neffects_volume={}\nscheme={}\nrumble={}\nauto_aim={}\nauto_attack={}\ncompass={}\nfullscreen={}\nvsync={}\ndev_keys={}\ndebug_overlay={}\nframe_rate={}\ncollision={}\n",
+            self.master_volume,
+            self.music_volume,
+            self.effects_volume,
+            self.scheme,
+            flag(self.rumble),
+            flag(self.auto_aim),
+            flag(self.auto_attack),
+            flag(self.compass),
+            flag(self.fullscreen),
+            flag(self.vsync),
+            flag(self.dev_keys),
+            flag(self.debug_overlay),
+            flag(self.frame_rate),
+            flag(self.collision),
         );
+        for (action, inputs) in &self.bindings.keys {
+            let names: Vec<&str> = inputs.iter().map(|&i| controls::input_name(i)).collect();
+            body += &format!("key.{}={}\n", action.key(), names.join(","));
+        }
+        for &(action, b) in &self.bindings.pad {
+            body += &format!("pad.{}={}\n", action.key(), controls::pad_name(b));
+        }
         let file = Self::file();
         let result = file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&file, body));
         if let Err(e) = result {
@@ -98,8 +209,7 @@ impl GameOptions {
     }
 }
 
-/// `-` / `=` turn the master volume down / up by 5% (until the settings
-/// menu exists).
+/// `-` / `=` turn the master volume down / up by 5%.
 fn volume_keys(keys: Res<ButtonInput<KeyCode>>, mut options: ResMut<GameOptions>) {
     let step = if keys.just_pressed(KeyCode::Minus) {
         -0.05
@@ -112,12 +222,14 @@ fn volume_keys(keys: Res<ButtonInput<KeyCode>>, mut options: ResMut<GameOptions>
     info!("master volume {:.0}%", options.master_volume * 100.0);
 }
 
-/// Saves the options and turns every playing sound to the new volume.
+/// Saves the options and applies them: every playing sound's volume, the
+/// window's mode and vsync, the developer keys.
 fn apply_options(
     options: Res<GameOptions>,
     mute: Res<Mute>,
     mut global: ResMut<GlobalVolume>,
     mut sinks: Query<(&mut AudioSink, &SoundKind)>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     options.save();
     let master = mute.master(&options);
@@ -125,5 +237,50 @@ fn apply_options(
     for (mut sink, kind) in &mut sinks {
         let Volume::Linear(v) = options.category(*kind) else { continue };
         sink.set_volume(Volume::Linear(master * v));
+    }
+    DEV_KEYS.store(dev_keys_env() || options.dev_keys, Ordering::Relaxed);
+    if let Ok(mut window) = windows.single_mut() {
+        let mode = if options.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
+        if window.mode != mode {
+            window.mode = mode;
+        }
+        let present = if options.vsync { PresentMode::AutoVsync } else { PresentMode::AutoNoVsync };
+        if window.present_mode != present {
+            window.present_mode = present;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::controls::Input;
+
+    #[test]
+    fn options_read_back_what_they_write() {
+        let mut o = GameOptions { scheme: 1, rumble: false, fullscreen: true, ..GameOptions::default() };
+        o.bindings.bind_key(Action::Magic, Input::Key(KeyCode::KeyK));
+        o.bindings.bind_pad(Action::Combo, bevy::input::gamepad::GamepadButton::LeftTrigger);
+        // What save writes, line by line, read into fresh options.
+        let flag = |b: bool| if b { "1" } else { "0" };
+        let mut lines = vec![
+            format!("scheme={}", o.scheme),
+            format!("rumble={}", flag(o.rumble)),
+            format!("fullscreen={}", flag(o.fullscreen)),
+        ];
+        for (action, inputs) in &o.bindings.keys {
+            let names: Vec<&str> = inputs.iter().map(|&i| controls::input_name(i)).collect();
+            lines.push(format!("key.{}={}", action.key(), names.join(",")));
+        }
+        for &(action, b) in &o.bindings.pad {
+            lines.push(format!("pad.{}={}", action.key(), controls::pad_name(b)));
+        }
+        let mut back = GameOptions::default();
+        for l in &lines {
+            let (k, v) = l.split_once('=').unwrap();
+            back.set(k, v);
+        }
+        assert_eq!((back.scheme, back.rumble, back.fullscreen), (1, false, true));
+        assert_eq!(back.bindings, o.bindings);
     }
 }

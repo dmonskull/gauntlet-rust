@@ -32,14 +32,20 @@ pub struct CollisionOverlay {
 #[derive(Component)]
 struct OverlayPart;
 
+/// The settings' Collision Overlay (K with the developer keys) or
+/// `GDL_DEBUG_COLLISION`.
 fn toggle(
     keys: Res<ButtonInput<KeyCode>>,
+    mut options: ResMut<crate::options::GameOptions>,
     mut overlay: ResMut<CollisionOverlay>,
     mut parts: Query<&mut Visibility, With<OverlayPart>>,
+    mut env: Local<Option<bool>>,
 ) {
+    let env = *env.get_or_insert(overlay.visible);
     if crate::dev_keys() && keys.just_pressed(KeyCode::KeyK) {
-        overlay.visible = !overlay.visible;
+        options.collision = !options.collision;
     }
+    overlay.visible = env || options.collision;
     let want = if overlay.visible { Visibility::Visible } else { Visibility::Hidden };
     for mut v in &mut parts {
         v.set_if_neq(want);
