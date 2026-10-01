@@ -118,9 +118,16 @@ players holding it, `0x10` = moving, `0x20` = on; `uVar4` = the kind flags
   = 0xFF (every player and monster query skips it) and its instance fades
   out by 8 alpha steps per field (`FUN_800ba9b0`, instance `+0x53`, flag
   `0x200` translucent, `2` hidden); active, it fades in and collides.
-- **Node flag `0x2000000`**: a separate mode toggling node flags
-  `0x100000`/`0x200000` (ends `0x400000`/`0x800000`). No trigger target on
-  the disc uses it.
+- **Node flag `0x2000000`** (the animated mode, below): no heights —
+  without kind flag `0x20`, state `0x20` sets node flag `0x200000` (play
+  on to the last frame) and clears `0x100000`, else the reverse (play back
+  to the first); it has arrived — not moving — with `0x100000` and
+  `0x400000` (at the first frame) or `0x200000` and `0x800000` (at the
+  last). With kind flag `0x20`: while no player holds it, once at the
+  last frame (`0x800000`) it clears state `0x30` and stops (`0x300000`);
+  while held it sets state `0x30` and clears both (round and round).
+  Stood on (without kind flag 8, `FUN_80063840` = 2) it stops where it
+  is (`0x300000`) and clears state `0x10`, skipping the rest.
 - **Everything else moves along Y**: toward the on height with state
   `0x20`, else the off height, at most **4 units/s** (`r2-0x6650` × frame
   time); within ±0.001 (`r2-0x6648`/`-0x6640`) it has arrived, and kind
@@ -162,6 +169,51 @@ one-shots panned at the mover's node as it is that tick
 grinding on; a mover's stop sound only if its set's loop was the one
 playing (the one asked for the tick before), as the game's `FUN_800163c4`
 test has it.
+
+## Animated objects
+
+The world file's table ([worlds-format.md](worlds-format.md), "Animated
+objects") lists nodes the level animates itself, one track each. The
+loader flags each one's node — and, through `FUN_800aafb0`, every node
+under it — `0x2000000`; the item set-up flags every trigger's target
+`0x100000` as it registers the mover. Each frame, before the items
+(`FUN_80056748` → `FUN_80055d08`, unless a camera cut has 11 to 99,999
+fields of its hold left: the 30-field delay and most of a trigger's cut
+pass with everything still, then the object plays while the camera
+watches), `FUN_800a7ff8` runs each object by its node's flags:
+
+| `0x100000` | `0x200000` | plays |
+| --- | --- | --- |
+| set | set | not at all: held (node flag `0x8000000` cleared) |
+| set | — | back to frame 0, then holds |
+| — | set | on to the last frame, then holds |
+| — | — | forward round and round |
+
+Playing, it poses the node at its frame (`FUN_8000f72c`, the characters'
+track sampler): the angles become the instance's rotation (`FUN_800bd448`,
+or `FUN_800bd548` with flag `0x8000`) when the track has any, the
+translation is added to the node's own (`+0x1C`) when it has any, a scale
+is set (instance `+0x40`, flag 8) when it has any. Then — unless time is
+stopped (`r13-0x731C`) and it goes round — node flags `0x400000`/
+`0x800000` clear, `0x8000000` sets and the frame moves 30 a second
+(`r2-0x5040` × the frame time): on, until its whole part reaches the last
+frame (that frame held, `0x8000000` cleared, or round to 0), then
+`0x800000`; back, until it goes below 0 (0 held), then `0x400000`. So
+every trigger's target starts at its first frame and holds there (and
+non-targets go round), a switch plays it on, and its cut — which holds
+while the node has `0x8000000` — ends when it gets there. Going round,
+a node of type `0x50000` (`flags & 0x100F0000`: H1's fire, the I realm's
+minecarts) bursts (`FUN_80055e60`: an effect and sound by realm) and it
+and its parents hide (instance flag 2, node flag `0x10000000`) until the
+next lap's first two frames.
+
+On A2 the triggers' objects are its drawbridges — `A2SUPPORTA`–`D`, each
+carrying a floor (`A2FLOOR#n`, moving collision), stand raised 70–80° at
+their first frame and swing down into place — the plank by the start
+(`A2PLANKPIECEA`, which falls 18 units), the diving board
+(`A2DIVEBOARD`, sliding 8.4 back) and `A2NSXLSHOWER` (dropping 32);
+B2's snakes rise and sink. Most of the rest go round: B3's rolling and
+falling rocks, B5's lava balls, C1's fish.
 
 ## Trigger touch and update
 
@@ -532,11 +584,16 @@ after the hero moves:
   lift timer (120 fields), stand-on-target (0x100), all-players (0x400,
   one player), the touches cleared unless flags 0xC0. Pads play OFF / ONA /
   ON / OFFA.
-- **Movers**: one per target node (lift kinds merged), starting at the off
-  height; toward on / off at 4 units/s, arrival within 0.001, kind flag
-  0x20 turning round, kind flag 8 or no player on it to move, the disable
-  byte 1 while moving (0xFF for hidden bridges), state kept by kinds 0x47
-  (bridges while someone stands on them).
+- **Movers**: one per target node — every trigger's, made for the party
+  or not, as the game registers them (the first registration's kind,
+  flags, heights and sound; later ones fill heights still 0 and a sound
+  still ≤ 0; lift kinds merged) — starting at the off height; only the
+  party's triggers ever change them. Toward on / off at 4 units/s,
+  arrival within 0.001, kind flag 0x20 turning round, kind flag 8 or no
+  player on it to move, the disable byte 1 while moving (0xFF for hidden
+  bridges), state kept by kinds 0x47 (bridges while someone stands on
+  them); on a node in the animated mode, the play flags instead of a
+  height.
 - **Rotators** subtypes 0 (always) and 2 (once touched, to the limit,
   grinding with `S_ROCKROTATE` in realm A or `S_METLROTATE` in realm I
   and stopping with `S_ROCKSTOP` / `S_METLROTATESTO`, `FUN_8009d01c`'s
@@ -555,10 +612,19 @@ levelA4 `-132.1,21,-1` is the LIFTPAD of `A4ELEV8`: the hero rides it down
 13 units, waits 2 s, and back up while it's held).
 
 Bridges fade in and out at the game's 8 alpha steps a field (the shader's
-fade, `uv_offset.w`; opaque parts blend while fading). Stand-ins and gaps:
-triggers run on or off screen; quest triggers (0x40), subtype 1 rotators or
-node flag 0x2000000; only the hero (not monsters) holds a mover by
-standing on it. Hazards and breakables are below.
+fade, `uv_offset.w`; opaque parts blend while fading).
+
+Animated objects (`mechanics.rs`): their nodes are moving roots too, posed
+from their tracks each tick as above — the movers aimed at them drive
+the play flags, the cut that shows one waits for it (`node_moving`), the
+damaging walls read the run-time flags (`Mechanics::node_flags`). Their
+scale is drawn (about the node) but their collision doesn't scale (not
+confirmed either way); the bursting type `0x50000` doesn't burst or hide
+yet.
+
+Stand-ins and gaps: triggers run on or off screen; subtype 1 rotators;
+only the hero (not monsters) holds a mover by standing on it. Hazards and
+breakables are below.
 
 [`hazards.rs`](../crates/gdl-game/src/hazards.rs) runs the damage tiles
 and damaging walls:
@@ -577,8 +643,8 @@ and damaging walls:
   field: 11.5 damage each time it comes on.
 
 Stand-ins: active phases last their animation (the game's own timer for
-them isn't confirmed); walls that only hurt while
-animating (0x2000000) never do, as nothing animates them yet.
+them isn't confirmed). Walls on nodes in the animated mode hurt only
+while they animate (or a mover moves them).
 
 [`breakables.rs`](../crates/gdl-game/src/breakables.rs): each hittable
 item (armour byte ≠ −1; barrel containers 0x2B–0x2D before they break,
