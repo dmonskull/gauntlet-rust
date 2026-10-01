@@ -37,9 +37,9 @@ The touch test (`FUN_8005f0e0`, class 5) uses a cylinder of radius
 0x40, id < 100, `FUN_800a1928` true) double it too. Item flag 0x400 and
 trigger flag 0x200 (chained-to, below) make a trigger untouchable.
 `FUN_8005ff4c(id, snap)` fires every trigger with an id (and its chain)
-from code — the tower's gates as it loads, snapped open
-(`docs/items.md`, "Quest items and the tower's gates";
-`Mechanics::fire_open`).
+from code — the tower's gates as it loads, snapped open, animated ones at
+their last frame (`docs/items.md`, "Quest items and the tower's gates";
+`Mechanics::fire`).
 
 ### Default flags by subtype
 
@@ -71,12 +71,36 @@ pass).
 
 ### Chains
 
-`FUN_8006437c` checks trigger ids are unique (`"%d triggers with id =
-%d"`, `"%d special triggers ..."`) and links each trigger with a `next`
-id to the trigger whose id matches (not flag 0x40): item `+0xE4` = that
-item, which gets trigger flag `0x200` (`"Linked Triggers loop"`,
-`"Trigger id %d, no next %d"`). A chained-to trigger can't be touched
-itself; it's set by the one before it.
+`FUN_8006437c` (the end of the item set-up, `FUN_80063fb0`, after the
+drop) checks trigger ids are unique (`"%d triggers with id = %d"`,
+`"%d special triggers ..."`) and links each trigger with a `next` id to
+the trigger whose id matches (not flag 0x40): item `+0xE4` = that item,
+which gets trigger flag `0x200` (`"Linked Triggers loop"`, `"Trigger id
+%d, no next %d"`). A chained-to trigger can't be touched itself; it's set
+by the one before it. The id byte `+0xE2` is read as a **signed** byte
+(`lbz` + `extsb`): the uniqueness check takes only ids 1–127 and, for
+each trigger in item order, clears the id (0) of every other trigger with
+the same id and the same flag `0x40` — so the first one keeps it and no
+chain, camera point or firing by id (`FUN_8005ff4c`) reaches the others
+(C2's 441 shares 103 with 438, C3's 426 shares 1 with 417); ids 128–255
+are never checked. A chain goes to the first trigger (other than itself)
+with the id that isn't a quest gate: on the disc D3's 362, I2's 477, K4's
+438 and the tower's 81, 149 and 150 (to the quest gate 104) chain to
+nothing.
+
+**Camera points**: the locator set-up (`FUN_80066258`, after the items)
+links each transmitter of kind 9 through `FUN_80066c7c(slot, index)`: in
+the tower (realm 13) indices 198, 170–183 and above 200 are the tower's
+own cameras (slots for its scenes; `0xF0`, `0xDC`, `0xAA` are the
+wizard's lookouts) and go no further; otherwise every trigger whose id,
+as a signed byte, equals the index gets `+0xEE` = the point (`"Two
+cameras link to trigger"` when it had one). An id of 128 and up never
+matches, so the tower's pad 145 (id 240, at the wizard's pedestal) has no
+cut, though the tower has a camera 240. `mechanics.rs` clears the shared
+ids and links the points the same way (`clear_shared_ids`,
+`camera_point`); it had linked every trigger whose id matched, cutting to
+camera 240 each time the hero stepped onto the pedestal, and cutting on
+C3's 426 too.
 
 ## Movers: the nodes triggers move
 
