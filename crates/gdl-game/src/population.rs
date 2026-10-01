@@ -520,13 +520,16 @@ fn build_model(
         .iter()
         .filter_map(|&(node, object)| {
             // Each atree node draws with its render flags (blending, facing),
-            // like a character's; hidden nodes, glows (whose texture the
-            // effects system sets at run time) and a chest's contents node
-            // (a placeholder card the game hides) don't draw.
+            // like a character's; hidden nodes and a chest's contents node
+            // (a placeholder card the game hides) don't draw. Unlike a
+            // hero's `CFGLOW`, which the effects system textures at run
+            // time, an item's glow is an ordinary part with its own texture
+            // (the red gem's `CFXP_GLOW` ring, the green potion's
+            // `XP_GLOW`; the others' names are cut short of "GLOW").
             let flags = match &r.atree {
                 Some(atree) => {
                     let n = &atree.nodes[node];
-                    if n.hidden() || n.name.ends_with("GLOW") || n.name == CONTENTS_NODE {
+                    if !part_drawn(n) {
                         return None;
                     }
                     n.render_flags
@@ -691,6 +694,12 @@ const BLAST_MODELS: &[(&str, Wanted)] = &[
     ("CHESTSEXP0", |t| t.class == ItemClass::Container && t.subtype == 0x30),
     ("CHESTGEXP0", |t| t.class == ItemClass::Container && !matches!(t.subtype, 0x2C | 0x30)),
 ];
+
+/// Whether an item model's atree node draws its part: all but hidden ones
+/// and a chest's contents node.
+fn part_drawn(n: &gdl_formats::anim::SkeletonNode) -> bool {
+    !n.hidden() && n.name != CONTENTS_NODE
+}
 
 /// The node of a container's model that its contents hang on once it's
 /// opened (`docs/items.md`, "Containers"): the game looks up the object
@@ -1142,6 +1151,26 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item_glows_draw_but_hidden_and_contents_nodes_dont() {
+        let node = |name: &str, render_flags: u32| gdl_formats::anim::SkeletonNode {
+            name: name.into(),
+            offset: [0.0; 3],
+            parent: Some(0),
+            kind: gdl_formats::anim::NodeKind::Skeletal,
+            node_flags: 0,
+            render_flags,
+            index: -1,
+        };
+        // The red gem's glow ring and the green potion's glow, like the
+        // other gems' (named `CFXP_GLO`…).
+        for name in ["CFXP_GLOW", "XP_GLOW", "CFXP_GLO", "XP_CRYSTA"] {
+            assert!(part_drawn(&node(name, 0x04c0_1880)), "{name}");
+        }
+        assert!(!part_drawn(&node("XP_CRYSTA", gdl_formats::anim::RENDER_HIDDEN)));
+        assert!(!part_drawn(&node(CONTENTS_NODE, 0)));
+    }
 
     #[test]
     fn locator_angles_come_back() {
