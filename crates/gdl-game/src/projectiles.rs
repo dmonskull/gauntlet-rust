@@ -815,6 +815,19 @@ impl PlayerGuard {
             self.0.insert(player, now + PLAYER_GUARD as f64);
         }
     }
+
+    /// Each player's guard (a copy, for a system that works on its own).
+    pub(crate) fn snapshot(&self) -> HashMap<Entity, f64> {
+        self.0.clone()
+    }
+
+    /// Takes back guards set elsewhere, keeping the later of each.
+    pub(crate) fn merge(&mut self, guards: &HashMap<Entity, f64>) {
+        for (&player, &until) in guards {
+            let e = self.0.entry(player).or_insert(until);
+            *e = e.max(until);
+        }
+    }
 }
 
 /// Reads an atree (by name) with its folder's models and textures.

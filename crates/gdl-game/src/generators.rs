@@ -463,7 +463,10 @@ pub fn tick_generators(
             }
             None => (g.enemy, g.ai),
         };
-        let Some((spot, offset)) = find_spot(&mut level, &ground.0, &g, made, &feet, &bodies) else { continue };
+        let Some((spot, offset)) = find_spot(&mut level, &ground.0, &g, made, &feet, &bodies) else {
+            trace!("generator {} found no spot for enemy {made}{}", g.placement, if victim.is_some() { " (its slot's monster went)" } else { "" });
+            continue;
+        };
         let tier = g.tier;
         let random_bit = level.random(2) == 1;
         let new = NewMonster {
