@@ -462,6 +462,9 @@ or ATTPWRC (`0x57`) with a full meter (cost 100); with the `0x400` power
 it's ATTBREATHE (`0x6E`; the breath itself is ported, [powers.md](
 powers.md) "breaths", the Pojo's turbo breath isn't). When the turbo blow lands the cost
 comes off the meter and the blow is × 3 (`r2-0x5c88`) with kind `0x20`
-(ported as a finisher strike). Turbo-table experience also adds 0.025 ×
+(ported as a finisher strike — a stand-in: the game's turbo blows are the
+class's `DAMG` attack records, `PDAT +0x16` and `+0x18/+0x1A`, through
+`FUN_80088b88`; [chunk-files.md](chunk-files.md) "The heroes' attack
+records"). Turbo-table experience also adds 0.025 ×
 experience to the meter (`FUN_80076144` with its third argument 1) — not
 ported, as the calls that pass it aren't traced.

@@ -79,5 +79,40 @@ joins (`FUN_80079ed8`, reading through the `PDAT` pointer at
 See [collision.md](collision.md) "Moving a player". `+0x58` (1.0–1.3) and
 `+0x5C..+0x7C` are further per-class tuning, not named yet. The player movement code multiplies stick magnitude by a speed
 
-`+0x0C`–`+0x1E` are i16 sound indices the player update plays (not traced).
+**The heroes' attack records** (found 2026-10-01, `tools/hdamg.py <class>`
+dumps them). `+0x00` / `+0x02` are the file's `SFXX` and `DAMG` counts
+(WAR: 15, 14); after loading, `+0x04` / `+0x08` point at those tables
+(`DAMG` records here are `0x58` bytes, not the critters' `0x50`). The i16s
+at `+0x0C`–`+0x22` (not sound indices, as once noted) are `DAMG` indices for
+the actions the player update hits with through `FUN_80088b88` (−1 none):
+
+| `PDAT` | action | WAR |
+| --- | --- | --- |
+| `+0x0C` | ATTPWRACLOSE `0x23` | 0 |
+| `+0x0E` | ATTPWRALOW `0x54` | 1 |
+| `+0x10` | ATTPWRAMED `0x25` | 2 |
+| `+0x12` | ATT360 `0x3C` | 3 |
+| `+0x14` | ATTPWRATHROW `0x63` | 4 |
+| `+0x16` | ATTPWRB `0x56` (turbo) | 5 |
+| `+0x18`, `+0x1A` | ATTPWRC `0x57` (full turbo; two records) | 6, 7 |
+| `+0x1C` | COMBOACT1 `0x58` (co-op combo) | 8 |
+| `+0x1E` | COMBOACT3 `0x5A` | −1 |
+| `+0x20` | ? | 12 |
+| `+0x22` | action `0x7B` | 13 |
+
+A hero `DAMG` record as `FUN_80088b88` (record, the action's time now and
+last tick) reads it — the rest isn't traced:
+`+0x00` i16 kind (0 and 5 nothing; 2, 3, 4 and others a hit through
+`FUN_80089114`, its third argument 0 for kind 2; 10 an area through
+`FUN_80030094`, stepped `+0x14` apart along the facing out to `+0x20`,
+scaled by `+0x2C/+0x30/+0x34`, effects' damage × `+0x44`); `+0x02` flags
+(`0x2000`, `0x20`, `0x10`: a screen shake of three strengths,
+`FUN_80067acc`, on both linked heroes; `0x400` a node glow while it runs;
+`0x80` no lasting phase; `0x300` the reach grows (or shrinks, `0x200`) over
+the run; `0x1000` stops the slots it hits); `+0x38` f32 damage (WAR's turbo
+B 50, its combo 10) — a record with damage also pays the pending turbo cost
+(`+0x910`) as it lands; `+0x50` i16 start frame and `+0x52` end frame (−1:
+one frame); `+0x54` i16 a hint raised as it starts (`FUN_800a4268`).
+The ported turbo attacks still land as finishers (a stand-in: their real
+blows are these records).
 value derived from this stat; the derivation isn't traced yet.

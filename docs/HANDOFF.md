@@ -10,15 +10,35 @@ in order.
 **Next jobs, in order** (the user's list from 2026-10-01: online → co-op →
 settings → bosses; online and bosses are done):
 
-1. **Co-op combos**: decoded in [coop.md](coop.md) "Co-op combos" (the
-   partner test, COMBOACT1/2, the partner's per-class actions, carrying on
-   the carry node, the warrior's and dwarf's throws with their hits), not
-   ported. First trace what the doc lists as not traced (the combo actions'
-   blows, the COMBO_SPH / COMBO_<colour> effects, how a carried hero is
-   placed), then port into `combat.rs` (the classifier's comment marks the
-   spot), `actions.rs` (the chooser's cases for `0x16`, `0x58`–`0x5A`,
-   `0x88`–`0x93`) and `player.rs`. Test with two local players
-   (`GDL_FAKE_PAD`, [coop.md](coop.md) "Testing") and online.
+1. **Co-op combos** — where the last session stopped (mid-decode, no code
+   yet). Decoded: [coop.md](coop.md) "Co-op combos" (partner test,
+   COMBOACT1/2/3, the partner's per-class actions, carrying, the throws,
+   the state machine's cases, the hit moment and its effects) and
+   [chunk-files.md](chunk-files.md) "The heroes' attack records" (the
+   class's `DAMG` records the combo, power and turbo attacks hit with;
+   `tools/hdamg.py WAR` dumps them). Steps:
+   1. Trace `FUN_80089114` (what a record of kind 2–4 hits, how far, with
+      what damage/kind; `FUN_80088b88` calls it) and `FUN_80030094` (kind
+      10's areas), and how a carried hero is placed each frame
+      (`FUN_800747ac` attaches, `FUN_80074644` lets go; the carry node
+      `+0x6DC`). Decompile: `~/ghidra-projects/exports/
+      GauntletDarkLegacy-main.dol.c`; constants: `tools/mydol.py`.
+   2. Parse the hero `DAMG`/`SFXX` chunks in `gdl-formats/src/pdata.rs`
+      with the `PDAT +0x0C..+0x22` indices; port `FUN_80088b88` as the
+      heroes' record blows — which also replaces the turbo attacks'
+      finisher stand-in (ATTPWRB/C) and gives the power attacks their
+      records.
+   3. The combo itself: the classifier's partner test (`combat.rs`, its
+      comment marks the spot; the partner needs other heroes' state, so
+      compute it in `player.rs` and pass it in), the requests (`0x16` →
+      COMBOACT1 with the 50 cost; the partner's intents `0x26`/`0x27`/`0x17`
+      from its `+0x964` flags), `actions.rs`'s cases for `0x58`–`0x5A`,
+      `0x89`, `0x8F` (looping) and `0x88`–`0x93`, the linking and turbo
+      payment, carrying per class, the effects (COMBO_SPH and
+      COMBO_<colour> by `effects::EffectOn`), the thrown hero's hits.
+   4. Test with two local players (`GDL_FAKE_PAD`, [coop.md](coop.md)
+      "Testing"; `GDL_BUTTONS=combo@…` presses Z) and online
+      (`tools/online_test.sh`, both sides holding combo near each other).
 2. **The monsters' crowd penalty** (`FUN_80051660`: a hero's score is its
    distance + its record's `+0xA28` past `r2-0x6eb0` × a monster value;
    find what keeps `+0xA28`). The helper started this and was stopped by
@@ -32,6 +52,12 @@ settings → bosses; online and bosses are done):
    the chimera's three fills (levelA5), the drider's whip cones (levelD5).
 5. Then the older queue below: the G–T tour's leads, the AIs on the chase
    stand-in, the level-by-level audit (top priority overall).
+
+Decoding tools: `tools/mydol.py` reads `main.dol` constants by address or
+`r2`/`r13` offset (`f32:r2-5b44`, `u32:80122628`); `tools/hdamg.py <class>`
+dumps a hero class's attack records; the decompile is
+`~/ghidra-projects/exports/GauntletDarkLegacy-main.dol.c`. Run every game
+through `tools/waitrun.sh` (muted, one at a time).
 
 ## State of `master`
 
