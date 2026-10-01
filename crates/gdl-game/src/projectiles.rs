@@ -399,8 +399,11 @@ const REFLECTS: u32 = 0x102_0000;
 /// Shrunk (the shrink power), monsters' missiles do this much of their
 /// damage.
 const SHRUNK_MISSILE: f32 = 0.5;
-/// A reflected missile does at most this.
+/// A reflected missile does at most this; its end comes a second sooner,
+/// and at most 10 s on.
 const REFLECTED_MOST: f32 = 15.0;
+const REFLECTED_SOONER: f32 = 1.0;
+const REFLECTED_MOST_LEFT: f32 = 10.0;
 /// The ricochet sound, at most this often (seconds).
 const RICOCHET: &str = "S_RICOCHET";
 const RICOCHET_EVERY: f64 = 1.0;
@@ -447,6 +450,10 @@ pub struct Projectile {
     hits_players: bool,
     hits_level: bool,
     critter_stop: Option<CritterStop>,
+    /// A critter's still effect held on its node (a sphere blow's own
+    /// slot, `DAMG` kind 0): it stays at this point of that entity and
+    /// doesn't fly. Its entity is a child of the anchor's.
+    anchor: Option<(Entity, Vec3)>,
 }
 
 /// Where a critter's missile stops (`critters.rs`: its blow's hit record,
@@ -491,6 +498,10 @@ pub struct CritterMissile<'a> {
     pub hits_players: bool,
     pub hits_level: bool,
     pub stop: CritterStop,
+    /// A still slot held at a point of an entity (a kind-0 blow's, on the
+    /// move's node), for `life` seconds; none: it flies its 3 s.
+    pub anchor: Option<(Entity, Vec3)>,
+    pub life: Option<f32>,
 }
 
 /// What a missile was let go with.
@@ -1062,6 +1073,7 @@ fn spawn_projectile(
         hits_players: true,
         hits_level: true,
         critter_stop: None,
+        anchor: None,
     };
     let transform = Transform::from_translation(launch.start).with_rotation(orientation(&p)).with_scale(Vec3::splat(scale));
     let entity = match model {
@@ -1132,22 +1144,32 @@ pub fn spawn_hero_missile(
 
 /// A critter's missile (`critters.rs`): it flies and hits like a
 /// monster's, with the critter's own model and numbers, and does what its
-/// hit record says where it stops.
+/// hit record says where it stops. One held on a node (`anchor`) stays
+/// there for its life, touching what comes within its radius.
 pub fn spawn_critter_missile(commands: &mut Commands, m: CritterMissile) -> Entity {
     let t = missile(0, m.damage, m.velocity.length(), m.radius, 0.0, [0.0; 3], m.gravity);
     let launch = Launch { check: m.start, start: m.start, velocity: m.velocity };
     let e = spawn_projectile(commands, m.model, Owner::Monster(m.critter), &launch, &t, m.radius, m.damage, m.kind, m.scale);
-    let (hits_players, hits_level, stop) = (m.hits_players, m.hits_level, m.stop);
+    let (hits_players, hits_level, stop, anchor, life) = (m.hits_players, m.hits_level, m.stop, m.anchor, m.life);
     commands.entity(e).entry::<Projectile>().and_modify(move |mut p| {
         // A critter's missiles don't pass items as the monsters' do. They
         // fly the missiles' 3 s: a stand-in — the game gives the slot the
         // effect record's life (its clip's with none), but moving slots
-        // have their end time moved on in flight in a way not traced.
+        // have their end time moved on in flight in a way not traced. A
+        // still slot keeps the record's life.
         p.passes_items = false;
         p.hits_players = hits_players;
         p.hits_level = hits_level;
         p.critter_stop = Some(stop);
+        p.anchor = anchor;
+        if let Some(life) = life {
+            p.lifetime = life;
+        }
     });
+    // Held on its node: drawn there (its place in the node's space).
+    if let Some((on, off)) = anchor {
+        commands.entity(e).insert((Transform::from_translation(off).with_scale(Vec3::splat(m.scale)), ChildOf(on)));
+    }
     e
 }
 
@@ -1338,6 +1360,7 @@ fn fly(
     mut potions: MessageWriter<BlastAt>,
     (items, mut struck, mut rocks): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>, MessageWriter<BlastItem>),
     (mut sounds, mut ricochet, mut blasts): (MessageWriter<PlaySoundAt>, Local<f64>, MessageWriter<CritterBlast>),
+    anchors: Query<&GlobalTransform, Without<Projectile>>,
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -1345,6 +1368,15 @@ fn fly(
     let bodies = bodies(&targets);
     for (entity, mut p) in &mut projectiles {
         let p = &mut *p;
+        // One held on a node is where the node is now (as of the last
+        // frame drawn), and doesn't fly.
+        if let Some((on, off)) = p.anchor {
+            if let Ok(g) = anchors.get(on) {
+                p.position = g.affine().transform_point3(off);
+            }
+            p.velocity = Vec3::ZERO;
+            p.gravity = 0.0;
+        }
         let from = p.position;
         let mut to = from + p.velocity * dt;
         p.previous = from;
@@ -1376,6 +1408,10 @@ fn fly(
                 p.velocity = -p.velocity;
                 p.damage = p.damage.min(REFLECTED_MOST);
                 p.reflected = Some(player);
+                // Its end comes a second sooner (at most 10 s on): a still
+                // one held on a node is gone at once.
+                let left = p.lifetime - p.age;
+                p.lifetime = if left <= REFLECTED_MOST_LEFT { p.lifetime - REFLECTED_SOONER } else { p.age + REFLECTED_MOST_LEFT };
                 to = from.lerp(to, s) + p.velocity * dt;
                 info!("a missile glances off the hero's reflect shield");
             } else if let Some((s, player)) = hit {
@@ -1562,6 +1598,8 @@ fn critter_stops(
             follow: None,
             monsters: true,
             items: p.kind & combat::hit_kind::MAGIC != 0,
+            steady: false,
+            cone: None,
         });
     }
     debug!("a critter's missile stops at {at:?} (blast {:.1})", c.blast);
@@ -1637,7 +1675,8 @@ fn orientation(p: &Projectile) -> Quat {
 
 fn interpolate(fixed: Res<Time<Fixed>>, mut projectiles: Query<(&Projectile, &mut Transform)>) {
     let t = fixed.overstep_fraction();
-    for (p, mut transform) in &mut projectiles {
+    // Those held on a node are placed in its space, once.
+    for (p, mut transform) in projectiles.iter_mut().filter(|(p, _)| p.anchor.is_none()) {
         transform.translation = p.previous.lerp(p.position, t);
         transform.rotation = orientation(p);
         transform.scale = Vec3::splat(p.scale);
@@ -1656,6 +1695,22 @@ mod tests {
         assert!((reach(5.0) - 35.0).abs() < 1e-4);
         // The power throw counts as 0.06 s.
         assert!((reach(WIND_UP + POWER_WIND_UP) - 27.0).abs() < 1e-4);
+    }
+
+    /// A still slot (a critter's sphere blow's, held on its node) touches a
+    /// hero whose cylinder, grown by its radius, holds its point.
+    #[test]
+    fn a_still_slot_touches_heroes_within_its_radius() {
+        let hero = Vec3::new(0.0, PLAYER_CENTRE, 0.0);
+        let touches = |at: Vec3, r: f32| cylinder_hit(at, at, hero, r + 1.5, r + PLAYER_HALF_HEIGHT).is_some();
+        // The lich's chain: 16 out from its torso.
+        assert!(touches(Vec3::new(17.0, 8.0, 0.0), 16.0));
+        assert!(!touches(Vec3::new(17.6, 8.0, 0.0), 16.0));
+        assert!(touches(Vec3::new(0.0, 20.9, 0.0), 16.0));
+        assert!(!touches(Vec3::new(0.0, 21.1, 0.0), 16.0));
+        // Its axe: 4.
+        assert!(touches(Vec3::new(3.0, 2.0, 3.0), 4.0));
+        assert!(!touches(Vec3::new(4.0, 2.0, 4.0), 4.0));
     }
 
     #[test]
