@@ -670,6 +670,9 @@ fn audio_keys(
     mut sinks: Query<&mut AudioSink, With<LevelMusic>>,
     mut play: MessageWriter<PlaySound>,
 ) {
+    if !crate::dev_keys() {
+        return;
+    }
     if keys.just_pressed(KeyCode::KeyM) {
         status.muted = !status.muted;
         for mut sink in &mut sinks {

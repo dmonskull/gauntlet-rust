@@ -37,7 +37,7 @@ fn toggle(
     mut overlay: ResMut<CollisionOverlay>,
     mut parts: Query<&mut Visibility, With<OverlayPart>>,
 ) {
-    if keys.just_pressed(KeyCode::KeyK) {
+    if crate::dev_keys() && keys.just_pressed(KeyCode::KeyK) {
         overlay.visible = !overlay.visible;
     }
     let want = if overlay.visible { Visibility::Visible } else { Visibility::Hidden };
