@@ -39,7 +39,8 @@ use crate::message_box::MessageBox;
 use crate::options::GameOptions;
 use crate::party::{MAX_PLAYERS, Party};
 use crate::player::{Player, PlayerChoice};
-use crate::player_state::{PlayerState, SetMember};
+use crate::party::Devices;
+use crate::player_state::{PartyChange, PlayerState};
 use crate::population::LevelPopulation;
 use crate::saves::{SavedCharacter, Saves};
 
@@ -54,12 +55,7 @@ pub struct FrontendPlugin {
 impl Plugin for FrontendPlugin {
     fn build(&self, app: &mut App) {
         let screen = if self.skip { Screen::Playing } else { Screen::Title };
-        let mut fe = Frontend::new(screen);
-        if self.skip {
-            // No name was entered: the first of the game's names, as a
-            // blank entry gets one of them.
-            fe.hero_name = NAMES[0].to_string();
-        }
+        let fe = Frontend::new(screen);
         app.insert_resource(fe)
             .init_resource::<Snapshot>()
             .add_systems(Startup, (load_text, spawn_backdrop))
@@ -119,59 +115,126 @@ fn menu_script() -> Vec<(String, u64)> {
         .collect()
 }
 
+/// What a front-end press came from: the keyboard and mouse, or a pad.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Device {
+    Keyboard,
+    Pad(Entity),
+}
+
+impl Device {
+    /// Whether these devices include it.
+    fn among(self, d: &Devices) -> bool {
+        match self {
+            Device::Keyboard => d.keyboard,
+            Device::Pad(e) => d.pad == Some(e),
+        }
+    }
+
+    /// It alone (a pad's player keeps the keyboard too when it's player 1
+    /// on their own: `start_select`).
+    fn only(self) -> Devices {
+        match self {
+            Device::Keyboard => Devices { keyboard: true, ..Devices::default() },
+            Device::Pad(e) => Devices { pad: Some(e), ..Devices::default() },
+        }
+    }
+}
+
+/// The keyboard's presses this frame.
+fn keyboard_pressed(keys: &ButtonInput<KeyCode>) -> Pressed {
+    let key = |ks: &[KeyCode]| ks.iter().any(|k| keys.just_pressed(*k));
+    let held = |ks: &[KeyCode]| ks.iter().any(|k| keys.pressed(*k));
+    Pressed {
+        up: key(&[KeyCode::ArrowUp, KeyCode::KeyW]),
+        down: key(&[KeyCode::ArrowDown, KeyCode::KeyS]),
+        left: key(&[KeyCode::ArrowLeft, KeyCode::KeyA]),
+        right: key(&[KeyCode::ArrowRight, KeyCode::KeyD]),
+        accept: key(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space, KeyCode::KeyJ]),
+        back: key(&[KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyH]),
+        start: key(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Escape]),
+        l: key(&[KeyCode::KeyQ, KeyCode::KeyP]),
+        r: key(&[KeyCode::KeyE, KeyCode::KeyO]),
+        hold_left: held(&[KeyCode::ArrowLeft, KeyCode::KeyA]),
+        hold_right: held(&[KeyCode::ArrowRight, KeyCode::KeyD]),
+    }
+}
+
+/// A pad's presses this frame; its stick counts as a press when it crosses
+/// half way (`was`: last frame's up, down, left, right).
+fn pad_pressed(pad: &Gamepad, was: &mut [bool; 4]) -> Pressed {
+    let stick = pad.left_stick();
+    let now = [stick.y > 0.5, stick.y < -0.5, stick.x < -0.5, stick.x > 0.5];
+    let edge: Vec<bool> = now.iter().zip(was.iter()).map(|(n, o)| *n && !*o).collect();
+    *was = now;
+    let b = |bs: &[GamepadButton]| bs.iter().any(|b| pad.just_pressed(*b));
+    Pressed {
+        up: b(&[GamepadButton::DPadUp]) || edge[0],
+        down: b(&[GamepadButton::DPadDown]) || edge[1],
+        left: b(&[GamepadButton::DPadLeft]) || edge[2],
+        right: b(&[GamepadButton::DPadRight]) || edge[3],
+        accept: b(&[GamepadButton::South]),
+        // The GameCube's B (west); an Xbox pad's B (east) backs out too.
+        back: b(&[GamepadButton::West, GamepadButton::East]),
+        start: b(&[GamepadButton::Start]),
+        l: b(&[GamepadButton::LeftTrigger, GamepadButton::LeftTrigger2]),
+        r: b(&[GamepadButton::RightTrigger, GamepadButton::RightTrigger2]),
+        hold_left: pad.pressed(GamepadButton::DPadLeft) || now[2],
+        hold_right: pad.pressed(GamepadButton::DPadRight) || now[3],
+    }
+}
+
+impl Pressed {
+    fn any(&self) -> bool {
+        self.up || self.down || self.left || self.right || self.accept || self.back || self.start || self.l || self.r
+    }
+
+    fn or(self, o: Pressed) -> Pressed {
+        Pressed {
+            up: self.up || o.up,
+            down: self.down || o.down,
+            left: self.left || o.left,
+            right: self.right || o.right,
+            accept: self.accept || o.accept,
+            back: self.back || o.back,
+            start: self.start || o.start,
+            l: self.l || o.l,
+            r: self.r || o.r,
+            hold_left: self.hold_left || o.hold_left,
+            hold_right: self.hold_right || o.hold_right,
+        }
+    }
+}
+
 pub(crate) fn read_input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
-    pads: Query<&Gamepad>,
+    pads: Query<(Entity, &Gamepad)>,
     mut fe: ResMut<Frontend>,
-    mut sticks: Local<[bool; 4]>,
+    mut sticks: Local<Vec<(Entity, [bool; 4])>>,
 ) {
     // Waiting for a key or button to bind: nothing else counts.
     if let Some((page, _)) = fe.capture {
-        let got = if keys.just_pressed(KeyCode::Escape) || pads.iter().any(|p| p.just_pressed(GamepadButton::Start)) {
+        let got = if keys.just_pressed(KeyCode::Escape) || pads.iter().any(|(_, p)| p.just_pressed(GamepadButton::Start)) {
             Some(Captured::Cancel)
         } else if page == Page::Keys {
             controls::just_pressed_input(&keys, &mouse).map(Captured::Key)
         } else {
-            controls::just_pressed_pad(&pads).map(Captured::Pad)
+            controls::just_pressed_pad(pads.iter().map(|(_, p)| p)).map(Captured::Pad)
         };
         if got.is_some() {
             fe.captured = got;
         }
         fe.input = Pressed::default();
+        fe.pressed_by.clear();
         return;
     }
-    let key = |ks: &[KeyCode]| ks.iter().any(|k| keys.just_pressed(*k));
-    let pad = |bs: &[GamepadButton]| pads.iter().any(|p| bs.iter().any(|b| p.just_pressed(*b)));
-    // The stick counts as a press when it crosses half way.
-    let stick = pads.iter().map(|p| p.left_stick()).find(|v| v.length() > 0.5).unwrap_or(Vec2::ZERO);
-    let now = [stick.y > 0.5, stick.y < -0.5, stick.x < -0.5, stick.x > 0.5];
-    let edge: Vec<bool> = now.iter().zip(sticks.iter()).map(|(n, o)| *n && !*o).collect();
-    *sticks = now;
-    let mut p = Pressed {
-        up: key(&[KeyCode::ArrowUp, KeyCode::KeyW]) || pad(&[GamepadButton::DPadUp]) || edge[0],
-        down: key(&[KeyCode::ArrowDown, KeyCode::KeyS]) || pad(&[GamepadButton::DPadDown]) || edge[1],
-        left: key(&[KeyCode::ArrowLeft, KeyCode::KeyA]) || pad(&[GamepadButton::DPadLeft]) || edge[2],
-        right: key(&[KeyCode::ArrowRight, KeyCode::KeyD]) || pad(&[GamepadButton::DPadRight]) || edge[3],
-        accept: key(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space, KeyCode::KeyJ])
-            || pad(&[GamepadButton::South]),
-        // The GameCube's B (west); an Xbox pad's B (east) backs out too.
-        back: key(&[KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyH]) || pad(&[GamepadButton::West, GamepadButton::East]),
-        start: key(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Escape]) || pad(&[GamepadButton::Start]),
-        l: key(&[KeyCode::KeyQ, KeyCode::KeyP])
-            || pad(&[GamepadButton::LeftTrigger, GamepadButton::LeftTrigger2]),
-        r: key(&[KeyCode::KeyE, KeyCode::KeyO])
-            || pad(&[GamepadButton::RightTrigger, GamepadButton::RightTrigger2]),
-        hold_left: [KeyCode::ArrowLeft, KeyCode::KeyA].iter().any(|k| keys.pressed(*k))
-            || pads.iter().any(|p| p.pressed(GamepadButton::DPadLeft))
-            || now[2],
-        hold_right: [KeyCode::ArrowRight, KeyCode::KeyD].iter().any(|k| keys.pressed(*k))
-            || pads.iter().any(|p| p.pressed(GamepadButton::DPadRight))
-            || now[3],
-    };
+    let mut keyboard = keyboard_pressed(&keys);
     fe.frame += 1;
     let frame = fe.frame;
-    for (name, _) in fe.script.iter().filter(|(_, f)| *f == frame) {
+    let script: Vec<String> = fe.script.iter().filter(|(_, f)| *f == frame).map(|(n, _)| n.clone()).collect();
+    for name in script {
+        let p = &mut keyboard;
         match name.as_str() {
             "up" => p.up = true,
             "down" => p.down = true,
@@ -185,7 +248,25 @@ pub(crate) fn read_input(
             other => warn!("GDL_MENU: unknown button {other}"),
         }
     }
-    fe.input = p;
+    let mut by = vec![(Device::Keyboard, keyboard)];
+    sticks.retain(|(e, _)| pads.contains(*e));
+    for (e, pad) in &pads {
+        let was = match sticks.iter_mut().find(|(s, _)| *s == e) {
+            Some((_, w)) => w,
+            None => {
+                sticks.push((e, [false; 4]));
+                &mut sticks.last_mut().expect("just pushed").1
+            }
+        };
+        by.push((Device::Pad(e), pad_pressed(pad, was)));
+    }
+    // The menus take any device's presses; the select screen's columns
+    // each their own.
+    fe.input = by.iter().fold(Pressed::default(), |all, (_, p)| all.or(*p));
+    if let Some((d, _)) = by.iter().find(|(_, p)| p.start || p.accept) {
+        fe.last_device = *d;
+    }
+    fe.pressed_by = by;
 }
 
 // ---------------------------------------------------------------------------
@@ -820,6 +901,49 @@ enum Step {
     Class,
 }
 
+/// A player's column on the select screen: what drives it, where it is,
+/// and whether its player is ready (the game's state 3).
+struct Column {
+    devices: Devices,
+    select: Select,
+    ready: bool,
+}
+
+impl Column {
+    /// A new player at New / Load.
+    fn new(devices: Devices, has_saves: bool) -> Self {
+        Self {
+            devices,
+            select: Select {
+                step: Step::NewOrLoad,
+                from_character_menu: false,
+                name: String::new(),
+                letter: b'@',
+                // A new character record starts as the Sorceress in
+                // yellow (the reset routine's defaults).
+                class: 6,
+                colour: 0,
+                menu: new_load_menu(has_saves),
+                t: 0.0,
+            },
+            ready: false,
+        }
+    }
+
+    /// A player in the game at the character menu, or ready.
+    fn member(devices: Devices, choice: &PlayerChoice, name: &str, has_saves: bool, ready: bool) -> Self {
+        let mut c = Self::new(devices, has_saves);
+        let s = &mut c.select;
+        s.step = Step::Character;
+        s.menu = character_menu(has_saves).selecting(Item::Done);
+        s.name = name.to_string();
+        s.class = CLASSES.iter().position(|k| *k == choice.class).unwrap_or(6);
+        s.colour = COLOURS.iter().position(|k| choice.variant.starts_with(k)).unwrap_or(0);
+        c.ready = ready;
+        c
+    }
+}
+
 struct Select {
     step: Step,
     /// The step class select returns to.
@@ -841,12 +965,17 @@ pub struct Frontend {
     t: f32,
     /// Open menus, innermost last.
     menus: Vec<Menu>,
-    select: Select,
+    /// The select screen's four columns, by slot.
+    columns: [Option<Column>; MAX_PLAYERS],
+    /// This frame's presses, all devices' together (the menus), and each
+    /// device's (the columns).
     input: Pressed,
+    pressed_by: Vec<(Device, Pressed)>,
+    /// The device that last pressed Start or A: the title's player 1, the
+    /// pause menu's player.
+    last_device: Device,
     frame: u64,
     script: Vec<(String, u64)>,
-    /// The hero's name, from the select screen.
-    pub hero_name: String,
     /// By slot: seconds each hero has lain dead.
     dead_for: [f32; MAX_PLAYERS],
     /// By slot: the hero is out of the level (its death over, outside the
@@ -871,22 +1000,12 @@ impl Frontend {
             screen,
             t: 0.0,
             menus: Vec::new(),
-            select: Select {
-                step: Step::NewOrLoad,
-                from_character_menu: false,
-                name: String::new(),
-                letter: b'@',
-                // A new character record starts as the Sorceress in
-                // yellow (the reset routine's defaults).
-                class: 6,
-                colour: 0,
-                menu: Menu::new(&NEW_LOAD),
-                t: 0.0,
-            },
+            columns: Default::default(),
             input: Pressed::default(),
+            pressed_by: Vec::new(),
+            last_device: Device::Keyboard,
             frame: 0,
             script: menu_script(),
-            hero_name: String::new(),
             dead_for: [0.0; MAX_PLAYERS],
             out: [false; MAX_PLAYERS],
             leaving: false,
@@ -936,6 +1055,12 @@ impl Frontend {
     fn frozen(&self) -> bool {
         !(self.screen == Screen::Playing && self.menus.is_empty())
     }
+
+    /// Whether the 4:3 screen's sides are covered: any screen of the front
+    /// end's but play, and a menu over play.
+    fn covers_sides(&self) -> bool {
+        self.screen != Screen::Playing || !self.menus.is_empty()
+    }
 }
 
 /// Black behind the full-screen screens, covering the whole window (the
@@ -943,6 +1068,12 @@ impl Frontend {
 /// the in-play HUD.
 #[derive(Component)]
 struct Backdrop;
+
+/// Black bars beside the 4:3 screen (left, right) while the front end's
+/// screens or a menu are up: the game's screens are 4:3, so a wider
+/// window shows nothing of the level outside them.
+#[derive(Component)]
+struct SideBar;
 
 fn spawn_backdrop(mut commands: Commands) {
     commands.spawn((
@@ -952,12 +1083,34 @@ fn spawn_backdrop(mut commands: Commands) {
         GlobalZIndex(99),
         Visibility::Hidden,
     ));
+    for right in [false, true] {
+        let mut node = Node { position_type: PositionType::Absolute, top: Val::Px(0.0), height: Val::Percent(100.0), ..default() };
+        if right {
+            node.right = Val::Px(0.0);
+        } else {
+            node.left = Val::Px(0.0);
+        }
+        commands.spawn((SideBar, node, BackgroundColor(Color::BLACK), GlobalZIndex(99), Visibility::Hidden));
+    }
 }
 
-fn show_backdrop(frontend: Res<Frontend>, mut backdrop: Query<&mut Visibility, With<Backdrop>>) {
+fn show_backdrop(
+    frontend: Res<Frontend>,
+    windows: Query<&Window>,
+    mut backdrop: Query<&mut Visibility, (With<Backdrop>, Without<SideBar>)>,
+    mut bars: Query<(&mut Node, &mut Visibility), With<SideBar>>,
+) {
     let want = if frontend.full_screen() { Visibility::Inherited } else { Visibility::Hidden };
     for mut v in &mut backdrop {
         v.set_if_neq(want);
+    }
+    let width = windows.single().map_or(0.0, |w| ((w.width() - w.height() * crate::font::SCREEN_W / crate::font::SCREEN_H) / 2.0).max(0.0));
+    let bars_up = frontend.covers_sides() && width > 0.0;
+    for (mut node, mut v) in &mut bars {
+        v.set_if_neq(if bars_up { Visibility::Inherited } else { Visibility::Hidden });
+        if node.width != Val::Px(width) {
+            node.width = Val::Px(width);
+        }
     }
 }
 
@@ -1011,7 +1164,7 @@ pub(crate) fn run(
     real: Res<Time<Real>>,
     mut virt: ResMut<Time<Virtual>>,
     game: Res<LoadedGame>,
-    (party, mut members): (Res<Party>, MessageWriter<SetMember>),
+    (party, mut changes): (Res<Party>, MessageWriter<PartyChange>),
     mut to_level: MessageWriter<ChangeLevelTo>,
     mut options: ResMut<GameOptions>,
     mut saves: ResMut<Saves>,
@@ -1023,8 +1176,10 @@ pub(crate) fn run(
     for m in &mut fe.menus {
         m.t += fields;
     }
-    fe.select.t += fields;
-    fe.select.menu.t += fields;
+    for c in fe.columns.iter_mut().flatten() {
+        c.select.t += fields;
+        c.select.menu.t += fields;
+    }
     let mut p = fe.input;
     let in_tower = game.current_name().eq_ignore_ascii_case(TOWER);
 
@@ -1066,11 +1221,14 @@ pub(crate) fn run(
             // One frame shows "Loading..." before the load stalls a frame.
             if fe.t > 2.0 {
                 to_level.write(ChangeLevelTo::to(TOWER));
-                start_select(&mut fe, false, has_saves);
+                start_select(&mut fe, SelectFor::NewGame, has_saves, &party, &mut changes);
                 fe.go(Screen::Select);
             }
         }
-        Screen::Select => select(&mut fe, &p, &party, &mut members, &mut saves),
+        Screen::Select => {
+            select_tick(&mut fe);
+            select(&mut fe, &party, &mut changes, &mut saves);
+        }
         Screen::LoadingGame => {
             if fe.t > 2.0 {
                 to_level.write(ChangeLevelTo::to(TOWER));
@@ -1106,7 +1264,7 @@ pub(crate) fn run(
                     }
                     Item::ManageCharacter => {
                         fe.menus.clear();
-                        start_select(&mut fe, true, has_saves);
+                        start_select(&mut fe, SelectFor::Manage, has_saves, &party, &mut changes);
                         fe.go(Screen::Select);
                     }
                     // Stand-ins: the shop and inventory screens.
@@ -1120,7 +1278,7 @@ pub(crate) fn run(
             // to the title.
             if fe.t >= 240.0 {
                 fe.menus.clear();
-                start_select(&mut fe, false, has_saves);
+                fe.columns = Default::default();
                 fe.go(Screen::Title);
             }
         }
@@ -1257,33 +1415,146 @@ fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions) -> bool {
     took
 }
 
-/// Starts the select screen: a new player at New / Load, or (Manage
-/// Character from the tower) the joined player at the character menu.
-fn start_select(fe: &mut Frontend, manage: bool, has_saves: bool) {
-    let s = &mut fe.select;
-    s.t = 0.0;
-    if manage {
-        s.step = Step::Character;
-        s.menu = character_menu(has_saves).selecting(Item::Done);
-    } else {
-        s.step = Step::NewOrLoad;
-        s.menu = new_load_menu(has_saves);
-        s.name.clear();
-        s.class = 6;
-        s.colour = 0;
-    }
-    s.menu.column = COLUMN[0];
+/// How the select screen opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectFor {
+    /// A new game from the title: the party starts afresh, its first
+    /// player the device that started.
+    NewGame,
+    /// Manage Character from the tower: the players in the game, ready —
+    /// but the one who asked, at their character menu.
+    Manage,
 }
 
-fn select(fe: &mut Frontend, p: &Pressed, party: &Party, members: &mut MessageWriter<SetMember>, saves: &mut Saves) {
+/// Starts the select screen.
+fn start_select(fe: &mut Frontend, how: SelectFor, has_saves: bool, party: &Party, changes: &mut MessageWriter<PartyChange>) {
+    fe.columns = Default::default();
+    match how {
+        SelectFor::NewGame => {
+            changes.write(PartyChange::Clear);
+            // Player 1 keeps the keyboard too when they started with a pad
+            // (alone, they play with both).
+            let mut devices = fe.last_device.only();
+            devices.keyboard = true;
+            fe.columns[0] = Some(Column::new(devices, has_saves));
+        }
+        SelectFor::Manage => {
+            let asker = fe.last_device;
+            for (slot, m) in party.members() {
+                let ready = !asker.among(&m.devices) && !(party.len() == 1);
+                fe.columns[slot] = Some(Column::member(m.devices, &m.choice, &m.name, has_saves, ready));
+            }
+        }
+    }
+    for (slot, c) in fe.columns.iter_mut().enumerate() {
+        if let Some(c) = c {
+            c.select.menu.column = COLUMN[slot];
+        }
+    }
+}
+
+/// What a column's presses came to.
+enum ColumnEvent {
+    None,
+    /// Its player backed out (or quit): the column empties.
+    Leave,
+    /// The game ends (the last player quit their character).
+    Title,
+}
+
+/// The select screen: each device drives its column; a device without one
+/// joins at the first free column with Start (a pad) or A. The game goes on
+/// once every player in is ready; with nobody left it's back to the title.
+fn select(fe: &mut Frontend, party: &Party, changes: &mut MessageWriter<PartyChange>, saves: &mut Saves) {
     let has_saves = !saves.file.characters.is_empty();
-    let slot = 0;
-    let choice = party.choice(slot).cloned();
+    let frame = fe.frame;
+    let presses = fe.pressed_by.clone();
+    for (device, p) in presses {
+        if !p.any() {
+            continue;
+        }
+        let owner = fe.columns.iter().position(|c| c.as_ref().is_some_and(|c| device.among(&c.devices)));
+        match owner {
+            Some(slot) => {
+                let Some(column) = fe.columns[slot].as_mut() else { continue };
+                match select_column(column, slot, &p, party, changes, saves, frame) {
+                    ColumnEvent::None => {}
+                    ColumnEvent::Leave => {
+                        fe.columns[slot] = None;
+                        changes.write(PartyChange::Leave(slot));
+                    }
+                    ColumnEvent::Title => {
+                        fe.columns = Default::default();
+                        changes.write(PartyChange::Clear);
+                        fe.menus.clear();
+                        fe.go(Screen::Title);
+                        return;
+                    }
+                }
+            }
+            None if p.start || (p.accept && device != Device::Keyboard) => {
+                if let Some(slot) = fe.columns.iter().position(Option::is_none) {
+                    info!("player {} joins on the select screen ({device:?})", slot + 1);
+                    let mut c = Column::new(device.only(), has_saves);
+                    c.select.menu.column = COLUMN[slot];
+                    fe.columns[slot] = Some(c);
+                }
+            }
+            None => {}
+        }
+    }
+    for (slot, c) in fe.columns.iter().enumerate() {
+        if let Some(c) = c
+            && c.ready
+            && c.select.step == Step::Class
+        {
+            debug!("player {} ready", slot + 1);
+        }
+    }
+    let joined: Vec<&Column> = fe.columns.iter().flatten().collect();
+    if joined.is_empty() {
+        // The only player backed out: back to the title.
+        fe.go(Screen::Title);
+    } else if joined.iter().all(|c| c.ready) {
+        // Every player in is ready: into the tower.
+        fe.go(Screen::LoadingGame);
+    }
+}
+
+/// One column's step on its device's presses: New / Load, the character
+/// menu, the load list, name entry and the class, as the game's
+/// per-player select update has them (`docs/frontend.md`).
+#[allow(clippy::too_many_arguments)]
+fn select_column(
+    column: &mut Column,
+    slot: usize,
+    p: &Pressed,
+    party: &Party,
+    changes: &mut MessageWriter<PartyChange>,
+    saves: &mut Saves,
+    frame: u64,
+) -> ColumnEvent {
+    let has_saves = !saves.file.characters.is_empty();
+    let devices = column.devices;
+    let member = party.get(slot);
     // The hero as it would be saved now.
-    let record = party
-        .get(slot)
-        .map(|m| SavedCharacter::of(&fe.hero_name, &m.choice.class, &m.choice.variant, &m.state));
-    let s = &mut fe.select;
+    let record = member.map(|m| SavedCharacter::of(&m.name, &m.choice.class, &m.choice.variant, &m.state));
+    // A ready player opens their character menu again with A (or Start).
+    if column.ready {
+        if p.accept || p.start {
+            column.ready = false;
+            let s = &mut column.select;
+            if member.is_some() {
+                s.step = Step::Character;
+                s.menu = character_menu(has_saves).selecting(Item::Done);
+            } else {
+                s.step = Step::Class;
+            }
+            s.menu.column = COLUMN[slot];
+        }
+        return ColumnEvent::None;
+    }
+    let s = &mut column.select;
     match s.step {
         Step::NewOrLoad => match s.menu.update(p) {
             Some(Item::New) => {
@@ -1295,12 +1566,9 @@ fn select(fe: &mut Frontend, p: &Pressed, party: &Party, members: &mut MessageWr
                 s.from_character_menu = false;
                 s.step = Step::LoadList;
                 s.menu = load_list(saves);
-                s.menu.column = COLUMN[0];
+                s.menu.column = COLUMN[slot];
             }
-            Some(Item::No) => {
-                // The only player backed out: back to the title.
-                fe.go(Screen::Title);
-            }
+            Some(Item::No) => return ColumnEvent::Leave,
             _ => {}
         },
         Step::Character => match s.menu.update(p) {
@@ -1319,42 +1587,35 @@ fn select(fe: &mut Frontend, p: &Pressed, party: &Party, members: &mut MessageWr
                     }
                 }
                 s.menu = character_menu(!saves.file.characters.is_empty()).selecting(Item::Done);
-                s.menu.column = COLUMN[0];
+                s.menu.column = COLUMN[slot];
             }
             Some(Item::Load) => {
                 s.from_character_menu = true;
                 s.step = Step::LoadList;
                 s.menu = load_list(saves);
-                s.menu.column = COLUMN[0];
+                s.menu.column = COLUMN[slot];
             }
             Some(Item::Quit) => {
                 // Only a hero with changes since its last save asks first.
                 let saved = record.as_ref().is_some_and(|r| saves.file.characters.iter().any(|c| c == r));
                 if saved {
-                    fe.menus.clear();
-                    fe.go(Screen::Title);
-                    start_select(fe, false, has_saves);
-                } else {
-                    s.step = Step::ConfirmQuit;
-                    s.menu = Menu::new(&YES_NO).selecting(Item::No);
-                    s.menu.column = COLUMN[0];
+                    return quit_event(party, slot);
                 }
+                s.step = Step::ConfirmQuit;
+                s.menu = Menu::new(&YES_NO).selecting(Item::No);
+                s.menu.column = COLUMN[slot];
             }
-            // Back into the tower with the (maybe changed) hero.
-            Some(Item::Done | Item::No) => fe.go(Screen::LoadingGame),
+            // Back into the tower with the (maybe changed) hero, once
+            // everyone's ready.
+            Some(Item::Done | Item::No) => column.ready = true,
             _ => {}
         },
         Step::ConfirmQuit => match s.menu.update(p) {
-            Some(Item::Yes) => {
-                // The last player leaving ends the game.
-                fe.menus.clear();
-                fe.go(Screen::Title);
-                start_select(fe, false, has_saves);
-            }
+            Some(Item::Yes) => return quit_event(party, slot),
             Some(Item::No) => {
                 s.step = Step::Character;
                 s.menu = character_menu(has_saves).selecting(Item::Quit);
-                s.menu.column = COLUMN[0];
+                s.menu.column = COLUMN[slot];
             }
             _ => {}
         },
@@ -1363,19 +1624,19 @@ fn select(fe: &mut Frontend, p: &Pressed, party: &Party, members: &mut MessageWr
                 if let Some(c) = saves.file.characters.get(i).cloned() {
                     s.class = CLASSES.iter().position(|k| *k == c.class).unwrap_or(s.class);
                     s.colour = COLOURS.iter().position(|k| *k == c.variant).unwrap_or(s.colour);
+                    s.name = c.name.clone();
                     // Even the same class and colour: a new record, the
                     // saved one laid on it (`player_state::new_member`).
-                    fe.hero_name = c.name.clone();
-                    fe.fresh_hero[slot] = true;
-                    info!("loaded {} the {} ({}), level {}", c.name, c.class, c.variant, c.level);
-                    members.write(SetMember {
+                    info!("player {}: loaded {} the {} ({}), level {}", slot + 1, c.name, c.class, c.variant, c.level);
+                    changes.write(PartyChange::Set {
                         slot,
                         choice: PlayerChoice { class: c.class.clone(), variant: c.variant.clone() },
                         name: c.name.clone(),
-                        saved: Some(c),
+                        saved: Some(Box::new(c)),
                         fresh: true,
+                        devices,
                     });
-                    fe.go(Screen::LoadingGame);
+                    column.ready = true;
                 }
             }
             Some(Item::No) => {
@@ -1386,7 +1647,7 @@ fn select(fe: &mut Frontend, p: &Pressed, party: &Party, members: &mut MessageWr
                     s.step = Step::NewOrLoad;
                     s.menu = new_load_menu(has_saves).selecting(Item::Load);
                 }
-                s.menu.column = COLUMN[0];
+                s.menu.column = COLUMN[slot];
             }
             _ => {}
         },
@@ -1428,7 +1689,7 @@ fn select(fe: &mut Frontend, p: &Pressed, party: &Party, members: &mut MessageWr
                 }
                 if s.step == Step::NameShown {
                     if s.name.is_empty() {
-                        let pick = (fe.frame as usize) % NAMES.len();
+                        let pick = (frame as usize + slot) % NAMES.len();
                         s.name = NAMES[pick].to_string();
                     }
                     s.t = 0.0;
@@ -1436,15 +1697,11 @@ fn select(fe: &mut Frontend, p: &Pressed, party: &Party, members: &mut MessageWr
             } else if p.back {
                 s.step = Step::NewOrLoad;
                 s.menu = new_load_menu(has_saves);
-                s.menu.column = COLUMN[0];
+                s.menu.column = COLUMN[slot];
             }
         }
-        Step::NameShown => {
-            if s.t >= 60.0 {
-                s.step = Step::Class;
-                s.from_character_menu = false;
-            }
-        }
+        // The name blinks for its 60 fields (`select_tick`).
+        Step::NameShown => {}
         Step::Class => {
             // Left/L and right/R change class (the secret seventeenth only
             // when unlocked, never here); up/down change colour.
@@ -1464,20 +1721,16 @@ fn select(fe: &mut Frontend, p: &Pressed, party: &Party, members: &mut MessageWr
                 let picked = PlayerChoice { class: CLASSES[s.class].to_string(), variant: COLOURS[s.colour].to_string() };
                 // Another class or colour, or a new game even with the same
                 // hero: a fresh record.
-                let fresh = choice.as_ref() != Some(&picked) || !s.from_character_menu;
-                if fresh {
-                    fe.fresh_hero[slot] = true;
-                }
-                fe.hero_name = s.name.clone();
-                info!("hero {} the {} ({})", fe.hero_name, picked.class, picked.variant);
-                members.write(SetMember { slot, choice: picked, name: s.name.clone(), saved: None, fresh });
+                let fresh = member.map(|m| &m.choice) != Some(&picked) || !s.from_character_menu;
+                info!("player {}: {} the {} ({})", slot + 1, s.name, picked.class, picked.variant);
+                changes.write(PartyChange::Set { slot, choice: picked, name: s.name.clone(), saved: None, fresh, devices });
                 if s.from_character_menu {
                     s.step = Step::Character;
                     s.menu = character_menu(has_saves).selecting(Item::Done);
-                    s.menu.column = COLUMN[0];
+                    s.menu.column = COLUMN[slot];
                 } else {
-                    // A new hero, ready: the game starts in the tower.
-                    fe.go(Screen::LoadingGame);
+                    // A new hero: this player is ready.
+                    column.ready = true;
                 }
             } else if p.back {
                 if s.from_character_menu {
@@ -1487,8 +1740,26 @@ fn select(fe: &mut Frontend, p: &Pressed, party: &Party, members: &mut MessageWr
                     s.step = Step::NewOrLoad;
                     s.menu = new_load_menu(has_saves);
                 }
-                s.menu.column = COLUMN[0];
+                s.menu.column = COLUMN[slot];
             }
+        }
+    }
+    ColumnEvent::None
+}
+
+/// A player quitting their character: out of the game, or with nobody else
+/// in, the game ends.
+fn quit_event(party: &Party, slot: usize) -> ColumnEvent {
+    if party.members().all(|(s, _)| s == slot) { ColumnEvent::Title } else { ColumnEvent::Leave }
+}
+
+/// The select screen's clocks: a finished name blinks for 60 fields, then
+/// the class.
+fn select_tick(fe: &mut Frontend) {
+    for c in fe.columns.iter_mut().flatten() {
+        if c.select.step == Step::NameShown && c.select.t >= 60.0 {
+            c.select.step = Step::Class;
+            c.select.from_character_menu = false;
         }
     }
 }
@@ -1643,7 +1914,7 @@ fn draw(
             }
             d.draw.shimmer(d.fonts, FONT32, 1.0, -256.0, 320.0, "Loading...", rgb(PURPLE), pulse(fe.t));
         }
-        Screen::Select => select_screen(&mut d, &fe.select, &strings, &stats),
+        Screen::Select => select_screen(&mut d, &fe, &strings, &stats),
         Screen::Playing => {}
         Screen::GameOver => {
             // The game types it out one letter per 8 fields after 60,
@@ -1852,12 +2123,42 @@ fn slider(d: &mut Painter, x: f32, y: f32, value: f32, alpha: f32) {
 /// The character-select screen: four player columns (`S1_PLYRn` over
 /// `S2_PLYRn`, framed by `S1_BORDER` / `S2_BORDER`); player 1's column
 /// shows its menu, name entry or class card.
-fn select_screen(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassStats) {
+/// Where each player's name starts on the select screen (the game's
+/// per-player table, less 34).
+const NAME_LEFT: [f32; 4] = [8.0, 138.0, 266.0, 391.0];
+
+/// The select screen: the players' panels along the bottom (as the game
+/// keeps them up there: in the player's colour once joined, dim
+/// otherwise), each column's art, and in each joined column its player's
+/// step — a ready player's class card.
+fn select_screen(d: &mut Painter, fe: &Frontend, strings: &Strings, stats: &ClassStats) {
+    for (slot, &col) in COLUMN.iter().enumerate() {
+        let [r, g, b] = if fe.columns[slot].is_some() { crate::game_hud::JOINED[slot] } else { crate::game_hud::NOT_JOINED[slot] };
+        d.image_sized("S3", 0, col, 304.0, 128.0, 16.0, Color::WHITE);
+        d.image_sized("S4", 0, col, 320.0, 128.0, 64.0, Color::srgb_u8(r, g, b));
+        d.image_sized("S4_FRAME", 0, col, 320.0, 128.0, 64.0, Color::WHITE);
+    }
     for (p, &col) in COLUMN.iter().enumerate() {
         d.image(&format!("S1_PLYR{}", p + 1), col, 0.0, Color::WHITE);
         d.image(&format!("S2_PLYR{}", p + 1), col, 256.0, Color::WHITE);
     }
-    let col = COLUMN[0];
+    for (slot, column) in fe.columns.iter().enumerate() {
+        let Some(column) = column else { continue };
+        if column.ready {
+            class_card(d, &column.select, strings, stats, COLUMN[slot], false);
+        } else {
+            column_screen(d, &column.select, slot, strings, stats);
+        }
+    }
+    for &col in &COLUMN {
+        d.image("S1_BORDER", col, 0.0, Color::WHITE);
+        d.image("S2_BORDER", col, 256.0, Color::WHITE);
+    }
+}
+
+/// A joined player's step in their column.
+fn column_screen(d: &mut Painter, s: &Select, slot: usize, strings: &Strings, stats: &ClassStats) {
+    let col = COLUMN[slot];
     let small = TextStyle::new(FONT8X8, 1.2, Color::WHITE);
     let icon = 19.0;
     // The button legend: icons, then the word.
@@ -1902,7 +2203,7 @@ fn select_screen(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassSt
             legend(d, &["BUTTON_L", "BUTTON_R"], 200.0, "Edit");
             legend(d, &["BUTTON_X"], 220.0, "Accept");
             legend(d, &["BUTTON_TRI"], 240.0, "Cancel");
-            let colour = rgb(PLAYER_COLOUR[0]);
+            let colour = rgb(PLAYER_COLOUR[slot]);
             if s.step == Step::NameShown {
                 // The finished name blinks, centred on the column.
                 if (s.t as u32) & 0x10 != 0 {
@@ -1910,7 +2211,7 @@ fn select_screen(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassSt
                 }
             } else {
                 let style = TextStyle::new(INITIALS, 0.9, colour);
-                let mut x = 42.0 - 30.0 - 4.0 + col;
+                let mut x = NAME_LEFT[slot];
                 for c in s.name.chars() {
                     d.draw.text(d.fonts, &style, x, 340.0, &c.to_string());
                     x += 18.0;
@@ -1926,19 +2227,14 @@ fn select_screen(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassSt
                 }
             }
         }
-        Step::Class => class_card(d, s, strings, stats, col),
-    }
-    for (p, &col) in COLUMN.iter().enumerate() {
-        let _ = p;
-        d.image("S1_BORDER", col, 0.0, Color::WHITE);
-        d.image("S2_BORDER", col, 256.0, Color::WHITE);
+        Step::Class => class_card(d, s, strings, stats, col, true),
     }
 }
 
 /// The class card: weapon art, the class in the chosen colour (a shadow
 /// and a question mark for a locked class), its name plate, the four
 /// attributes with the strongest glowing, and its level.
-fn class_card(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassStats, col: f32) {
+fn class_card(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassStats, col: f32, choosing: bool) {
     let class = CLASSES[s.class];
     let open = s.class < OPEN_CLASSES;
     d.image(&format!("S12_WEAP_{}", CLASSES[s.class & 7]), col, 0.0, Color::WHITE);
@@ -1951,12 +2247,18 @@ fn class_card(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassStats
     }
     let small = TextStyle::new(FONT8X8, 1.2, Color::WHITE);
     let icon = 19.0;
-    d.image_sized("BUTTON_L", 0, col + 10.0, 232.0, icon, icon, Color::WHITE);
-    d.image_sized("BUTTON_R", 0, col + 29.0, 232.0, icon, icon, Color::WHITE);
-    d.draw.text(d.fonts, &small, col + 56.0, 236.0, "Change");
+    // The legend while the class is being picked (a ready player's card
+    // has none).
+    if choosing {
+        d.image_sized("BUTTON_L", 0, col + 10.0, 232.0, icon, icon, Color::WHITE);
+        d.image_sized("BUTTON_R", 0, col + 29.0, 232.0, icon, icon, Color::WHITE);
+        d.draw.text(d.fonts, &small, col + 56.0, 236.0, "Change");
+    }
     if open {
-        d.image_sized("BUTTON_X", 0, col + 20.0, 252.0, icon, icon, Color::WHITE);
-        d.draw.text(d.fonts, &small, col + 20.0 + icon + 8.0, 256.0, "Select");
+        if choosing {
+            d.image_sized("BUTTON_X", 0, col + 20.0, 252.0, icon, icon, Color::WHITE);
+            d.draw.text(d.fonts, &small, col + 20.0 + icon + 8.0, 256.0, "Select");
+        }
         if let Some(values) = stats.0.get(s.class).copied().flatten() {
             let best = (0..4).max_by_key(|&i| (values[i], -(i as i32))).unwrap_or(0);
             for i in 0..4 {

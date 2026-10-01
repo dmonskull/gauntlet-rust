@@ -112,16 +112,24 @@ pub struct SpendPower {
     pub bits: u32,
 }
 
-/// A player picked on the select screen: `slot` plays `choice` under
-/// `name` — with a fresh record (a saved character's laid on it), or, not
-/// fresh, the record it has (its name changed).
+/// A change to the party from the select screen.
 #[derive(Message, Clone, Debug)]
-pub struct SetMember {
-    pub slot: usize,
-    pub choice: PlayerChoice,
-    pub name: String,
-    pub saved: Option<crate::saves::SavedCharacter>,
-    pub fresh: bool,
+pub enum PartyChange {
+    /// `slot` plays `choice` under `name` from `devices` — with a fresh
+    /// record (a saved character's laid on it), or, not fresh, the record
+    /// it has (its name changed).
+    Set {
+        slot: usize,
+        choice: PlayerChoice,
+        name: String,
+        saved: Option<Box<crate::saves::SavedCharacter>>,
+        fresh: bool,
+        devices: Devices,
+    },
+    /// `slot`'s player leaves the game.
+    Leave(usize),
+    /// Everyone leaves (a new game).
+    Clear,
 }
 
 /// A timed or counted powerup the hero carries — one slot of the record's
@@ -568,7 +576,7 @@ impl Plugin for PlayerStatePlugin {
             .add_message::<HurtHero>()
             .add_message::<SpendPower>()
             .add_message::<HealPlayer>()
-            .add_message::<SetMember>()
+            .add_message::<PartyChange>()
             .add_systems(Update, set_members.before(crate::player::PlayerSpawn))
             .init_resource::<Party>()
             .init_resource::<EnemyScale>()
@@ -605,21 +613,30 @@ pub fn new_member(
     Member { choice, name: name.to_string(), state, devices }
 }
 
-/// Puts the players picked on the select screen in the party. A new one
-/// keeps the devices whoever had its slot used (player 1: the keyboard).
-fn set_members(mut picks: MessageReader<SetMember>, mut game: ResMut<crate::level::LoadedGame>, mut party: ResMut<Party>) {
-    for pick in picks.read() {
-        if let Some(member) = party.get_mut(pick.slot)
-            && !pick.fresh
-            && member.choice == pick.choice
-        {
-            member.name = pick.name.clone();
-            continue;
+/// Makes the select screen's changes to the party.
+fn set_members(mut changes: MessageReader<PartyChange>, mut game: ResMut<crate::level::LoadedGame>, mut party: ResMut<Party>) {
+    for change in changes.read() {
+        match change {
+            PartyChange::Set { slot, choice, name, saved, fresh, devices } => {
+                if let Some(member) = party.get_mut(*slot)
+                    && !fresh
+                    && member.choice == *choice
+                {
+                    member.name = name.clone();
+                    member.devices = *devices;
+                    continue;
+                }
+                let member = new_member(&mut game.install, choice.clone(), name, saved.as_deref(), *devices);
+                info!("player {}: {} the {} ({})", slot + 1, member.name, member.choice.class, member.choice.variant);
+                party.join(*slot, member);
+            }
+            PartyChange::Leave(slot) => {
+                if let Some(m) = party.leave(*slot) {
+                    info!("player {}: {} leaves the game", slot + 1, m.name);
+                }
+            }
+            PartyChange::Clear => *party = Party::default(),
         }
-        let devices = party.get(pick.slot).map_or(Devices { keyboard: pick.slot == 0, ..Devices::default() }, |m| m.devices);
-        let member = new_member(&mut game.install, pick.choice.clone(), &pick.name, pick.saved.as_ref(), devices);
-        info!("player {}: {} the {} ({})", pick.slot + 1, member.name, member.choice.class, member.choice.variant);
-        party.join(pick.slot, member);
     }
 }
 

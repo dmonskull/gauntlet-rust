@@ -101,13 +101,12 @@ impl Party {
     }
 
     /// Takes a player out of the game.
-    #[allow(dead_code)] // joining (coming next)
     pub fn leave(&mut self, slot: usize) -> Option<Member> {
         self.members.get_mut(slot)?.take()
     }
 
     /// The first free slot.
-    #[allow(dead_code)] // joining (coming next)
+    #[allow(dead_code)] // joining mid-game (coming next)
     pub fn free_slot(&self) -> Option<usize> {
         self.members.iter().position(Option::is_none)
     }
