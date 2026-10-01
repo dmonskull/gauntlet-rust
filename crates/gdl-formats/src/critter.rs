@@ -221,6 +221,14 @@ pub struct CritterType {
     /// `+0xF4`, `+0xF6`: `SFXX` for being hit (the second for blows from
     /// the second hit effect).
     pub hit_effects: [i16; 2],
+    /// `+0xF8`..`+0xFE`: the 2D health meter (flag 4): how many sprites
+    /// it's made of (each 256 wide, side by side), how far its back moves
+    /// the next meter's start along (with flag 8, which gives it a back),
+    /// and the fill's margins at its left and right ends.
+    pub meter: [i16; 4],
+    /// `+0x100`: where the 3D meter (flag 0x800, `GMETER`) stands, from
+    /// the root.
+    pub meter_offset: [f32; 3],
     /// `+0x110`: its `MOVE` records.
     pub moves: Span,
     /// `+0x114`: its `PTRN` records.
@@ -433,7 +441,8 @@ fn node_name_at(r: &[u8], at: usize) -> String {
 }
 
 impl CritterType {
-    fn parse(r: &[u8]) -> Self {
+    /// One `TYPE` record (`0x140` bytes, little-endian).
+    pub fn parse(r: &[u8]) -> Self {
         let span = |at: usize| Span { count: i16_at(r, at), first: i16_at(r, at + 2) };
         Self {
             name: name_at(r, 0, 0x20),
@@ -459,6 +468,8 @@ impl CritterType {
             experience: f32_at(r, 0xE8),
             wake_distance: f32_at(r, 0xEC),
             hit_effects: [i16_at(r, 0xF4), i16_at(r, 0xF6)],
+            meter: std::array::from_fn(|i| i16_at(r, 0xF8 + 2 * i)),
+            meter_offset: vec3_at(r, 0x100),
             moves: span(0x110),
             patterns: span(0x114),
             nodes: span(0x118),
@@ -902,5 +913,46 @@ mod tests {
             }
         }
         eprintln!("{statues} placed critters, {woken} with a wake trigger: {report:?}");
+    }
+
+    /// The health meters: every boss but the chimera's body has a 2D one
+    /// (flag 4) of two sprites, 256 apart, with its fill's margins; all of
+    /// them have a back (flag 8) but the chimera's lion and snake, which
+    /// share the eagle's. The golems and gargoyles have the 3D one (flag
+    /// 0x800) a few units over their root; the general none.
+    #[test]
+    fn every_real_critter_meter() {
+        let files = files();
+        if files.is_empty() {
+            return;
+        }
+        let mut meters = Vec::new();
+        for (p, c) in &files {
+            let name = p.file_stem().unwrap().to_string_lossy().to_ascii_uppercase();
+            for t in &c.types {
+                let flat = t.flags & 4 != 0;
+                let solid = t.flags & 0x800 != 0;
+                match c.desc.class {
+                    class::BOSS => {
+                        assert!(!solid, "{name} {}", t.name);
+                        if flat {
+                            assert_eq!(&t.meter[..2], &[2, 256], "{name} {}", t.name);
+                            assert!(t.meter[2] > 0 && t.meter[3] > 0, "{name} {}", t.meter[2]);
+                        }
+                    }
+                    class::GOLEM | class::GARGOYLE => {
+                        assert!(solid && !flat, "{name}");
+                        assert!(t.meter_offset[1] > 8.0, "{name} {:?}", t.meter_offset);
+                    }
+                    _ => assert!(!solid && !flat, "{name}"),
+                }
+                if flat {
+                    meters.push((name.clone(), t.name.clone(), t.flags & 8 != 0));
+                }
+            }
+        }
+        let backless: Vec<_> = meters.iter().filter(|m| !m.2).map(|m| format!("{} {}", m.0, m.1)).collect();
+        assert_eq!(backless, ["CHIMERA LION", "CHIMERA SNAKE"]);
+        assert_eq!(meters.len(), 13, "{meters:?}");
     }
 }

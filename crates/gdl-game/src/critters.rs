@@ -63,13 +63,15 @@
 //! messages timed as the game types them), and a short countdown ends
 //! the level.
 //!
+//! A boss has a health meter across the top of the screen, a golem or
+//! gargoyle a 3D one over its head (`meter.rs`).
+//!
 //! Stand-ins (see the doc): a woken statue goes straight to its ACTIVE
 //! animation and its critter appears when that ends; critter missiles
 //! fly the missiles' three seconds; the chimera's wake
-//! timer starts at once; the tower's first level follows a boss. The darkening isn't drawn; the
-//! heroes' side of the intro, the boss camera, parts (the chimera's
-//! heads), breaking nodes, the health meter, effects and fading, its blows
-//! on other monsters and pushing players aside aren't done.
+//! timer starts at once; the tower's first level follows a boss. The
+//! heroes' highlights in the intro, breaking nodes, look nodes, fading,
+//! its blows on other monsters and pushing players aside aren't done.
 
 use gdl_formats::detmath::Det;
 use std::collections::HashMap;
@@ -110,10 +112,13 @@ use crate::population::{ContentModels, LevelPopulation};
 use crate::projectiles::{CritterMissile, CritterStop, cylinder_hit, load_atree, spawn_critter_missile};
 use crate::world::{LevelEntity, LevelGround};
 
+mod meter;
+
 pub struct CrittersPlugin;
 
 impl Plugin for CrittersPlugin {
     fn build(&self, app: &mut App) {
+        meter::plugin(app);
         app.init_resource::<BossWatch>()
             .add_systems(
                 FixedUpdate,
@@ -234,6 +239,8 @@ fn run_victory(
             for (_, s) in party.states_mut() {
                 s.realms_beaten |= 1 << level.realm_id;
             }
+            // The health meters go.
+            level.meters.hidden = true;
             info!("realm {} beaten", level.realm_id);
             if let Some((m, life)) = &level.end.key {
                 v.key = Some((spawn(m, v.key_at, &mut commands), now + life, false));
@@ -400,6 +407,9 @@ const PLACED_RANGE: f32 = 50.0;
 const MAKES_ROCK: i16 = 6;
 /// A `DAMG` of this kind is a boss's loot (on its DEATH).
 const LOOT: i16 = 9;
+/// A `DAMG` of this kind is a held attack: its slot hurts steadily over
+/// its whole radius (the others set down grow as blasts).
+const HELD_ATTACK: i16 = 2;
 /// Boss types the intro and the end treat apart.
 const DRAGON: i32 = 0x22;
 const CHIMERA: i32 = 0x23;
@@ -574,6 +584,10 @@ pub struct CritterKind {
     /// effects the folder lacks that the effect table's own bank holds.
     effects: HashMap<usize, Arc<CharacterModel>>,
     effect_clips: HashMap<usize, (u16, u16)>,
+    /// Its folder (`MONSTERS/DRAGON`: its 2D meter's sprites too), and its
+    /// 3D health meter (`GMETER`) when a type has one.
+    folder: String,
+    solid_meter: Option<CharacterModel>,
 }
 
 /// A body's model and what its moves animate.
@@ -714,6 +728,8 @@ pub struct CritterLevel {
     grabs: Vec<GrabHero>,
     throws: Vec<ThrowHero>,
     releases: Vec<Entity>,
+    /// The 2D health meters (`meter.rs`).
+    meters: meter::Meters,
 }
 
 /// A blow of kind 5 (at every safe rock) or 6 (throwing one down): its
@@ -1025,6 +1041,8 @@ pub struct Critter {
     /// Its hit flash (`flash.rs`): a body's over its whole model, a part's
     /// over its subtree.
     flash: Flash,
+    /// Its 2D health meter, by number (`meter.rs`).
+    meter: Option<usize>,
 }
 
 impl Critter {
@@ -1377,14 +1395,25 @@ fn setup_level(
                 },
             }
         }
+        // The 3D health meter, for types that have one.
+        let solid_meter = if file.types.iter().any(|t| t.flags & meter::SOLID != 0) {
+            let m = data(meter::SOLID_MODEL).map(|d| build(&d));
+            if m.is_none() {
+                warn!("{folder}: no {}", meter::SOLID_MODEL);
+            }
+            m
+        } else {
+            None
+        };
         info!(
-            "critter {} ({path}) from {folder}: {} moves, statue {}, {} missile models",
+            "critter {} ({path}) from {folder}: {} moves, statue {}, {} missile models, 3D meter {}",
             file.desc.name,
             file.moves.len(),
             statue.is_some(),
-            effects.len()
+            effects.len(),
+            solid_meter.is_some()
         );
-        kinds.insert(enemy, Arc::new(CritterKind { file, bodies, statue, effects, effect_clips }));
+        kinds.insert(enemy, Arc::new(CritterKind { file, bodies, statue, effects, effect_clips, folder, solid_meter }));
     }
     if let Some(mut texanims) = texanims {
         info!("{} texture animations on the level's critters", animated.len());
@@ -1491,6 +1520,7 @@ fn setup_level(
         grabs: Vec::new(),
         throws: Vec::new(),
         releases: Vec::new(),
+        meters: meter::Meters::default(),
     };
 
     // The boss appears at the level's boss locator, dropped onto the floor
@@ -1507,7 +1537,7 @@ fn setup_level(
         if let Some(h) = ground.0.floor_probe(at, 4.0, -1000.0, 5.0, 2) {
             at[1] = h.point[1];
         }
-        level.boss = spawn_critter(&level, &kind, at, yaw, &mut commands);
+        level.boss = spawn_critter(&mut level, &kind, at, yaw, &mut commands);
         level.boss_spot = spot.position;
         // The boss gathers the level's safe rocks: the round its throws
         // take with no target starts at a random one.
@@ -1650,11 +1680,11 @@ fn runes_held(realm_id: u32, bits: u32) -> usize {
 }
 
 /// Makes a critter of `kind` standing at `position` facing `yaw`: its
-/// hit points, its home (the type's, or here), its hit spheres; then its
-/// parts (the types chained by `TYPE +0x11C`: the chimera's heads), which
-/// move subtrees of its model. Hit spheres are numbered across the body
-/// and its parts.
-fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 3], yaw: f32, commands: &mut Commands) -> Option<Entity> {
+/// hit points, its home (the type's, or here), its hit spheres, its health
+/// meter; then its parts (the types chained by `TYPE +0x11C`: the
+/// chimera's heads), which move subtrees of its model, each with its own
+/// meter. Hit spheres are numbered across the body and its parts.
+fn spawn_critter(level: &mut CritterLevel, kind: &Arc<CritterKind>, position: [f32; 3], yaw: f32, commands: &mut Commands) -> Option<Entity> {
     let ty = 0;
     let body = kind.bodies[ty].as_ref()?;
     let t = &kind.file.types[ty];
@@ -1663,12 +1693,25 @@ fn spawn_critter(level: &CritterLevel, kind: &Arc<CritterKind>, position: [f32; 
     let root = body.model.as_ref()?.spawn(transform, commands);
     let mut owners = Vec::new();
     let mut c = new_critter(level, kind, ty, position, yaw, root, None, &mut owners, commands);
+    c.meter = level.meters.add(t, c.full_hit_points);
+    if t.flags & meter::FLAT != 0 {
+        level.meters.folder = kind.folder.clone();
+    }
+    if t.flags & meter::SOLID != 0
+        && let Some(m) = &kind.solid_meter
+    {
+        meter::add_solid(m, root, t, commands);
+    }
     let mut part = t.child;
     let mut guard = 0;
     while let Some(pt) = part.filter(|&p| p < kind.file.types.len() && guard < 8) {
         if kind.bodies[pt].is_some() {
             let k = c.parts.len();
-            let p = new_critter(level, kind, pt, position, yaw, root, Some(k), &mut owners, commands);
+            let mut p = new_critter(level, kind, pt, position, yaw, root, Some(k), &mut owners, commands);
+            p.meter = level.meters.add(&kind.file.types[pt], p.full_hit_points);
+            if p.meter.is_some() {
+                level.meters.folder = kind.folder.clone();
+            }
             debug!("boss part {} ({} nodes under {})", kind.file.types[pt].name, p.body().subtree.len(), part_node(&kind.file.types[pt]));
             c.parts.push(p);
         }
@@ -1803,6 +1846,7 @@ fn new_critter(
         sphere_owner: Vec::new(),
         mirrored: true,
         flash: Flash::default(),
+        meter: None,
     }
 }
 
@@ -2585,6 +2629,8 @@ fn rock_blows(
                 monsters: false,
                 items: false,
                 follow: None,
+                steady: false,
+                cone: None,
             });
             sounds.write_batch(b.sounds.iter().cloned());
             if !b.every {
@@ -3303,9 +3349,13 @@ fn deal(
         }
         return;
     }
-    // A sphere's or a cone's own effect (no damage of its own here).
+    // A sphere's or a cone's own effect; a sphere's slot hurts the first
+    // hero it touches.
     if first && matches!(d.kind, 0 | 4) {
         show_effect(c, me, d, (node, node_bone), level, commands);
+        if d.kind == 0 {
+            touch_slot(c, me, d, damage, (node, node_bone), level, commands);
+        }
     }
     // At the safe rocks (`rock_blows`); the game makes none with no rocks
     // gathered.
@@ -3571,10 +3621,12 @@ fn record_life(c: &Critter, e: usize) -> f32 {
 /// the drider's and the wraith's attached attacks, the stomp rings, the
 /// djinn's and the lich's at their target): the blow's effect (none, or one
 /// the table doesn't hold, and nothing happens) where its record puts it,
-/// and a blast growing over the effect's life out to `DAMG +0x0C` there —
+/// and a blast out to `DAMG +0x0C` there over the effect's life —
 /// following the critter or its node when the effect is attached — on the
 /// heroes (not with the blow's flag 0x1000) and, for all but bosses, the
-/// monsters (never itself).
+/// monsters (never itself). Kinds 3 and 8 grow as any blast does; kind 2
+/// (its slot's flags `0x30`) holds its whole radius at full damage, each
+/// target spared a second at most.
 #[allow(clippy::too_many_arguments)]
 fn set_down(c: &Critter, me: Entity, d: &CritterDamage, damage: f32, node: (Affine3A, Option<Entity>), heroes: &[Hero], level: &mut CritterLevel, commands: &mut Commands) {
     let Some((e, record)) = usize::try_from(d.effects[0]).ok().filter(|e| c.kind.effect_clips.contains_key(e)).and_then(|e| Some((e, c.kind.file.sounds.get(e)?))) else {
@@ -3602,18 +3654,112 @@ fn set_down(c: &Critter, me: Entity, d: &CritterDamage, damage: f32, node: (Affi
         heroes: d.flags & NO_PLAYERS == 0,
         monsters: c.class() != class::BOSS,
         items: false,
+        steady: d.kind == HELD_ATTACK,
+        cone: area_cone(d, record.flags, at, c.yaw),
     });
     info!("critter {me:?} sets down {} (kind {}): {damage:.0} out to {:.0} over {life:.2} s at {here:?}", record.effect, d.kind, d.radius);
     level.events.push("effect");
 }
 
+/// An area's cone (its blow's `DAMG +0x18` above −1: the cosine it hits
+/// within) and the slot's facing: the blow's yaw `+0x14` from its anchor's
+/// facing when it's held on the root or a node (in that space), from the
+/// critter's when set down at the node's point (record flag 0x40: the slot
+/// takes the critter's rotation), else from the world's +Z (at the spawn
+/// point, or at the target).
+fn area_cone(d: &CritterDamage, record_flags: u32, at: Anchor, yaw: f32) -> Option<(f32, Quat)> {
+    if d.param <= -1.0 {
+        return None;
+    }
+    let from = match at {
+        Anchor::On(..) => 0.0,
+        Anchor::At(_) if record_flags & (SFXX_ON_ROOT | SFXX_AT_SPAWN) == 0 && record_flags & SFXX_AT_NODE != 0 => yaw,
+        Anchor::At(_) => 0.0,
+    };
+    Some((d.param, Quat::from_rotation_y(from + d.yaw)))
+}
+
 /// A sphere's or a cone's own effect (kinds 0 and 4): shown where its
-/// record puts it for its life. (The game's slot for it can hurt a hero
-/// it touches: not done.)
+/// record puts it for its life. A cone's slot does no damage (the game
+/// gives it none, and no flags to hit anything with); a sphere's touches
+/// ([`touch_slot`]).
 fn show_effect(c: &Critter, me: Entity, d: &CritterDamage, node: (Affine3A, Option<Entity>), level: &mut CritterLevel, commands: &mut Commands) {
     let Some((e, record)) = usize::try_from(d.effects[0]).ok().and_then(|e| Some((e, c.kind.file.sounds.get(e)?))) else { return };
     let at = anchor(c, me, d, record, node, None);
     spawn_effect(c, e, at, node.0, record_life(c, e), level, commands);
+}
+
+/// How far a blow's own effect slot touches heroes from where it's held: a
+/// sphere's (kind 0) with an effect record, its `DAMG +0x08` × the
+/// critter's scale. A cone's (kind 4) carries no damage; the other kinds'
+/// slots are missiles or areas.
+fn touch_radius(d: &CritterDamage, scale: f32) -> Option<f32> {
+    (d.kind == 0 && d.effects[0] >= 0).then_some(d.size * scale)
+}
+
+/// A blow's hit record (`DAMG +0x42`): where its effect slot stops, the
+/// record's sound, and its effect for that clip, bursting out to `DAMG
+/// +0x0C` (no effect, no burst).
+fn hit_record(c: &Critter, d: &CritterDamage, realm: char) -> CritterStop {
+    let hit = usize::try_from(d.effects[1]).ok().and_then(|h| c.kind.file.sounds.get(h).map(|r| (h, r)));
+    hit.map_or_else(CritterStop::default, |(h, r)| {
+        let clip = c.kind.effect_clips.get(&h).map(|&(f, rt)| f32::from(f) / clip_fps(rt));
+        CritterStop {
+            sound: (!r.sound.is_empty()).then(|| r.sound.replace("%c", &realm.to_string())),
+            effect: c.kind.effects.get(&h).cloned(),
+            life: clip.unwrap_or(0.0),
+            blast: if clip.is_some() { d.radius } else { 0.0 },
+        }
+    })
+}
+
+/// A sphere blow's own effect slot (kind 0 with an effect record: the
+/// lich's axe and chain; `docs/critters.md`, "What a `DAMG` does"): a still
+/// slot where the record puts its effect — held on the move's node, at the
+/// blow's offset — for the record's life, carrying the blow's damage and
+/// kind: the first hero (not with the blow's flag 0x1000) whose cylinder
+/// comes within its own radius (`DAMG +0x08`) takes the damage through the
+/// critter guard, and the slot stops there (a guarded hero stops it too),
+/// playing its hit record. It doesn't touch the level or items. With no
+/// effect the table holds there's no slot.
+fn touch_slot(c: &Critter, me: Entity, d: &CritterDamage, damage: f32, node: (Affine3A, Option<Entity>), level: &mut CritterLevel, commands: &mut Commands) {
+    let Some((e, record)) = usize::try_from(d.effects[0])
+        .ok()
+        .filter(|e| c.kind.effect_clips.contains_key(e))
+        .and_then(|e| Some((e, c.kind.file.sounds.get(e)?)))
+    else {
+        return;
+    };
+    let Some(radius) = touch_radius(d, level.enemy_scale) else { return };
+    let at = anchor(c, me, d, record, node, None);
+    let root = Affine3A::from_rotation_translation(Quat::from_rotation_y(c.yaw), Vec3::from(c.position));
+    let here = at.point(|who| if who == me { root } else { node.0 });
+    let life = record_life(c, e);
+    let stop = hit_record(c, d, level.realm);
+    spawn_critter_missile(
+        commands,
+        CritterMissile {
+            model: None,
+            critter: me,
+            start: here,
+            velocity: Vec3::ZERO,
+            gravity: 0.0,
+            radius,
+            damage,
+            kind: d.blow,
+            scale: record.size,
+            hits_players: d.flags & NO_PLAYERS == 0,
+            hits_level: false,
+            stop,
+            anchor: match at {
+                Anchor::On(who, off) => Some((who, off)),
+                Anchor::At(_) => None,
+            },
+            life: Some(life),
+        },
+    );
+    info!("critter {me:?}'s {} slot: {damage:.0} to the first hero within {radius:.1} for {life:.2} s at {here:?}", record.effect);
+    level.events.push("touch");
 }
 
 /// Turns a direction by `yaw` about the vertical and tilts it by `pitch`
@@ -3684,18 +3830,7 @@ fn launch(c: &Critter, me: Entity, d: &CritterDamage, damage: f32, level: &mut C
         dir = turn_dir(dir, d.yaw + spread, if d.flags & 8 != 0 { d.pitch } else { 0.0 });
     }
     let model = c.kind.effects.get(&e).map(|m| m.as_ref());
-    // The hit record: its sound, and its effect for its clip's length (no
-    // effect, no burst).
-    let hit = usize::try_from(d.effects[1]).ok().and_then(|h| c.kind.file.sounds.get(h).map(|r| (h, r)));
-    let stop = hit.map_or_else(CritterStop::default, |(h, r)| {
-        let clip = c.kind.effect_clips.get(&h).map(|&(f, rt)| f32::from(f) / clip_fps(rt));
-        CritterStop {
-            sound: (!r.sound.is_empty()).then(|| r.sound.replace("%c", &level.realm.to_string())),
-            effect: c.kind.effects.get(&h).cloned(),
-            life: clip.unwrap_or(0.0),
-            blast: if clip.is_some() { d.radius } else { 0.0 },
-        }
-    });
+    let stop = hit_record(c, d, level.realm);
     info!(
         "critter {me:?} launches a missile: {damage:.0} damage at {speed:.0}/s from {start:?}, radius {:.2}, burst {:.1}",
         d.size, stop.blast
@@ -3715,6 +3850,8 @@ fn launch(c: &Critter, me: Entity, d: &CritterDamage, damage: f32, level: &mut C
             hits_players: d.flags & NO_PLAYERS == 0,
             hits_level: d.flags & NO_LEVEL == 0,
             stop,
+            anchor: None,
+            life: None,
         },
     );
     // Stand-in glow (half its burst radius): some effect models take their
@@ -4028,6 +4165,7 @@ mod tests {
             grabs: Vec::new(),
             throws: Vec::new(),
             releases: Vec::new(),
+            meters: meter::Meters::default(),
         }
     }
 
@@ -4132,6 +4270,31 @@ mod tests {
         assert!((t - (106.0 / 30.0 + 1.0)).abs() < 1e-4, "{t}");
     }
 
+    /// Which sphere blows leave a slot that hurts the first hero it touches,
+    /// and how far it reaches (real data).
+    #[test]
+    fn the_lichs_sphere_blows_leave_touching_slots() {
+        let root_dir = std::env::var("GAUNTLET_ASSET_ROOT").unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let read = |name: &str| std::fs::read(std::path::Path::new(&root_dir).join("CRITTER").join(name)).ok().map(|b| CritterFile::parse(&b).unwrap());
+        let (Some(lich), Some(dragon)) = (read("LICH.WAD"), read("DRAGON.WAD")) else {
+            eprintln!("skipping: no critter files");
+            return;
+        };
+        // The lich's flaming axe (AXEF, 5 out to 4) and its chain's second
+        // blow (10 out to 16, its own sphere's radius 0): the only sphere
+        // blows on the disc with an effect record.
+        assert_eq!(touch_radius(&lich.damage[3], 1.0), Some(4.0));
+        assert_eq!(touch_radius(&lich.damage[7], 1.0), Some(16.0));
+        assert_eq!(touch_radius(&lich.damage[7], 0.5), Some(8.0));
+        assert_eq!((lich.damage[3].damage, lich.damage[7].damage, lich.damage[7].radius), (5.0, 10.0, 0.0));
+        // Its plain axe has none; the dragon's breaths (cones, with NULLFX)
+        // and its fireball (a missile) don't touch.
+        assert_eq!(touch_radius(&lich.damage[2], 1.0), None);
+        for d in &dragon.damage {
+            assert_eq!(touch_radius(d, 1.0), None, "kind {}", d.kind);
+        }
+    }
+
     /// The chimera's body and heads share their wounds (real data).
     #[test]
     fn the_chimeras_heads_and_body_share_their_wounds() {
@@ -4142,7 +4305,15 @@ mod tests {
             return;
         };
         let file = CritterFile::parse(&bytes).unwrap();
-        let kind = Arc::new(CritterKind { file, bodies: Vec::new(), statue: None, effects: HashMap::new(), effect_clips: HashMap::new() });
+        let kind = Arc::new(CritterKind {
+            file,
+            bodies: Vec::new(),
+            statue: None,
+            effects: HashMap::new(),
+            effect_clips: HashMap::new(),
+            folder: String::new(),
+            solid_meter: None,
+        });
         let level = level_with(CHIMERA, intro::NONE);
         let mut world = World::new();
         let root = world.spawn_empty().id();

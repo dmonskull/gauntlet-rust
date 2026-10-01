@@ -27,7 +27,7 @@ leaves co-op out.
 | Hero movement, camera, cuts | 7 | 97 % | the step cut under the boss camera |
 | Hero combat, magic, power-ups | 10 | 88 % | rapid fire's rate, missile streaks, magic element models, the legendary weapon's throw |
 | Monsters and generators | 9 | 77 % | most AIs run the chase stand-in; no actor-vs-actor collision (they do ride moving floors) |
-| Bosses and critters | 9 | 72 % | grabs, effect-slot contact damage, missile lifetimes, the boss key, stumps, the health meter |
+| Bosses and critters | 9 | 77 % | missile lifetimes, the areas' cones and guards, stumps, look nodes, no harm in the end sequence (a player hook) |
 | Items, pickups, doors, exits, hazards | 6 | 95 % | random item types, the keys' turning traced, the secret realm's kept movers and camera |
 | Level mechanics (triggers, lifts, animated objects, secret walls, falls) | 8 | 86 % | E2's debris, subtype 1 rotators; the G–T tour's leads (G2, G3, G4, H3, J3, K3, T1, the I2/J3/S3 triggers it found unregistered) |
 | What each level places and hides | 5 | 90 % | every level audited statically (the last round: A5, A6, J, K, L, S, T, DEMO1); random item types take the first choice; the stray objects likely the debug markers (now off) |
@@ -130,14 +130,27 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
 
 ### 4. Bosses and critters ([critters.md](critters.md) "Stand-ins and gaps")
 
-- Grabs (`DAMG` kind 7): decoded, hero side on branch `wip-grabs`; test on
-  I5 (`GDL_WARP="9.6,-4,-45"`).
-- The effect slots' contact damage for kinds 0 and 4 (the lich's aura).
+- Grabs (`DAMG` kind 7): done (checked on I5, `GDL_WARP="9.6,-4,-45"`).
+- Done: the blows' effect slots (kind 0's held on its node hurting the
+  first hero it touches — the lich's axe and chain —, kind 4's carrying
+  no damage, kind 2's steady area); the health meters (the bosses' 2D
+  meters at the top of the screen, the golems' and gargoyles' 3D
+  `GMETER`; `critters/meter.rs`); the boss key decoded to the end — it's
+  only shown (the pick-up is dead code in retail), and what it opens is
+  the realm's bit: the HUD's key row, the tower window's shard, the
+  temple once all eight are in.
+- The areas' cone (`DAMG +0x18`) and their hero guard (the rest of a
+  growing blast's life, a second for a steady one); the element's default
+  wall effect when a missile with a burst radius but no hit record stops;
+  non-bosses' missiles and slots hitting monsters.
+- No hero can be hurt once the end sequence runs (the game's hurt
+  routine refuses every blow while `r13-0x7790` ≠ 0): needs a hook in
+  `player.rs` (`BossWatch::ending`).
 - Critter missiles' lifetime (3 s stand-in), trails and spin.
-- The boss key's effect and pick-up (a 5 s stand-in returns to the
-  tower); where the heroes go after a boss.
-- Head stumps, the parts' look nodes, the health meter (`GMETER`),
-  breakable `NODE`s, dropping held items, shadows.
+- Where the heroes go after a boss (`levelL1` stand-in: the game's
+  `0x80054d18` takes the players' `+0x830`, else the tower's `0xD00`).
+- Head stumps, the parts' look nodes, breakable `NODE`s, dropping held
+  items, shadows.
 - Critter blows on monsters, pushing players aside, critter-vs-critter
   and -monster collision, elemental resistances, multi-target weighting,
   the distance-from-home condition.
