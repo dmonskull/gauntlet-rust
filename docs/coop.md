@@ -131,9 +131,33 @@ input classifier (`FUN_80088170`); player records are `0x335c` bytes from
 - **The thrown hero** (COMBOWAR2 / COMBODWF2 movement): what it runs into
   takes 50 (warrior's) or 10 (dwarf's) heavy (`0x20`) damage
   (`FUN_8008615c`), objects 50 or 20 (`FUN_8008625c`).
-- Not traced: the combo actions' own blows (their animation events), the
-  COMBO_SPH / COMBO_<colour> effects, the carry node's bone (`+0x6DC`), how
-  a carried hero is placed each frame.
+- **The state machine** (`FUN_800ab898`): COMBOACT1 hands over at its end
+  (mode 1) to COMBOACT2 when the class has that clip (the action's clip
+  index, record `+0x210 + 8 × action`, ≥ 0), else COMBOACT3 if it has it,
+  else as asked (mode 0 unless knocked). COMBOACT2, COMBOWAR2 and
+  COMBODWF2 loop (the loop flag) while still asked for (mode 0), and as
+  soon as something else is asked for go to their next action (`+1`: …3)
+  if the class has its clip (mode 2, at once). COMBOACT3 and the other
+  per-class actions end normally (mode 0 unless knocked). None of them
+  strikes on a switch (no `+0x900` bits).
+- **The hit moment** (end of `FUN_80080d3c`, while `+0x834` < 2): the
+  action's time `+0x98` crossing 0 (last tick's `+0x958` < 0 ≤ now) during
+  COMBOACT1 starts the effects `FUN_80091c9c(at, own colour, partner's
+  colour)`: COMBO_SPH (effect `0x3D`, `0x80122648`) tinted by the
+  partner's colour (tables `0x80119bb8`, `0x801218bc` → `0x80121868`) and
+  COMBO_<own colour> (`0x80122638`: `0x3E`–`0x41` YEL/BLU/RED/GRE), at the
+  hero's top point (`+0x54`), or for the dwarf and jester at `+0xD0` +
+  `+0x838`. The blow: the class's `DAMG` record named by `PDAT +0x1C`
+  (COMBOACT1; `+0x1E` for COMBOACT3) through `FUN_80088b88(last time, time,
+  hero, record, partner, 0)` — the same routine the power and turbo
+  attacks use ([chunk-files.md](chunk-files.md) "The heroes' attack
+  records"; WAR's combo record 8: kind 4, damage 10, from frame 0, hint
+  102).
+- Not traced: `FUN_80089114` (what kinds 2–4 hit and how far),
+  `FUN_80030094` (kind 10's areas), the carry node's bone (`+0x6DC`), how a
+  carried hero is placed each frame (`FUN_800747ac` / `FUN_80074644`).
+  `tools/hdamg.py <class>` dumps a class's records; `tools/mydol.py` reads
+  the constants.
 
 ## Not yet
 
