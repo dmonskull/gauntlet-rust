@@ -32,6 +32,7 @@ use crate::combat::hit_kind;
 use crate::character;
 use crate::effects::EffectAt;
 use crate::exits::ChangeLevelTo;
+use crate::exits::secret_realm::{CoinTaken, SecretExitTaken, SecretReturn};
 use crate::hints::{Hint, Hints, ShowHint};
 use crate::mechanics::LevelNodes;
 use crate::message_box::ShowMessage;
@@ -53,6 +54,7 @@ pub struct ItemTick;
 impl Plugin for ItemsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LevelItems>()
+            .add_message::<GoOut>()
             .configure_sets(FixedUpdate, ItemTick.after(PlayerTick))
             .add_systems(FixedUpdate, tick.in_set(ItemTick))
             .add_systems(
@@ -694,6 +696,15 @@ pub struct LevelItems {
     /// Which folder each level id loads, for where exits go
     /// ([`crate::exits::LevelIds`]).
     order: LevelOrder,
+    /// Gold items as the level was built: a secret level's coins.
+    gold: usize,
+}
+
+/// Every hero in play goes out of the level at once, to `to` (the secret
+/// realm's timer, `exits/secret_realm.rs`): as through a secret exit.
+#[derive(Message, Clone, Debug)]
+pub struct GoOut {
+    pub to: String,
 }
 
 impl LevelItems {
@@ -782,6 +793,46 @@ impl LevelItems {
 
     pub fn view(&self, placement: usize) -> Option<ItemView<'_>> {
         self.find(placement).map(Self::view_of)
+    }
+
+    /// The level's gold items as it was built (the game's count of them,
+    /// a secret level's coins).
+    pub fn gold_items(&self) -> usize {
+        self.gold
+    }
+
+    /// The heroes are going out of the level.
+    pub fn leaving(&self) -> bool {
+        self.leaving.is_some()
+    }
+
+    /// The level's items as the party leaves through secret exit `exit`
+    /// (`docs/items.md`, "The secret realm"): the placements gone — picked
+    /// up, broken, destroyed, chests opened, the exit itself — and the
+    /// doors open. The game keeps each item's flags.
+    fn kept(&self, exit: usize) -> (Vec<usize>, Vec<usize>) {
+        let own = self.items.iter().filter(|i| i.placement < RELEASED_BASE);
+        let opened_chest = |i: &Item| i.class() == ItemClass::Container && (i.state > 0 || i.flags & USED != 0);
+        let gone = own.clone().filter(|i| i.gone || i.leaving || i.placement == exit || opened_chest(i)).map(|i| i.placement);
+        let opened = own.filter(|i| !i.gone && i.class() == ItemClass::Door && i.flags & USED != 0).map(|i| i.placement);
+        (gone.collect(), opened.collect())
+    }
+
+    /// Lays a kept level's items on the level as it's built: the gone ones
+    /// go (and their models as they come, `attach_models`), the opened
+    /// doors open again. Returns how many of each.
+    fn restore(&mut self, gone: &[usize], opened: &[usize]) -> (usize, usize) {
+        let mut n = (0, 0);
+        for item in &mut self.items {
+            if gone.contains(&item.placement) {
+                item.gone = true;
+                n.0 += 1;
+            } else if opened.contains(&item.placement) && item.class() == ItemClass::Door {
+                item.flags |= USED;
+                n.1 += 1;
+            }
+        }
+        n
     }
 
     /// The items riding a moving floor (placement, the floor's node), but
@@ -1179,6 +1230,7 @@ pub(crate) fn build_items(
     nodes: Option<Res<LevelNodes>>,
     party: Res<Party>,
     ids: Option<Res<crate::exits::LevelIds>>,
+    back: Option<Res<SecretReturn>>,
 ) {
     let pop = &population.population;
     // The items are dropped with the movers at their off heights (the
@@ -1355,7 +1407,13 @@ pub(crate) fn build_items(
         .iter()
         .find(|t| t.name == KEY_RING && t.class == ItemClass::Powerup && t.subtype == KEY)
         .cloned();
-    *items = LevelItems { items: out, realm, level, doors, scrolls, ambient, secret_first, gold_chest, key_ring, order, ..default() };
+    let gold = out.iter().filter(|i| i.class() == ItemClass::Powerup && i.ty.subtype == GOLD).count();
+    *items = LevelItems { items: out, realm, level, doors, scrolls, ambient, secret_first, gold_chest, key_ring, order, gold, ..default() };
+    // Back from the secret realm: the level as the party left it.
+    if let Some(kept) = back.as_deref().and_then(|b| b.restoring(&population.level)) {
+        let (gone, opened) = items.restore(&kept.gone, &kept.opened);
+        info!("{}: as it was left, {gone} items gone and {opened} doors open", population.level);
+    }
 }
 
 /// An exit's destination code (`g1`) as a realm id and level (0 the
@@ -1373,7 +1431,8 @@ pub fn exit_destination(code: &str) -> Option<(u32, u32)> {
 type NewModel<'a> = (Entity, &'a PlacementIndex, Option<&'a ItemRig>, &'a Transform, Has<ShutExitModel>);
 
 /// Links newly spawned models to their items (and removes the models of
-/// items not in a one-player game).
+/// items not in a one-player game, and of those gone before the level
+/// was left for the secret realm).
 fn attach_models(
     mut commands: Commands,
     mut items: ResMut<LevelItems>,
@@ -1382,6 +1441,7 @@ fn attach_models(
 ) {
     for (entity, &PlacementIndex(placement), rig, transform, shut_model) in &models {
         match items.items.iter_mut().find(|i| i.placement == placement) {
+            Some(item) if item.gone => commands.entity(entity).despawn(),
             // A shut exit shows `EXIT_OFF` in its place, as the game swaps
             // the model.
             Some(item) if item.flags & CLOSED != 0 && !shut_model => {
@@ -1594,6 +1654,10 @@ struct Out<'a> {
     now: f32,
     /// The level's realm id.
     realm: usize,
+    /// Coins taken (gold in the secret realm), and a secret exit taken
+    /// with the level as it's left (`exits/secret_realm.rs`).
+    coins: u32,
+    secret_exit: Option<SecretExitTaken>,
 }
 
 impl Out<'_> {
@@ -1641,7 +1705,7 @@ impl Out<'_> {
     }
 
     fn message(&mut self, group: &str, index: usize, voice: Option<&'static str>) {
-        self.messages.push(ShowMessage { group: group.into(), index: Some(index), voice });
+        self.messages.push(ShowMessage { voice, ..ShowMessage::new(group, index) });
     }
 
     /// The plate for a pickup: its subtype and the game's value for it.
@@ -1665,9 +1729,9 @@ fn tick(
     seen: Res<Hints>,
     mut change: MessageWriter<ChangeLevelTo>,
     mut effects: MessageWriter<EffectAt>,
-    mut hurt: MessageWriter<HurtHero>,
-    mut notices: MessageWriter<PickupNotice>,
+    (mut hurt, mut notices): (MessageWriter<HurtHero>, MessageWriter<PickupNotice>),
     (stop, camera, lock): (Res<TimeStop>, Option<Res<crate::play_camera::PlayCamera>>, Res<crate::online::Lockstep>),
+    (mut go_out, mut coins, mut secret): (MessageReader<GoOut>, MessageWriter<CoinTaken>, MessageWriter<SecretExitTaken>),
 ) {
     let views = lock.on.then(|| crate::monsters::game_view(camera.as_deref()));
     let drawn = cameras.iter().find(|(c, _)| c.is_active).map(|(c, t)| (c.clone(), *t));
@@ -1677,7 +1741,14 @@ fn tick(
     let now = time.elapsed_secs();
     update_items(items, dt, &mut commands);
     // Going out: the level changes once the heroes' fields are up.
-    let leaving = step_leaving(items, &mut change);
+    let mut leaving = step_leaving(items, &mut change);
+    // Out of time (`exits/secret_realm.rs`): every hero goes out at once,
+    // as through a secret exit, touching nothing more.
+    let timed_out = go_out.read().last().cloned().filter(|_| items.leaving.is_none() && !leaving);
+    if let Some(GoOut { to }) = &timed_out {
+        items.leaving = Some(Leaving { to: to.clone(), fields: 0, secret: true });
+        leaving = true;
+    }
     let new_out = |items: &LevelItems, slot: usize| Out {
         sounds: Vec::new(),
         voices: Vec::new(),
@@ -1693,6 +1764,8 @@ fn tick(
         scrolls: items.scrolls.clone(),
         now,
         realm: items.realm,
+        coins: 0,
+        secret_exit: None,
     };
     // Each hero against the items, in slot order: the exits each living
     // hero stands in, and where they all are.
@@ -1701,6 +1774,7 @@ fn tick(
     let mut stood: Vec<Vec<usize>> = Vec::new();
     let mut living = 0;
     let mut feet_all: Vec<Vec3> = Vec::new();
+    let mut first_facing = None;
     for slot in order {
         let Some(mut player) = players.iter_mut().find(|p| p.slot == slot) else { continue };
         let Some(state) = party.state_mut(slot) else { continue };
@@ -1709,6 +1783,7 @@ fn tick(
         if state.alive {
             living += 1;
             feet_all.push(Vec3::from(player.mover.position));
+            first_facing.get_or_insert(player.mover.facing);
         }
         stood.extend(exits_here);
         // Poison eaten is a poison blow on the hero, through its armour
@@ -1724,7 +1799,7 @@ fn tick(
         for n in &mut out.notices {
             n.slot = slot;
         }
-        flush(out, (at, slot), items, (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects));
+        flush(out, (at, slot), items, (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects), (&mut coins, &mut secret));
     }
     // The portal steps on while every living hero stands in it; a secret
     // exit takes them as soon as one does.
@@ -1739,7 +1814,10 @@ fn tick(
     on_exit.sort_unstable();
     on_exit.dedup();
     let first_feet = feet_all.first().map_or([0.0; 3], |f| f.to_array());
-    exits(items, &on_exit, first_feet, &mut out);
+    exits(items, &on_exit, (first_feet, first_facing.unwrap_or(0.0)), &mut out);
+    if timed_out.is_some() {
+        out.sounds.push(PlaySoundAt::panned(TUNNEL_SOUND, Vec3::from(first_feet), CALL_VOLUME));
+    }
     // The flame burns while any hero stands in an open exit that isn't
     // secret.
     items.in_exit = stood.iter().flatten().any(|&i| items.items[i].ty.subtype != SECRET_EXIT);
@@ -1751,7 +1829,13 @@ fn tick(
             }
         }
     }
-    flush(out, (Vec3::from(first_feet), 0), items, (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects));
+    flush(
+        out,
+        (Vec3::from(first_feet), 0),
+        items,
+        (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects),
+        (&mut coins, &mut secret),
+    );
     fall_items(items, dt, ground.as_deref(), &cameras, &mut commands);
     exit_flame(items, feet_all.first().copied(), &mut loops);
     let quiet = stop.0 || camera.is_some_and(|c| c.in_cut());
@@ -1772,9 +1856,12 @@ fn flush(
         &mut MessageWriter<PickupNotice>,
         &mut MessageWriter<EffectAt>,
     ),
+    (coins, secret): (&mut MessageWriter<CoinTaken>, &mut MessageWriter<SecretExitTaken>),
 ) {
-    let Out { sounds: s, voices: v, hints: h, messages: m, notices: n, effects: e, mut woken, .. } = out;
+    let Out { sounds: s, voices: v, hints: h, messages: m, notices: n, effects: e, mut woken, coins: c, secret_exit, .. } = out;
     items.woken.append(&mut woken);
+    coins.write_batch((0..c).map(|_| CoinTaken));
+    secret.write_batch(secret_exit);
     sounds.write_batch(s);
     voices.write_batch(v.into_iter().map(|line| QueueHeroLine { line, volume: HERO_LINE_VOLUME, at }));
     hints.write_batch(h.into_iter().map(|hint| ShowHint::to(slot, hint)));
@@ -2149,7 +2236,11 @@ fn pick_up(
             state.add_gold(gold);
             out.notice(1, gold as i32);
             out.sound(gold_sound(out.realm, gold));
-            if gold > 24 {
+            // In the secret realm gold is the level's coins, counted
+            // (`exits/secret_realm.rs`) with no hint.
+            if out.realm == SECRET_REALM {
+                out.coins += 1;
+            } else if gold > 24 {
                 out.hint(Hint::CollectGold);
             }
             true
@@ -2556,8 +2647,10 @@ const SECRET_EXIT: i32 = 0x32;
 /// Exits the heroes stand in this tick: the portal steps through its
 /// actions while they stay, and when the last one has played the heroes go
 /// out (`going_out.rs`) to where the exit takes them ([`exit_goes_to`]),
-/// `S_TUNNEL` panned at the first one's feet. Secret exits go at once.
-fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Out) {
+/// `S_TUNNEL` panned at the first one's feet. Secret exits go at once,
+/// and the level is kept as it's left, where the first hero stands and
+/// how it faces (the secret realm's timer sends the party back to it).
+fn exits(items: &mut LevelItems, on_exit: &[usize], (feet, facing): ([f32; 3], f32), out: &mut Out) {
     let (realm, level) = (items.realm, items.level);
     let mut go = None;
     for (i, item) in items.items.iter_mut().enumerate() {
@@ -2580,7 +2673,7 @@ fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Ou
         let dest = exit_goes_to(realm, level, secret, code, &items.order);
         if secret {
             item.flags |= USED;
-            go = dest.map(|to| (to, true));
+            go = dest.map(|to| (to, true, item.placement));
             break;
         }
         let last = item.action_count().saturating_sub(1).min(4);
@@ -2591,11 +2684,15 @@ fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Ou
             item.play(next);
         } else if item.done || last == 0 {
             item.flags |= USED;
-            go = dest.map(|to| (to, false));
+            go = dest.map(|to| (to, false, item.placement));
             break;
         }
     }
-    if let Some((to, secret)) = go {
+    if let Some((to, secret, exit)) = go {
+        if secret {
+            let (gone, opened) = items.kept(exit);
+            out.secret_exit = Some(SecretExitTaken { at: feet, facing, gone, opened });
+        }
         // Going out takes 50 fields before the level changes (a secret
         // exit none); the first hero out goes with the tunnel's sound.
         let fields = if secret { 0 } else { crate::going_out::FIELDS };
@@ -2831,7 +2928,74 @@ mod tests {
             scrolls: String::new(),
             now: 0.0,
             realm: 1,
+            coins: 0,
+            secret_exit: None,
         }
+    }
+
+    /// In the secret realm gold is a coin, counted with no hint; elsewhere
+    /// 25 or more raises the gold hint.
+    #[test]
+    fn secret_realm_gold_is_a_coin() {
+        let seen = Hints::default();
+        let mut state = PlayerState::default();
+        let mut out = Out { realm: SECRET_REALM, ..out(&seen) };
+        let mut amount = 0;
+        assert!(pick_up(&mut state, GOLD, 0, "COIN_JACKAL", &mut amount, 0.0, 0, &mut out));
+        assert_eq!((out.coins, out.hints.len()), (1, 0));
+        assert_eq!(out.sounds.first().map(|s| s.name.as_str()), Some("S_PKUPGOLD1"));
+        let mut out = super::tests::out(&seen);
+        let mut amount = 50;
+        assert!(pick_up(&mut state, GOLD, 0, "TREAS_GOLD", &mut amount, 0.0, 0, &mut out));
+        assert_eq!((out.coins, out.hints.as_slice()), (0, [Hint::CollectGold].as_slice()));
+        assert_eq!(state.gold, 50);
+    }
+
+    /// A level left through a secret exit is kept as it was left — what
+    /// was taken or opened, the exit — and laid on the level built afresh.
+    #[test]
+    fn a_level_kept_through_a_secret_exit_comes_back_as_left() {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let door = ItemType { class: ItemClass::Door, ..obstacle(0) };
+        let level = [
+            (powerup(GOLD, "COIN", 0), 1),
+            (powerup(KEY, "KEY", 1), 2),
+            (door.clone(), 3),
+            (door, 4),
+            (ItemType { class: ItemClass::Container, ..obstacle(0x2E) }, 5),
+            (ItemType { class: ItemClass::Exit, ..obstacle(SECRET_EXIT) }, 6),
+        ];
+        let build = || {
+            let mut items = LevelItems::default();
+            for (ty, placement) in level.iter().cloned() {
+                let p = items.release(ty, [0.0; 3], identity, None, 0);
+                items.items.iter_mut().find(|i| i.placement == p).unwrap().placement = placement;
+            }
+            items
+        };
+        let mut items = build();
+        let at = |items: &mut LevelItems, p: usize| items.items.iter().position(|i| i.placement == p).unwrap();
+        // The coin taken, a door opened, the chest opened; the gold it let
+        // out lies about (not the level's own: not kept).
+        let i = at(&mut items, 1);
+        items.items[i].gone = true;
+        let i = at(&mut items, 3);
+        items.items[i].flags |= USED;
+        let i = at(&mut items, 5);
+        items.items[i].state = 2;
+        items.release(powerup(GOLD, "TREAS_GOLD", 100), [0.0; 3], identity, None, 0);
+        let (gone, opened) = items.kept(6);
+        assert_eq!((gone.as_slice(), opened.as_slice()), ([1, 5, 6].as_slice(), [3].as_slice()));
+        let mut fresh = build();
+        assert_eq!(fresh.restore(&gone, &opened), (3, 1));
+        let state = |items: &mut LevelItems, p: usize| {
+            let i = at(items, p);
+            (items.items[i].gone, items.items[i].flags & USED != 0)
+        };
+        assert_eq!(
+            [1, 2, 3, 4, 5, 6].map(|p| state(&mut fresh, p)),
+            [(true, false), (false, false), (false, true), (false, false), (true, false), (true, false)]
+        );
     }
 
     /// A locked chest of `subtype` holding `contents` (`count` of them) at

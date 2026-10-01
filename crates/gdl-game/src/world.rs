@@ -131,7 +131,11 @@ fn change_level(
     // The realm last played outside the tower (where the heroes come back).
     mut last_realm: Local<Option<u32>>,
     mut flash_colours: ResMut<FlashColours>,
-    (tunings, party): (Option<Res<crate::monsters::LevelTunings>>, Option<Res<crate::party::Party>>),
+    (tunings, party, back): (
+        Option<Res<crate::monsters::LevelTunings>>,
+        Option<Res<crate::party::Party>>,
+        Option<Res<crate::exits::secret_realm::SecretReturn>>,
+    ),
     (mut lock, mut new_game): (ResMut<crate::online::Lockstep>, MessageReader<crate::online::NewGame>),
 ) {
     // A new game (online) comes back to the tower as a fresh one does.
@@ -157,7 +161,7 @@ fn change_level(
 
     let mut stats = CurrentLevelStats { name: game.current_name().to_string(), ..default() };
     match game.load_current() {
-        Ok(level) => {
+        Ok(mut level) => {
             // Its obstacles flash with its own AAAWHITE.
             flash_colours.level = flash::white_of(&level.model, &level.textures);
             // Some level textures animate through frames kept in the always
@@ -193,6 +197,11 @@ fn change_level(
             built.anims.extend(spawned.texanims);
             commands.insert_resource(LevelTexAnims::new(std::mem::take(&mut built.anims)));
             let entry = population::start_entry(&level.name, *last_realm);
+            // Back from the secret realm, the heroes arrive where they
+            // left (`exits/secret_realm.rs`).
+            if let Some(back) = back.as_deref() {
+                back.arrive(&level.name, &mut level.population, entry);
+            }
             if let Some((realm, _)) = crate::quest::level_of(&level.name)
                 && realm != 13
             {

@@ -28,11 +28,11 @@ leaves co-op out.
 | Hero combat, magic, power-ups | 10 | 88 % | rapid fire's rate, missile streaks, magic element models, the legendary weapon's throw |
 | Monsters and generators | 9 | 75 % | most AIs run the chase stand-in; no actor-vs-actor collision |
 | Bosses and critters | 9 | 72 % | grabs, effect-slot contact damage, missile lifetimes, the boss key, stumps, the health meter |
-| Items, pickups, doors, exits, hazards | 6 | 91 % | random item types, the shop, the secret realm's coins, the keys' turning traced |
+| Items, pickups, doors, exits, hazards | 6 | 92 % | random item types, the shop, the keys' turning traced, the secret realm's kept movers and camera |
 | Level mechanics (triggers, lifts, animated objects, secret walls, falls) | 8 | 84 % | bursting objects, E2's debris, subtype 1 rotators; the tour's re-run pending |
 | What each level places and hides | 5 | 90 % | every level audited statically (the last round: A5, A6, J, K, L, S, T, DEMO1); random item types take the first choice; the stray objects likely the debug markers (now off) |
 | Every level checked start to exit | 5 | 25 % | only A1's exit to A6 checked; triggers toured on A1–C1 and D1–D4 |
-| Quest, tower, saving | 5 | 88 % | the secret realm's coins, per-class records, memory card screens |
+| Quest, tower, saving | 5 | 90 % | the unlocked secret characters on the select screen, per-class records, memory card screens |
 | Front end, menus, HUD, hints | 7 | 75 % | shop, inventory, options, attract loop, the hints' plates |
 | Audio | 5 | 85 % | music switching and ducking, menu sounds, footstep pan |
 | Co-op (2–4 players) | 6 | 65 % | the after-level progress and shop screen (and joining there), co-op combos, the monsters' crowd penalty, the exits' wait-for-the-others hint |
@@ -85,9 +85,16 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
   L1's 81/83 are as the game has them. Saved heroes keep their bits:
   each still names the portal finished, now the level the game puts
   behind it.
-- The secret levels (S1–S9) have no exits: the secret realm's timer sends
-  the heroes back ([items.md](items.md), "Exits"), and it isn't in the
-  runtime, so they can't be left but by quitting.
+- The secret levels (S1–S9) end by their timer, now in the runtime
+  (`exits/secret_realm.rs`, [items.md](items.md) "The secret realm"): the
+  hourglass, the clock and the count, the coins and the unlock, and the
+  way back to the level whose secret exit was taken, as it was left.
+  Left: the movers' and levers' states and the camera kept with it (the
+  game keeps them; here they start afresh), no opening shot and no save
+  on the way back (hooks in `play_camera.rs`/`frontend.rs`:
+  `SecretReturn::coming_back_to`), Quit Level disabled there, the
+  opening's banners (`GRAB_GOLD`, `S_GRAB`; every level's name), S5's
+  lights (record flag 8).
 - The tower (also the fourth round): the gates it opens as it loads now
   have their animated walls at their last frame (they played open over
   their first seconds on every return), the lower lift and elevator start
@@ -162,7 +169,8 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
   fade.
 - The memory card screens; one record per class.
 - Hints drawn as the game draws them, for its time (plain centred text now).
-- The secret realm's coin count and `ALLCOINS` (the secret character).
+- The select screen opening the secret characters a hero has unlocked
+  (`secret_realm::class_open`; the coins, count and `ALLCOINS` are in).
 
 ### 8. Audio ([audio-format.md](audio-format.md) "Not done / unconfirmed")
 
