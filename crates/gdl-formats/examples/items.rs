@@ -5,7 +5,7 @@
 //! cargo run -p gdl-formats --example items -- <game>/Gauntlet/LEVELS/levelL1 [class]
 //! ```
 
-use gdl_formats::population::Population;
+use gdl_formats::population::{PlacementParams, Population};
 
 fn main() {
     let dir = std::env::args().nth(1).expect("usage: items <level folder> [class name]");
@@ -20,8 +20,18 @@ fn main() {
         }
         let [x, y, z] = p.position;
         let [rx, ry, rz] = p.rotation;
+        let params = p.params(ty.class);
+        // A container's contents by name (a random type's choices too).
+        let contents = match params {
+            PlacementParams::Container { contents: Some(c), .. } => pop.item_types.get(c).map_or(String::new(), |t| {
+                let choices: Vec<&str> = t.choices.iter().filter_map(|&k| pop.item_types.get(k)).map(|k| k.name.as_str()).collect();
+                let pick = if choices.is_empty() { String::new() } else { format!(" of {choices:?}") };
+                format!(" holds {:?} {:#x} {} amount {}{pick}", t.class, t.subtype, t.name, t.amount)
+            }),
+            _ => String::new(),
+        };
         println!(
-            "{i:4} {class:12} {:16} {:16} players {:2} flags {:#04x} pos ({x:8.2}, {y:7.2}, {z:8.2}) rot ({:6.1}°, {:6.1}°, {:6.1}°) params {:?}",
+            "{i:4} {class:12} {:16} {:16} players {:2} flags {:#04x} pos ({x:8.2}, {y:7.2}, {z:8.2}) rot ({:6.1}°, {:6.1}°, {:6.1}°) params {params:?}{contents}",
             ty.name,
             p.model_name(ty),
             p.players,
@@ -29,7 +39,6 @@ fn main() {
             rx.to_degrees(),
             ry.to_degrees(),
             rz.to_degrees(),
-            p.params(ty.class)
         );
     }
     for l in &pop.locators {

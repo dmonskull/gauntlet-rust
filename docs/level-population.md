@@ -82,7 +82,13 @@ post-multiplies, so for row vectors the result is Rx·Ry·Rz — then sets the
 translation, and calls `FUN_800646e4(item, placement, type, matrix)`.
 Once every item is made, `FUN_80063fb0` runs the mover update
 (`FUN_800629ec`) once — every trigger's target now stands at its off
-height — and `FUN_80064140` drops each item onto the floor below it: every
+height — and `FUN_80064140` drops each item onto the floor below it. The
+animated objects are at their first frame by then: the level load
+(`FUN_80057020`) runs the world's update `FUN_80056748` once just before
+`FUN_80063fb0`, and its animated-object pass (`FUN_80055d08` →
+`FUN_800a7ff8`) poses each at its current frame, 0, before moving it on
+(the mover update only gives the triggers' animated targets their play
+flags). Every
 item has an instance (its model, or a bare one), so all but the types that
 keep their height (`+0x0A` bit 0) — those flagged to have no model too.
 The floor is `FUN_8000d3c4`'s (4 above to 10 below, radius 1); the item
@@ -97,13 +103,17 @@ pos"`). Then:
 - a trigger for every player (flag `0x400`) whose floor is its target or a
   child of it becomes one that counts only stood on there (`0x100`).
 
-The rewrite drops the items the same way (`items.rs`, with the movers'
-start poses from `mechanics::start_poses`; animated objects are still at
-rest then, as the game hasn't animated them yet) and moves every rider
-with its floor (`mechanics.rs`). It had dropped only items with a model,
-with the movers at rest, and moved lift pads with their target's pose
-from rest — which put a pad placed on a lowered lift that far below it
-(B5's 275, D4's 338 and 342).
+The rewrite drops the items the same way (`items.rs`, with the start
+poses from `mechanics::start_poses`: the movers at their off heights,
+the animated objects at their first frame) and moves every rider with its
+floor (`mechanics.rs`). It had dropped only items with a model, with the
+movers at rest, and moved lift pads with their target's pose from rest —
+which put a pad placed on a lowered lift that far below it (B5's 275, D4's
+338 and 342); and it had dropped onto the animated objects at rest, so a
+lift pad placed on an animated platform didn't ride it (G1's 420 on the
+swinging arm's platform and 424 on the lowered lift stayed behind as the
+platform left, and the hero standing on the platform at its other end
+couldn't send it back).
 
 Parameters by class (from `FUN_800646e4` and the debug display
 `FUN_8002e650`, which prints `"ITEM %02X (%dP)"` and a line per class):

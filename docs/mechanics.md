@@ -135,7 +135,22 @@ players holding it, `0x10` = moving, `0x20` = on; `uVar4` = the kind flags
   offset. Node flag `0x8000000` while moving.
   - **Without kind flag 8**, it only moves while no player stands on it
     (`FUN_80063840(node, 1)`: 2 = a live player's standing node `+0x8C4`
-    is this node, 1 = a monster's `+0x298` is, 0 = none).
+    is this node, 1 = a monster's `+0x298` is, 0 = none). It's the node
+    itself, not a child: a platform whose floor is a child node (G1's
+    swinging arm and lift) carries the hero whatever its flags. The same
+    hold applies in the animated mode (both play flags set, not moving).
+    ACTIVESW-style triggers (subtype `0x18`) always add flag 8, as do
+    DOORPAD, DOORSW, LIFTPAD, LIFTSW and LIFTEND; ELEVPAD (`0x19`:
+    `0x804`) and ELEVSW (`0x1A`: `0x02`) don't (nor the bridges', which
+    don't move).
+    `level_audit --ridden` lists every mover a ridden pad drives: on the
+    disc only C2's six elevator switches (pads 40, 42, 50, 76, 89, 101)
+    drive a node without flag 8 that the hero stands on itself — they move
+    once the hero steps off — and two lift pads share their spots with an
+    off switch on the same node (A4 256 with 259, J3 483 with 495): the
+    triggers update in item order before the movers, so where both are
+    touched the pad turns it on and the switch off again in the same
+    update, and it stays put.
 - While moving (or fading): state `|= 0x10`, node flag `0x20000000`, and
   without kind flag 8 the disable byte `+0x35` = 1 (the player's queries,
   mask 1, skip it). The byte is reset to 0 at the start of each update.
