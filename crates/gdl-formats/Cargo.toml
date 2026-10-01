@@ -6,6 +6,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+libm.workspace = true
 # Pure-Rust Zstandard decoder for RVZ disc images (already in the tree via bevy).
 ruzstd = { version = "0.8", default-features = false, features = ["std"] }
 thiserror.workspace = true

@@ -1,3 +1,4 @@
+pub mod detmath;
 pub mod anim;
 pub mod audio;
 pub mod chunk;

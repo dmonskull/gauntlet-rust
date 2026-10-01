@@ -9,6 +9,7 @@
 //! kind of point as the hero's: its feet), remove it when the target can no
 //! longer be hit (dead, destroyed), and read [`Hit`] messages.
 
+use gdl_formats::detmath::Det;
 use std::f32::consts::FRAC_PI_4;
 
 use bevy::prelude::*;
@@ -427,7 +428,7 @@ pub fn search_within<'a>(
     range: f32,
     candidates: impl IntoIterator<Item = (Entity, Vec3, &'a Targetable)>,
 ) -> Option<Found> {
-    let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
+    let dir = Vec3::new(heading.dsin(), 0.0, heading.dcos());
     let narrowing = (1.0 - SEARCH_CONE) / range;
     // Inside the cone: the margin by which it is (the game's test).
     let margin = |n: Vec3, distance: f32| -> Option<f32> {
@@ -616,12 +617,12 @@ pub fn blow(strike: Strike, strength: f32, target: &Found) -> (f32, u32) {
 /// The push the game hands a monster with a blow of `damage` from an
 /// attacker facing `facing`.
 pub fn push(facing: f32, damage: f32) -> Vec3 {
-    Vec3::new(facing.sin(), (PUSH_PER_DAMAGE * damage).min(PUSH_MAX), facing.cos())
+    Vec3::new(facing.dsin(), (PUSH_PER_DAMAGE * damage).min(PUSH_MAX), facing.dcos())
 }
 
 /// Heading of a direction (0 = +Z, π/2 = +X).
 pub fn heading_of(v: Vec3) -> f32 {
-    v.x.atan2(v.z)
+    v.x.datan2(v.z)
 }
 
 pub struct CombatPlugin;
@@ -686,7 +687,7 @@ fn spawn_dummy(
 ) {
     for player in &players {
         let (feet, facing) = (Vec3::from(player.start.0), player.start.1);
-        let mut at = feet + Vec3::new(facing.sin(), 0.0, facing.cos()) * spec.distance;
+        let mut at = feet + Vec3::new(facing.dsin(), 0.0, facing.dcos()) * spec.distance;
         if let Some(y) = ground.as_ref().and_then(|g| g.0.floor_height((at + Vec3::Y * 2.0).to_array())) {
             at.y = y;
         }
@@ -847,7 +848,7 @@ mod tests {
         assert_eq!(found.entity, e(2));
         assert!((found.distance - 3.0).abs() < 1e-5);
         // 50° off is inside the cone up close, outside it far away.
-        let off = |d: f32| Vec3::new(d * 50f32.to_radians().sin(), 0.0, d * 50f32.to_radians().cos());
+        let off = |d: f32| Vec3::new(d * 50f32.to_radians().dsin(), 0.0, d * 50f32.to_radians().dcos());
         assert!(search(origin, 0.0, [(e(3), off(3.0), &near)]).is_some());
         assert!(search(origin, 0.0, [(e(3), off(20.0), &near)]).is_none());
         // Behind: never.

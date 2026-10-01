@@ -2,6 +2,7 @@
 //! E/Q) for up/down, hold the right mouse button to look, Shift to go fast,
 //! mouse wheel to change speed.
 
+use gdl_formats::detmath::Det;
 use bevy::camera::{CameraProjection, SubCameraView};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
@@ -61,7 +62,7 @@ impl FlyCamera {
         let center = (min + max) / 2.0;
         let size = max - min;
         let fit = size.y.max(size.x.max(size.z) / 1.6).max(0.5);
-        let distance = fit * 0.5 / (22.5f32.to_radians()).tan() * 1.15;
+        let distance = fit * 0.5 / (22.5f32.to_radians()).dtan() * 1.15;
         let eye = center + Vec3::new(0.0, 0.3, 1.0).normalize() * (distance + size.z * 0.5);
         *transform = Transform::from_translation(eye).looking_at(center, Vec3::Y);
         let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
@@ -147,7 +148,7 @@ fn fly(
     };
 
     if scroll.delta.y != 0.0 {
-        fly.speed = (fly.speed * 1.15f32.powf(scroll.delta.y)).clamp(1.0, 2000.0);
+        fly.speed = (fly.speed * 1.15f32.dpowf(scroll.delta.y)).clamp(1.0, 2000.0);
     }
     if buttons.pressed(MouseButton::Right) {
         // The picture is mirrored: dragging right turns the other way.

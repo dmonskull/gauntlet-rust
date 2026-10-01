@@ -24,6 +24,7 @@
 //! fields (word 0x24, the counts) aren't used, and trigger-switched
 //! emitters always run.
 
+use gdl_formats::detmath::Det;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
@@ -260,7 +261,7 @@ impl Emitter {
         let round = std::f32::consts::TAU * self.random();
         let side = dir.any_orthonormal_vector();
         let other = dir.cross(side);
-        let d = dir * off.cos() + (side * round.cos() + other * round.sin()) * off.sin();
+        let d = dir * off.dcos() + (side * round.dcos() + other * round.dsin()) * off.dsin();
         let j = Vec3::new(self.random() * 2.0 - 1.0, self.random() * 2.0 - 1.0, self.random() * 2.0 - 1.0) * jitter;
         let life = life[0] + life[1].max(0.0) * self.random();
         self.particles.push(Particle { position: self.origin + j, velocity: d * speed, age: 0.0, life: life.max(0.01) });

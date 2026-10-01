@@ -1,6 +1,7 @@
 //! Turns a level's parsed models, world placements and textures into Bevy
 //! meshes, and switches levels at runtime.
 
+use gdl_formats::detmath::Det;
 use bevy::prelude::*;
 
 use std::collections::{HashMap, HashSet};
@@ -379,7 +380,7 @@ fn spawn_level(
     // `GDL_PARTICLE_TEST=<letter>`: that record's system 6 units in front of
     // the player start, in the open (test with `GDL_LOOK_AT` on it).
     if let (Ok(letter), Some(start)) = (std::env::var("GDL_PARTICLE_TEST"), level.population.player_start(0)) {
-        let ahead = Vec3::new(start.yaw.sin(), 0.0, start.yaw.cos()) * 6.0;
+        let ahead = Vec3::new(start.yaw.dsin(), 0.0, start.yaw.dcos()) * 6.0;
         let at = Vec3::from(start.position) + ahead + Vec3::Y * 3.0;
         info!("GDL_PARTICLE_TEST: record {letter} at {at}");
         emitters.push((format!("TESTPSYS{letter}"), at));

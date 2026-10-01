@@ -174,6 +174,7 @@ Gauntlet: Dark Legacy and all related assets, trademarks and intellectual
 property belong to their respective owners. This project is unaffiliated
 with them.
 
+
 ## Legal
 
 A fan project, not affiliated with or endorsed by Midway, Warner Bros.

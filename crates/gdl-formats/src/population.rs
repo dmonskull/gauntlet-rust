@@ -7,6 +7,7 @@
 //! layouts, the functions that read each field and what's still unknown.
 //! Little-endian like the rest of the file.
 
+use crate::detmath::Det;
 use thiserror::Error;
 
 const HEADER_WORDS: usize = 30;
@@ -587,7 +588,7 @@ pub fn rotation_matrix(rotation: [f32; 3]) -> [f32; 9] {
     // Each step mixes two columns (a, b) of every row: (1, 2) for X,
     // (0, 2) for Y, (0, 1) for Z — the same formula for all three.
     let mut turn = |a: usize, b: usize, angle: f32| {
-        let (s, c) = angle.sin_cos();
+        let (s, c) = angle.dsin_cos();
         for row in 0..3 {
             let (x, y) = (m[row * 3 + a], m[row * 3 + b]);
             m[row * 3 + a] = c * x - s * y;

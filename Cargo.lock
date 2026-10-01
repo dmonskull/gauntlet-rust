@@ -2994,6 +2994,7 @@ dependencies = [
 name = "gdl-formats"
 version = "0.1.0"
 dependencies = [
+ "libm",
  "ruzstd",
  "thiserror 2.0.21",
 ]

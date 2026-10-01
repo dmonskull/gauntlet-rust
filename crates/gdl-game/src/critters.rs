@@ -71,6 +71,7 @@
 //! heads), breaking nodes, the health meter, effects and fading, its blows
 //! on other monsters and pushing players aside aren't done.
 
+use gdl_formats::detmath::Det;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -1400,7 +1401,7 @@ fn setup_level(
             position[1] = y;
         }
         let m = rotation_matrix(p.rotation);
-        let yaw = m[6].atan2(m[8]);
+        let yaw = m[6].datan2(m[8]);
         let range = match p.params(ty.class) {
             PlacementParams::Enemy { range, .. } => range,
             _ => 0.0,
@@ -1489,7 +1490,7 @@ fn setup_level(
         // The boss's spot is turned by the game's locator builder (not
         // the placements'): its yaw is the stored one.
         let m = crate::population::locator_matrix(spot.rotation);
-        let yaw = m[6].atan2(m[8]);
+        let yaw = m[6].datan2(m[8]);
         let mut at = spot.position;
         if let Some(h) = ground.0.floor_probe(at, 4.0, -1000.0, 5.0, 2) {
             at[1] = h.point[1];
@@ -2785,7 +2786,7 @@ fn centre_of(c: &Critter, ty: &TypeInfo) -> [f32; 3] {
 /// A critter's centre: its root plus its type's centre offset, turned
 /// with it (the game's `+0x5C`).
 fn centre_at(position: [f32; 3], yaw: f32, o: [f32; 3]) -> [f32; 3] {
-    let (s, co) = yaw.sin_cos();
+    let (s, co) = yaw.dsin_cos();
     [position[0] + o[0] * co + o[2] * s, position[1] + o[1], position[2] - o[0] * s + o[2] * co]
 }
 
@@ -2815,7 +2816,7 @@ fn score(c: &Critter, cond: &Condition, centre: [f32; 3], point: [f32; 3]) -> (f
         return (1.03e21, distance, dir);
     }
     let h = c.yaw - cond.angle;
-    let cos = h.sin() * dir[0] + h.cos() * dir[1];
+    let cos = h.dsin() * dir[0] + h.dcos() * dir[1];
     if cos < cond.min_cos {
         return (1.1e21, distance, dir);
     }
@@ -2860,7 +2861,7 @@ fn best_target(c: &Critter, cond: &Condition, fallback: bool) -> Option<Entity> 
             1.02e21
         } else {
             let h = c.yaw - cond.angle;
-            if h.sin() * t.direction[0] + h.cos() * t.direction[1] < cond.min_cos { 1.1e21 } else { t.distance * t.weight }
+            if h.dsin() * t.direction[0] + h.dcos() * t.direction[1] < cond.min_cos { 1.1e21 } else { t.distance * t.weight }
         };
         if best.is_none_or(|(b, _)| s < b) {
             best = Some((s, t.player));
@@ -3230,10 +3231,10 @@ fn deal(
     // from the move's node (`loot.rs`).
     if d.kind == LOOT {
         if first {
-            let (s, co) = c.yaw.sin_cos();
+            let (s, co) = c.yaw.dsin_cos();
             let velocity = turn_dir(Vec3::new(s, 0.0, co), d.yaw, d.pitch) * d.speed[0];
             let at = Vec3::from(c.node_at.unwrap_or(c.position));
-            let spread = d.param.clamp(-1.0, 1.0).acos();
+            let spread = d.param.clamp(-1.0, 1.0).dacos();
             level.loot.push(BossLoot { at, velocity, spread, boss: level.boss_type, realm: level.realm_id });
             level.events.push("loot");
         }
@@ -3519,9 +3520,9 @@ fn lob_toward(from: Vec3, to: Vec3, speed: f32, gravity: f32) -> Vec3 {
     if disc < 0.0 {
         return d.normalize_or_zero();
     }
-    let angle = ((s2 - disc.sqrt()) / (gravity * h)).atan();
+    let angle = ((s2 - disc.sqrt()) / (gravity * h)).datan();
     let f = flat / h;
-    Vec3::new(f.x * angle.cos(), angle.sin(), f.y * angle.cos())
+    Vec3::new(f.x * angle.dcos(), angle.dsin(), f.y * angle.dcos())
 }
 
 /// A missile blow (kind 1): the blow's effect — its `SFXX` record; with
@@ -3539,7 +3540,7 @@ fn launch(c: &Critter, me: Entity, d: &CritterDamage, damage: f32, level: &mut C
         debug!("critter {me:?}: a missile blow with no effect the table holds: nothing flies");
         return;
     };
-    let (s, co) = c.yaw.sin_cos();
+    let (s, co) = c.yaw.dsin_cos();
     let o = d.offset;
     let offset = Vec3::new(o[0] * co + o[2] * s, o[1], -o[0] * s + o[2] * co);
     let start = Vec3::from(c.node_at.unwrap_or(c.position)) + offset;
@@ -3678,7 +3679,7 @@ fn walk(c: &mut Critter, m: &CritterMove, ty: &TypeInfo, collision: &LevelCollis
 /// A move's ground step for a critter facing `yaw`: forward, back, to
 /// either side or diagonally.
 fn move_direction(yaw: f32, k: i32, s: f32) -> (f32, f32) {
-    let f = [yaw.sin(), yaw.cos()];
+    let f = [yaw.dsin(), yaw.dcos()];
     match k {
         kind::BACK => (-s * f[0], -s * f[1]),
         kind::WALK_RIGHT => (s * f[1], -s * f[0]),
@@ -3714,7 +3715,7 @@ fn turn(c: &mut Critter, m: &CritterMove, heroes: &[Hero]) {
         Some(c.home_yaw)
     } else {
         c.move_target.and_then(|t| heroes.iter().find(|h| h.entity == t)).map(|h| {
-            let g = (h.feet[0] - c.position[0]).atan2(h.feet[2] - c.position[2]);
+            let g = (h.feet[0] - c.position[0]).datan2(h.feet[2] - c.position[2]);
             if ty.flags & TYPE_FREE_TURN != 0 {
                 g
             } else {

@@ -32,6 +32,7 @@
 //! minecarts) show their explosion and sound as their loop comes round
 //! but its blast doesn't hurt yet (`effects.rs`).
 
+use gdl_formats::detmath::Det;
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
@@ -1308,7 +1309,7 @@ fn tick(
             p.ground.floor += new[1] - old[1];
             // The turn about the vertical: where the X axis went.
             let x = delta.apply_vector([1.0, 0.0, 0.0]);
-            p.mover.facing -= x[2].atan2(x[0]);
+            p.mover.facing -= x[2].datan2(x[0]);
         }
     }
 }
@@ -1485,7 +1486,7 @@ mod tests {
         assert_eq!(play & (PLAY_ON | AT_END | ANIMATING), PLAY_ON | AT_END);
         // Posed at the last key: a turn of 1 radian about Y.
         let x = a.local.apply_vector([1.0, 0.0, 0.0]);
-        assert!((x[0] - 1f32.cos()).abs() < 1e-5 && (x[2].abs() - 1f32.sin()).abs() < 1e-5, "{x:?}");
+        assert!((x[0] - 1f32.dcos()).abs() < 1e-5 && (x[2].abs() - 1f32.dsin()).abs() < 1e-5, "{x:?}");
         // Off again: back to the first frame — a tick longer, as it only
         // stops once the frame goes below the first.
         st = 0;

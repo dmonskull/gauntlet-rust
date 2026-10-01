@@ -7,6 +7,7 @@
 //! The game multiplies gamma-space colours; Bevy blends in linear space,
 //! so the veil lets through brightness^2.2 to look the same.
 
+use gdl_formats::detmath::Det;
 use bevy::prelude::*;
 
 use crate::critters::CritterLevel;
@@ -36,7 +37,7 @@ fn spawn(mut commands: Commands) {
 /// The veil's opacity for a scene brightness offset.
 pub fn veil_alpha(offset: f32) -> f32 {
     let brightness = (1.0 + offset).clamp(0.0, 1.0);
-    1.0 - brightness.powf(2.2)
+    1.0 - brightness.dpowf(2.2)
 }
 
 fn update(critters: Option<Res<CritterLevel>>, mut veil: Query<&mut BackgroundColor, With<Veil>>) {
@@ -57,7 +58,7 @@ mod tests {
     fn the_intro_darkens_to_a_fifth() {
         assert_eq!(veil_alpha(0.0), 0.0);
         // −0.8: a fifth of the brightness, in gamma terms.
-        assert!((1.0 - veil_alpha(-0.8) - 0.2f32.powf(2.2)).abs() < 1e-6);
+        assert!((1.0 - veil_alpha(-0.8) - 0.2f32.dpowf(2.2)).abs() < 1e-6);
         assert_eq!(veil_alpha(-2.0), 1.0);
     }
 }

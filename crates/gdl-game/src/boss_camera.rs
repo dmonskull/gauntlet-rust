@@ -15,6 +15,7 @@
 //! Yaw, distance and pitch ease toward their goals with the game's speed
 //! limits and accelerations, and the target glides after its goal.
 
+use gdl_formats::detmath::Det;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_6, PI};
 
 use gdl_formats::BossCamera;
@@ -180,8 +181,8 @@ impl BossCam {
 
     /// The way the camera looks (+Z turned by yaw, then pitch).
     pub fn direction(&self) -> [f32; 3] {
-        let (sy, cy) = self.yaw.sin_cos();
-        let (sp, cp) = self.pitch.sin_cos();
+        let (sy, cy) = self.yaw.dsin_cos();
+        let (sp, cp) = self.pitch.dsin_cos();
         [sy * cp, sp, cy * cp]
     }
 
@@ -339,8 +340,8 @@ impl BossCam {
             })
         };
         let Some(mut way) = way else { return self.yaw };
-        let facing = [self.facing.sin(), 0.0, self.facing.cos()];
-        let cos_cone = r.yaw_offset.cos();
+        let facing = [self.facing.dsin(), 0.0, self.facing.dcos()];
+        let cos_cone = r.yaw_offset.dcos();
         let mut cone = dot_flat(way, facing);
         if self.started {
             let (_, camera) = flat_unit(sub(self.eye(), self.target));
@@ -365,9 +366,9 @@ impl BossCam {
             let _ = score;
         }
         if cos_cone <= cone {
-            wrap(way[0].atan2(way[2]) + PI)
+            wrap(way[0].datan2(way[2]) + PI)
         } else {
-            let f = facing[0].atan2(facing[2]);
+            let f = facing[0].datan2(facing[2]);
             let side = way[2] * facing[0] - way[0] * facing[2];
             let y = if side < 0.0 { f + r.yaw_offset } else { f - r.yaw_offset };
             wrap(y + PI)
@@ -443,7 +444,7 @@ impl BossCam {
     /// The nearest ordinary camera point across the ground; another takes
     /// over only when it's within 0.667 of the current one's distance.
     fn nearest_point(&mut self, at: [f32; 3], points: &[CameraPoint]) -> Option<CameraPoint> {
-        let ground = |p: &CameraPoint| (at[0] - p.position[0]).hypot(at[2] - p.position[2]);
+        let ground = |p: &CameraPoint| (at[0] - p.position[0]).dhypot(at[2] - p.position[2]);
         let best = (0..points.len())
             .filter(|&i| Some(i) != self.point)
             .min_by(|&a, &b| ground(&points[a]).total_cmp(&ground(&points[b])));
@@ -551,9 +552,9 @@ fn heroes_way(scene: &Scene, target: [f32; 3], with_boss: bool, camera_yaw: f32)
     ways.sort_by(|a, b| b.0.total_cmp(&a.0));
     let yaw = match ways.as_slice() {
         [] => return None,
-        [(_, one)] => one[0].atan2(one[2]),
+        [(_, one)] => one[0].datan2(one[2]),
         [(_, first), (_, second), ..] => {
-            let (a, b) = (first[0].atan2(first[2]), second[0].atan2(second[2]));
+            let (a, b) = (first[0].datan2(first[2]), second[0].datan2(second[2]));
             let mut mid = wrap(0.5 * (a + b));
             if wrap(mid - a).abs() > FRAC_PI_2 {
                 mid = wrap(mid + PI);
@@ -564,7 +565,7 @@ fn heroes_way(scene: &Scene, target: [f32; 3], with_boss: bool, camera_yaw: f32)
             mid
         }
     };
-    Some([-yaw.sin(), 0.0, -yaw.cos()])
+    Some([-yaw.dsin(), 0.0, -yaw.dcos()])
 }
 
 /// Eases `value` toward `goal` (the doc's easing): speeds up by `accel` a
@@ -599,7 +600,7 @@ fn ease(value: f32, goal: f32, min: f32, max: f32, accel: f32, band: f32, speed:
 
 /// Yaw and pitch of `v` (0 = +Z; pitch negative looking down).
 fn angles(v: [f32; 3]) -> (f32, f32) {
-    (v[0].atan2(v[2]), v[1].atan2(v[0].hypot(v[2])))
+    (v[0].datan2(v[2]), v[1].datan2(v[0].dhypot(v[2])))
 }
 
 fn cos_of(tan: f32) -> f32 {
@@ -608,7 +609,7 @@ fn cos_of(tan: f32) -> f32 {
 
 /// Across the ground: the length and the unit way (y 0).
 fn flat_unit(v: [f32; 3]) -> (f32, [f32; 3]) {
-    let len = v[0].hypot(v[2]);
+    let len = v[0].dhypot(v[2]);
     if len > 0.0 { (len, [v[0] / len, 0.0, v[2] / len]) } else { (0.0, [1.0, 0.0, 0.0]) }
 }
 

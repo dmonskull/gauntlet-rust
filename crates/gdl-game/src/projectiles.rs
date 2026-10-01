@@ -17,6 +17,7 @@
 //! [`HeroShot`] and [`MonsterShot`] are how `player.rs` and `monsters.rs`
 //! ask for a missile.
 
+use gdl_formats::detmath::Det;
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -100,7 +101,7 @@ fn spawn_thrower(
     }
     spec.done = Some(hero);
     let (feet, facing) = (Vec3::from(player.start.0), player.start.1);
-    let mut at = feet + Vec3::new(facing.sin(), 0.0, facing.cos()) * spec.distance;
+    let mut at = feet + Vec3::new(facing.dsin(), 0.0, facing.dcos()) * spec.distance;
     if let Some(y) = ground.as_ref().and_then(|g| g.0.floor_height((at + Vec3::Y * 2.0).to_array())) {
         at.y = y;
     }
@@ -513,7 +514,7 @@ pub fn hero_aim(facing: f32, aim: Vec3, targeted: bool, elevation: f32, dwarf: b
     if dwarf {
         e += 0.2;
     }
-    let f = Vec3::new(facing.sin(), 0.0, facing.cos());
+    let f = Vec3::new(facing.dsin(), 0.0, facing.dcos());
     let mut a = aim;
     let across = Vec2::new(a.x, a.z).length();
     if bolt || f.x * a.x + f.z * a.z < AIM_CONE * across {
@@ -738,7 +739,7 @@ pub fn monster_launch(shot: &MonsterShot, kind: MissileKind, t: &MissileType, sp
     };
     dir.y = dir.y.max(0.0);
     let n = dir.normalize_or_zero();
-    if n.x * shot.facing.sin() + n.z * shot.facing.cos() < MONSTER_CONE {
+    if n.x * shot.facing.dsin() + n.z * shot.facing.dcos() < MONSTER_CONE {
         return None;
     }
     // Where each type lets go, relative to its centre.
@@ -1048,7 +1049,7 @@ fn spawn_projectile(
         kind: kind | t.kind,
         blast: t.blast,
         spin: t.spin,
-        yaw: launch.velocity.x.atan2(launch.velocity.z),
+        yaw: launch.velocity.x.datan2(launch.velocity.z),
         age: 0.0,
         lifetime: LIFETIME,
         scale,
@@ -1622,7 +1623,7 @@ fn orientation(p: &Projectile) -> Quat {
     if p.spin == [0.0; 3] {
         let v = p.velocity;
         let across = Vec2::new(v.x, v.z).length();
-        Quat::from_rotation_y(v.x.atan2(v.z)) * Quat::from_rotation_x(-v.y.atan2(across))
+        Quat::from_rotation_y(v.x.datan2(v.z)) * Quat::from_rotation_x(-v.y.datan2(across))
     } else {
         let [x, y, z] = p.spin;
         Quat::from_rotation_y(p.yaw)
@@ -1681,13 +1682,13 @@ mod tests {
         let a = hero_aim(0.0, Vec3::Z, false, 0.0, false, false);
         assert!((a - Vec3::Z).length() < 1e-6);
         // A target 20° off and a little up: steeper by 1.2.
-        let n = Vec3::new(20f32.to_radians().sin(), 0.1, 20f32.to_radians().cos()).normalize();
+        let n = Vec3::new(20f32.to_radians().dsin(), 0.1, 20f32.to_radians().dcos()).normalize();
         let a = hero_aim(0.0, n, true, 0.0, false, false);
         assert!(a.x > 0.3 && a.y > n.y);
         // A bolt goes along the facing whatever it found.
         assert!((hero_aim(0.0, n, true, 0.0, false, true) - Vec3::Z).length() < 1e-6);
         // 40° off: ignored.
-        let off = Vec3::new(40f32.to_radians().sin(), 0.0, 40f32.to_radians().cos());
+        let off = Vec3::new(40f32.to_radians().dsin(), 0.0, 40f32.to_radians().dcos());
         assert!((hero_aim(0.0, off, true, 0.0, false, false) - Vec3::Z).length() < 1e-6);
         // Downhill targets count half; the dwarf throws a little up.
         let down = Vec3::new(0.0, -0.4, 0.9).normalize();

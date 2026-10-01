@@ -18,6 +18,7 @@
 //! Anything missing or undecodable is logged and skipped — audio never
 //! stops the game from running.
 
+use gdl_formats::detmath::Det;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -155,7 +156,7 @@ fn pan_db(k: u32) -> i32 {
     if k >= 127 {
         return -904;
     }
-    (100.0 * (f64::from(127 - k) / 127.0).log10()).round() as i32
+    (100.0 * (f64::from(127 - k) / 127.0).dlog10()).round() as i32
 }
 
 /// The left and right gains of a pan: the mixer's side pan through its
@@ -164,7 +165,7 @@ fn pan_db(k: u32) -> i32 {
 /// isn't applied here.
 pub fn stereo_gains(pan: i32) -> [f32; 2] {
     let (side, _surround) = mix(pan);
-    let amp = |db: i32| 10f32.powf(db as f32 / 200.0);
+    let amp = |db: i32| 10f32.dpowf(db as f32 / 200.0);
     let centre = amp(pan_db(mix(CENTRE_PAN).0));
     [amp(pan_db(side)) / centre, amp(pan_db(127 - side)) / centre]
 }
@@ -178,7 +179,7 @@ fn ear(camera: &PlayCamera) -> (Vec3, Vec3) {
     let ahead = if ahead.length_squared() > 1e-8 {
         ahead.normalize()
     } else {
-        Vec3::new(camera.screen_yaw().sin(), 0.0, camera.screen_yaw().cos())
+        Vec3::new(camera.screen_yaw().dsin(), 0.0, camera.screen_yaw().dcos())
     };
     (target, Vec3::new(ahead.z, 0.0, -ahead.x))
 }

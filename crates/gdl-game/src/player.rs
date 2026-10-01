@@ -26,6 +26,7 @@
 //! appeared; `GDL_HOPS="x,y,z;x,y,z"` moves the hero onto each point in
 //! turn, every `GDL_HOP_TICKS` ticks (default 120), on the first level.
 
+use gdl_formats::detmath::Det;
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use gdl_formats::{PlayerCollision, PlayerGround};
@@ -315,7 +316,7 @@ fn show_body_looks(
         let gold = state.bits.armour & crate::damage::resists::GOLD != 0;
         let fade = match longest_power(state, power::SPECIAL, power::INVISIBLE) {
             Some(t) if blink_shows(t) => {
-                let transparency = INVISIBLE + (INVISIBLE_WAVER * (std::f32::consts::TAU * t).sin()).trunc();
+                let transparency = INVISIBLE + (INVISIBLE_WAVER * (std::f32::consts::TAU * t).dsin()).trunc();
                 transparency / 255.0
             }
             _ => 0.0,
@@ -487,7 +488,7 @@ fn hit_reaction(damage: f32, flags: u32, push: Vec3, facing: f32, pojo: bool) ->
     if class < 10 {
         return (class, speed, None);
     }
-    let mut heading = push.x.atan2(push.z);
+    let mut heading = push.x.datan2(push.z);
     if wrap(heading - facing).abs() > std::f32::consts::FRAC_PI_2 {
         class += 1;
         heading = wrap(heading + std::f32::consts::PI);
@@ -795,7 +796,7 @@ fn start_spot(
     };
     let (mine, theirs) = (FORMATION[slot.min(MAX_PLAYERS - 1)], FORMATION[first_slot.min(MAX_PLAYERS - 1)]);
     let (dx, dz) = (step * (mine.0 - theirs.0), step * (mine.1 - theirs.1));
-    let (sin, cos) = yaw.sin_cos();
+    let (sin, cos) = yaw.dsin_cos();
     floor_at(first[0] + dx * cos + dz * sin, first[2] - dx * sin + dz * cos)
         .or_else(|| AROUND.iter().find_map(|&(x, z)| floor_at(first[0] + step * x, first[2] + step * z)))
         .unwrap_or(first)
@@ -1176,7 +1177,7 @@ fn tick(
     // Online each hero's stick turns by its own camera (`play_camera.rs`).
     let axes = |slot: usize| {
         let yaw = play_camera.as_deref().map_or(0.0, |c| c.yaw_of(slot));
-        let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+        let forward = Vec3::new(yaw.dsin(), 0.0, yaw.dcos());
         (forward, Vec3::new(forward.z, 0.0, -forward.x))
     };
     let body = PlayerCollision::default();
@@ -1202,11 +1203,11 @@ fn tick(
         }
         let (forward, right) = axes(p.slot);
         let dir = right * raw.x + forward * raw.y;
-        let stick = Stick { heading: dir.x.atan2(dir.z), magnitude: raw.length().min(1.0) };
+        let stick = Stick { heading: dir.x.datan2(dir.z), magnitude: raw.length().min(1.0) };
         // The Robotron style's right stick (the GameCube's C-stick).
         let c_raw = if !mine.robotron() { Vec2::ZERO } else { input.c_stick };
         let c_dir = right * c_raw.x + forward * c_raw.y;
-        let c_stick = Stick { heading: c_dir.x.atan2(c_dir.z), magnitude: c_raw.length().min(1.0) };
+        let c_stick = Stick { heading: c_dir.x.datan2(c_dir.z), magnitude: c_raw.length().min(1.0) };
         p.previous = (p.mover.position, p.mover.facing);
         if p.light.as_mut().is_some_and(|l| !l.step()) {
             p.light = None;
@@ -1596,7 +1597,7 @@ fn tick(
                         let centre = f.position + Vec3::Y * (0.5 * f.height);
                         (centre - from).normalize_or(f.direction)
                     }
-                    _ => Vec3::new(wanted.sin(), 0.0, wanted.cos()),
+                    _ => Vec3::new(wanted.dsin(), 0.0, wanted.dcos()),
                 };
                 let wound_up = (time.elapsed_secs_f64() - p.attack_started) as f32;
                 debug!("{} releases a projectile after {wound_up:.2} s", current.name());
@@ -1630,7 +1631,7 @@ fn tick(
             face = reaction_face;
         }
         if let Some(b) = face_boss {
-            face = Some((b.x - position.x).atan2(b.z - position.z));
+            face = Some((b.x - position.x).datan2(b.z - position.z));
         }
 
         // Movement: this tick's step uses the movement factor from the last
@@ -1689,7 +1690,7 @@ fn strike_blow(
     }
     let kind = kind | p.weapon;
     let push = if sighted { combat::push(facing, damage) } else { Vec3::ZERO };
-    let at = position + Vec3::new(facing.sin(), 0.0, facing.cos()) * (combat::REACH + p.radius);
+    let at = position + Vec3::new(facing.dsin(), 0.0, facing.dcos()) * (combat::REACH + p.radius);
     Some(Hit { target: found.entity, attacker, damage, kind, push, at, target_kind: found.kind, ranged: false })
 }
 
