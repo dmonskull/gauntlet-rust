@@ -708,6 +708,7 @@ string (−1 = the whole group), `VOICE1` sound id. The ones items use:
 | 7, `0x5E`, `0x5F` | `USEMAGIC2`, `THROWMAGIC`, `MAGICSHIELD` | `S_USEMAGIC2`, `S_THROWMAGIC`, `S_SHIELDMAGIC` |
 | 8 | `SAVEKEYS` | `S_SAVEKEYS` |
 | 9 | `TRANSPORTERSMOVEYOU` | `S_TRANSPORTER` |
+| `0xB` | `HOWTOEXIT` ("ALL PLAYERS NEED / TO STEP ON THE EXIT"), once: a hero has stood in an exit for 6 fields (its `+0x254`, in the player update that ends at `0x80086cc8`) with more than one player in the game (`r13-0x7394` > 1), no level change under way (`r13-0x7764` < 0) and a normal exit (`r13-0x72dc` < 3) | `S_SAMEEXIT` |
 | `0xF`, `0x10` | `EATMEAT`, `EATFRUIT` | `S_MEATGIVES`, `S_FRUITGIVES` |
 | `0xE` | `SHOOTPOTIONLESSER` ("SHOOTING MAGIC / HAS A LOWER EFFECT"): a hero's missile or blast sets off a potion lying on the floor (`FUN_8002f400`) | `S_SHOOTINGMAGIC` |
 | `0x11` | `COLLECTGOLD` | `S_COLLECTGOLD` |

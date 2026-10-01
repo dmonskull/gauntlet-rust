@@ -656,6 +656,8 @@ struct HeroTouch {
     last_feet: Option<[f32; 3]>,
     transport: Option<Transport>,
     transport_cooldown: i32,
+    /// Fields it has stood in an exit (the player's `+0x254`).
+    in_exit: f32,
 }
 
 /// The current level's items.
@@ -1696,6 +1698,7 @@ fn tick(
     };
     // Each hero against the items, in slot order: the exits each living
     // hero stands in, and where they all are.
+    let party_size = party.len();
     let mut order: Vec<usize> = players.iter().map(|p| p.slot).collect();
     order.sort_unstable();
     let mut stood: Vec<Vec<usize>> = Vec::new();
@@ -1706,6 +1709,15 @@ fn tick(
         let Some(state) = party.state_mut(slot) else { continue };
         let mut out = new_out(items, slot);
         let exits_here = if leaving { None } else { run_hero(items, dt, state, ground.as_deref(), &mut player, &cameras, &mut out) };
+        // A hero in an exit the others haven't reached waits for them: after
+        // 6 fields, hint 0xB (only with more than one player, no level
+        // change under way, and not a secret exit).
+        let in_exit = exits_here.as_ref().is_some_and(|e| e.iter().any(|&i| items.items[i].ty.subtype != SECRET_EXIT));
+        let waited = &mut items.heroes[slot].in_exit;
+        *waited = if in_exit { *waited + FIELDS_PER_TICK as f32 } else { 0.0 };
+        if *waited >= WAIT_HINT_FIELDS && party_size > 1 && !leaving {
+            out.hints.push(Hint::WaitForOthers);
+        }
         if state.alive {
             living += 1;
             feet_all.push(Vec3::from(player.mover.position));
@@ -2552,6 +2564,9 @@ const REALM_F: usize = 6;
 
 /// A secret exit's subtype (`SECRET_ICON`).
 const SECRET_EXIT: i32 = 0x32;
+
+/// Fields a hero stands in an exit alone before the wait hint.
+const WAIT_HINT_FIELDS: f32 = 6.0;
 
 /// Exits the heroes stand in this tick: the portal steps through its
 /// actions while they stay, and when the last one has played the heroes go
