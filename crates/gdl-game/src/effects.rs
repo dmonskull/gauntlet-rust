@@ -53,6 +53,7 @@ impl Plugin for EffectsPlugin {
             .add_message::<CritterBlast>()
             .add_message::<BankEffect>()
             .add_message::<EffectAt>()
+            .add_message::<WorldBurst>()
             .add_message::<ExplosionAt>()
             .add_message::<NextStage>()
             .add_message::<BreathAt>()
@@ -819,6 +820,21 @@ pub struct EffectAt {
     pub scale: f32,
 }
 
+/// A level object bursting (`mechanics.rs`: H1's fire, the ice realm's
+/// minecarts): the realm's explosion where it is, and its blast — no one's,
+/// flags `0x2B` — hurting the heroes, monsters and items about it for as
+/// long as the explosion plays.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct WorldBurst {
+    pub name: &'static str,
+    pub bank: Option<&'static str>,
+    pub at: Vec3,
+    pub scale: f32,
+    pub kind: u32,
+    pub damage: f32,
+    pub radius: f32,
+}
+
 /// A one-off effect riding something (its model a child of `on`, turning
 /// with it): the hero's level-up flash and sparkle.
 #[derive(Message, Clone, Copy, Debug)]
@@ -839,7 +855,7 @@ pub(crate) struct OneShot(pub(crate) f32);
 fn spawn_one_shots(
     mut commands: Commands,
     mut requests: MessageReader<EffectAt>,
-    (mut riding, mut banked): (MessageReader<EffectOn>, MessageReader<BankEffect>),
+    (mut riding, mut banked, mut bursts): (MessageReader<EffectOn>, MessageReader<BankEffect>, MessageReader<WorldBurst>),
     places: Query<&GlobalTransform>,
     time: Res<Time>,
     mut game: ResMut<LoadedGame>,
@@ -857,6 +873,37 @@ fn spawn_one_shots(
             continue;
         };
         play_effect(&mut commands, &effect, e.at, e.facing, Vec3::splat(e.scale), &mut seed, &mut meshes);
+    }
+    for b in bursts.read() {
+        let effect = match b.bank {
+            Some(bank) => models.effect_from(bank, b.name, &mut game, &mut meshes, &mut materials, &mut images),
+            None => models.effect(b.name, &mut game, &mut meshes, &mut materials, &mut images),
+        };
+        let life = effect.as_ref().map_or(1.0, |e| e.life);
+        if let Some(effect) = &effect {
+            play_effect(&mut commands, effect, b.at, 0.0, Vec3::splat(b.scale), &mut seed, &mut meshes);
+        }
+        debug!("a burst's blast at {:?}: {:.0} out to {:.0} over {life:.2} s", b.at, b.damage, b.radius);
+        let blast = Blast {
+            owner: Entity::PLACEHOLDER,
+            shape: BlastShape::Grow,
+            centre: b.at,
+            kind: b.kind,
+            damage: b.damage,
+            radius: b.radius,
+            life,
+            age: 0.0,
+            spared: HashMap::new(),
+            spared_items: HashMap::new(),
+            heroes: Heroes::Hurt,
+            items: true,
+            monsters: true,
+            then: &[],
+            scale: Vec3::ONE,
+            drop: 0.0,
+            heading: None,
+        };
+        commands.spawn((Transform::from_translation(b.at), Visibility::Hidden, blast, BlastColour(0, true), LevelEntity));
     }
     for e in riding.read() {
         let effect = match e.bank {
@@ -929,10 +976,10 @@ struct HeroMagic {
 }
 
 impl HeroMagic {
-    /// A slot's magic stat at a hero level.
-    fn at(&self, slot: usize, level: u32) -> f32 {
+    /// A slot's magic stat at a hero level, with the points bought.
+    fn at(&self, slot: usize, level: u32, bought: f32) -> f32 {
         let [start, max] = self.stat.get(slot).copied().unwrap_or([400.0, 400.0]);
-        locomotion::stat_at_level(start, max, level, 0.0)
+        locomotion::stat_at_level(start, max, level, bought)
     }
 }
 
@@ -989,7 +1036,8 @@ fn use_potions(
             kind |= cycle.0 % 4 + 1;
             cycle.0 += 1;
         }
-        let stat = magic.as_ref().map_or(400.0, |m| m.at(slot, level));
+        let bought = state.as_ref().map_or(0.0, |s| s.bought.magic);
+        let stat = magic.as_ref().map_or(400.0, |m| m.at(slot, level, bought));
         let e = potion_effect(kind, u.mode, 0, powered_magic(stat, state.as_deref()), level);
         let c = colour_index(kind);
         info!(
@@ -1098,7 +1146,7 @@ fn set_off_potions(
             let slot = players.get(hero).map_or(0, |p| p.slot);
             let state = party.state(slot);
             let level = state.map_or(1, |s| s.level.max(1));
-            let stat = magic.as_ref().map_or(400.0, |m| m.at(slot, level));
+            let stat = magic.as_ref().map_or(400.0, |m| m.at(slot, level, state.map_or(0.0, |s| s.bought.magic)));
             let e = potion_effect(kind, 0, 0, STRUCK_POWER * powered_magic(stat, state), level);
             // The striker's own magic: its sound at the striker's feet.
             let feet = players.get(hero).map_or(at, |p| Vec3::from(p.mover.position));

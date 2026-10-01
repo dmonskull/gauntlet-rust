@@ -197,29 +197,29 @@ pub struct Player {
 /// The hero's working stats at a character level: strength (5–20),
 /// armour (0–5) and speed (units/s), each from the class stat plus 5 per
 /// level up to its maximum.
-fn derived_stats(stats: Option<&PlayerStats>, level: u32) -> (f32, f32, f32) {
-    let at = |s: gdl_formats::pdata::Stat| locomotion::stat_at_level(s.start, s.max, level, 0.0);
-    let strength = combat::strength(stats.map_or(400.0, |s| at(s.strength)));
-    let armor = (0.005 * stats.map_or(0.0, |s| at(s.armor))).clamp(0.0, 5.0);
-    let speed = locomotion::move_speed(stats.map_or(400.0, |s| at(s.speed)), 0.0);
+fn derived_stats(stats: Option<&PlayerStats>, level: u32, bought: &crate::player_state::StatBonus) -> (f32, f32, f32) {
+    let at = |s: gdl_formats::pdata::Stat, b: f32| locomotion::stat_at_level(s.start, s.max, level, b);
+    let strength = combat::strength(stats.map_or(400.0 + bought.strength, |s| at(s.strength, bought.strength)));
+    let armor = (0.005 * stats.map_or(bought.armour, |s| at(s.armor, bought.armour))).clamp(0.0, 5.0);
+    let speed = locomotion::move_speed(stats.map_or(400.0 + bought.speed, |s| at(s.speed, bought.speed)), 0.0);
     (strength, armor, speed)
 }
 
-/// Re-derives each hero's stats when its level changes.
+/// Re-derives each hero's stats when its level or its bought points change.
 fn level_stats(
     models: Res<HeroModels>,
     party: Res<Party>,
-    mut applied: Local<[u32; MAX_PLAYERS]>,
+    mut applied: Local<[(u32, crate::player_state::StatBonus); MAX_PLAYERS]>,
     mut players: Query<&mut Player>,
 ) {
     let fresh: Vec<usize> = players.iter_mut().filter(|p| p.is_added()).map(|p| p.slot).collect();
     for (slot, state) in party.states() {
         let Some((_, hero)) = models.slots.get(slot).and_then(Option::as_ref) else { continue };
-        if state.level == applied[slot] && !fresh.contains(&slot) {
+        if (state.level, state.bought) == applied[slot] && !fresh.contains(&slot) {
             continue;
         }
-        applied[slot] = state.level;
-        let (strength, armor, speed) = derived_stats(hero.stats.as_ref(), state.level);
+        applied[slot] = (state.level, state.bought);
+        let (strength, armor, speed) = derived_stats(hero.stats.as_ref(), state.level, &state.bought);
         for mut p in players.iter_mut().filter(|p| p.slot == slot) {
             p.strength = strength;
             p.armor = armor;

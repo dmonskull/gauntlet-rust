@@ -38,6 +38,7 @@ use crate::level::LoadedGame;
 use crate::message_box::MessageBox;
 use crate::online::{ColumnShow, Hero, Lobby, Lockstep, Message, NewGame, Online, OnlineFailed, Opening};
 use crate::play_camera::PlayCamera;
+use crate::shop::{ShopData, ShopKind, ShopOpen, ShopOutcome, ShopPress, ShopScreen};
 use crate::options::GameOptions;
 use crate::party::{MAX_PLAYERS, Party};
 use crate::player::{Player, PlayerChoice};
@@ -73,6 +74,8 @@ impl Plugin for FrontendPlugin {
                 )
                     .chain(),
             )
+            // The shop screen draws what this frame's tick did.
+            .configure_sets(Update, crate::shop::ShopDraw.after(run))
             // Online a death plays out on the network's ticks, alike on
             // every machine.
             .add_systems(
@@ -97,6 +100,9 @@ struct Pressed {
     start: bool,
     l: bool,
     r: bool,
+    /// The game's X (the shop sells with it): X on the keyboard, the top
+    /// button on a pad.
+    x: bool,
     /// Left / right held (the sliders move while they're down).
     hold_left: bool,
     hold_right: bool,
@@ -163,6 +169,7 @@ fn keyboard_pressed(keys: &ButtonInput<KeyCode>) -> Pressed {
         start: key(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Escape]),
         l: key(&[KeyCode::KeyQ, KeyCode::KeyP]),
         r: key(&[KeyCode::KeyE, KeyCode::KeyO]),
+        x: key(&[KeyCode::KeyX]),
         hold_left: held(&[KeyCode::ArrowLeft, KeyCode::KeyA]),
         hold_right: held(&[KeyCode::ArrowRight, KeyCode::KeyD]),
     }
@@ -187,6 +194,7 @@ fn pad_pressed(pad: &Gamepad, was: &mut [bool; 4]) -> Pressed {
         start: b(&[GamepadButton::Start]),
         l: b(&[GamepadButton::LeftTrigger, GamepadButton::LeftTrigger2]),
         r: b(&[GamepadButton::RightTrigger, GamepadButton::RightTrigger2]),
+        x: b(&[GamepadButton::North]),
         hold_left: pad.pressed(GamepadButton::DPadLeft) || now[2],
         hold_right: pad.pressed(GamepadButton::DPadRight) || now[3],
     }
@@ -194,7 +202,7 @@ fn pad_pressed(pad: &Gamepad, was: &mut [bool; 4]) -> Pressed {
 
 impl Pressed {
     fn any(&self) -> bool {
-        self.up || self.down || self.left || self.right || self.accept || self.back || self.start || self.l || self.r
+        self.up || self.down || self.left || self.right || self.accept || self.back || self.start || self.l || self.r || self.x
     }
 
     fn or(self, o: Pressed) -> Pressed {
@@ -208,6 +216,7 @@ impl Pressed {
             start: self.start || o.start,
             l: self.l || o.l,
             r: self.r || o.r,
+            x: self.x || o.x,
             hold_left: self.hold_left || o.hold_left,
             hold_right: self.hold_right || o.hold_right,
         }
@@ -253,6 +262,7 @@ pub(crate) fn read_input(
             "start" => p.start = true,
             "l" => p.l = true,
             "r" => p.r = true,
+            "x" => p.x = true,
             other => warn!("GDL_MENU: unknown button {other}"),
         }
     }
@@ -915,6 +925,9 @@ enum Screen {
     /// "Loading..." then the hero appears in the tower.
     LoadingGame,
     Playing,
+    /// The after-level screen, or the Tower Menu's Shop or Inventory
+    /// (`shop.rs`).
+    Shop,
     GameOver,
 }
 
@@ -1045,6 +1058,12 @@ pub struct Frontend {
     /// A line under the title's menus (why going online didn't work), and
     /// fields it has left.
     notice: Option<(String, f32)>,
+    /// The shop screen up: which, and whether it's after levelH4.
+    shop_kind: Option<ShopKind>,
+    shop_final: bool,
+    /// The level whose after-level screen has been shown (the tower may
+    /// load again before another level is played).
+    after_level_for: Option<String>,
 }
 
 impl Frontend {
@@ -1072,6 +1091,9 @@ impl Frontend {
             sent_ready: false,
             remote_heroes: Default::default(),
             notice: None,
+            shop_kind: None,
+            shop_final: false,
+            after_level_for: None,
         }
     }
 
@@ -1086,7 +1108,7 @@ impl Frontend {
     /// art ends at y 320 and the tower loaded behind it shows below, and
     /// GAME OVER is drawn over the level.
     fn full_screen(&self) -> bool {
-        matches!(self.screen, Screen::Title | Screen::Connecting | Screen::LoadingSelect | Screen::LoadingGame)
+        matches!(self.screen, Screen::Title | Screen::Connecting | Screen::LoadingSelect | Screen::LoadingGame | Screen::Shop)
     }
 
     /// Whether a level is being played (menus may be open over it).
@@ -1228,7 +1250,7 @@ pub(crate) fn run(
     real: Res<Time<Real>>,
     mut virt: ResMut<Time<Virtual>>,
     game: Res<LoadedGame>,
-    (party, mut changes, pads): (Res<Party>, MessageWriter<PartyChange>, Query<Entity, With<Gamepad>>),
+    (mut party, mut changes, pads): (ResMut<Party>, MessageWriter<PartyChange>, Query<Entity, With<Gamepad>>),
     mut to_level: MessageWriter<ChangeLevelTo>,
     mut options: ResMut<GameOptions>,
     mut saves: ResMut<Saves>,
@@ -1242,6 +1264,7 @@ pub(crate) fn run(
         MessageWriter<NewGame>,
     ),
     (keys, mut camera): (Res<ButtonInput<KeyCode>>, Option<ResMut<PlayCamera>>),
+    mut shop: (ResMut<ShopScreen>, Option<Res<ShopData>>),
 ) {
     let has_saves = !saves.file.characters.is_empty();
     let fields = real.delta_secs() * 60.0;
@@ -1441,9 +1464,38 @@ pub(crate) fn run(
                         start_select(&mut fe, SelectFor::Manage, has_saves, &party, &mut changes);
                         fe.go(Screen::Select);
                     }
-                    // Stand-ins: the shop and inventory screens.
-                    Item::Shop | Item::Inventory => info!("{item:?} isn't implemented"),
+                    Item::Shop | Item::Inventory => {
+                        let kind = if item == Item::Shop { ShopKind::Shop } else { ShopKind::Inventory };
+                        fe.menus.clear();
+                        let mut open = ShopOpen::new(kind);
+                        for (slot, state) in party.states() {
+                            open.bonus[slot] = state.bought;
+                        }
+                        open_shop(&mut fe, &mut shop, &party, open);
+                    }
                     other => open_submenu(&mut fe.menus, other),
+                }
+            }
+        }
+        Screen::Shop => {
+            let presses = shop_presses(&fe, &party);
+            let outcome = crate::shop::tick(&mut shop.0, fields, &presses, &mut party);
+            if outcome != ShopOutcome::Continue {
+                // The points bought stay with the heroes.
+                for slot in 0..MAX_PLAYERS {
+                    if let (Some(bought), Some(state)) = (shop.0.bonus(slot), party.state_mut(slot)) {
+                        state.bought = bought;
+                    }
+                }
+                shop.0.close();
+                let final_level = fe.shop_final;
+                fe.shop_kind = None;
+                if outcome == ShopOutcome::SelectScreen {
+                    // Each player at their character menu; others may join.
+                    start_select(&mut fe, SelectFor::AfterLevel { final_level }, has_saves, &party, &mut changes);
+                    fe.go(Screen::Select);
+                } else {
+                    fe.go(Screen::Playing);
                 }
             }
         }
@@ -1483,6 +1535,36 @@ pub(crate) fn run(
             if frozen { virt.pause() } else { virt.unpause() }
         }
     }
+}
+
+/// Opens the shop screen (`shop.rs`) over the game.
+fn open_shop(fe: &mut Frontend, (screen, data): &mut (ResMut<ShopScreen>, Option<Res<ShopData>>), party: &Party, open: ShopOpen) {
+    let Some(data) = data.as_deref() else {
+        warn!("the shop's data isn't loaded");
+        return;
+    };
+    fe.shop_final = open.level.as_deref().is_some_and(|l| l.eq_ignore_ascii_case("levelH4"));
+    fe.shop_kind = Some(open.kind);
+    screen.open(data, party, open);
+    fe.go(Screen::Shop);
+}
+
+/// Each player's presses for the shop screen: their own devices' (alone,
+/// every device's).
+fn shop_presses(fe: &Frontend, party: &Party) -> [ShopPress; MAX_PLAYERS] {
+    let mut out = [ShopPress::default(); MAX_PLAYERS];
+    let locals: Vec<usize> = party.members().filter(|(_, m)| !m.devices.remote).map(|(s, _)| s).collect();
+    for (device, p) in &fe.pressed_by {
+        let owner = party.members().find(|(_, m)| device.among(&m.devices)).map(|(s, _)| s);
+        let Some(slot) = owner.or_else(|| (locals.len() == 1).then(|| locals[0])) else { continue };
+        let o = &mut out[slot];
+        o.up |= p.up;
+        o.down |= p.down;
+        o.accept |= p.accept;
+        o.sell |= p.x;
+        o.back |= p.back;
+    }
+    out
 }
 
 /// Online: whose camera this machine shows — its own hero's while it's
@@ -1660,6 +1742,10 @@ enum SelectFor {
     /// The online lobby: this machine's player in their slot (the others'
     /// columns open as they come).
     Online(usize),
+    /// After a level's screen: every player at the character menu, the
+    /// cursor on Done (after levelH4, Change, Load and Quit disabled);
+    /// others can join in the free columns.
+    AfterLevel { final_level: bool },
 }
 
 /// Starts the select screen.
@@ -1681,6 +1767,15 @@ fn start_select(fe: &mut Frontend, how: SelectFor, has_saves: bool, party: &Part
             fe.remote_heroes = Default::default();
             if me < MAX_PLAYERS {
                 fe.columns[me] = Some(Column::new(Devices { keyboard: true, ..Devices::default() }, has_saves));
+            }
+        }
+        SelectFor::AfterLevel { final_level } => {
+            for (slot, m) in party.members() {
+                let mut c = Column::member(m.devices, &m.choice, &m.name, has_saves, false);
+                if final_level {
+                    c.select.menu.disabled = vec![Item::Change, Item::Load, Item::Quit];
+                }
+                fe.columns[slot] = Some(c);
             }
         }
         SelectFor::Manage => {
@@ -2281,6 +2376,7 @@ const DYING_SECONDS: f32 = 4.0;
 /// When a level starts: outside the tower and the secret realm the game
 /// saves each hero's record — except in `levelE2` and `levelF2` — and a
 /// hero that died in the last level comes back with its saved record.
+#[allow(clippy::too_many_arguments)]
 fn level_started(
     population: Res<LevelPopulation>,
     mut fe: ResMut<Frontend>,
@@ -2288,8 +2384,33 @@ fn level_started(
     mut party: ResMut<Party>,
     saves: Res<Saves>,
     mut changes: MessageWriter<PartyChange>,
+    (mut shop, trail, lock): ((ResMut<ShopScreen>, Option<Res<ShopData>>), Res<crate::tower::LevelTrail>, Res<Lockstep>),
 ) {
     let name = population.level.to_ascii_lowercase();
+    // Back in the tower from a level finished: the after-level screen
+    // (tally, shop, stats, inventory), with the tower behind it — not
+    // online yet.
+    if name == TOWER.to_ascii_lowercase() {
+        if let Some(level) = trail.finished.clone().filter(|l| fe.after_level_for.as_ref() != Some(l))
+            && fe.screen == Screen::Playing
+            && !lock.on
+        {
+            let mut open = ShopOpen::new(ShopKind::AfterLevel);
+            open.level = Some(level.clone());
+            for slot in 0..MAX_PLAYERS {
+                open.level_start[slot] = snapshot.0[slot].clone();
+                open.out[slot] = fe.out[slot];
+                if let Some(state) = party.state(slot) {
+                    open.bonus[slot] = state.bought;
+                }
+            }
+            info!("after {level}: the after-level screen");
+            fe.after_level_for = Some(level);
+            open_shop(&mut fe, &mut shop, &party, open);
+        }
+    } else {
+        fe.after_level_for = None;
+    }
     // Back in the tower, players who asked to join pick their heroes.
     if name == TOWER.to_ascii_lowercase() && fe.screen == Screen::Playing && fe.waiting.iter().any(Option::is_some) {
         let has_saves = !saves.file.characters.is_empty();
@@ -2493,6 +2614,8 @@ fn draw(
                 small(&mut d, 358.0, line2, rgb(PURPLE));
             }
         }
+        // The shop screen draws itself (`shop.rs`).
+        Screen::Shop => {}
         Screen::Playing => {
             if let Some(o) = online.as_deref() {
                 if lock.waited > crate::online::WAIT_SHOWN {

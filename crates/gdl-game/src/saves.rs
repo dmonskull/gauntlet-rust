@@ -35,6 +35,9 @@ pub struct SavedCharacter {
     pub runestones: Vec<i32>,
     pub realms_beaten: u32,
     pub quest: Quest,
+    /// Stat points bought in the shop.
+    #[serde(default)]
+    pub bought: crate::player_state::StatBonus,
 }
 
 impl SavedCharacter {
@@ -53,6 +56,7 @@ impl SavedCharacter {
             runestones: state.runestones.clone(),
             realms_beaten: state.realms_beaten,
             quest: state.quest.clone(),
+            bought: state.bought,
         }
     }
 
@@ -66,6 +70,7 @@ impl SavedCharacter {
         state.runestones = self.runestones.clone();
         state.realms_beaten = self.realms_beaten;
         state.quest = self.quest.clone();
+        state.bought = self.bought;
         state.health = if self.health > 0.0 { self.health.min(state.max_health()) } else { state.max_health() };
     }
 
