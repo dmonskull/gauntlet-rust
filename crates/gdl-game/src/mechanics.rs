@@ -38,7 +38,7 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use gdl_formats::anim::{Pose, ROTATION_BITS, SCALE_BITS, TRANSLATION_BITS, Track, rotation_matrix as pose_matrix};
 use gdl_formats::collision::NodePose;
-use gdl_formats::population::{LocatorKind, PlacementParams, Population};
+use gdl_formats::population::{Locator, LocatorKind, PlacementParams, Population};
 use gdl_formats::WorldNode;
 
 use crate::audio::{LoopSoundAt, PlaySoundAt};
@@ -122,6 +122,9 @@ const LIFT_DELAY: u16 = 0x800;
 const WAKES: u16 = 0x2000;
 /// Shakes the camera when it comes on.
 const SHAKES: u16 = 0x1000;
+/// The battlefield's realm id: once its first level is finished the
+/// tower's lower lift and elevator start on.
+const BATTLEFIELD: usize = 8;
 
 // Mover kind flags (the trigger flags' low byte) and state bits.
 const MOVES_CARRYING: u8 = 0x8;
@@ -621,7 +624,8 @@ impl Mechanics {
     /// ones that need standing on their target, or with flag `0x8000` —
     /// and those chained after it come on for good (the game also sets
     /// their `0x400`); `snap` puts their movers at their on heights at once
-    /// (as the tower loads), else they travel there.
+    /// (as the tower loads), else they travel there. An animated target
+    /// plays on (`snap`: it's at its last frame).
     pub fn fire(&mut self, id: u8, snap: bool) {
         for i in 0..self.triggers.len() {
             let t = &self.triggers[i];
@@ -634,15 +638,11 @@ impl Mechanics {
                 let t = &mut self.triggers[j];
                 t.flags |= ALL_PLAYERS;
                 t.action = 2;
-                if let Some(&mv) = t.target.and_then(|n| self.mover_of.get(&n)) {
-                    let mv = &mut self.movers[mv];
-                    mv.state = ON | PLAYERS;
-                    if snap {
-                        mv.previous = mv.state;
-                        mv.offset = mv.on;
-                    }
+                let (target, chain) = (t.target, t.chain);
+                if let Some(node) = target {
+                    self.turn_on(node, snap);
                 }
-                k = t.chain;
+                k = chain;
                 steps += 1;
                 if k == Some(i) || steps > self.triggers.len() {
                     break;
@@ -651,6 +651,63 @@ impl Mechanics {
             debug!("trigger {} (id {id}) fired{}", self.triggers[i].placement, if snap { " as the level loads" } else { "" });
         }
     }
+
+    /// Turns a trigger's target on and held by every player (state
+    /// `0x2F`), as the tower does to the gates it opens: a mover heads for
+    /// its on height (`snap`: it's there); an animated one plays on, with
+    /// no sound of its turning (`snap`: at its last frame).
+    fn turn_on(&mut self, node: usize, snap: bool) {
+        let animated = self.animated.contains(&node);
+        if let Some(&mv) = self.mover_of.get(&node) {
+            let mv = &mut self.movers[mv];
+            mv.state = ON | PLAYERS;
+            if animated || snap {
+                mv.previous = mv.state;
+            }
+            if snap && !animated {
+                mv.offset = mv.on;
+            }
+        }
+        if animated {
+            let play = self.play.entry(node).or_default();
+            *play = (*play & !PLAY_BACK) | PLAY_ON;
+            if snap {
+                *play |= AT_END;
+                if let Some(a) = self.animation_of.get(&node).and_then(|&a| self.animations.get_mut(a)) {
+                    a.frame = f32::from(a.frames.saturating_sub(1));
+                }
+            }
+        }
+    }
+}
+
+/// Clears the ids the game clears as it links the triggers
+/// (`docs/mechanics.md`, "Chains"), given each trigger's id and whether
+/// it's a quest gate: ids are signed bytes, and of the triggers sharing
+/// one of 1 to 127 (quest gates and the rest apart) only the first keeps
+/// it — no chain, camera point or firing by id reaches the others.
+fn clear_shared_ids(ids: &mut [(u8, bool)]) {
+    for i in 0..ids.len() {
+        let (id, quest) = ids[i];
+        if !(1..=127).contains(&id) {
+            continue;
+        }
+        for other in &mut ids[i + 1..] {
+            if *other == (id, quest) {
+                other.0 = 0;
+            }
+        }
+    }
+}
+
+/// The camera point a trigger with id `id` cuts to as it comes on
+/// (`docs/mechanics.md`, "Chains"): the locator of kind 9 whose index is
+/// the id read as a signed byte — so none for an id of 128 and up, which
+/// keeps the tower's own cameras (170 and up) from its pads — a later one
+/// with the same index taking it.
+fn camera_point(locators: &[Locator], id: u8) -> Option<usize> {
+    let id = i16::from(id as i8);
+    locators.iter().rposition(|l| l.kind == LocatorKind::Transmitter(9) && l.index == id)
 }
 
 /// A quest gate (trigger flag 0x40): touched while its crystals (ids
@@ -736,9 +793,7 @@ fn setup(
                     timer: 0.0,
                     action: 0,
                     shown: 0,
-                    cut: (id != 0)
-                        .then(|| pop.locators.iter().position(|l| l.kind == LocatorKind::Transmitter(9) && l.index == i16::from(id)))
-                        .flatten(),
+                    cut: None,
                 });
             }
             PlacementParams::Rotator { target: Some(node), angle, limit } if node < nodes.nodes.len() => {
@@ -756,6 +811,12 @@ fn setup(
             _ => {}
         }
     }
+    // Of the triggers sharing an id only the first keeps it.
+    let mut ids: Vec<(u8, bool)> = m.triggers.iter().map(|t| (t.id, t.flags & QUEST != 0)).collect();
+    clear_shared_ids(&mut ids);
+    for (t, (id, _)) in m.triggers.iter_mut().zip(ids) {
+        t.id = id;
+    }
     // Chains: each trigger with a next id leads to the one with that id.
     for i in 0..m.triggers.len() {
         let next = m.triggers[i].next;
@@ -767,6 +828,10 @@ fn setup(
             m.triggers[i].chain = Some(k);
             m.triggers[k].flags |= CHAINED_TO;
         }
+    }
+    // Then the camera points, as the locators are set up.
+    for t in &mut m.triggers {
+        t.cut = camera_point(&pop.locators, t.id);
     }
     // Animated objects: the loader puts their nodes (and every node under
     // them) in the animated mode; the item set-up has every trigger's
@@ -812,6 +877,22 @@ fn setup(
     // The tower opens the gates the quest has opened for good as it loads
     // (any player's).
     if quest::level_of(&population.level).is_some_and(|(realm, _)| realm == quest::TOWER) {
+        // As its items are made, the lower tower's lift and elevator (the
+        // targets of ids 104 and 199) are on once any hero has finished the
+        // battlefield's first level (`docs/items.md`, "Quest items and the
+        // tower's gates"): the animated lift at its last frame, the
+        // elevator on its way up.
+        if party.any(|s| s.quest.finished[BATTLEFIELD] & 1 != 0) {
+            let lower: Vec<usize> = m.triggers.iter().filter(|t| matches!(t.id, 104 | 199)).filter_map(|t| t.target).collect();
+            for node in lower {
+                if m.animated.contains(&node) {
+                    m.turn_on(node, true);
+                } else if let Some(&mv) = m.mover_of.get(&node) {
+                    m.movers[mv].state = ON | PLAYERS;
+                    m.movers[mv].previous = ON | PLAYERS;
+                }
+            }
+        }
         let mut gates: Vec<u8> = party.states().flat_map(|(_, s)| s.quest.tower_gates(s.runestone_bits())).collect();
         gates.sort_unstable();
         gates.dedup();
@@ -829,9 +910,9 @@ fn setup(
         m.animations.len()
     );
     // Movers that start off their rest height, animated objects at their
-    // first frame.
+    // first frame (the tower's opened ones at their last).
     for a in &mut m.animations {
-        a.local = animated_pose(&a.track, &a.track.sample(0.0), nodes.origin[a.node]);
+        a.local = animated_pose(&a.track, &a.track.sample(a.frame), nodes.origin[a.node]);
     }
     for (root, pose) in world_poses(&m, &nodes) {
         m.poses.insert(root, (pose, pose));
@@ -1448,6 +1529,25 @@ mod tests {
         assert_eq!(default_flags(LIFTPAD, 0), 0x80C);
     }
 
+    #[test]
+    fn shared_ids_keep_the_first_and_camera_points_read_signed_ids() {
+        // C3's switches 417 and 426 share id 1: only the first keeps it (and
+        // its camera point); a quest gate keeps its own; ids from 128 on
+        // aren't checked.
+        let mut ids = [(1, false), (1, false), (1, true), (200, false), (200, false), (0, false)];
+        clear_shared_ids(&mut ids);
+        assert_eq!(ids, [(1, false), (0, false), (1, true), (200, false), (200, false), (0, false)]);
+        // The tower's pad 145 has id 240, and the tower a camera point 240
+        // (the wizard's): the game never links them.
+        let point =
+            |index: i16| Locator { kind: LocatorKind::Transmitter(9), param: 0, index, position: [0.0; 3], rotation: [0.0; 3] };
+        let locators = [point(1), point(240), point(5)];
+        assert_eq!(camera_point(&locators, 1), Some(0));
+        assert_eq!(camera_point(&locators, 240), None);
+        assert_eq!(camera_point(&locators, 5), Some(2));
+        assert_eq!(camera_point(&locators, 7), None);
+    }
+
     /// A track turning about Y through `keys` (frame, angle), `frames` long.
     fn turning(frames: u16, keys: &[(u16, f32)]) -> Animation {
         let keys = keys.iter().map(|&(f, y)| (f, Pose { rotation: [0.0, y, 0.0], ..Pose::default() })).collect();
@@ -1461,6 +1561,46 @@ mod tests {
             bursts: false,
             burst_hidden: false,
         }
+    }
+
+    /// The tower firing its gates as it loads: an animated gate is at its
+    /// last frame at once and stays there; a trigger that needs standing on
+    /// its target isn't fired.
+    #[test]
+    fn a_fired_animated_gate_is_open_at_once() {
+        let mut m = Mechanics::default();
+        m.animations.push(turning(5, &[(0, 0.0), (4, 1.0)]));
+        m.animation_of.insert(0, 0);
+        m.animated.insert(0);
+        m.play.insert(0, PLAY_BACK);
+        m.movers.push(Mover { node: 0, kind: 0x18, flags: 0x0A, off: 0.0, on: 0.0, offset: 0.0, state: 0, previous: 0, sound: -1, alpha: 0 });
+        m.mover_of.insert(0, 0);
+        let trigger = |id: u8, flags: u16| Trigger {
+            placement: 0,
+            subtype: 0x18,
+            target: Some(0),
+            flags,
+            radius: 0.0,
+            id,
+            next: 0,
+            chain: None,
+            touches: 0,
+            timer: 0.0,
+            action: 0,
+            shown: 0,
+            cut: None,
+        };
+        m.triggers.push(trigger(104, 0x14A));
+        m.fire(104, true);
+        assert_eq!((m.movers[0].state, m.animations[0].frame), (0, 0.0));
+        m.triggers.push(trigger(102, 0x4A));
+        m.fire(102, true);
+        assert_eq!((m.movers[0].state, m.movers[0].previous, m.animations[0].frame), (ON | PLAYERS, ON | PLAYERS, 4.0));
+        let (mut st, play) = (m.movers[0].state, m.play.get_mut(&0).unwrap());
+        assert_eq!(*play & (PLAY_BACK | PLAY_ON | AT_END), PLAY_ON | AT_END);
+        play_animation(&mut m.animations[0], play, false, [0.0; 3]);
+        assert_eq!(drive_animation(0x0A, false, &mut st, play), Some(false));
+        assert_eq!((m.animations[0].frame, *play & AT_END), (4.0, AT_END));
     }
 
     #[test]
