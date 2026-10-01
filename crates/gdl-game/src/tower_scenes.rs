@@ -184,17 +184,17 @@ fn printf(format: &str, args: &[&str]) -> String {
 
 /// What the tower announces as it loads: the first shard won but not
 /// announced before (bits 1–8 of the marks), else — it wins — the first
-/// stone so (0–12); with no new stone, back from the battlefield
-/// (`levelH3`) without the thirteenth announced, the thirteenth's absence,
-/// and with all twelve announced and the Desecrated Temple done (that
-/// wins), the Underworld's portal. The announced bits are those before
-/// this load.
+/// stone so (0–12); with no new stone, back from finishing the
+/// battlefield (`levelH3`) without the thirteenth announced, the
+/// thirteenth's absence, and with all twelve announced and the Desecrated
+/// Temple done (that wins), the Underworld's portal. The announced bits
+/// are those before this load.
 pub fn announcement(
     marks: u32,
     shards_announced: u32,
     runes: u32,
     runes_announced: u32,
-    previous: Option<&str>,
+    finished: Option<&str>,
 ) -> Option<Announce> {
     let new_shards = marks & !shards_announced;
     let new_runes = runes & !runes_announced;
@@ -202,7 +202,7 @@ pub fn announcement(
     if let Some(i) = (0..13u8).find(|i| new_runes & (1 << i) != 0) {
         return Some(Announce::Rune(i));
     }
-    if previous.is_some_and(|p| p.eq_ignore_ascii_case(BATTLEFIELD)) && runes_announced & RUNE13 == 0 {
+    if finished.is_some_and(|p| p.eq_ignore_ascii_case(BATTLEFIELD)) && runes_announced & RUNE13 == 0 {
         out = Some(Announce::Rune13No);
     }
     if runes_announced & ALL_TWELVE == ALL_TWELVE && marks & TEMPLE_MARK != 0 {

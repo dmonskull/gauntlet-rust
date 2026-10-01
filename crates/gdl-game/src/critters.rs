@@ -177,19 +177,19 @@ fn pose_parts(critters: Query<(&Critter, &Animator)>, mut bones: Query<&mut Tran
 ///   the heroes hold all twelve runestones); it ends the level (which
 ///   then waits for the voice queues, as every level change does);
 /// - 9: once the voice queues are empty (his speeches done),
-/// - 10: at 35 fields left the heroes teleport out.
+/// - 10: at 35 fields left the heroes still standing teleport out in the
+///   death light (`going_out.rs`, stepping 0.5).
 ///
 /// His speeches wait in the announcer's voice queue; from his appearance
 /// the announcer's own lines (hints) are refused. His messages show a page
 /// at a time for as long as the game types each. Stand-ins: he doesn't
-/// fade; the heroes' teleport-out effect isn't drawn; the next level is
-/// the tower's first.
+/// fade; the next level is the tower's first.
 #[allow(clippy::too_many_arguments)]
 fn run_victory(
     mut commands: Commands,
     level: Option<ResMut<CritterLevel>>,
     mut state: Option<ResMut<PlayerState>>,
-    players: Query<&Player>,
+    mut players: Query<&mut Player>,
     mut animators: Query<&mut Animator>,
     mut sounds: MessageWriter<PlaySoundAt>,
     (mut voices, mut queues): (MessageWriter<QueueVoice>, ResMut<VoiceQueues>),
@@ -295,13 +295,18 @@ fn run_victory(
                 v.step = 10;
             }
             if v.step == 10 && v.countdown <= TELEPORT_LEFT {
-                debug!("the heroes teleport out (the effect isn't drawn)");
+                debug!("the heroes teleport out");
+                if state.as_ref().is_some_and(|s| s.alive) {
+                    for mut p in &mut players {
+                        p.light = Some(crate::going_out::DeathLight::new(crate::going_out::TELEPORT_LIGHT_STEP));
+                    }
+                }
                 v.step = 11;
             }
             if v.countdown <= 0.0 && !v.over {
                 // The key and the wizard go with the level.
                 info!("the boss level is over: to {AFTER_BOSS_LEVEL}");
-                change.write(ChangeLevelTo(AFTER_BOSS_LEVEL.into()));
+                change.write(ChangeLevelTo::finishing(AFTER_BOSS_LEVEL));
                 v.over = true;
             }
         }

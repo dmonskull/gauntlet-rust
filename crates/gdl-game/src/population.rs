@@ -628,22 +628,19 @@ fn spawn_built(
                 bones.push(commands.spawn((at, Visibility::default(), ChildOf(parent))).id());
             }
             // A flipbook node's frame hangs from a holder of its own, so
-            // the frame can be swapped (`items.rs`).
-            let holders: Vec<(usize, Entity, FlipbookFrames)> = model
+            // the frame can be swapped (`items.rs`) — also one showing
+            // nothing until a later action (an exit's rising column).
+            let flipbooks: Vec<(Entity, usize, FlipbookFrames, Option<Billboard>)> = model
                 .flipbooks
                 .iter()
                 .map(|(node, frames)| {
                     let holder = commands.spawn((Transform::default(), Visibility::default(), ChildOf(bones[*node]))).id();
-                    (*node, holder, frames.clone())
+                    (holder, *node, frames.clone(), Billboard::from_flags(atree.nodes[*node].render_flags))
                 })
                 .collect();
-            let mut flipbooks = Vec::new();
             for (node, parts, facing) in &model.parts {
-                match holders.iter().find(|(n, _, _)| n == node) {
-                    Some((_, holder, frames)) => {
-                        attach(commands, *holder, parts, *facing);
-                        flipbooks.push((*holder, *node, frames.clone(), *facing));
-                    }
+                match flipbooks.iter().find(|(_, n, _, _)| n == node) {
+                    Some((holder, ..)) => attach(commands, *holder, parts, *facing),
                     None => attach(commands, bones[*node], parts, *facing),
                 }
             }

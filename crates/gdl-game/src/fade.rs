@@ -108,14 +108,19 @@ const CHROME_MODE: f32 = 3.0;
 /// of its materials: with a texture in place of each part's own — the
 /// game's texture override −3 with draw flag `0x80000`, which the chrome
 /// power-ups use: coordinates from each point's normal, along the camera's
-/// right and up — and/or see-through by `fade` (the object's transparency
-/// / 255: invisibility). A part gets its copy the first time it shows a
-/// material; one whose material changes meanwhile is copied again.
+/// right and up — or through a death texture's frame (override −4, as a
+/// dying monster: the death light as a hero goes out) — and/or see-through
+/// by `fade` (the object's transparency / 255: invisibility). A part gets
+/// its copy the first time it shows a material; one whose material changes
+/// meanwhile is copied again.
 #[derive(Default)]
 pub struct BodyLook {
-    /// What the copies show: the texture, and whether they're faded.
-    shown: Option<(Option<AssetId<Image>>, bool)>,
+    /// What the copies show: the texture, whether through a death texture,
+    /// and whether they're faded.
+    shown: Option<(Option<AssetId<Image>>, bool, bool)>,
     fade: f32,
+    /// The death texture's frame the copies show.
+    frame: Option<AssetId<Image>>,
     /// A part's own material → its copy.
     copies: HashMap<AssetId<LevelMaterial>, Handle<LevelMaterial>>,
     /// A copy → the material it stands in for.
@@ -123,18 +128,19 @@ pub struct BodyLook {
 }
 
 impl BodyLook {
-    /// Shows `texture` and `fade` on the body's parts (neither: their own
-    /// again).
+    /// Shows `texture`, the death texture's frame `dying` and `fade` on the
+    /// body's parts (none: their own again).
     pub fn show(
         &mut self,
         texture: Option<&Handle<Image>>,
+        dying: Option<&Handle<Image>>,
         fade: f32,
         animator: &Animator,
         drawn: &mut Query<&mut MeshMaterial3d<LevelMaterial>>,
         materials: &mut Assets<LevelMaterial>,
     ) {
-        let key = (texture.map(Handle::id), fade > 0.0);
-        let wanted = (key.0.is_some() || key.1).then_some(key);
+        let key = (texture.map(Handle::id), dying.is_some(), fade > 0.0);
+        let wanted = (key.0.is_some() || key.1 || key.2).then_some(key);
         if wanted != self.shown {
             // Back on their own materials first.
             for &(_, e) in animator.meshes() {
@@ -147,6 +153,7 @@ impl BodyLook {
             self.originals.clear();
             self.shown = wanted;
             self.fade = fade;
+            self.frame = dying.map(Handle::id);
         }
         if wanted.is_none() {
             return;
@@ -160,7 +167,11 @@ impl BodyLook {
             let copy = match self.copies.get(&own) {
                 Some(c) => c.clone(),
                 None => {
-                    let Some(mut copy) = materials.get(own).cloned() else { continue };
+                    let Some(own_material) = materials.get(own) else { continue };
+                    let mut copy = match dying {
+                        Some(frame) => own_material.dissolving(frame.clone()),
+                        None => own_material.clone(),
+                    };
                     if let Some(texture) = texture {
                         copy.diffuse = Some(texture.clone());
                         copy.params.x = CHROME_MODE;
@@ -181,6 +192,16 @@ impl BodyLook {
                 }
             };
             m.0 = copy;
+        }
+        if let Some(frame) = dying
+            && self.frame != Some(frame.id())
+        {
+            self.frame = Some(frame.id());
+            for c in self.copies.values() {
+                if let Some(m) = materials.get_mut(c) {
+                    m.lightmap = Some(frame.clone());
+                }
+            }
         }
         if fade != self.fade {
             self.fade = fade;

@@ -59,6 +59,9 @@ pub enum DeathSet {
     Alt,
 }
 
+/// The light's set: the heroes go out through it (`going_out.rs`).
+pub const LIGHT: DeathSet = DeathSet::Element(3);
+
 /// The death texture a monster of type `enemy` with this floor step gets
 /// when a blow of `kind` kills it (the game's monster damage routine):
 /// knights and trees their own set for plain blows; any

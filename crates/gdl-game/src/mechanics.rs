@@ -59,7 +59,7 @@ impl Plugin for MechanicsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            setup.run_if(resource_exists_and_changed::<LevelPopulation>).after(crate::quest::enter_level),
+            setup.run_if(resource_exists_and_changed::<LevelPopulation>).after(crate::quest::seed_tests),
         )
             .add_systems(FixedUpdate, tick.after(PlayerTick))
             .add_systems(Update, pose_groups);

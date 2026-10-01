@@ -48,6 +48,7 @@ use crate::population::LevelPopulation;
 use crate::effects::{BreathAt, ChopAt, EffectAt, EffectOn, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
 use crate::flash::{self, Flash, FlashColours};
 use crate::fade::BodyLook;
+use crate::going_out::{DeathLight, GoingOut};
 use crate::hints::{Hint, ShowHint};
 use crate::projectiles::{self, HeroShot};
 use crate::world::{LevelEntity, LevelGround};
@@ -174,6 +175,11 @@ pub struct Player {
     /// Moved instantly since the item touch test last ran (`items.rs`
     /// takes it): that test starts from here, not from where the hero was.
     pub teleported: bool,
+    /// Going out through an exit (`going_out.rs`; `items.rs` starts it),
+    /// and the death light on the body (the same slot as the flash and the
+    /// chrome; it wins over both).
+    pub going_out: Option<GoingOut>,
+    pub light: Option<DeathLight>,
 }
 
 /// The hero's working stats at a character level: strength (5–20),
@@ -280,10 +286,12 @@ fn blink_shows(t: f32) -> bool {
 ///   the slot from a hit flash.
 /// - **Invisibility**: the body's transparency is 160 + 16 × sin(2π t)
 ///   while the longest invisibility shows, else none.
+/// - **The death light** (going out, a boss level's end): `DEATHLIGHT`'s
+///   frame, drawn as a dying monster's death texture; it takes the slot.
 #[allow(clippy::type_complexity)]
 fn show_body_looks(
     state: Option<Res<PlayerState>>,
-    colours: Res<FlashColours>,
+    (colours, deaths): (Res<FlashColours>, Option<Res<crate::deaths::DeathTextures>>),
     mut players: Query<(&mut Player, &Animator)>,
     mut drawn: Query<&mut MeshMaterial3d<LevelMaterial>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
@@ -300,6 +308,7 @@ fn show_body_looks(
         }
         _ => 0.0,
     };
+    let light_frames = deaths.and_then(|d| d.frames(crate::deaths::LIGHT));
     for (mut p, animator) in &mut players {
         let p = &mut *p;
         if armed {
@@ -308,11 +317,12 @@ fn show_body_looks(
         if p.chrome.step() {
             debug!("chrome {} (time {chrome_time:?})", if p.chrome.on() { "on" } else { "off" });
         }
-        let texture = if p.chrome.on() { colours.chrome[usize::from(gold)].as_ref() } else { None };
-        if texture.is_some() && p.flash.stop() {
+        let light = p.light.as_ref().zip(light_frames.as_ref()).map(|(l, f)| f[l.frame().min(f.len() - 1)].clone());
+        let texture = if p.chrome.on() && light.is_none() { colours.chrome[usize::from(gold)].as_ref() } else { None };
+        if (texture.is_some() || light.is_some()) && p.flash.stop() {
             flash::tag_body(animator, |_| true, 0, &mut tags, &mut commands);
         }
-        p.body_look.show(texture, fade, animator, &mut drawn, &mut materials);
+        p.body_look.show(texture, light.as_ref(), fade, animator, &mut drawn, &mut materials);
     }
 }
 
@@ -568,6 +578,11 @@ impl Player {
     ///
     /// [`DamagePlayer`]: crate::player_state::DamagePlayer
     pub fn take_blow(&mut self, damage: f32, kind: u32, push: Vec3) -> f32 {
+        // Going out, no blow reaches it (the game hurts only heroes in
+        // play).
+        if self.going_out.is_some() {
+            return 0.0;
+        }
         let mut kind = kind;
         let mut d = crate::damage::resist(damage, &mut kind, self.armor, self.armour_bits, self.boss_level);
         // Levitating, small monsters' blows don't reach it.
@@ -773,6 +788,8 @@ fn spawn_player(
         magic: MagicState::default(),
         wall_hit: None,
         teleported: false,
+        going_out: None,
+        light: None,
     };
     commands.entity(root).insert((player, LevelEntity));
     controls.ticks = 0;
@@ -977,6 +994,22 @@ fn tick(
     for (entity, mut player, mut animator) in &mut players {
         let p = &mut *player;
         p.previous = (p.mover.position, p.mover.facing);
+        if p.light.as_mut().is_some_and(|l| !l.step()) {
+            p.light = None;
+        }
+        // Going out through an exit: no control and no blows; it sinks and
+        // spins, then it's gone (`going_out.rs`).
+        if let Some(out) = &mut p.going_out {
+            let (mut feet, mut facing) = (p.mover.position, p.mover.facing);
+            let was_there = !out.gone();
+            if !out.tick(&mut feet, &mut facing, body.half_height, dt, &mut p.light) && was_there {
+                commands.entity(entity).insert(Visibility::Hidden);
+            }
+            (p.mover.position, p.mover.facing) = (feet, facing);
+            p.pending_hit = (0.0, 0, Vec3::ZERO);
+            p.pending_stun = None;
+            continue;
+        }
         let position = Vec3::from(p.mover.position);
         let facing = p.mover.facing;
         let current = p.actions.action;

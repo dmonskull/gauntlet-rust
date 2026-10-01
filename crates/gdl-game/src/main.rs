@@ -29,6 +29,7 @@ mod frame_rate;
 mod frontend;
 mod game_hud;
 mod gamma;
+mod going_out;
 mod generators;
 mod hazards;
 mod hints;
