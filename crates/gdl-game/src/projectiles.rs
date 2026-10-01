@@ -403,11 +403,11 @@ const REFLECTED_MOST: f32 = 15.0;
 const RICOCHET: &str = "S_RICOCHET";
 const RICOCHET_EVERY: f64 = 1.0;
 /// The hero's top point above its feet (`PDAT +0x50`, every class): the
-/// gauntlets' sounds play there.
-const HERO_TOP: f32 = 4.4;
-/// The gauntlets' shots and an effect's own sound (a critter missile's
-/// where it stops) play at this requested volume.
-const LOUD: u8 = 0xE0;
+/// gauntlets', the breaths' and the hammer's sounds play there.
+pub(crate) const HERO_TOP: f32 = 4.4;
+/// The gauntlets' shots, the breaths and an effect's own sound (a critter
+/// missile's where it stops) play at this requested volume.
+pub(crate) const LOUD: u8 = 0xE0;
 
 /// A missile in flight.
 #[derive(Component, Debug)]
