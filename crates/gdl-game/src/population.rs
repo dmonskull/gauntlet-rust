@@ -429,7 +429,10 @@ impl<'a> Sources<'a> {
             }
         }
         let object_order: Vec<usize> = atree_order.iter().copied().chain([self.level]).collect();
-        for suffix in ["", "L1", "ROOT"] {
+        // The game appends as it goes (`docs/level-population.md`): the
+        // name, then with `L1`, then with `L1ROOT` (the lizards' generators
+        // are `GEN_LIZ<n>L1ROOT`).
+        for suffix in ["", "L1", "L1ROOT"] {
             let full = format!("{name}{suffix}");
             for &s in &object_order {
                 if let Some(&o) = self.objects[s].get(full.as_str()) {

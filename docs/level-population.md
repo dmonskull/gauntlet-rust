@@ -171,8 +171,9 @@ e.g. `levelA` for CASTLE) and `"items/level%s"` (the level's own, if its
 `objects.ngc` exists); `"powerups"` is loaded too. `FUN_80067338` looks
 each type's name up as an atree (`FUN_800674e0`: realm items, powerups,
 level items; generators also every loaded monster), and `FUN_80065b4c`
-builds it from the atree, or else finds a plain object by name, then name
-+ `L1`, then name + `ROOT` (`FUN_800b8684`). Generator models are plain
+builds it from the atree, or else finds a plain object by name, then
+with `L1` appended, then `ROOT` appended to that — name + `L1ROOT`
+(`strcat`, `FUN_800e7814`; `FUN_800b8684` compares 15 characters). Generator models are plain
 objects `GEN_<code><n>L1` in `MONSTERS/<code>/objects.ngc`.
 
 The runtime uses `ITEMS/level<realm letter>` — every realm WAD names the
