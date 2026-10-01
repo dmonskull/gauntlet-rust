@@ -3,6 +3,8 @@ resolver = "3"
 members = ["crates/gdl-formats", "crates/gdl-install", "crates/gdl-game", "crates/gdl-net"]
 
 [workspace.package]
+repository = "https://github.com/dmonskull/gauntlet-rust"
+license = "MIT"
 version = "0.1.0"
 edition = "2024"
 publish = false

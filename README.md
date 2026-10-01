@@ -9,6 +9,12 @@ This project ships no game assets and no code copied from the original
 binary. Point it at a copy of the game you already own and it reads that
 copy's own data at runtime.
 
+## Download
+
+Ready-to-run builds for Windows, macOS and Linux are on the
+[Releases page](https://github.com/dmonskull/gauntlet-rust/releases):
+unzip, run `gdl-game`, and pick your own copy of the game when it asks.
+
 ## Play
 
 [PLAYING.md](PLAYING.md) is the players' guide: starting the game, local
@@ -167,3 +173,10 @@ games.
 Gauntlet: Dark Legacy and all related assets, trademarks and intellectual
 property belong to their respective owners. This project is unaffiliated
 with them.
+
+## Legal
+
+A fan project, not affiliated with or endorsed by Midway, Warner Bros.
+Interactive or Nintendo; *Gauntlet* and *Gauntlet: Dark Legacy* belong to
+their owners. The code is MIT-licensed ([LICENSE](LICENSE)); no game data
+is included or distributed — you need your own copy of the game.
