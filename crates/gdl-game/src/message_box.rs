@@ -8,7 +8,8 @@
 //! stops while it's up (the game runs the box's own loop, drawing the
 //! frozen scene); 15 fields into a page, B puts the page away — cutting its
 //! voice line short — and the last one closes the box, after which the
-//! pads are ignored for 4 frames.
+//! pads are ignored for 4 frames. `GDL_SKIP_BOXES=1` (testing: scripted
+//! runs can't press B) puts each page away as soon as B could.
 //!
 //! Captions are the wizards' words during their scenes:
 //! white, centred, typed out a letter at a time in a cut's black bar, a
@@ -227,7 +228,9 @@ fn run_box(
     mut requests: MessageReader<ShowMessage>,
     mut voices: MessageWriter<QueueVoice>,
     mut stops: MessageWriter<StopSound>,
+    mut skip: Local<Option<bool>>,
 ) {
+    let skip = *skip.get_or_insert_with(|| std::env::var("GDL_SKIP_BOXES").is_ok_and(|v| !v.is_empty() && v != "0"));
     let fields = real.delta_secs() * 60.0;
     boxes.t += fields;
     boxes.queue.extend(requests.read().cloned());
@@ -236,7 +239,7 @@ fn run_box(
     }
     if let Some(open) = boxes.open.as_mut() {
         open.fields += fields;
-        if open.fields >= PAGE_GUARD && fe.back_pressed() {
+        if open.fields >= PAGE_GUARD && (fe.back_pressed() || skip) {
             if let Some(line) = open.voice {
                 stops.write(StopSound(line.into()));
             }
