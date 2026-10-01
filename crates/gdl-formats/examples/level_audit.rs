@@ -4,7 +4,7 @@
 //! nothing is drawn (dev tool).
 //!
 //! ```text
-//! cargo run -p gdl-formats --example level_audit -- <game>/Gauntlet [level] [--triggers] [--anim] [--falls]
+//! cargo run -p gdl-formats --example level_audit -- <game>/Gauntlet [level] [--triggers] [--anim] [--falls] [--walls]
 //! ```
 //!
 //! With `--triggers`, every trigger the party has is listed too: where it
@@ -14,7 +14,9 @@
 //! (where the level starts it) and at its last (where the trigger takes
 //! it). With `--falls`, the falling obstacles (rock falls, leaves, debris,
 //! shot-down walls, sinking rocks): their model, shape, links and the
-//! floor under each.
+//! floor under each. With `--walls`, each secret wall's own triangles
+//! (their box in the world and the way they face) and a warp point on the
+//! floor 4 in front of it.
 //!
 //! Per level it lists:
 //! - `MOVER`: world nodes the game moves (or hides) because a trigger for
@@ -188,8 +190,9 @@ fn main() {
     let listing = args.iter().any(|a| a == "--triggers");
     let describe = args.iter().any(|a| a == "--anim");
     let falls = args.iter().any(|a| a == "--falls");
+    let wall_list = args.iter().any(|a| a == "--walls");
     let mut plain = args.iter().filter(|a| !a.starts_with("--"));
-    let root = plain.next().expect("usage: level_audit <game>/Gauntlet [level] [--triggers] [--anim] [--falls]").clone();
+    let root = plain.next().expect("usage: level_audit <game>/Gauntlet [level] [--triggers] [--anim] [--falls] [--walls]").clone();
     let only = plain.next().map(|s| s.to_ascii_lowercase());
     let root = Path::new(&root);
     let mut levels: Vec<_> = std::fs::read_dir(root.join("LEVELS")).expect("LEVELS").flatten().map(|e| e.path()).collect();
@@ -366,6 +369,42 @@ fn main() {
             .collect();
         if !walls.is_empty() {
             note("WALL", format!("{} secret walls (placements {walls:?})", walls.len()), &mut lines);
+        }
+
+        // Secret walls: where their triangles are and a point in front.
+        if wall_list && let Some(c) = &collision {
+            for &i in &walls {
+                let p = &pop.placements[i];
+                let (first, count) = (p.links[0].max(0) as usize, p.links[1].max(0) as usize);
+                let Some(tris) = c.triangles.get(first..first + count) else { continue };
+                let m = gdl_formats::population::rotation_matrix(p.rotation);
+                // World = local · m + position (row vectors).
+                let world = |v: [f32; 3]| -> [f32; 3] { std::array::from_fn(|j| p.position[j] + (0..3).map(|k| v[k] * m[k * 3 + j]).sum::<f32>()) };
+                let (mut lo, mut hi, mut n) = ([f32::MAX; 3], [f32::MIN; 3], [0.0f32; 3]);
+                for t in tris {
+                    for v in t.vertices() {
+                        let w = world(v);
+                        for k in 0..3 {
+                            lo[k] = lo[k].min(w[k]);
+                            hi[k] = hi[k].max(w[k]);
+                        }
+                    }
+                    let tn: [f32; 3] = std::array::from_fn(|j| (0..3).map(|k| t.normal[k] * m[k * 3 + j]).sum::<f32>());
+                    for k in 0..3 {
+                        n[k] += tn[k];
+                    }
+                }
+                let flat = (n[0] * n[0] + n[2] * n[2]).sqrt().max(1e-6);
+                let (nx, nz) = (n[0] / flat, n[2] / flat);
+                let mid = [(lo[0] + hi[0]) / 2.0, lo[1], (lo[2] + hi[2]) / 2.0];
+                let front = [mid[0] + 4.0 * nx, mid[1] + 2.0, mid[2] + 4.0 * nz];
+                let floor = c.player_floor_height(front, 1.0).map_or("no floor".to_string(), |y| format!("floor {y:.2}"));
+                lines.push(format!(
+                    "  WALLD {i:4} {} box ({:.1}, {:.1}, {:.1})..({:.1}, {:.1}, {:.1}) faces ({nx:.2}, {nz:.2}); in front ({:.1}, {:.1}) {floor}",
+                    p.model_name(pop.resolved_type(p)),
+                    lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], front[0], front[2]
+                ));
+            }
         }
 
         // Crumbling floors: what they are and what's under them.
