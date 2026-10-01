@@ -25,9 +25,11 @@
 //! 4. lands the move's blows on their frames — a sphere on the move's node
 //!    swept from its last position, a breath cone along the node, a
 //!    missile (with the critter's own effect model, aimed with an arc at
-//!    its target, faster the angrier it is) or a ring on the ground — and
-//!    plays its sounds; a player a critter hit can't be hit by one again
-//!    for 0.25 s;
+//!    its target, faster the angrier it is, splashing and bursting where
+//!    it stops) or a still effect set down as its record says (a ring on
+//!    the ground, an attached attack: a blast growing over its life) — and
+//!    plays its effects' sounds; a player a critter hit can't be hit by
+//!    one again for 0.25 s;
 //! 5. walks at the move's speed in the move's direction plus its knockback
 //!    (a golem on the level's walls and floor, stopping short of players;
 //!    a boss kept within its leash of home) and turns toward its target at
@@ -62,9 +64,8 @@
 //! the level.
 //!
 //! Stand-ins (see the doc): a woken statue goes straight to its ACTIVE
-//! animation and its critter appears when that ends; ground rings (a
-//! damaging effect in the game) hurt players in their radius at once;
-//! critter missiles fly the missiles' three seconds; the chimera's wake
+//! animation and its critter appears when that ends; critter missiles
+//! fly the missiles' three seconds; the chimera's wake
 //! timer starts at once; the tower's first level follows a boss. The darkening isn't drawn; the
 //! heroes' side of the intro, the boss camera, parts (the chimera's
 //! heads), breaking nodes, the health meter, effects and fading, its blows
@@ -87,7 +88,7 @@ use gdl_formats::{LevelCollision, ModelFile, enemy};
 use crate::audio::{PlaySoundAt, QueueVoice, VoiceQueues};
 use crate::character::{Animate, Animator, CharacterData, CharacterModel, advance_clip, clip_end, clip_fps};
 use crate::combat::{CritterAim, SphereAim, TargetKind, Targetable};
-use crate::effects::{CritterBlast, OneShot, effect_life};
+use crate::effects::{BankEffect, CritterBlast, OneShot, effect_life};
 use crate::exits::ChangeLevelTo;
 use crate::flash::{self, Flash, FlashColours};
 use crate::message_box::{self, ShowCaption, TextFile};
@@ -690,6 +691,12 @@ pub struct CritterLevel {
     rock_blows: Vec<RockBlow>,
     rock_timers: Vec<(usize, f32)>,
     last_rock: i32,
+    /// The critters' still effects set down this tick (`critter_effects`),
+    /// and whether one of the effects started shakes the camera.
+    area_blasts: Vec<CritterBlast>,
+    shake: bool,
+    /// Effects the critters' folders don't hold, from the effect bank.
+    bank_effects: Vec<BankEffect>,
 }
 
 /// A blow of kind 5 (at every safe rock) or 6 (throwing one down): its
@@ -710,6 +717,18 @@ struct RockBlow {
     /// Its `SFXX` record's sounds, played at each rock.
     sounds: Vec<PlaySoundAt>,
 }
+
+/// An `SFXX` record's flags: 2 shakes the camera as it starts; 1 (or
+/// 0x800) attaches its effect to the critter's root, 0x80 puts it at the
+/// critter's spawn point, 0x40 at the move's node.
+const SFXX_SHAKES: u32 = 0x2;
+const SFXX_ON_ROOT: u32 = 0x801;
+const SFXX_AT_SPAWN: u32 = 0x80;
+const SFXX_AT_NODE: u32 = 0x40;
+/// The shake it starts: the target round a 0.1 circle for 90 fields,
+/// priority 100.
+const SFXX_SHAKE: crate::play_camera::Shake =
+    crate::play_camera::Shake { amplitude: 0.1, what: 0, delay: 0.0, fields: 90.0, priority: 100 };
 
 /// A missile blow's flags: 0x1000 flies past the heroes, 0x40 through
 /// walls and items.
@@ -1134,8 +1153,8 @@ impl Critter {
 /// An `SFXX` record starting (the game's effect start): its sound and
 /// those of the records chained after it, from where the critter stands
 /// at 0xE0 — faded by its distance from the heroes, panned only during its
-/// DEATH move.
-fn effect_sounds(c: &Critter, record: usize, realm: char, out: &mut Vec<PlaySoundAt>) {
+/// DEATH move. Returns whether one of them shakes the camera (flag 2).
+fn effect_sounds(c: &Critter, record: usize, realm: char, out: &mut Vec<PlaySoundAt>) -> bool {
     let mut names = Vec::new();
     sound_chain(&c.kind.file, record, realm, &mut names);
     let at = Vec3::from(c.position);
@@ -1143,6 +1162,16 @@ fn effect_sounds(c: &Critter, record: usize, realm: char, out: &mut Vec<PlaySoun
     out.extend(names.into_iter().map(|n| {
         if dying { PlaySoundAt::panned(n, at, SFXX_VOLUME) } else { PlaySoundAt::faded(n, at, SFXX_VOLUME) }
     }));
+    let (mut next, mut shakes, mut guard) = (Some(record), false, 0);
+    while let Some(r) = next.and_then(|i| c.kind.file.sounds.get(i)) {
+        shakes |= r.flags & SFXX_SHAKES != 0;
+        next = usize::try_from(r.next).ok();
+        guard += 1;
+        if guard > 8 {
+            break;
+        }
+    }
+    shakes
 }
 
 /// The names of an `SFXX` record's sounds and those chained after it.
@@ -1418,6 +1447,9 @@ fn setup_level(
         rock_blows: Vec::new(),
         rock_timers: Vec::new(),
         last_rock: -1,
+        area_blasts: Vec::new(),
+        shake: false,
+        bank_effects: Vec::new(),
     };
 
     // The boss appears at the level's boss locator, dropped onto the floor
@@ -2013,6 +2045,7 @@ fn tick_critters(
         let bone_matrix = |n: Option<usize>| -> Affine3A {
             n.and_then(|n| animator.bone(n)).and_then(|b| bones.get(b).ok()).map_or(root, |g| g.affine())
         };
+        let bone_entity = |n: Option<usize>| n.and_then(|n| animator.bone(n));
         // The parts' moves: target, node, blows and sounds; their hit
         // spheres follow their nodes.
         for p in &mut c.parts {
@@ -2022,7 +2055,7 @@ fn tick_critters(
                 && let Some(pcur) = p.current
             {
                 let pmv = p.moves()[pcur].clone();
-                act(p, entity, &pmv, pcur, &bone_matrix, &heroes, level, &mut blows, &mut to_play, &mut commands);
+                act(p, entity, &pmv, pcur, (&bone_matrix, &bone_entity), &heroes, level, &mut blows, &mut to_play, &mut commands);
                 if p.frozen <= 0.0 {
                     p.clock.advance(DT);
                 }
@@ -2052,7 +2085,7 @@ fn tick_critters(
         }
 
         follow_spheres(c, &bone_matrix, &mut spheres, &mut commands);
-        act(c, entity, &mv, cur, &bone_matrix, &heroes, level, &mut blows, &mut to_play, &mut commands);
+        act(c, entity, &mv, cur, (&bone_matrix, &bone_entity), &heroes, level, &mut blows, &mut to_play, &mut commands);
 
         // Walk and turn.
         if boss {
@@ -2088,7 +2121,8 @@ fn tick_critters(
     // `GDL_CRITTER_SHOT=<png>`: a testing aid that saves a screenshot a
     // few ticks after the first critter event named by
     // `GDL_CRITTER_SHOT_ON` (`death`, the default; `missile`; `hurt`; `part`, a
-    // boss part starting an attack; `rocks`, a blow at the safe rocks).
+    // boss part starting an attack; `rocks`, a blow at the safe rocks;
+    // `effect`, a still effect set down).
     let wanted = std::env::var("GDL_CRITTER_SHOT_ON").unwrap_or_else(|_| "death".into());
     if death_shot.is_none() && level.events.iter().any(|e| *e == wanted) {
         let delay = std::env::var("GDL_CRITTER_SHOT_DELAY").ok().and_then(|v| v.parse().ok());
@@ -2162,7 +2196,7 @@ fn act(
     me: Entity,
     mv: &CritterMove,
     cur: usize,
-    bone_matrix: &dyn Fn(Option<usize>) -> Affine3A,
+    (bone_matrix, bone_entity): Bones,
     heroes: &[Hero],
     level: &mut CritterLevel,
     blows: &mut Vec<Blow>,
@@ -2178,6 +2212,7 @@ fn act(
         c.node_was = None;
     }
     let node_matrix = bone_matrix(c.body().nodes[cur]);
+    let node_bone = bone_entity(c.body().nodes[cur]);
     c.node_was = c.node_at.filter(|_| c.node_was.is_some() || !c.switched);
     c.node_at = Some(node_matrix.translation.into());
     if c.node_was.is_none() {
@@ -2193,16 +2228,19 @@ fn act(
         c.blows_done |= bit;
         let Ok(d) = usize::try_from(mv.damage[slot]) else { continue };
         let Some(dmg) = c.kind.file.damage.get(d).cloned() else { continue };
-        deal(c, me, &dmg, first, node_matrix, heroes, level, blows, to_play, commands);
+        deal(c, me, &dmg, first, (node_matrix, node_bone), heroes, level, blows, to_play, commands);
     }
     for (k, (s, at)) in mv.sounds.iter().enumerate() {
         let bit = 1 << k;
         if c.sounds_done & bit == 0 && *s >= 0 && i32::from(*at) <= frame {
             c.sounds_done |= bit;
-            effect_sounds(c, *s as usize, level.realm, to_play);
+            level.shake |= effect_sounds(c, *s as usize, level.realm, to_play);
         }
     }
 }
+
+/// A critter's bones by its skeleton's node: world matrix and entity.
+type Bones<'a> = (&'a dyn Fn(Option<usize>) -> Affine3A, &'a dyn Fn(Option<usize>) -> Option<Entity>);
 
 /// The idle move: TAUNT while unhurt, else READY.
 fn idle(c: &Critter, now: f32) -> Option<usize> {
@@ -2409,9 +2447,18 @@ fn rock_blows(
     transforms: Query<&Transform>,
     mut blasts: MessageWriter<CritterBlast>,
     mut sounds: MessageWriter<PlaySoundAt>,
+    (mut shakes, mut banked): (MessageWriter<crate::play_camera::Shake>, MessageWriter<BankEffect>),
 ) {
-    let (Some(mut level), Some(mut items)) = (level, items) else { return };
+    let Some(mut level) = level else { return };
     let level = &mut *level;
+    // The still effects the critters set down this tick, the bank's
+    // effects they show, and a shake.
+    blasts.write_batch(std::mem::take(&mut level.area_blasts));
+    banked.write_batch(std::mem::take(&mut level.bank_effects));
+    if std::mem::take(&mut level.shake) {
+        shakes.write(SFXX_SHAKE);
+    }
+    let Some(mut items) = items else { return };
     // Where a rock stands: its model's pose (its node), else its centre.
     let pose_of = |items: &LevelItems, placement: usize, centre: [f32; 3]| {
         items
@@ -2479,8 +2526,10 @@ fn rock_blows(
                 damage: b.damage,
                 radius: b.radius,
                 life: b.life,
+                heroes: true,
                 monsters: false,
                 items: false,
+                follow: None,
             });
             sounds.write_batch(b.sounds.iter().cloned());
             if !b.every {
@@ -3141,7 +3190,7 @@ fn deal(
     me: Entity,
     d: &CritterDamage,
     first: bool,
-    node: Affine3A,
+    (node, node_bone): (Affine3A, Option<Entity>),
     heroes: &[Hero],
     level: &mut CritterLevel,
     blows: &mut Vec<Blow>,
@@ -3169,14 +3218,25 @@ fn deal(
         && !matches!(d.kind, 5..=7)
         && let Ok(e) = usize::try_from(d.effects[0])
     {
-        effect_sounds(c, e, level.realm, to_play);
+        level.shake |= effect_sounds(c, e, level.realm, to_play);
     }
-    if matches!(d.kind, 1 | 2 | 8) {
+    if d.kind == 1 {
         if first {
             launch(c, me, d, damage, level, commands);
             level.events.push("missile");
         }
         return;
+    }
+    // Still effects doing their damage where they're set down.
+    if matches!(d.kind, 2 | 3 | 8) {
+        if first {
+            set_down(c, me, d, damage, (node, node_bone), heroes, level, commands);
+        }
+        return;
+    }
+    // A sphere's or a cone's own effect (no damage of its own here).
+    if first && matches!(d.kind, 0 | 4) {
+        show_effect(c, me, d, (node, node_bone), level, commands);
     }
     // At the safe rocks (`rock_blows`); the game makes none with no rocks
     // gathered.
@@ -3187,7 +3247,7 @@ fn deal(
             let (frames, rate) = e.and_then(|e| c.kind.effect_clips.get(&e)).copied().unwrap_or((0, 0));
             let mut sounds = Vec::new();
             if let Some(e) = e {
-                effect_sounds(c, e, level.realm, &mut sounds);
+                level.shake |= effect_sounds(c, e, level.realm, &mut sounds);
             }
             level.rock_blows.push(RockBlow {
                 critter: me,
@@ -3222,10 +3282,6 @@ fn deal(
         let centre = Vec3::from(h.feet) + Vec3::Y * h.half;
         let hit = match d.kind {
             0 => cylinder_hit(was, at, centre, h.radius + d.radius, h.half + d.radius).is_some(),
-            3 if first => {
-                let v = centre - at;
-                Vec2::new(v.x, v.z).length() <= d.radius + h.radius && v.y.abs() <= h.half + d.radius
-            }
             4 => {
                 let v = centre - at;
                 let across = Vec2::new(v.x, v.z).length();
@@ -3248,7 +3304,7 @@ fn deal(
             && damage > 0.0
             && let Ok(e) = usize::try_from(d.effects[1])
         {
-            effect_sounds(c, e, level.realm, to_play);
+            level.shake |= effect_sounds(c, e, level.realm, to_play);
             kind_bits |= crate::combat::hit_kind::NO_HIT_LOOK;
         }
         blows.push((h.entity, damage, kind_bits, push.to_array()));
@@ -3256,9 +3312,161 @@ fn deal(
         c.blows_dealt += 1;
         debug!("critter {me:?} blow kind {} lands for {damage:.1}", d.kind);
     }
-    if first && !matches!(d.kind, 0 | 3 | 4) {
+    if first && !matches!(d.kind, 0 | 4) {
         debug!("critter {me:?}: damage kind {} not done yet", d.kind);
     }
+}
+
+/// Where a critter's effect goes: on an entity (its root or a node), at a
+/// point in its space, or left at a point in the world.
+#[derive(Clone, Copy, Debug)]
+enum Anchor {
+    On(Entity, Vec3),
+    At(Vec3),
+}
+
+impl Anchor {
+    /// Where it is now, the entity's pose being `pose`.
+    fn point(self, pose: impl Fn(Entity) -> Affine3A) -> Vec3 {
+        match self {
+            Anchor::On(e, off) => pose(e).transform_point3(off),
+            Anchor::At(p) => p,
+        }
+    }
+}
+
+/// Where a blow's effect record puts its effect (the game's effect start,
+/// `docs/critters.md` "What a DAMG does"): record flag 1 or 0x800 on the
+/// critter's root at the record's offset; 0x80 at the critter's home (its
+/// spawn point) plus the offset, 0x40 at the move's node (the offset in
+/// its space) plus the blow's place — both left there; else a blow on the
+/// node (kinds 0, 2, 3, 4) goes on the node at the blow's offset plus the
+/// record's, and a blow at the target (kind 8) at the target's feet plus
+/// the blow's offset turned with the critter, plus the record's. (Kind 8
+/// with 0x40 adds the node's place to the target's, as decoded.)
+fn anchor(c: &Critter, me: Entity, d: &CritterDamage, record: &gdl_formats::critter::CritterSound, (node, node_bone): (Affine3A, Option<Entity>), target: Option<Vec3>) -> Anchor {
+    let off = Vec3::from(record.offset);
+    let blow = Vec3::from(d.offset);
+    // Kind 8's place is the target's plus the blow's offset turned with
+    // the critter; the others' the blow's offset as it is.
+    let place = if d.kind == 8 {
+        target.unwrap_or(Vec3::from(c.position)) + Quat::from_rotation_y(c.yaw) * blow
+    } else {
+        blow
+    };
+    if record.flags & SFXX_ON_ROOT != 0 {
+        Anchor::On(me, off)
+    } else if record.flags & SFXX_AT_SPAWN != 0 {
+        Anchor::At(Vec3::from(c.home) + off)
+    } else if record.flags & SFXX_AT_NODE != 0 {
+        Anchor::At(node.transform_point3(off) + place)
+    } else if d.kind == 8 {
+        Anchor::At(place + off)
+    } else {
+        match node_bone {
+            Some(b) => Anchor::On(b, place + off),
+            None => Anchor::On(me, place + off),
+        }
+    }
+}
+
+/// Shows a blow's effect (its effect record's model at the record's size)
+/// where the record puts it, for `life` seconds — from the effect table's
+/// bank when the critter's folder doesn't hold it.
+fn spawn_effect(c: &Critter, e: usize, at: Anchor, pose: Affine3A, life: f32, level: &mut CritterLevel, commands: &mut Commands) {
+    let size = c.kind.file.sounds.get(e).map_or(1.0, |r| r.size);
+    let Some(model) = c.kind.effects.get(&e) else {
+        if let Some(r) = c.kind.file.sounds.get(e).filter(|r| !r.effect.is_empty()) {
+            let (_, rotation, _) = pose.to_scale_rotation_translation();
+            level.bank_effects.push(BankEffect {
+                name: r.effect.clone(),
+                at: match at {
+                    Anchor::At(p) => p,
+                    Anchor::On(..) => pose.translation.into(),
+                },
+                on: match at {
+                    Anchor::On(who, off) => Some((who, off)),
+                    Anchor::At(_) => None,
+                },
+                rotation,
+                scale: size,
+                life,
+            });
+        }
+        return;
+    };
+    let local = |off: Vec3| Transform::from_translation(off).with_scale(Vec3::splat(size));
+    let fx = match at {
+        Anchor::On(parent, off) => {
+            let fx = model.spawn(local(off), commands);
+            commands.entity(fx).insert(ChildOf(parent));
+            fx
+        }
+        Anchor::At(p) => {
+            let (_, rotation, _) = pose.to_scale_rotation_translation();
+            model.spawn(local(p).with_rotation(rotation), commands)
+        }
+    };
+    commands.entity(fx).insert((OneShot(life), LevelEntity));
+}
+
+/// An effect record's life: its own, else its clip's (30 frames with
+/// none).
+fn record_life(c: &Critter, e: usize) -> f32 {
+    let record = c.kind.file.sounds.get(e);
+    match record.map(|r| r.life) {
+        Some(life) if life > 0.0 => life,
+        _ => c.kind.effect_clips.get(&e).map_or(1.0, |&(f, rate)| effect_life(f, rate)),
+    }
+}
+
+/// A still effect doing its damage where it's set down (kinds 2, 3 and 8:
+/// the drider's and the wraith's attached attacks, the stomp rings, the
+/// djinn's and the lich's at their target): the blow's effect (none, or one
+/// the table doesn't hold, and nothing happens) where its record puts it,
+/// and a blast growing over the effect's life out to `DAMG +0x0C` there —
+/// following the critter or its node when the effect is attached — on the
+/// heroes (not with the blow's flag 0x1000) and, for all but bosses, the
+/// monsters (never itself).
+#[allow(clippy::too_many_arguments)]
+fn set_down(c: &Critter, me: Entity, d: &CritterDamage, damage: f32, node: (Affine3A, Option<Entity>), heroes: &[Hero], level: &mut CritterLevel, commands: &mut Commands) {
+    let Some((e, record)) = usize::try_from(d.effects[0]).ok().filter(|e| c.kind.effect_clips.contains_key(e)).and_then(|e| Some((e, c.kind.file.sounds.get(e)?))) else {
+        debug!("critter {me:?}: a still effect with no effect the table holds: nothing");
+        return;
+    };
+    let target = c.move_target.and_then(|p| heroes.iter().find(|h| h.entity == p)).map(|h| Vec3::from(h.feet));
+    let at = anchor(c, me, d, record, node, target);
+    let life = record_life(c, e);
+    let pose = node.0;
+    spawn_effect(c, e, at, pose, life, level, commands);
+    let root = Affine3A::from_rotation_translation(Quat::from_rotation_y(c.yaw), Vec3::from(c.position));
+    let here = at.point(|who| if who == me { root } else { pose });
+    level.area_blasts.push(CritterBlast {
+        owner: me,
+        at: here,
+        follow: match at {
+            Anchor::On(who, off) => Some((who, off)),
+            Anchor::At(_) => None,
+        },
+        kind: d.blow,
+        damage,
+        radius: d.radius,
+        life,
+        heroes: d.flags & NO_PLAYERS == 0,
+        monsters: c.class() != class::BOSS,
+        items: false,
+    });
+    info!("critter {me:?} sets down {} (kind {}): {damage:.0} out to {:.0} over {life:.2} s at {here:?}", record.effect, d.kind, d.radius);
+    level.events.push("effect");
+}
+
+/// A sphere's or a cone's own effect (kinds 0 and 4): shown where its
+/// record puts it for its life. (The game's slot for it can hurt a hero
+/// it touches: not done.)
+fn show_effect(c: &Critter, me: Entity, d: &CritterDamage, node: (Affine3A, Option<Entity>), level: &mut CritterLevel, commands: &mut Commands) {
+    let Some((e, record)) = usize::try_from(d.effects[0]).ok().and_then(|e| Some((e, c.kind.file.sounds.get(e)?))) else { return };
+    let at = anchor(c, me, d, record, node, None);
+    spawn_effect(c, e, at, node.0, record_life(c, e), level, commands);
 }
 
 /// Turns a direction by `yaw` about the vertical and tilts it by `pitch`
@@ -3660,6 +3868,9 @@ mod tests {
             rock_blows: Vec::new(),
             rock_timers: Vec::new(),
             last_rock: -1,
+            area_blasts: Vec::new(),
+            shake: false,
+            bank_effects: Vec::new(),
         }
     }
 

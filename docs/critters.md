@@ -1545,9 +1545,23 @@ in the game) and the bosses on the 30 Hz tick, interpolated for drawing.
     `ENEMYINFO` item of any kind, if flagged on screen or always active.
   - The statue's own animation states (`+0xC4`/`+0xCA`/`+0xC6`) are
     reduced to "play ACTIVE, then spawn".
-- **The stomp ring** (`DAMG` kind 3, ATTACK4) hurts heroes within its
-  radius at once. In the game it's a damaging effect in the projectile
-  table, lasting `+0x08` s.
+- **Still effects** (kinds 2, 3, 8; `set_down`): the blow's effect where
+  its record puts it (record flag 1/0x800 on the critter's root at the
+  record's offset; 0x80 at the critter's home + offset; 0x40 at the move
+  node's point + the blow's offset, left there; else kinds 2/3 on the
+  move node at the blow's offset + the record's, kind 8 at the target's
+  feet + the blow's offset turned with the critter + the record's), for
+  its life (the record's, else its clip's), as a blast growing over that
+  life out to `DAMG +0x0C` — following the root or node when attached —
+  on the heroes (not with the blow's flag 0x1000) and, for all but
+  bosses, the monsters (never itself): the golem's and garm's stomp
+  rings, the drider's and wraith's attached attacks, the djinn's and
+  lich's at their target. Effects a critter's folder lacks (EXPRING,
+  NULLFX) come from the `WEAPONS` bank (`effects::BankEffect`). A record
+  with flag 2 shakes the camera as it starts (0.1, 90 fields, priority
+  100). Kinds 0 and 4 show their effects too; the game's slot for them
+  can hurt a hero it touches (radius `+0x08`, e.g. the lich's aura):
+  not done. A moving still effect (the garm's, speed 10) stays put.
 - **Missiles** (kind 1, `launch`, `projectiles::spawn_critter_missile`):
   none without an effect the table holds; they hit with `DAMG +0x08` (the
   missile's own radius, the slot's `+0x84`), are drawn at the effect

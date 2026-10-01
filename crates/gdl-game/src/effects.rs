@@ -48,6 +48,7 @@ impl Plugin for EffectsPlugin {
             .add_message::<BlastAt>()
             .add_message::<SweepItems>()
             .add_message::<CritterBlast>()
+            .add_message::<BankEffect>()
             .add_message::<EffectAt>()
             .add_message::<ExplosionAt>()
             .add_message::<NextStage>()
@@ -212,22 +213,40 @@ pub struct SweepItems {
 
 /// A critter's effect doing its damage where it's set down: the game's
 /// missile slot in area mode, growing as any blast does over `life`, the
-/// effect's clip, and hurting the heroes about it — a boss's at the safe
-/// rocks (`DAMG` kinds 5 and 6, `critters.rs`: flags `0x801 | 0x20`, not
-/// monsters or items), or a critter's missile bursting where it stops
-/// (`projectiles.rs`: monsters too, and items for magic). Never its own
-/// critter. Unseen here: the effect's model is the critter's own, set down
-/// with it.
+/// effect's, and hurting the heroes about it (with `heroes`) — a boss's at
+/// the safe rocks (`DAMG` kinds 5 and 6, `critters.rs`: flags `0x801 |
+/// 0x20`, not monsters or items), a still effect (kinds 2, 3, 8: monsters
+/// too for all but bosses; `follow`ing the critter or its node when it's
+/// attached, from a point in its space), or a critter's missile bursting
+/// where it stops (`projectiles.rs`: monsters too, and items for magic).
+/// Never its own critter. Unseen here: the effect's model is the critter's
+/// own, set down with it.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct CritterBlast {
     pub owner: Entity,
     pub at: Vec3,
+    pub follow: Option<(Entity, Vec3)>,
     pub kind: u32,
     pub damage: f32,
     pub radius: f32,
     pub life: f32,
+    pub heroes: bool,
     pub monsters: bool,
     pub items: bool,
+}
+
+/// A critter's effect that its own folder doesn't hold, from the effect
+/// table's bank (`WEAPONS`: the golem's EXPRING): shown at `at` (or riding
+/// `on`, at a point in its space) for `life` seconds at `scale`, its
+/// particles bursting where it starts.
+#[derive(Message, Clone, Debug)]
+pub struct BankEffect {
+    pub name: String,
+    pub at: Vec3,
+    pub on: Option<(Entity, Vec3)>,
+    pub rotation: Quat,
+    pub scale: f32,
+    pub life: f32,
 }
 
 /// What a thrown potion becomes where it lands.
@@ -337,7 +356,7 @@ pub fn blast_front(left: f32, life: f32, radius: f32) -> Option<(f32, f32)> {
 }
 
 /// Blast, shield or burst.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum BlastShape {
     /// Grows from the point it went off.
     Grow,
@@ -347,6 +366,9 @@ enum BlastShape {
     /// head node (only within its cone ahead of the hero), the hammer's
     /// ring from the hero's feet.
     Rides { hero: Entity, head: Option<Entity>, cone: bool },
+    /// Grows like a blast from a point in an entity's space as it moves:
+    /// a critter's effect on its root or a node.
+    Follows(Entity, Vec3),
 }
 
 /// A hero breathes (ATTBREATHE starts, `player.rs`): the effect `fx` on its
@@ -600,9 +622,30 @@ pub fn spray(systems: &ParticleSystems, at: Vec3, scale: f32, seed: &mut u32, co
 struct EffectModels {
     weapons: HashMap<&'static str, Option<EffectModel>>,
     banks: HashMap<(String, &'static str), Option<EffectModel>>,
+    /// The effect table's own bank by names read from data (a critter's
+    /// effect records).
+    named: HashMap<String, Option<EffectModel>>,
 }
 
 impl EffectModels {
+    /// An effect of the effect table's own bank (`WEAPONS`) by a name read
+    /// from data.
+    fn effect_named(
+        &mut self,
+        name: &str,
+        game: &mut LoadedGame,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<LevelMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Option<EffectModel> {
+        if let Some(e) = self.named.get(name) {
+            return e.clone();
+        }
+        let e = load_effect(game, "WEAPONS", name, meshes, materials, images);
+        self.named.insert(name.to_string(), e.clone());
+        e
+    }
+
     /// The model and its life (seconds) for `name`.
     fn get(
         &mut self,
@@ -703,7 +746,7 @@ fn effect_additive(name: &str) -> bool {
 fn load_effect(
     game: &mut LoadedGame,
     folder: &str,
-    name: &'static str,
+    name: &str,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<LevelMaterial>,
     images: &mut Assets<Image>,
@@ -783,7 +826,7 @@ pub(crate) struct OneShot(pub(crate) f32);
 fn spawn_one_shots(
     mut commands: Commands,
     mut requests: MessageReader<EffectAt>,
-    mut riding: MessageReader<EffectOn>,
+    (mut riding, mut banked): (MessageReader<EffectOn>, MessageReader<BankEffect>),
     places: Query<&GlobalTransform>,
     time: Res<Time>,
     mut game: ResMut<LoadedGame>,
@@ -816,6 +859,23 @@ fn spawn_one_shots(
         spray(&effect.particles, place.translation(), e.scale, &mut seed, &mut commands, &mut meshes);
         let model = effect.model.spawn(Transform::from_scale(Vec3::splat(e.scale)), &mut commands);
         commands.entity(model).insert((OneShot(effect.life), ChildOf(e.on)));
+    }
+    for e in banked.read() {
+        let Some(effect) = models.effect_named(&e.name, &mut game, &mut meshes, &mut materials, &mut images) else {
+            debug!("critter effect {} isn't in the effect bank", e.name);
+            continue;
+        };
+        let local = |at: Vec3| Transform::from_translation(at).with_rotation(e.rotation).with_scale(Vec3::splat(e.scale));
+        let (model, start) = match e.on.and_then(|(on, off)| places.get(on).ok().map(|g| (on, off, g))) {
+            Some((on, off, g)) => {
+                let m = effect.model.spawn(Transform::from_translation(off).with_scale(Vec3::splat(e.scale)), &mut commands);
+                commands.entity(m).insert(ChildOf(on));
+                (m, g.affine().transform_point3(off))
+            }
+            None => (effect.model.spawn(local(e.at), &mut commands), e.at),
+        };
+        spray(&effect.particles, start, e.scale, &mut seed, &mut commands, &mut meshes);
+        commands.entity(model).insert((OneShot(e.life), LevelEntity));
     }
 }
 
@@ -1373,7 +1433,7 @@ fn critter_blasts(mut commands: Commands, mut requests: MessageReader<CritterBla
         info!("a critter's blast at {:?}: {:.0} out to {:.0} over {:.2} s", c.at, c.damage, c.radius, c.life);
         let blast = Blast {
             owner: c.owner,
-            shape: BlastShape::Grow,
+            shape: c.follow.map_or(BlastShape::Grow, |(on, off)| BlastShape::Follows(on, off)),
             centre: c.at,
             kind: c.kind,
             damage: c.damage,
@@ -1382,7 +1442,7 @@ fn critter_blasts(mut commands: Commands, mut requests: MessageReader<CritterBla
             age: 0.0,
             spared: HashMap::new(),
             spared_items: HashMap::new(),
-            heroes: Heroes::Hurt,
+            heroes: if c.heroes { Heroes::Hurt } else { Heroes::Spared },
             items: c.items,
             monsters: c.monsters,
             then: &[],
@@ -1426,7 +1486,7 @@ fn tick_blasts(
         MessageWriter<StrikePotion>,
         MessageWriter<BlastItem>,
     ),
-    (bones, mut guard): (Query<&GlobalTransform, Without<Targetable>>, ResMut<projectiles::PlayerGuard>),
+    (bones, anchors, mut guard): (Query<&GlobalTransform, Without<Targetable>>, Query<&GlobalTransform>, ResMut<projectiles::PlayerGuard>),
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -1473,11 +1533,16 @@ fn tick_blasts(
                 b.heading = Some(Vec2::new(p.mover.facing.sin(), p.mover.facing.cos()));
             }
         }
+        if let BlastShape::Follows(on, off) = b.shape
+            && let Ok(g) = anchors.get(on)
+        {
+            b.centre = g.affine().transform_point3(off);
+        }
         // Grow (and a breath): reach and share by the time left; the
         // shield: steady, full damage, each target spared a second (at
         // most what's left).
         let (reach, share, spare) = match b.shape {
-            BlastShape::Grow | BlastShape::Rides { .. } => match blast_front(left, b.life, b.radius) {
+            BlastShape::Grow | BlastShape::Rides { .. } | BlastShape::Follows(..) => match blast_front(left, b.life, b.radius) {
                 Some((r, s)) => (r, s, (left + 1.0 / 15.0).max(0.2)),
                 None => continue,
             },
@@ -1626,7 +1691,7 @@ fn follow_blasts(
     for (entity, b, colour, mut transform, children) in &mut blasts {
         transform.translation = b.centre - Vec3::Y * b.drop;
         let reach = match b.shape {
-            BlastShape::Grow | BlastShape::Rides { .. } => {
+            BlastShape::Grow | BlastShape::Rides { .. } | BlastShape::Follows(..) => {
                 blast_front(b.life - b.age, b.life, b.radius).map_or(0.0, |(r, _)| r)
             }
             BlastShape::Aura(_) => b.radius,
