@@ -7,7 +7,9 @@
 //! hero without touching its internals, by writing a [`DamagePlayer`] (or a
 //! [`HurtHero`], which says how the blow is voiced) message. The hero's
 //! cries as it's hurt and as it dies are the game's damage routine's
-//! (`docs/audio-format.md`, "The hero's cries").
+//! (`docs/audio-format.md`, "The hero's cries"). `GDL_IMMORTAL=1`
+//! (testing: scripted tours of a level) keeps the hero at its last hit
+//! point instead of dying.
 
 use bevy::prelude::*;
 use gdl_formats::pdata::PlayerStats;
@@ -37,6 +39,12 @@ pub const MAX_LEVEL: u32 = 99;
 const LEVEL_UP_HEALTH: f32 = 100.0;
 /// Below this much health the hero dies.
 const DEATH_BELOW: f32 = 1.0;
+
+/// `GDL_IMMORTAL=1`: the hero never dies (testing).
+fn immortal() -> bool {
+    static IMMORTAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IMMORTAL.get_or_init(|| std::env::var("GDL_IMMORTAL").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
 
 /// Stand-ins for the hero's size until the class record loads (the values
 /// every class record on the disc holds).
@@ -346,7 +354,9 @@ impl PlayerState {
             return false;
         }
         self.health -= amount;
-        if self.health < DEATH_BELOW {
+        if self.health < DEATH_BELOW && immortal() {
+            self.health = DEATH_BELOW;
+        } else if self.health < DEATH_BELOW {
             self.health = 0.0;
             self.alive = false;
             return true;
