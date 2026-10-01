@@ -15,6 +15,11 @@ const PLACEMENT_STRIDE: usize = 0x3C;
 const LOCATOR_STRIDE: usize = 0x1C;
 
 /// Header words holding (count, offset) for each table.
+/// The powerup subtype of keys, and the type keys placed several at a
+/// time become.
+const KEY_SUBTYPE: i32 = 2;
+const KEY_RING: &str = "KEYRING";
+
 const ITEM_TYPES_WORDS: (usize, usize) = (18, 19);
 const PLACEMENTS_WORDS: (usize, usize) = (20, 21);
 const LOCATORS_WORDS: (usize, usize) = (22, 23);
@@ -131,6 +136,8 @@ pub enum PopulationError {
     BadItemType(usize, i32, usize),
     #[error("random item type {0} picks from item type {1}, but there are only {2}")]
     BadChoice(usize, i32, usize),
+    #[error("{0}")]
+    Animations(#[from] crate::world::WorldError),
 }
 
 /// What an item type is; the first word of its record.
@@ -457,6 +464,9 @@ pub struct Population {
     pub item_types: Vec<ItemType>,
     pub placements: Vec<Placement>,
     pub locators: Vec<Locator>,
+    /// The world file's animated objects ([`crate::world::object_animations`]),
+    /// carried with the placements for what moves the level's nodes.
+    pub animations: Vec<crate::world::ObjectAnimation>,
 }
 
 impl Population {
@@ -516,13 +526,25 @@ impl Population {
             })
             .collect();
 
-        Ok(Self { item_types, placements, locators })
+        let animations = crate::world::object_animations(worlds)?;
+        Ok(Self { item_types, placements, locators, animations })
     }
 
-    /// The item type a placement ends up with, following random types to
-    /// their first choice (the game picks one at run time).
+    /// The item type a placement ends up with, as the game's item
+    /// constructor takes it: random types followed to their first choice
+    /// (the game picks one each time the level is built), and keys placed
+    /// more than one at a time made the level's `KEYRING` type.
     pub fn resolved_type(&self, placement: &Placement) -> &ItemType {
-        self.resolve(placement.item_type)
+        let ty = self.resolve(placement.item_type);
+        if ty.class == ItemClass::Powerup
+            && ty.subtype == KEY_SUBTYPE
+            && matches!(placement.params(ty.class), PlacementParams::Powerup { count } if count > 1)
+            && let Some(ring) =
+                self.item_types.iter().find(|t| t.class == ItemClass::Powerup && t.subtype == KEY_SUBTYPE && t.name == KEY_RING)
+        {
+            return ring;
+        }
+        ty
     }
 
     /// Follows random item types to their first choice.

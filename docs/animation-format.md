@@ -135,9 +135,16 @@ table, scale delta table (256 × f32 each; offset 0 = absent), key data,
 track table; then action count, bone count.
 
 The track table is **bone-major**: entry `bone × actions + action`, 8 bytes:
-`u16 flags, u16 channel count, u32 offset into key data`. A bone whose flags
-have no low-nibble bits and no high byte isn't animated by that action
-(`FUN_8000f2d8`): it stays at its rest offset with identity rotation.
+`u16 flags, u16 channel count, u32 offset into key data`. The loader
+swaps only the header, so the game reads an entry's flags big-endian: its
+tests on that value (`(v & 0xF) == 0 && (v >> 8) == 0`, `v & 0x80`) are the
+little-endian value's `0x0F00`/`0x00FF` and `0x8000`. A bone whose flags
+have no channel bits (`& 0x0FFF == 0`) isn't animated by that action
+(`FUN_8000f2d8`, and `FUN_800a7ff8` for the world's animated objects): it
+stays at its rest offset with identity rotation. (The rewrite had tested
+the little-endian value's low nibble and high byte, which left the 32
+translation-only tracks without delta keys — and 418 of the world's —
+unplayed.)
 
 ## Tracks (`FUN_8000f7f4`)
 
@@ -148,7 +155,7 @@ Flag bits (masks at `0x80117b40`):
 | `0x001 0x002 0x004` | rotation x y z (radians) | 0 |
 | `0x010 0x020 0x040` | translation x y z (added to the rest offset) | 0 |
 | `0x100 0x200 0x400` | scale x y z | 1 |
-| `0x080` | use the alternate Euler order | |
+| `0x8000` | use the alternate Euler order (none on the disc) | |
 | `0x2000` | keys after the first are delta bytes | |
 | `0x4000` | single static key, no bitmap | |
 
@@ -165,7 +172,7 @@ used as-is (`r2−0x7f00`); rotations are finally wrapped to (−π, π].
 
 ## Bone matrix
 
-`FUN_800bd448` (default) and `FUN_800bd548` (flag `0x080`) build the
+`FUN_800bd448` (default) and `FUN_800bd548` (flag `0x8000`) build the
 rotation from the three angles with explicit formulas (ported verbatim in
 `rotation_matrix`), row-major for row vectors with the translation in the
 last row. Angles are radians — the sine routine at `FUN_800bcbf8` is a

@@ -7,8 +7,7 @@
 //! A tile that hurts the hero raises the hint to avoid dangerous objects.
 //!
 //! Stand-ins: an active phase lasts its animation (the game's own timing
-//! for it isn't confirmed); damaging walls on nodes that hurt only while
-//! animating (flag 0x2000000, which nothing animates yet) never hurt.
+//! for it isn't confirmed).
 
 use bevy::prelude::*;
 use gdl_formats::population::{ItemClass, PlacementParams};
@@ -16,7 +15,7 @@ use gdl_formats::population::{ItemClass, PlacementParams};
 use crate::audio::{CALL_VOLUME, PlaySoundAt};
 use crate::hints::{Hint, ShowHint};
 use crate::items::{self, LevelItems};
-use crate::mechanics::LevelNodes;
+use crate::mechanics::{LevelNodes, Mechanics};
 use crate::monsters::MonsterLevel;
 use crate::player::{Player, PlayerTick};
 use crate::player_state::{Cry, DamagePlayer, HurtHero, PlayerState};
@@ -290,7 +289,8 @@ fn levitating(state: &PlayerState) -> bool {
 }
 
 /// Node flags that make a wall hurt, and those that only hurt while the
-/// node animates.
+/// node animates (the animated mode, `mechanics.rs`) — while it's
+/// animating or a mover moves it.
 const HURTS: u32 = 0xF_0000;
 const HURTS_WHILE_MOVING: u32 = 0x200_0000;
 const NODE_MOVING: u32 = 0x800_0000;
@@ -298,6 +298,7 @@ const NODE_MOVING: u32 = 0x800_0000;
 fn walls(
     hazards: Option<ResMut<Hazards>>,
     nodes: Option<Res<LevelNodes>>,
+    mechanics: Option<Res<Mechanics>>,
     state: Option<Res<PlayerState>>,
     mut players: Query<&mut Player>,
     mut hurt: MessageWriter<DamagePlayer>,
@@ -309,12 +310,13 @@ fn walls(
     if !state.alive || h.wall_guard > 0.0 {
         return;
     }
-    // The node's flags OR'ed up its parents.
+    // The node's flags OR'ed up its parents, with what the game sets on
+    // them as it runs.
     let mut flags = 0;
     let mut n = Some(node);
     let mut steps = 0;
     while let Some(k) = n {
-        flags |= nodes.nodes.get(k).map_or(0, |w| w.flags);
+        flags |= nodes.nodes.get(k).map_or(0, |w| w.flags) | mechanics.as_ref().map_or(0, |m| m.node_flags(k));
         n = nodes.parent.get(k).copied().flatten();
         steps += 1;
         if steps > nodes.nodes.len() {

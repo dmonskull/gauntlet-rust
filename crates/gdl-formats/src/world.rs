@@ -10,6 +10,7 @@
 
 use thiserror::Error;
 
+use crate::anim::{self, Track};
 use crate::collision::CollisionTables;
 
 const NODE_STRIDE: usize = 0x3C;
@@ -29,6 +30,8 @@ pub enum WorldError {
     Cycle(usize),
     #[error("collision tables: {0}")]
     BadCollision(String),
+    #[error("animated object {0}: {1}")]
+    BadAnimation(usize, String),
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +188,81 @@ impl WorldFile {
     }
 }
 
+/// Header words of the animated objects: the version word, the clips
+/// header (offset), how many, and their table (offset).
+const VERSION_WORD: usize = 24;
+const ANIM_CLIPS_WORD: usize = 25;
+const ANIM_COUNT_WORD: usize = 26;
+const ANIM_TABLE_WORD: usize = 27;
+/// An animated object's record.
+const ANIM_ENTRY: usize = 0x10;
+/// A clips header's track table offset (its fifth word).
+const CLIPS_TRACK_TABLE: usize = 0x10;
+const TRACK_ENTRY: usize = 8;
+
+/// A world object the level animates itself (`docs/worlds-format.md`,
+/// "Animated objects"): one track, the same format as the characters'
+/// clips, played at 30 frames a second — round and round, or forward and
+/// back as the triggers aimed at it turn it on and off
+/// (`docs/mechanics.md`).
+#[derive(Debug, Clone)]
+pub struct ObjectAnimation {
+    /// The node it poses.
+    pub node: usize,
+    /// Its length in frames.
+    pub frames: u16,
+    /// Rotation (radians; the node's own, replacing none), translation
+    /// (added to where the file puts the node) and scale. `None` when the
+    /// track has no channels: the game leaves the node be.
+    pub track: Option<Track>,
+}
+
+/// The level's animated objects (header words 25–27: the clips header,
+/// the count and the table of `0x10`-byte records — node index (i16),
+/// frame count (i16), two words the game uses at run time, the frame
+/// (f32) and the file offset of the object's track entry). None without
+/// the extended header or the clips.
+pub fn object_animations(file: &[u8]) -> Result<Vec<ObjectAnimation>, WorldError> {
+    let h = slice(file, 0, HEADER_WORDS * 4)?;
+    let word = |i: usize| le_u32(h, i * 4);
+    let (version, clips_at) = (word(VERSION_WORD), word(ANIM_CLIPS_WORD) as usize);
+    if version & VERSION_MAGIC != VERSION_MAGIC || version & 0xFF == 0 || clips_at == 0 {
+        return Ok(Vec::new());
+    }
+    let count = word(ANIM_COUNT_WORD) as usize;
+    let table = slice(file, word(ANIM_TABLE_WORD) as usize, count * ANIM_ENTRY)?;
+    let bad = |k: usize, why: String| WorldError::BadAnimation(k, why);
+    let Some(clips) = anim::parse_clips(file, clips_at).map_err(|e| bad(0, e.to_string()))? else {
+        return Ok(Vec::new());
+    };
+    let tracks = clips_at + le_u32(slice(file, clips_at, 0x1C)?, CLIPS_TRACK_TABLE) as usize;
+    let nodes = word(0) as usize;
+    table
+        .chunks(ANIM_ENTRY)
+        .enumerate()
+        .map(|(k, e)| {
+            let node = le_u16(e, 0) as i16;
+            let frames = le_u16(e, 2) as i16;
+            let entry = le_u32(e, 0xC) as usize;
+            if node < 0 || node as usize >= nodes {
+                return Err(bad(k, format!("node {node} of {nodes}")));
+            }
+            if frames < 1 {
+                return Err(bad(k, format!("{frames} frames")));
+            }
+            // The entry is one of the clips' track entries: the object's
+            // bone (one action).
+            let rel = entry.checked_sub(tracks).filter(|r| r % TRACK_ENTRY == 0);
+            let bone = rel.map(|r| r / TRACK_ENTRY).filter(|&b| b < clips.num_bones);
+            let Some(bone) = bone else {
+                return Err(bad(k, format!("track entry {entry:#x} isn't in the table at {tracks:#x}")));
+            };
+            let track = clips.track(bone, 0, frames as usize).map_err(|e| bad(k, e.to_string()))?;
+            Ok(ObjectAnimation { node: node as usize, frames: frames as u16, track })
+        })
+        .collect()
+}
+
 fn slice(file: &[u8], at: usize, len: usize) -> Result<&[u8], WorldError> {
     file.get(at..at + len).ok_or(WorldError::Truncated(at, at + len))
 }
@@ -244,6 +322,39 @@ mod tests {
         f[4..8].copy_from_slice(&((HEADER_WORDS * 4) as u32).to_le_bytes());
         f.extend(node("X", [0.0; 3], 5, -1, false));
         assert!(matches!(WorldFile::parse(&f), Err(WorldError::BadLink(0, 5))));
+    }
+
+    /// Every level's animated objects parse: nodes in range, every key
+    /// finite (`docs/worlds-format.md`, "Animated objects").
+    #[test]
+    fn every_real_level_animation_parses() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT")
+            .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let dir = std::path::Path::new(&root).join("LEVELS");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            eprintln!("skipping: {dir:?} not present");
+            return;
+        };
+        let (mut levels, mut objects, mut keys) = (0, 0, 0);
+        for level in entries.flatten().map(|e| e.path()) {
+            let Ok(w) = std::fs::read(level.join("WORLDS.PS2")) else { continue };
+            let world = WorldFile::parse(&w).unwrap_or_else(|e| panic!("{level:?}: {e}"));
+            let anims = object_animations(&w).unwrap_or_else(|e| panic!("{level:?}: {e}"));
+            for a in &anims {
+                assert!(a.node < world.nodes.len(), "{level:?}");
+                let Some(t) = &a.track else { continue };
+                for (f, p) in &t.keys {
+                    assert!(*f < a.frames, "{level:?} node {}: key at {f} of {}", a.node, a.frames);
+                    let all = p.rotation.iter().chain(&p.translation).chain(&p.scale);
+                    assert!(all.clone().all(|v| v.is_finite()), "{level:?} node {}", a.node);
+                }
+                keys += t.keys.len();
+            }
+            objects += anims.len();
+            levels += 1;
+        }
+        eprintln!("{levels} worlds: {objects} animated objects, {keys} keys");
+        assert!(levels == 0 || objects > 1000, "too few animated objects: {objects}");
     }
 
     /// Every level's WORLDS.PS2 parses, walks without cycles, and the model
