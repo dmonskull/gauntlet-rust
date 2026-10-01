@@ -21,8 +21,13 @@
 //!   and any player puts its page away), the voice queues, the players who
 //!   left, and every 30 ticks a hash of the game state the machines
 //!   compare.
+//! - **Starting again**: the host sends the party as its game has it and
+//!   where to start ([`Message::Resync`]), and lockstep restarts from tick
+//!   0 — for a player joining the game under way (at the tower), a player's
+//!   changed hero (Manage Character) or the machines out of sync (the level
+//!   under way).
 //! - Each machine's camera follows its own hero, a teammate's while its
-//!   own is out (`play_camera.rs`).
+//!   own is out (`play_camera.rs`), or the host picks the shared co-op one.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
@@ -68,7 +73,7 @@ impl Plugin for OnlinePlugin {
             .add_systems(Update, fresh_game)
             .add_systems(RunFixedMainLoop, drive.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .add_systems(RunFixedMainLoop, run_net_tick.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
-            .add_systems(NetTick, (leave_gone, net_shop.after(leave_gone), checksum.after(net_shop)))
+            .add_systems(NetTick, (leave_gone, net_shop.after(leave_gone), test_desync.before(checksum), checksum.after(net_shop)))
             .add_systems(Last, settle);
     }
 }
@@ -145,6 +150,12 @@ pub enum Message {
     Hero { slot: u8, hero: Option<Hero> },
     /// The host starts the game with this party.
     Begin { heroes: Vec<(u8, Hero)> },
+    /// The host starts again from the same place everywhere: this party
+    /// (everyone's record as the host has it, players who joined since
+    /// too), on `level` (the tower when someone joins or changes hero; the
+    /// level under way after the machines went out of sync). Lockstep
+    /// restarts right after.
+    Resync { heroes: Vec<(u8, Hero)>, level: String },
 }
 
 /// A hero a player brings: a new one, or one saved on their machine (its
@@ -180,6 +191,7 @@ pub enum Lobby {
     Column { slot: usize, show: ColumnShow },
     Hero { slot: usize, hero: Option<Hero> },
     Begin(Vec<(usize, Hero)>),
+    Resync(Vec<(usize, Hero)>, String),
 }
 
 /// Where the session is.
@@ -200,7 +212,8 @@ pub enum Phase {
 pub struct Online {
     session: NetSession,
     pub host: bool,
-    /// The invite code (the host's), and whether it went to the clipboard.
+    /// The invite code (the host's; a client's, the one it joined with), and
+    /// whether the host's went to the clipboard.
     pub invite: Option<String>,
     pub copied: bool,
     /// The slot this machine plays, once it's in.
@@ -218,6 +231,14 @@ pub struct Online {
     started: bool,
     /// Short notices for the screen ("Player 2 left"), seconds left.
     pub notices: Vec<(String, f32)>,
+    /// Joined while the game was under way: playing from the host's next
+    /// resync.
+    pub late: bool,
+    /// A resync is on its way: no tick runs until lockstep restarts.
+    pub awaiting_restart: bool,
+    /// The host: players who joined late and are ready, waiting for the
+    /// tower.
+    pub joiners: Vec<(usize, Hero)>,
 }
 
 impl Online {
@@ -235,6 +256,19 @@ impl Online {
             desync: None,
             started: false,
             notices: Vec::new(),
+            late: false,
+            awaiting_restart: false,
+            joiners: Vec::new(),
+        }
+    }
+
+    /// The host starts again from this party on `level`, everywhere.
+    pub fn resync(&mut self, heroes: &[(usize, Hero)], level: &str) {
+        let heroes = heroes.iter().map(|(s, h)| (*s as u8, h.clone())).collect();
+        self.send(&Message::Resync { heroes, level: level.to_string() });
+        self.awaiting_restart = true;
+        if let Err(e) = self.session.restart() {
+            warn!("online: can't restart: {e}");
         }
     }
 
@@ -246,8 +280,8 @@ impl Online {
         }
     }
 
-    /// The host starts the game: everyone gets the party, and no one joins
-    /// after this.
+    /// The host starts the game: everyone gets the party. Players joining
+    /// after this come in at the host's next resync.
     pub fn start_game(&mut self, heroes: &[(usize, Hero)]) {
         let heroes = heroes.iter().map(|(s, h)| (*s as u8, h.clone())).collect();
         self.send(&Message::Begin { heroes });
@@ -266,7 +300,8 @@ impl Online {
             .collect()
     }
 
-    fn notice(&mut self, text: impl Into<String>) {
+    /// A short notice on the screen.
+    pub fn notice(&mut self, text: impl Into<String>) {
         self.notices.push((text.into(), 4.0));
     }
 }
@@ -318,7 +353,7 @@ pub fn host(commands: &mut Commands, game: &LoadedGame) {
 pub fn join(commands: &mut Commands, game: &LoadedGame, code: &str) -> Result<(), String> {
     let session = NetSession::join(code, config(game)).map_err(|e| e.to_string())?;
     commands.remove_resource::<OnlineFailed>();
-    commands.insert_resource(Online::new(session, false, None));
+    commands.insert_resource(Online::new(session, false, Some(code.to_string())));
     Ok(())
 }
 
@@ -422,8 +457,9 @@ fn poll(mut commands: Commands, opening: Option<Res<Opening>>, online: Option<Re
     }
     for event in online.session.poll_events() {
         match event {
-            NetEvent::Connected { you, slots } => {
-                info!("online: in as machine {you}, slots {slots:?}");
+            NetEvent::Connected { you, slots, late } => {
+                info!("online: in as machine {you}, slots {slots:?}{}", if late { " (the game is under way)" } else { "" });
+                online.late = late;
                 online.me = slots.first().map(|&s| s as usize);
                 online.peers.retain(|(p, _)| *p != you);
                 online.peers.push((you, slots));
@@ -470,6 +506,13 @@ fn poll(mut commands: Commands, opening: Option<Res<Opening>>, online: Option<Re
                 info!("online: lockstep starts (input delay {delay})");
                 online.started = true;
             }
+            NetEvent::Restarted { delay } => {
+                info!("online: lockstep starts again (input delay {delay})");
+                online.started = true;
+                online.awaiting_restart = false;
+                online.late = false;
+                online.desync = None;
+            }
             NetEvent::DelayChanged { delay } => info!("online: input delay now {delay} ticks"),
             NetEvent::Control { from, bytes } => {
                 let decoded = std::str::from_utf8(&bytes).ok().and_then(|t| ron::from_str::<Message>(t).ok());
@@ -479,11 +522,21 @@ fn poll(mut commands: Commands, opening: Option<Res<Opening>>, online: Option<Re
                     Some(Message::Begin { heroes }) => {
                         online.inbox.push(Lobby::Begin(heroes.into_iter().map(|(s, h)| (s as usize, h)).collect()));
                     }
+                    Some(Message::Resync { heroes, level }) => {
+                        // The restart follows on the same stream: no tick
+                        // until it comes.
+                        online.awaiting_restart = true;
+                        online.inbox.push(Lobby::Resync(heroes.into_iter().map(|(s, h)| (s as usize, h)).collect(), level));
+                    }
                     None => warn!("online: machine {from} sent something this build doesn't read"),
                 }
             }
             NetEvent::Desync { tick } => {
                 error!("online: the machines' games differ from tick {tick}");
+                if online.desync.is_none() {
+                    // The host starts the level again (`frontend.rs`).
+                    online.notice("Out of sync, the level starts again");
+                }
                 online.desync.get_or_insert(tick);
             }
             NetEvent::Disconnected(why) => {
@@ -538,7 +591,11 @@ pub(crate) fn drive(
     lock.owed = (lock.owed + real.delta()).min(step * MOST_OWED);
     let settled = lock.quiet >= SETTLE_FRAMES && !lock.held;
     let mut run = 0;
-    if online.started && settled && lock.owed >= step {
+    // A restart's ticks wait for the front end to start the game again
+    // from the host's resync, which may come in the same frame.
+    let resyncing = online.inbox.iter().any(|m| matches!(m, Lobby::Resync(..)));
+    let started = online.started && !online.awaiting_restart && !resyncing;
+    if started && settled && lock.owed >= step {
         match online.session.ready_inputs(lock.tick) {
             Some(bundle) => {
                 take_bundle(&mut lock, &mut inputs, &bundle);
@@ -554,7 +611,7 @@ pub(crate) fn drive(
             }
             None => lock.waited += real.delta_secs(),
         }
-    } else if online.started && settled {
+    } else if started && settled {
         lock.waited = 0.0;
     }
     // The clock: the tick to run, then how far into the next one it is,
@@ -744,7 +801,22 @@ fn checksum(
     let log = std::env::var("GDL_SYNC_LOG").is_ok_and(|v| !v.is_empty() && v != "0") || online.desync.is_some();
     if log {
         let list: Vec<String> = parts.iter().map(|(n, v)| format!("{n} {:04x}", v & 0xFFFF)).collect();
-        info!("sync tick {}: {:016x} ({})", lock.tick, total, list.join(", "));
+        // The run counts too (ticks start again at each restart).
+        let at = u64::from(online.session.epoch()) * 100_000 + u64::from(lock.tick);
+        info!("sync tick {at}: {:016x} ({})", total, list.join(", "));
+    }
+}
+
+/// `GDL_DESYNC_AT=<tick>` (testing the recovery): on that tick of the first
+/// run this machine's game goes its own way — player 1 finds a coin the
+/// others don't.
+fn test_desync(lock: Res<Lockstep>, online: Option<Res<Online>>, mut party: ResMut<Party>, mut at: Local<Option<Option<u32>>>) {
+    let at = *at.get_or_insert_with(|| std::env::var("GDL_DESYNC_AT").ok().and_then(|v| v.parse().ok()));
+    if at.is_some_and(|t| t == lock.tick) && online.is_some_and(|o| o.session.epoch() == 0)
+        && let Some(s) = party.states_mut().next().map(|(_, s)| s)
+    {
+        warn!("online: GDL_DESYNC_AT: player 1 gets a coin here only");
+        s.gold += 1;
     }
 }
 

@@ -70,7 +70,12 @@ pub(crate) fn encode(addr: &EndpointAddr) -> String {
 pub(crate) fn decode(code: &str) -> Result<EndpointAddr, InviteError> {
     let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
     let rest = code.strip_prefix("GDL").or_else(|| code.strip_prefix("gdl")).ok_or(InviteError::NotAnInvite)?;
-    let (version, payload) = rest.split_once('-').ok_or(InviteError::NotAnInvite)?;
+    // Written out without its dash, it's this protocol's.
+    let ours = PROTOCOL.to_string();
+    let (version, payload) = match rest.split_once('-') {
+        Some(parts) => parts,
+        None => (ours.as_str(), rest.strip_prefix(ours.as_str()).ok_or(InviteError::NotAnInvite)?),
+    };
     let version: u16 = version.parse().map_err(|_| InviteError::NotAnInvite)?;
     if version != PROTOCOL {
         return Err(InviteError::Version { invite: version, ours: PROTOCOL });
@@ -191,7 +196,9 @@ mod tests {
         assert_eq!(decode(&code), Ok(a.clone()));
         // Lowercase, wrapped over lines, with spaces round it.
         let messy = format!("  {}\n{} ", code[..20].to_lowercase(), &code[20..]);
-        assert_eq!(decode(&messy), Ok(a));
+        assert_eq!(decode(&messy), Ok(a.clone()));
+        // Written out with a space for its dash (the game's font has none).
+        assert_eq!(decode(&code.replacen('-', " ", 1)), Ok(a));
         assert_eq!(base32(&[]), "");
         assert_eq!(unbase32(&base32(&[1, 2, 3, 4, 5, 6])), Some(vec![1, 2, 3, 4, 5, 6]));
     }

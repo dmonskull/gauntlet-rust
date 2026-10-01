@@ -96,9 +96,9 @@ use transport::{Driver, Shared};
 
 /// The network protocol's version: builds speaking another refuse each
 /// other (the invite code says which it is for).
-pub const PROTOCOL: u16 = 1;
+pub const PROTOCOL: u16 = 2;
 /// The QUIC application protocol name.
-pub const ALPN: &[u8] = b"gdl-coop/1";
+pub const ALPN: &[u8] = b"gdl-coop/2";
 
 /// A machine in the session: the host is [`HOST`], clients `1..=7`.
 pub type PeerId = u8;
@@ -142,7 +142,9 @@ pub enum Target {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NetEvent {
     /// In the game as `you`, playing `slots` (the host has this at once).
-    Connected { you: PeerId, slots: Vec<u8> },
+    /// `late`: the game was under way; the slots play from the host's next
+    /// [`NetSession::restart`].
+    Connected { you: PeerId, slots: Vec<u8>, late: bool },
     /// Joining didn't work: the host is unreachable, refused (full,
     /// started, another build), or the invite was wrong.
     Failed(String),
@@ -153,6 +155,9 @@ pub enum NetEvent {
     /// The host started the game: tick 0 is next, the first `delay`
     /// ticks idle.
     Started { delay: u8 },
+    /// The host started lockstep again at tick 0 (everyone in the roster
+    /// playing); the run before is forgotten.
+    Restarted { delay: u8 },
     /// The host raised the input delay.
     DelayChanged { delay: u8 },
     /// A game message.
@@ -300,7 +305,8 @@ impl NetSession {
         self.core().take_events()
     }
 
-    /// The host starts the game: no one joins after this.
+    /// The host starts the game: a machine joining after this waits, its
+    /// slots kept, for the host's next [`NetSession::restart`].
     pub fn start(&self) -> Result<(), NetError> {
         let mut core = self.core();
         if !core.is_host() {
@@ -352,6 +358,21 @@ impl NetSession {
         self.shared.wake.notify_one();
     }
 
+    /// The host starts lockstep again at tick 0: machines that joined since
+    /// the start play from here, and a game that went out of sync can start
+    /// again alike. Send what every machine needs to start from the same
+    /// state (control messages) first: they arrive before the restart.
+    pub fn restart(&self) -> Result<(), NetError> {
+        let mut core = self.core();
+        if !core.is_host() {
+            return Err(NetError::NotHost);
+        }
+        core.restart();
+        drop(core);
+        self.shared.wake.notify_one();
+        Ok(())
+    }
+
     /// The host raises the input delay (it never comes down).
     pub fn raise_input_delay(&self, delay: u8) -> Result<(), NetError> {
         let mut core = self.core();
@@ -366,6 +387,12 @@ impl NetSession {
 
     pub fn input_delay(&self) -> u8 {
         self.core().delay()
+    }
+
+    /// Lockstep's run: 0 from the start, one more at each restart (the
+    /// same on every machine once the restart reached it).
+    pub fn epoch(&self) -> u8 {
+        self.core().epoch()
     }
 
     /// Everyone in the game, this machine too.

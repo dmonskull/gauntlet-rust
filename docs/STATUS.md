@@ -35,13 +35,15 @@ leaves co-op out.
 | Quest, tower, saving | 5 | 92 % | the unlocked secret characters on the select screen, per-class records, memory card screens |
 | Front end, menus, HUD, hints | 7 | 85 % | options, the attract loop, the hints' plates, the memory card screens |
 | Audio | 5 | 85 % | music switching and ducking, menu sounds, footstep pan |
-| Co-op (2–4 players) | 6 | 72 % | co-op combos, the monsters' crowd penalty, online: joining after the start |
+| Co-op (2–4 players) | 6 | 72 % | co-op combos, the monsters' crowd penalty |
 | Speed and stability | 2 | 85 % | the animated objects' cost unmeasured; warm-up hitches |
 
 ## What's left
 
-- Online co-op: joining after the start, Manage Character and the shops
-  online; recovering from an out-of-sync game (today it only warns).
+- Online co-op (an addition) has everything the local game has: joining
+  the game under way (at the tower), Manage Character, the shops, and an
+  out-of-sync game starts its level again for everyone
+  ([online.md](online.md) "Starting again").
 
 In order, top first. Each line names its doc, where the decoding is.
 

@@ -56,7 +56,9 @@ details and the full to-do list):
 
 - **Online co-op** for up to four players over the internet: invite codes,
   no port forwarding, each player with their own screen, camera and
-  settings, watching a teammate while down.
+  settings, watching a teammate while down. Friends can join a game under
+  way, heroes can be changed mid-game, and if the machines ever disagree
+  the level simply starts again for everyone.
 - Windows, macOS and Linux; any window size, widescreen included.
 - Keyboard and mouse with rebindable keys, or any pad — each player can
   switch between them at will.
@@ -75,9 +77,7 @@ details and the full to-do list):
 5. Effects: texture wipes, effect lights, weapon and hand glows, exact
    particle maths.
 6. Audio: music switching and ducking.
-7. Co-op: co-op combos, the monsters' crowd penalty, the exits'
-   wait-for-the-others hint. Online: joining after the start, Manage
-   Character and the shops online, recovering from an out-of-sync game.
+7. Co-op: co-op combos, the monsters' crowd penalty.
 
 ## Play
 

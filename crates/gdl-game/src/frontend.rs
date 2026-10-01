@@ -303,6 +303,8 @@ enum Item {
     Join,
     /// Online play's menu.
     OnlineCamera,
+    /// The invite code to the clipboard again: friends join with it.
+    CopyInvite,
     LeaveGame,
     ConfirmLeave,
     /// Pause menus.
@@ -662,18 +664,28 @@ static ONLINE_MENU: MenuDef = title_menu(&[e("Host Game", Item::Host), e("Join G
 /// Online play's Start menu: play goes on underneath. In the tower the Shop
 /// and Inventory open for everyone.
 static ONLINE_GAME_MENU: MenuDef =
-    game_menu("Online Game", true, &[e("Settings", Item::Settings), e("Camera", Item::OnlineCamera), e("Leave Game", Item::LeaveGame)]);
-static ONLINE_TOWER_MENU: MenuDef = game_menu(
-    "Online Game",
-    true,
-    &[
-        e("Settings", Item::Settings),
-        e("Shop", Item::Shop),
-        e("Inventory", Item::Inventory),
-        e("Camera", Item::OnlineCamera),
-        e("Leave Game", Item::LeaveGame),
-    ],
-);
+    game_menu(
+        "Online Game",
+        true,
+        &[e("Settings", Item::Settings), e("Camera", Item::OnlineCamera), e("Invite", Item::CopyInvite), e("Leave Game", Item::LeaveGame)],
+    );
+/// Seven items: smaller, to fit the scroll.
+static ONLINE_TOWER_MENU: MenuDef = MenuDef {
+    item_scale: 0.8,
+    ..game_menu(
+        "Online Game",
+        true,
+        &[
+            e("Settings", Item::Settings),
+            e("Shop", Item::Shop),
+            e("Inventory", Item::Inventory),
+            e("Manage Character", Item::ManageCharacter),
+            e("Camera", Item::OnlineCamera),
+            e("Invite", Item::CopyInvite),
+            e("Leave Game", Item::LeaveGame),
+        ],
+    )
+};
 /// The host's camera choice.
 static ONLINE_CAMERA_MENU: MenuDef = game_menu("Online Camera", true, &[]);
 static LEAVE_GAME: MenuDef = confirm("Leave Game?", &[e("No", Item::No), e("Yes", Item::ConfirmLeave)]);
@@ -1087,6 +1099,11 @@ pub struct Frontend {
     after_level_for: Option<String>,
     /// Last frame something covered play (a menu, a screen, the box).
     over_play: bool,
+    /// Online: the level the game (re)starts on (none: the tower).
+    load_level: Option<String>,
+    /// Online: this machine's player is at their character menu (Manage
+    /// Character) while the game goes on.
+    online_manage: bool,
 }
 
 impl Frontend {
@@ -1118,10 +1135,15 @@ impl Frontend {
             shop_final: false,
             after_level_for: None,
             over_play: false,
+            load_level: None,
+            online_manage: false,
         }
     }
 
     fn go(&mut self, screen: Screen) {
+        if self.screen != screen {
+            info!("front end: {screen:?} (frame {})", self.frame);
+        }
         self.screen = screen;
         self.t = 0.0;
     }
@@ -1139,6 +1161,13 @@ impl Frontend {
     /// screen, the shop.
     pub fn covers_play(&self) -> bool {
         self.full_screen() || self.screen == Screen::Select
+    }
+
+    /// Online: this machine's player is at their character menu while the
+    /// game goes on (their controls are held; the party doesn't change
+    /// here until the host's resync).
+    pub fn in_online_manage(&self) -> bool {
+        self.online_manage && self.screen == Screen::Select
     }
 
     /// Whether the shop screen is up (`shop.rs`).
@@ -1379,7 +1408,7 @@ pub(crate) fn run(
                                 fe.menus.clear();
                                 fe.go(Screen::Connecting);
                             }
-                            Err(e) => fe.notice = Some((format!("Can't join: {e}"), 400.0)),
+                            Err(e) => fe.notice = Some((format!("Can't join, {e}"), 400.0)),
                         },
                         None => fe.notice = Some(("Copy your friend's invite code first".into(), 400.0)),
                     },
@@ -1418,6 +1447,11 @@ pub(crate) fn run(
                 fe.go(Screen::Select);
             }
         }
+        Screen::Select if online.is_some() && fe.online_manage => {
+            select_tick(&mut fe);
+            let online = online.as_deref_mut().expect("online");
+            online_manage(&mut fe, online, &party, &mut changes, &mut saves, &mut commands, &mut lock);
+        }
         Screen::Select if online.is_some() => {
             select_tick(&mut fe);
             let online = online.as_deref_mut().expect("online");
@@ -1443,9 +1477,9 @@ pub(crate) fn run(
         }
         Screen::LoadingGame => {
             if fe.t > 2.0 {
-                // `GDL_ONLINE_LEVEL=<level>` (testing): an online game
-                // starts there instead.
-                let level = std::env::var("GDL_ONLINE_LEVEL").ok().filter(|_| lock.on);
+                // Online: where the host's resync says; `GDL_ONLINE_LEVEL`
+                // (testing) starts a new online game there instead.
+                let level = fe.load_level.take().or_else(|| std::env::var("GDL_ONLINE_LEVEL").ok().filter(|_| lock.on));
                 to_level.write(ChangeLevelTo::to(level.as_deref().unwrap_or(TOWER)));
                 fe.go(Screen::Playing);
             }
@@ -1494,6 +1528,19 @@ pub(crate) fn run(
                         Some(o) => o.notices.push(("Only the host can change the camera".into(), 4.0)),
                         None => {}
                     },
+                    Item::CopyInvite => {
+                        if let Some(o) = online.as_deref_mut() {
+                            let said = match o.invite.clone() {
+                                Some(code) if crate::online::copy_invite(&code) => {
+                                    "Invite code copied, friends join with it at the tower"
+                                }
+                                Some(_) => "Couldn't reach the clipboard",
+                                None => "No invite code yet",
+                            };
+                            o.notice(said);
+                        }
+                        fe.menus.clear();
+                    }
                     Item::ConfirmLeave => {
                         crate::online::leave(&mut commands, &mut lock);
                         fe.menus.clear();
@@ -1509,6 +1556,21 @@ pub(crate) fn run(
                         // it the party goes back to the tower.
                         fe.menus.clear();
                         to_level.write(ChangeLevelTo::to(TOWER));
+                    }
+                    // Online: this player alone, at their character menu,
+                    // while the game goes on.
+                    Item::ManageCharacter if lock.on => {
+                        fe.menus.clear();
+                        if let Some(me) = online.as_ref().and_then(|o| o.me)
+                            && let Some(m) = party.get(me)
+                        {
+                            fe.columns = Default::default();
+                            let mut c = Column::member(m.devices, &m.choice, &m.name, has_saves, false);
+                            c.select.menu.column = COLUMN[me];
+                            fe.columns[me] = Some(c);
+                            fe.online_manage = true;
+                            fe.go(Screen::Select);
+                        }
                     }
                     Item::ManageCharacter => {
                         fe.menus.clear();
@@ -1591,7 +1653,15 @@ pub(crate) fn run(
         // Online the network's ticks drive the game (`online.rs`): the
         // front end only holds it while it isn't in play (a shop screen
         // runs on the ticks).
-        lock.held = !matches!(fe.screen, Screen::Playing | Screen::Shop);
+        lock.held = !matches!(fe.screen, Screen::Playing | Screen::Shop) && !fe.in_online_manage();
+        // The host's resyncs (players joining, a changed hero, the games
+        // out of sync) and what the others send meanwhile.
+        if (matches!(fe.screen, Screen::Playing | Screen::Shop) || fe.in_online_manage())
+            && let Some(o) = online.as_deref_mut()
+        {
+            let here = game.current_name().to_string();
+            online_in_play(&mut fe, o, &party, &mut changes, (&mut lock, &mut new_game), &here, &mut saves);
+        }
         if fe.screen == Screen::Playing {
             let over = online.as_ref().and_then(|o| match &o.phase {
                 crate::online::Phase::Over(why) => Some(why.clone()),
@@ -1601,7 +1671,7 @@ pub(crate) fn run(
                 warn!("online game over: {why}");
                 crate::online::leave(&mut commands, &mut lock);
                 fe.menus.clear();
-                fe.notice = Some((format!("Online game ended: {why}"), 600.0));
+                fe.notice = Some((format!("Online game ended, {why}"), 600.0));
                 fe.go(Screen::GameOver);
             } else if let (Some(o), Some(camera)) = (online.as_ref(), camera.as_deref_mut()) {
                 camera.watching = watched(&fe, &party, o.me, camera.watching, &p);
@@ -2243,7 +2313,8 @@ fn online_lobby(
     let Some(me) = online.me.filter(|&m| m < MAX_PLAYERS) else { return };
     for m in std::mem::take(&mut online.inbox) {
         match m {
-            Lobby::Joined { slot } if slot != me && slot < MAX_PLAYERS => {
+            // A late joiner sees only its own column (the others play).
+            Lobby::Joined { slot } if slot != me && slot < MAX_PLAYERS && !online.late => {
                 if fe.columns[slot].is_none() {
                     let mut c = Column::new(Devices { remote: true, ..Devices::default() }, true);
                     c.select.menu.column = COLUMN[slot];
@@ -2265,7 +2336,12 @@ fn online_lobby(
                 fe.remote_heroes[slot] = hero;
             }
             Lobby::Begin(heroes) => {
-                begin_online(fe, online, &heroes, changes, lock, new_game);
+                begin_online(fe, online, &heroes, None, changes, lock, new_game);
+                return;
+            }
+            // A late joiner comes in with the host's resync.
+            Lobby::Resync(heroes, level) => {
+                begin_online(fe, online, &heroes, Some(level), changes, lock, new_game);
                 return;
             }
             _ => {}
@@ -2329,7 +2405,7 @@ fn online_lobby(
         heroes.sort_by_key(|(s, _)| *s);
         info!("online: the host starts with {} players", heroes.len());
         online.start_game(&heroes);
-        begin_online(fe, online, &heroes, changes, lock, new_game);
+        begin_online(fe, online, &heroes, None, changes, lock, new_game);
     }
 }
 
@@ -2340,6 +2416,7 @@ fn begin_online(
     fe: &mut Frontend,
     online: &mut Online,
     heroes: &[(usize, Hero)],
+    level: Option<String>,
     changes: &mut MessageWriter<PartyChange>,
     lock: &mut Lockstep,
     new_game: &mut MessageWriter<NewGame>,
@@ -2371,7 +2448,146 @@ fn begin_online(
     fe.leaving = false;
     fe.fresh_hero = [true; MAX_PLAYERS];
     fe.menu_slot = 0;
+    fe.online_manage = false;
+    fe.after_level_for = None;
+    fe.load_level = level;
     fe.go(Screen::LoadingGame);
+}
+
+/// Online, in play: what the others send, and the host's resyncs — a
+/// late joiner ready (at the tower), a player's changed hero (Manage
+/// Character), the machines out of sync (the level under way again).
+fn online_in_play(
+    fe: &mut Frontend,
+    online: &mut Online,
+    party: &Party,
+    changes: &mut MessageWriter<PartyChange>,
+    (lock, new_game): (&mut Lockstep, &mut MessageWriter<NewGame>),
+    here: &str,
+    saves: &mut Saves,
+) {
+    let _ = saves;
+    let mut changed: Vec<(usize, Hero)> = Vec::new();
+    for m in std::mem::take(&mut online.inbox) {
+        match m {
+            Lobby::Resync(heroes, level) => {
+                info!("online: the host starts again on {level}");
+                begin_online(fe, online, &heroes, Some(level), changes, lock, new_game);
+                return;
+            }
+            Lobby::Joined { slot } => online.notice(format!("Player {} is joining", slot + 1)),
+            Lobby::Left { slot } => online.joiners.retain(|(s, _)| *s != slot),
+            Lobby::Hero { slot, hero: Some(hero) } if online.host => {
+                if party.get(slot).is_some() {
+                    changed.push((slot, hero));
+                } else {
+                    online.notice(format!("{} joins at the tower", hero.name.replace('_', " ")));
+                    online.joiners.retain(|(s, _)| *s != slot);
+                    online.joiners.push((slot, hero));
+                }
+            }
+            Lobby::Hero { slot, hero: None } => online.joiners.retain(|(s, _)| *s != slot),
+            _ => {}
+        }
+    }
+    if !online.host || online.awaiting_restart {
+        return;
+    }
+    // A player changed hero: everyone again in the tower with it.
+    let changed: Vec<(usize, Hero)> = changed.into_iter().filter(|(slot, h)| hero_changes(party, *slot, h)).collect();
+    if !changed.is_empty() {
+        host_resync(fe, online, party, changes, (lock, new_game), &changed, TOWER);
+        return;
+    }
+    // Out of sync: the level under way again, from the host's records.
+    if online.desync.take().is_some() {
+        host_resync(fe, online, party, changes, (lock, new_game), &[], here);
+        return;
+    }
+    // Players waiting to join come in at the tower, as in the game.
+    if !online.joiners.is_empty() && here.eq_ignore_ascii_case(TOWER) && fe.screen == Screen::Playing {
+        let joiners = std::mem::take(&mut online.joiners);
+        host_resync(fe, online, party, changes, (lock, new_game), &joiners, TOWER);
+    }
+}
+
+/// Whether a hero a player sent changes them: another class or colour, or a
+/// saved record loaded (the same hero, unsaved, keeps its record).
+fn hero_changes(party: &Party, slot: usize, h: &Hero) -> bool {
+    party.get(slot).is_none_or(|m| m.choice.class != h.class || m.choice.variant != h.variant || h.saved.is_some())
+}
+
+/// The host starts again everywhere on `level`: every player's record as
+/// it is here, with `extra` (joiners, changed heroes) in their slots.
+fn host_resync(
+    fe: &mut Frontend,
+    online: &mut Online,
+    party: &Party,
+    changes: &mut MessageWriter<PartyChange>,
+    (lock, new_game): (&mut Lockstep, &mut MessageWriter<NewGame>),
+    extra: &[(usize, Hero)],
+    level: &str,
+) {
+    let mut heroes: Vec<(usize, Hero)> = party
+        .members()
+        .map(|(slot, m)| {
+            let saved = SavedCharacter::of(&m.name, &m.choice.class, &m.choice.variant, &m.state);
+            (slot, Hero { class: m.choice.class.clone(), variant: m.choice.variant.clone(), name: m.name.clone(), saved: Some(saved) })
+        })
+        .collect();
+    for (slot, h) in extra {
+        heroes.retain(|(s, _)| s != slot);
+        heroes.push((*slot, h.clone()));
+    }
+    heroes.sort_by_key(|(s, _)| *s);
+    info!("online: the host starts again on {level} with {} players", heroes.len());
+    online.resync(&heroes, level);
+    begin_online(fe, online, &heroes, Some(level.to_string()), changes, lock, new_game);
+}
+
+/// Online Manage Character: this machine's player at their character menu
+/// (Save, Change, Load, Done; Quit leaves the game) while the others play.
+/// Done sends the hero to the host, which starts everyone again in the
+/// tower if it changed.
+fn online_manage(
+    fe: &mut Frontend,
+    online: &mut Online,
+    party: &Party,
+    changes: &mut MessageWriter<PartyChange>,
+    saves: &mut Saves,
+    commands: &mut Commands,
+    lock: &mut Lockstep,
+) {
+    let Some(me) = online.me.filter(|&m| m < MAX_PLAYERS) else { return };
+    let frame = fe.frame;
+    let presses: Vec<Pressed> = fe.pressed_by.iter().map(|(_, p)| *p).filter(Pressed::any).collect();
+    for p in presses {
+        let Some(column) = fe.columns[me].as_mut() else { break };
+        match select_column(column, me, &p, party, changes, saves, frame) {
+            ColumnEvent::None => {}
+            ColumnEvent::Leave | ColumnEvent::Title => {
+                crate::online::leave(commands, lock);
+                fe.columns = Default::default();
+                changes.write(PartyChange::Clear);
+                fe.online_manage = false;
+                fe.go(Screen::Title);
+                return;
+            }
+        }
+    }
+    let Some(c) = fe.columns[me].as_ref().filter(|c| c.ready) else { return };
+    let hero = hero_of(c);
+    if hero_changes(party, me, &hero) {
+        info!("online: player {} changes hero: {} the {} ({})", me + 1, hero.name, hero.class, hero.variant);
+        if online.host {
+            online.inbox.push(Lobby::Hero { slot: me, hero: Some(hero) });
+        } else {
+            online.send(&Message::Hero { slot: me as u8, hero: Some(hero) });
+        }
+    }
+    fe.columns = Default::default();
+    fe.online_manage = false;
+    fe.go(Screen::Playing);
 }
 
 const STEPS: [Step; 7] = [Step::NewOrLoad, Step::Character, Step::ConfirmQuit, Step::LoadList, Step::Name, Step::NameShown, Step::Class];
@@ -2589,6 +2805,20 @@ fn death(
 // ---------------------------------------------------------------------------
 // Drawing
 
+/// Our own lines (the game's strings never need it) in `FONT32`, which has
+/// no `:`, `;`, `-` or `"`: those become what it has. An invite code shown
+/// with a space for its dash still joins (`gdl_net` takes it either way).
+fn font32_text(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            ':' | ';' => ',',
+            '-' => ' ',
+            '"' => '\'',
+            c => c,
+        })
+        .collect()
+}
+
 /// Splits text into lines of at most `width` characters, at spaces.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines = vec![String::new()];
@@ -2641,6 +2871,7 @@ fn draw(
         Res<Party>,
         Option<Res<PlayCamera>>,
     ),
+    boxes: Res<MessageBox>,
 ) {
     let (Some(fonts), Some(tex), Some(strings), Some(stats)) = (fonts, tex.as_deref_mut(), strings, stats) else {
         return;
@@ -2648,7 +2879,7 @@ fn draw(
     let mut d = Painter { draw: &mut draw, fonts: &fonts, tex, images: &mut images };
     let small = |d: &mut Painter, y: f32, text: &str, colour: Color| {
         let style = TextStyle::new(FONT32, 0.5, colour);
-        for (i, line) in wrap(text, 52).iter().enumerate() {
+        for (i, line) in wrap(&font32_text(text), 52).iter().enumerate() {
             let x = 256.0 - (d.fonts.width(FONT32, 0.5, line) / 2.0).trunc();
             d.draw.text(d.fonts, &style, x, y + 14.0 * i as f32, line);
         }
@@ -2671,7 +2902,7 @@ fn draw(
         Screen::Connecting => {
             title(&mut d, fe.t);
             let (text, hint) = match (&failed, &opening, online.as_deref()) {
-                (Some(f), _, _) => (format!("Couldn't go online: {}", f.0), "Press A to go back"),
+                (Some(f), _, _) => (format!("Couldn't go online, {}", f.0), "Press A to go back"),
                 (None, Some(_), _) => ("Creating the game...".to_string(), "Press B to cancel"),
                 _ => ("Joining the game...".to_string(), "Press B to cancel"),
             };
@@ -2688,11 +2919,16 @@ fn draw(
                 let ready = fe.columns.iter().flatten().all(|c| c.ready);
                 let (line1, line2) = if o.host {
                     let code = match (&o.invite, o.copied) {
-                        (Some(_), true) => "Invite code copied: paste it to your friends (C copies it again)".to_string(),
-                        (Some(code), false) => format!("Invite code: {code}"),
+                        (Some(_), true) => "Invite code copied, paste it to your friends (C copies it again)".to_string(),
+                        (Some(code), false) => format!("Invite code {code}"),
                         (None, _) => "Getting the invite code...".to_string(),
                     };
-                    (code, if ready { "Everyone's ready: press Start to begin" } else { "Waiting for everyone to be ready" })
+                    (code, if ready { "Everyone's ready, press Start to begin" } else { "Waiting for everyone to be ready" })
+                } else if o.late {
+                    (
+                        "The game is under way, you join at the tower".to_string(),
+                        if ready { "Waiting for the party to reach the tower" } else { "Pick your hero" },
+                    )
                 } else {
                     ("Online game".to_string(), if ready { "Waiting for the host to start" } else { "Pick your hero" })
                 };
@@ -2719,7 +2955,7 @@ fn draw(
                     && w != me
                 {
                     let name = party.get(w).map_or_else(|| format!("Player {}", w + 1), |m| m.name.replace('_', " "));
-                    small(&mut d, 350.0, &format!("Watching {name}  (L / R: another player)"), Color::WHITE);
+                    small(&mut d, 350.0, &format!("Watching {name}  (L / R for another player)"), Color::WHITE);
                 }
             }
         }
@@ -2741,7 +2977,9 @@ fn draw(
         small(&mut d, 364.0, text, Color::WHITE);
     }
     // Only the innermost menu is up: opening a sub-menu closes its parent.
-    if let Some(m) = fe.menus.last() {
+    // Online a message box can open over a player's menu (play goes on
+    // underneath): the menu waits, unseen, until the box is put away.
+    if let Some(m) = fe.menus.last().filter(|_| !(fe.screen == Screen::Playing && boxes.is_open())) {
         draw_menu(&mut d, m, &options);
         if m.kind == Some(Dynamic::Style) {
             for (name, x, y) in STYLE_PICTURES {
