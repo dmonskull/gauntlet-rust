@@ -28,11 +28,11 @@ use gdl_formats::pdata::PlayerStats;
 use gdl_formats::{LevelCollision, ModelFile, enemy};
 
 use crate::actions::Strike;
-use crate::audio::PlaySound;
+use crate::audio::{CALL_VOLUME, PlaySoundAt};
 use crate::breakables::BlastItem;
 use crate::character::{self, CharacterData, CharacterModel};
 use crate::combat::{self, CritterAim, Hit, TargetKind, Targetable};
-use crate::effects::{BlastAt, PotionBurst, StrikePotion, is_floor_potion};
+use crate::effects::{BlastAt, CritterBlast, OneShot, PotionBurst, StrikePotion, is_floor_potion};
 use crate::items::LevelItems;
 use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
@@ -402,6 +402,12 @@ const REFLECTED_MOST: f32 = 15.0;
 /// The ricochet sound, at most this often (seconds).
 const RICOCHET: &str = "S_RICOCHET";
 const RICOCHET_EVERY: f64 = 1.0;
+/// The hero's top point above its feet (`PDAT +0x50`, every class): the
+/// gauntlets', the breaths' and the hammer's sounds play there.
+pub(crate) const HERO_TOP: f32 = 4.4;
+/// The gauntlets' shots, the breaths and an effect's own sound (a critter
+/// missile's where it stops) play at this requested volume.
+pub(crate) const LOUD: u8 = 0xE0;
 
 /// A missile in flight.
 #[derive(Component, Debug)]
@@ -433,6 +439,56 @@ pub struct Projectile {
     /// The monsters' missiles pass most items (their flag `0x100`): a
     /// critter's statue among them.
     passes_items: bool,
+    /// A critter's missile: whether it hits the heroes (its blow's flag
+    /// `0x1000` clears it) and the level (`0x40` clears that and the
+    /// items), and what happens where it stops.
+    hits_players: bool,
+    hits_level: bool,
+    critter_stop: Option<CritterStop>,
+}
+
+/// Where a critter's missile stops (`critters.rs`: its blow's hit record,
+/// the game's follow-up effect and hit and wall sounds): the record's
+/// sound there (faded, 0xE0); its effect shown there for its clip; and,
+/// with a blast radius, a blast growing out to it over that clip — on the
+/// heroes and the monsters (not its own critter), and items for magic. It
+/// stops on the first hero, wall or item it meets, or bursts as its life
+/// runs out.
+#[derive(Clone, Default)]
+pub struct CritterStop {
+    pub sound: Option<String>,
+    pub effect: Option<Arc<CharacterModel>>,
+    pub life: f32,
+    pub blast: f32,
+}
+
+impl std::fmt::Debug for CritterStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CritterStop")
+            .field("sound", &self.sound)
+            .field("effect", &self.effect.is_some())
+            .field("life", &self.life)
+            .field("blast", &self.blast)
+            .finish()
+    }
+}
+
+/// A critter's missile (`critters.rs`, a `DAMG` of kind 1).
+pub struct CritterMissile<'a> {
+    pub model: Option<&'a CharacterModel>,
+    pub critter: Entity,
+    pub start: Vec3,
+    pub velocity: Vec3,
+    pub gravity: f32,
+    /// What it hits with (`DAMG +0x08`).
+    pub radius: f32,
+    pub damage: f32,
+    pub kind: u32,
+    /// Its model's scale (the effect record's size).
+    pub scale: f32,
+    pub hits_players: bool,
+    pub hits_level: bool,
+    pub stop: CritterStop,
 }
 
 /// What a missile was let go with.
@@ -741,9 +797,25 @@ const POJO_HAND: Vec3 = Vec3::new(0.0, -0.5, -1.25);
 #[derive(Resource, Default)]
 struct MissileModels(HashMap<(i32, MissileKind), Option<Arc<CharacterModel>>>);
 
-/// When each player can next be hurt by a missile (fixed-clock seconds).
+/// When each player can next be hurt by a missile or a blast (the game's
+/// player `+0x8E8`; fixed-clock seconds).
 #[derive(Resource, Default)]
-struct PlayerGuard(HashMap<Entity, f64>);
+pub(crate) struct PlayerGuard(HashMap<Entity, f64>);
+
+impl PlayerGuard {
+    /// Whether a blow can land on `player` now.
+    pub(crate) fn open(&self, player: Entity, now: f64) -> bool {
+        self.0.get(&player).is_none_or(|&until| until <= now)
+    }
+
+    /// A blow of `damage` landed on `player`: above 2, it's guarded a
+    /// quarter second.
+    pub(crate) fn landed(&mut self, player: Entity, damage: f32, now: f64) {
+        if damage > GUARD_ABOVE {
+            self.0.insert(player, now + PLAYER_GUARD as f64);
+        }
+    }
+}
 
 /// Reads an atree (by name) with its folder's models and textures.
 pub(crate) fn load_atree(game: &mut LoadedGame, folder: &str, atree: &str) -> Option<CharacterData> {
@@ -954,6 +1026,9 @@ fn spawn_projectile(
         pierced: Vec::new(),
         reflected: None,
         passes_items: matches!(owner, Owner::Monster(_)),
+        hits_players: true,
+        hits_level: true,
+        critter_stop: None,
     };
     let transform = Transform::from_translation(launch.start).with_rotation(orientation(&p)).with_scale(Vec3::splat(scale));
     let entity = match model {
@@ -1023,26 +1098,23 @@ pub fn spawn_hero_missile(
 }
 
 /// A critter's missile (`critters.rs`): it flies and hits like a
-/// monster's, from `start` at `velocity`, with the critter's own model
-/// (drawn at `scale`) and numbers.
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_critter_missile(
-    commands: &mut Commands,
-    model: Option<&CharacterModel>,
-    critter: Entity,
-    start: Vec3,
-    velocity: Vec3,
-    gravity: f32,
-    radius: f32,
-    damage: f32,
-    kind: u32,
-    scale: f32,
-) -> Entity {
-    let t = missile(0, damage, velocity.length(), radius, 0.0, [0.0; 3], gravity);
-    let launch = Launch { check: start, start, velocity };
-    let e = spawn_projectile(commands, model, Owner::Monster(critter), &launch, &t, radius, damage, kind, scale);
-    // A critter's missiles don't pass items as the monsters' do.
-    commands.entity(e).entry::<Projectile>().and_modify(|mut p| p.passes_items = false);
+/// monster's, with the critter's own model and numbers, and does what its
+/// hit record says where it stops.
+pub fn spawn_critter_missile(commands: &mut Commands, m: CritterMissile) -> Entity {
+    let t = missile(0, m.damage, m.velocity.length(), m.radius, 0.0, [0.0; 3], m.gravity);
+    let launch = Launch { check: m.start, start: m.start, velocity: m.velocity };
+    let e = spawn_projectile(commands, m.model, Owner::Monster(m.critter), &launch, &t, m.radius, m.damage, m.kind, m.scale);
+    let (hits_players, hits_level, stop) = (m.hits_players, m.hits_level, m.stop);
+    commands.entity(e).entry::<Projectile>().and_modify(move |mut p| {
+        // A critter's missiles don't pass items as the monsters' do. They
+        // fly the missiles' 3 s: a stand-in — the game gives the slot the
+        // effect record's life (its clip's with none), but moving slots
+        // have their end time moved on in flight in a way not traced.
+        p.passes_items = false;
+        p.hits_players = hits_players;
+        p.hits_level = hits_level;
+        p.critter_stop = Some(stop);
+    });
     e
 }
 
@@ -1056,7 +1128,7 @@ fn launch_hero(
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
     (items, mut struck): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>),
-    (mut sounds, mut spent): (MessageWriter<PlaySound>, MessageWriter<SpendPower>),
+    (mut sounds, mut spent): (MessageWriter<PlaySoundAt>, MessageWriter<SpendPower>),
     players: Query<&Player>,
 ) {
     let boss_level = level.as_ref().is_some_and(|l| l.boss >= 0);
@@ -1095,7 +1167,15 @@ fn launch_hero(
             Hand::Throw => hero.throw_offset,
             Hand::Centre => Vec3::ZERO,
         };
-        sounds.write(PlaySound(throw_sound(special, weapon, hero.class)));
+        // The gauntlets' sounds are panned from the hero's top, the rest
+        // faded from its feet (`docs/audio-format.md`).
+        let feet = shot.feet;
+        let name = throw_sound(special, weapon, hero.class);
+        sounds.write(if special & (LEFT_GAUNTLET | RIGHT_GAUNTLET) != 0 {
+            PlaySoundAt::panned(name, feet + Vec3::Y * HERO_TOP, LOUD)
+        } else {
+            PlaySoundAt::faded(name, feet, CALL_VOLUME)
+        });
         let mut launch = hero_launch(shot, missile_class(hero.class), offset, r.wound_up, hero.speed, t.gravity, bolt);
         let radius = t.radius * r.size;
         let damage = hero.damage * r.mult;
@@ -1223,7 +1303,7 @@ fn fly(
     mut damage: MessageWriter<DamagePlayer>,
     mut potions: MessageWriter<BlastAt>,
     (items, mut struck, mut rocks): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>, MessageWriter<BlastItem>),
-    (mut sounds, mut ricochet): (MessageWriter<PlaySound>, Local<f64>),
+    (mut sounds, mut ricochet, mut blasts): (MessageWriter<PlaySoundAt>, Local<f64>, MessageWriter<CritterBlast>),
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -1241,7 +1321,7 @@ fn fly(
         let mut stop = None;
 
         // Players (monster missiles): the first cylinder the move enters.
-        if !hero_owned {
+        if !hero_owned && p.hits_players {
             let hit = players
                 .iter()
                 .filter(|(e, _)| p.reflected != Some(*e))
@@ -1256,7 +1336,7 @@ fn fly(
                 // now, at most 15, and moves on at once (`S_RICOCHET` at
                 // most once a second).
                 if now >= *ricochet + RICOCHET_EVERY {
-                    sounds.write(PlaySound(RICOCHET.into()));
+                    sounds.write(PlaySoundAt::faded(RICOCHET, from, CALL_VOLUME));
                     *ricochet = now;
                 }
                 p.velocity = -p.velocity;
@@ -1348,6 +1428,7 @@ fn fly(
         // A safe rock in the way (every missile but magic; a broken one
         // only an explosive one) takes the blow, and the missile stops.
         if stop.is_none()
+            && p.hits_level
             && let Some((s, placement)) = items.as_deref().and_then(|i| i.rock_in_way(from.to_array(), to.to_array(), r, p.kind))
         {
             to = from.lerp(to, s);
@@ -1358,6 +1439,7 @@ fn fly(
         // A sleeping critter's statue in the way wakes as the missile hits
         // it (the monsters' missiles pass it, as they pass most items).
         if stop.is_none()
+            && p.hits_level
             && let Some((s, placement)) = items.as_deref().and_then(|i| i.statue_in_way(from.to_array(), to.to_array(), r, p.passes_items))
         {
             to = from.lerp(to, s);
@@ -1367,6 +1449,7 @@ fn fly(
         }
         // The level.
         if stop.is_none()
+            && p.hits_level
             && let Some(g) = ground.as_deref()
             && let Some(h) = wall(&g.0, from, to, WALL_RADIUS * r)
         {
@@ -1386,7 +1469,7 @@ fn fly(
                 debug!("missile bounces off the level at {to:?}");
             }
         }
-        let bursts = p.blast > 0.0 || p.potion.is_some();
+        let bursts = p.blast > 0.0 || p.potion.is_some() || p.critter_stop.as_ref().is_some_and(|c| c.blast > 0.0);
         if stop.is_none() && bursts && p.age >= p.lifetime - BURST_EARLY {
             stop = Some(Stop::At(to));
         }
@@ -1400,7 +1483,9 @@ fn fly(
                 commands.entity(entity).despawn();
             }
             Some(Stop::At(at)) => {
-                if let Some(b) = p.potion {
+                if let Some(c) = &p.critter_stop {
+                    critter_stops(p, c, at, &mut sounds, &mut blasts, &mut commands);
+                } else if let Some(b) = p.potion {
                     potions.write(BlastAt { owner: p.owner.entity(), at, kind: b.kind, damage: b.damage, radius: b.radius });
                 } else if p.blast > 0.0 {
                     burst(p, at, now, &mut players, &bodies, &mut guard, &mut hits, &mut damage);
@@ -1409,6 +1494,40 @@ fn fly(
             }
         }
     }
+}
+
+/// A critter's missile stops at `at`: its hit record's sound, effect and
+/// blast there.
+fn critter_stops(
+    p: &Projectile,
+    c: &CritterStop,
+    at: Vec3,
+    sounds: &mut MessageWriter<PlaySoundAt>,
+    blasts: &mut MessageWriter<CritterBlast>,
+    commands: &mut Commands,
+) {
+    if let Some(name) = &c.sound {
+        sounds.write(PlaySoundAt::faded(name.clone(), at, LOUD));
+    }
+    if let Some(model) = &c.effect {
+        let e = model.spawn(Transform::from_translation(at), commands);
+        commands.entity(e).insert((OneShot(c.life), LevelEntity));
+    }
+    if c.blast > 0.0 {
+        blasts.write(CritterBlast {
+            owner: p.owner.entity(),
+            at,
+            kind: p.kind,
+            damage: p.damage,
+            radius: c.blast,
+            life: c.life,
+            heroes: true,
+            follow: None,
+            monsters: true,
+            items: p.kind & combat::hit_kind::MAGIC != 0,
+        });
+    }
+    debug!("a critter's missile stops at {at:?} (blast {:.1})", c.blast);
 }
 
 /// A bomb bursts at `at`: every monster (and, for a monster's bomb, every

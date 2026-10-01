@@ -163,7 +163,15 @@ pub struct MonsterHit {
 /// Each level's tuning record and the enemy types it loads, by lower-case
 /// level folder (`levela1`).
 #[derive(Resource, Default)]
-struct LevelTunings(HashMap<String, (LevelTuning, LevelEnemies, MonsterSoundTable)>);
+pub(crate) struct LevelTunings(HashMap<String, (LevelTuning, LevelEnemies, MonsterSoundTable)>);
+
+impl LevelTunings {
+    /// The enemy types a level loads (its realm's swap for the
+    /// placeholders), by its folder name.
+    pub(crate) fn enemies(&self, level: &str) -> Option<&LevelEnemies> {
+        self.0.get(&level.to_ascii_lowercase()).map(|e| &e.1)
+    }
+}
 
 /// Each enemy type's hit and death sounds on a level.
 pub type MonsterSoundTable = HashMap<i32, Arc<enemy::MonsterSounds>>;
@@ -783,10 +791,11 @@ fn setup_level(
         awareness: tuning.monster_awareness,
         damage: tuning.monster_damage,
     };
-    let (gens, placed) = generators::from_population(&population.population, &ground.0, &tuning, &enemies);
+    let realm = crate::quest::level_of(&population.level).map_or(0, |(r, _)| r);
+    let (gens, placed) = generators::from_population(&population.population, &ground.0, &tuning, &enemies, realm);
 
     let mut wanted: Vec<(i32, i32)> =
-        gens.iter().map(|g| (g.enemy, g.tier)).chain(placed.iter().map(|p| (p.enemy, p.tier))).collect();
+        gens.iter().flat_map(|g| g.makes()).chain(placed.iter().map(|p| (p.enemy, p.tier))).collect();
     // Monsters hiding in containers (Deaths in barrels) come out at tier 1.
     let pop = &population.population;
     for p in &pop.placements {

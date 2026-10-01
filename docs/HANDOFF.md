@@ -368,6 +368,22 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
+**Level fidelity (user request, 2026-09-30; top priority after the job in
+hand).** The user found levels with things placed that shouldn't be
+there, and levels that can't be finished because objects don't move when
+a lever is used, "etc". Every level must match the original and every
+item/object mechanic work. Split, side by side:
+- the helper (static, no game runs): the decompile's placement
+  activation rules (player count, difficulty, quest/realm state, the
+  placement flags, what the population skips) and every trigger/lever →
+  target link kind (movers, lifts, bridges, doors, rotators, generators,
+  hidden items), against `population.rs`/`items.rs`/`mechanics.rs`; a dev
+  example that scans all 67 levels and lists each placement or link the
+  port mishandles, then fixes;
+- me (in game): each level from its start — pull every lever, ride the
+  lifts, open the doors, reach the exit — fixing what fails, logging
+  each level's state here.
+
 0. Power-ups, what's left: the head-2 sparkle, rapid fire's rate, the
    missile streaks (above). The heroes' step cut under the boss
    camera; the hand glows (and their banks' running modifiers); the

@@ -22,7 +22,8 @@ use gdl_formats::anim::AnimFile;
 use gdl_formats::pdata::PlayerStats;
 use gdl_formats::texmod::TexMod;
 
-use crate::audio::PlaySound;
+use crate::audio::{CALL_VOLUME, PlaySoundAt};
+use crate::projectiles::{HERO_TOP, LOUD};
 use crate::breakables::BlastItem;
 use crate::character::{CharacterData, CharacterModel, clip_fps};
 use crate::deaths;
@@ -48,6 +49,7 @@ impl Plugin for EffectsPlugin {
             .add_message::<BlastAt>()
             .add_message::<SweepItems>()
             .add_message::<CritterBlast>()
+            .add_message::<BankEffect>()
             .add_message::<EffectAt>()
             .add_message::<ExplosionAt>()
             .add_message::<NextStage>()
@@ -210,19 +212,41 @@ pub struct SweepItems {
     pub life: f32,
 }
 
-/// A boss's effect set down where it does its damage (`DAMG` kinds 5 and
-/// 6, `critters.rs`: the P-boss's spouts at the safe rocks, the yeti's
-/// boulders): the game's missile slot in area mode from the start (flags
-/// `0x801 | 0x20`: players, not monsters or items), growing as any blast
-/// does over `life`, the effect's clip. Unseen here: the effect's model is
-/// the critter's own, set down by `critters.rs`.
+/// A critter's effect doing its damage where it's set down: the game's
+/// missile slot in area mode, growing as any blast does over `life`, the
+/// effect's, and hurting the heroes about it (with `heroes`) — a boss's at
+/// the safe rocks (`DAMG` kinds 5 and 6, `critters.rs`: flags `0x801 |
+/// 0x20`, not monsters or items), a still effect (kinds 2, 3, 8: monsters
+/// too for all but bosses; `follow`ing the critter or its node when it's
+/// attached, from a point in its space), or a critter's missile bursting
+/// where it stops (`projectiles.rs`: monsters too, and items for magic).
+/// Never its own critter. Unseen here: the effect's model is the critter's
+/// own, set down with it.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct CritterBlast {
     pub owner: Entity,
     pub at: Vec3,
+    pub follow: Option<(Entity, Vec3)>,
     pub kind: u32,
     pub damage: f32,
     pub radius: f32,
+    pub life: f32,
+    pub heroes: bool,
+    pub monsters: bool,
+    pub items: bool,
+}
+
+/// A critter's effect that its own folder doesn't hold, from the effect
+/// table's bank (`WEAPONS`: the golem's EXPRING): shown at `at` (or riding
+/// `on`, at a point in its space) for `life` seconds at `scale`, its
+/// particles bursting where it starts.
+#[derive(Message, Clone, Debug)]
+pub struct BankEffect {
+    pub name: String,
+    pub at: Vec3,
+    pub on: Option<(Entity, Vec3)>,
+    pub rotation: Quat,
+    pub scale: f32,
     pub life: f32,
 }
 
@@ -333,7 +357,7 @@ pub fn blast_front(left: f32, life: f32, radius: f32) -> Option<(f32, f32)> {
 }
 
 /// Blast, shield or burst.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum BlastShape {
     /// Grows from the point it went off.
     Grow,
@@ -343,6 +367,9 @@ enum BlastShape {
     /// head node (only within its cone ahead of the hero), the hammer's
     /// ring from the hero's feet.
     Rides { hero: Entity, head: Option<Entity>, cone: bool },
+    /// Grows like a blast from a point in an entity's space as it moves:
+    /// a critter's effect on its root or a node.
+    Follows(Entity, Vec3),
 }
 
 /// A hero breathes (ATTBREATHE starts, `player.rs`): the effect `fx` on its
@@ -596,9 +623,30 @@ pub fn spray(systems: &ParticleSystems, at: Vec3, scale: f32, seed: &mut u32, co
 struct EffectModels {
     weapons: HashMap<&'static str, Option<EffectModel>>,
     banks: HashMap<(String, &'static str), Option<EffectModel>>,
+    /// The effect table's own bank by names read from data (a critter's
+    /// effect records).
+    named: HashMap<String, Option<EffectModel>>,
 }
 
 impl EffectModels {
+    /// An effect of the effect table's own bank (`WEAPONS`) by a name read
+    /// from data.
+    fn effect_named(
+        &mut self,
+        name: &str,
+        game: &mut LoadedGame,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<LevelMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Option<EffectModel> {
+        if let Some(e) = self.named.get(name) {
+            return e.clone();
+        }
+        let e = load_effect(game, "WEAPONS", name, meshes, materials, images);
+        self.named.insert(name.to_string(), e.clone());
+        e
+    }
+
     /// The model and its life (seconds) for `name`.
     fn get(
         &mut self,
@@ -699,7 +747,7 @@ fn effect_additive(name: &str) -> bool {
 fn load_effect(
     game: &mut LoadedGame,
     folder: &str,
-    name: &'static str,
+    name: &str,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<LevelMaterial>,
     images: &mut Assets<Image>,
@@ -770,15 +818,16 @@ pub struct EffectOn {
     pub scale: f32,
 }
 
-/// A one-off effect's seconds left.
+/// A one-off effect's seconds left (also a critter's effects set down,
+/// `critters.rs`, `projectiles.rs`).
 #[derive(Component)]
-struct OneShot(f32);
+pub(crate) struct OneShot(pub(crate) f32);
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_one_shots(
     mut commands: Commands,
     mut requests: MessageReader<EffectAt>,
-    mut riding: MessageReader<EffectOn>,
+    (mut riding, mut banked): (MessageReader<EffectOn>, MessageReader<BankEffect>),
     places: Query<&GlobalTransform>,
     time: Res<Time>,
     mut game: ResMut<LoadedGame>,
@@ -811,6 +860,23 @@ fn spawn_one_shots(
         spray(&effect.particles, place.translation(), e.scale, &mut seed, &mut commands, &mut meshes);
         let model = effect.model.spawn(Transform::from_scale(Vec3::splat(e.scale)), &mut commands);
         commands.entity(model).insert((OneShot(effect.life), ChildOf(e.on)));
+    }
+    for e in banked.read() {
+        let Some(effect) = models.effect_named(&e.name, &mut game, &mut meshes, &mut materials, &mut images) else {
+            debug!("critter effect {} isn't in the effect bank", e.name);
+            continue;
+        };
+        let local = |at: Vec3| Transform::from_translation(at).with_rotation(e.rotation).with_scale(Vec3::splat(e.scale));
+        let (model, start) = match e.on.and_then(|(on, off)| places.get(on).ok().map(|g| (on, off, g))) {
+            Some((on, off, g)) => {
+                let m = effect.model.spawn(Transform::from_translation(off).with_scale(Vec3::splat(e.scale)), &mut commands);
+                commands.entity(m).insert(ChildOf(on));
+                (m, g.affine().transform_point3(off))
+            }
+            None => (effect.model.spawn(local(e.at), &mut commands), e.at),
+        };
+        spray(&effect.particles, start, e.scale, &mut seed, &mut commands, &mut meshes);
+        commands.entity(model).insert((OneShot(e.life), LevelEntity));
     }
 }
 
@@ -891,7 +957,7 @@ fn use_potions(
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
     ground: Option<Res<LevelGround>>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
     mut blasts: MessageWriter<BlastAt>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
@@ -918,11 +984,11 @@ fn use_potions(
         );
         match u.mode {
             0 => {
-                sounds.write(PlaySound(POTION_SOUND[c].into()));
+                sounds.write(PlaySoundAt::panned(POTION_SOUND[c], u.feet, CALL_VOLUME));
                 blasts.write(BlastAt { owner: u.hero, at: u.feet, kind: e.kind, damage: e.damage, radius: e.radius });
             }
             1 => {
-                sounds.write(PlaySound(SHIELD_SOUND[c].into()));
+                sounds.write(PlaySoundAt::panned(SHIELD_SOUND[c], u.feet, CALL_VOLUME));
                 let effect = models.effect(SHIELD_FX[c], &mut game, &mut meshes, &mut materials, &mut images);
                 let scale = (e.radius / 12.0).clamp(0.33, 1.0);
                 spawn_blast(
@@ -987,7 +1053,8 @@ fn set_off_potions(
     magic: Option<Res<HeroMagic>>,
     mut cycle: ResMut<PotionCycle>,
     mut blasts: MessageWriter<BlastAt>,
-    (mut sounds, mut hints): (MessageWriter<PlaySound>, MessageWriter<crate::hints::ShowHint>),
+    (mut sounds, mut hints): (MessageWriter<PlaySoundAt>, MessageWriter<crate::hints::ShowHint>),
+    players: Query<&Player>,
 ) {
     let Some(mut items) = items else {
         strikes.clear();
@@ -1013,7 +1080,9 @@ fn set_off_potions(
             let level = state.as_ref().map_or(1, |s| s.level.max(1));
             let stat = magic.as_ref().map_or(400.0, |m| locomotion::stat_at_level(m.stat[0], m.stat[1], level, 0.0));
             let e = potion_effect(kind, 0, 0, STRUCK_POWER * powered_magic(stat, state.as_deref()), level);
-            sounds.write(PlaySound(POTION_SOUND[colour_index(kind)].into()));
+            // The striker's own magic: its sound at the striker's feet.
+            let feet = players.get(hero).map_or(at, |p| Vec3::from(p.mover.position));
+            sounds.write(PlaySoundAt::panned(POTION_SOUND[colour_index(kind)], feet, CALL_VOLUME));
             blasts.write(BlastAt { owner: hero, at, kind: e.kind, damage: e.damage, radius: e.radius });
             hints.write(crate::hints::ShowHint(crate::hints::Hint::ShootPotion));
         }
@@ -1078,7 +1147,7 @@ fn spawn_explosions(
     mut next: MessageReader<NextStage>,
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
     mut seed: Local<u32>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
@@ -1087,7 +1156,7 @@ fn spawn_explosions(
     for e in requests.read() {
         let monster = e.by == Exploder::Monster;
         if monster {
-            sounds.write(PlaySound(EXPLOSION_SOUND.into()));
+            sounds.write(PlaySoundAt::faded(EXPLOSION_SOUND, e.at, LOUD));
         }
         let (fx, kind, radius, heroes, then, scale, drop) = match (e.poison, e.by) {
             (true, Exploder::Monster) => {
@@ -1197,7 +1266,7 @@ fn spawn_breaths(
     mut requests: MessageReader<BreathAt>,
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
     bones: Query<&GlobalTransform>,
     players: Query<&Player>,
     (mut meshes, mut materials, mut images): Assets3d,
@@ -1219,7 +1288,7 @@ fn spawn_breaths(
             } else {
                 warn!("the Pojo has no {POJO_MOUTH} node to breathe from");
             }
-            sounds.write(PlaySound(POJO_TURBO_SOUND.into()));
+            sounds.write(PlaySoundAt::panned(POJO_TURBO_SOUND, Vec3::from(p.mover.position), LOUD));
         }
         let effect = models.effect(b.fx, &mut game, &mut meshes, &mut materials, &mut images);
         let life = effect.as_ref().map_or(1.0, |e| e.life);
@@ -1249,7 +1318,7 @@ fn spawn_breaths(
             }
         }
         if let Some(sound) = b.sound {
-            sounds.write(PlaySound(sound.into()));
+            sounds.write(PlaySoundAt::panned(sound, Vec3::from(p.mover.position) + Vec3::Y * HERO_TOP, LOUD));
         }
         info!("{} from the hero: {:.1} damage out to {:.1} over {life:.2} s", b.fx, b.damage, b.radius);
         let blast = Blast {
@@ -1283,7 +1352,7 @@ fn spawn_chops(
     mut requests: MessageReader<ChopAt>,
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
-    (mut sounds, mut shakes): (MessageWriter<PlaySound>, MessageWriter<crate::play_camera::Shake>),
+    (mut sounds, mut shakes): (MessageWriter<PlaySoundAt>, MessageWriter<crate::play_camera::Shake>),
     players: Query<&Player>,
     (mut meshes, mut materials, mut images): Assets3d,
 ) {
@@ -1296,7 +1365,7 @@ fn spawn_chops(
             let model = e.model.spawn(Transform::default(), &mut commands);
             commands.entity(model).insert((OneShot(life), ChildOf(c.hero)));
         }
-        sounds.write(PlaySound(CHOP_SOUND.into()));
+        sounds.write(PlaySoundAt::panned(CHOP_SOUND, feet + Vec3::Y * HERO_TOP, LOUD));
         shakes.write(CHOP_SHAKE);
         info!("the hammer comes down: {CHOP_DAMAGE:.0} damage out to {CHOP_RADIUS:.0} over {life:.2} s");
         let blast = Blast {
@@ -1365,10 +1434,10 @@ fn sweep_items(mut commands: Commands, mut requests: MessageReader<SweepItems>) 
 
 fn critter_blasts(mut commands: Commands, mut requests: MessageReader<CritterBlast>) {
     for c in requests.read() {
-        info!("a boss's blast at {:?}: {:.0} out to {:.0} over {:.2} s", c.at, c.damage, c.radius, c.life);
+        info!("a critter's blast at {:?}: {:.0} out to {:.0} over {:.2} s", c.at, c.damage, c.radius, c.life);
         let blast = Blast {
             owner: c.owner,
-            shape: BlastShape::Grow,
+            shape: c.follow.map_or(BlastShape::Grow, |(on, off)| BlastShape::Follows(on, off)),
             centre: c.at,
             kind: c.kind,
             damage: c.damage,
@@ -1377,9 +1446,9 @@ fn critter_blasts(mut commands: Commands, mut requests: MessageReader<CritterBla
             age: 0.0,
             spared: HashMap::new(),
             spared_items: HashMap::new(),
-            heroes: Heroes::Hurt,
-            items: false,
-            monsters: false,
+            heroes: if c.heroes { Heroes::Hurt } else { Heroes::Spared },
+            items: c.items,
+            monsters: c.monsters,
             then: &[],
             scale: Vec3::ONE,
             drop: 0.0,
@@ -1421,7 +1490,7 @@ fn tick_blasts(
         MessageWriter<StrikePotion>,
         MessageWriter<BlastItem>,
     ),
-    bones: Query<&GlobalTransform, Without<Targetable>>,
+    (bones, anchors, mut guard): (Query<&GlobalTransform, Without<Targetable>>, Query<&GlobalTransform>, ResMut<projectiles::PlayerGuard>),
 ) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
@@ -1468,11 +1537,16 @@ fn tick_blasts(
                 b.heading = Some(Vec2::new(p.mover.facing.sin(), p.mover.facing.cos()));
             }
         }
+        if let BlastShape::Follows(on, off) = b.shape
+            && let Ok(g) = anchors.get(on)
+        {
+            b.centre = g.affine().transform_point3(off);
+        }
         // Grow (and a breath): reach and share by the time left; the
         // shield: steady, full damage, each target spared a second (at
         // most what's left).
         let (reach, share, spare) = match b.shape {
-            BlastShape::Grow | BlastShape::Rides { .. } => match blast_front(left, b.life, b.radius) {
+            BlastShape::Grow | BlastShape::Rides { .. } | BlastShape::Follows(..) => match blast_front(left, b.life, b.radius) {
                 Some((r, s)) => (r, s, (left + 1.0 / 15.0).max(0.2)),
                 None => continue,
             },
@@ -1506,7 +1580,10 @@ fn tick_blasts(
             .collect();
         if b.monsters {
             for body in combat::one_per_critter(reached, |body| body.aim) {
-                hit(body.entity, body.kind, b);
+                // Not the critter whose effect it is.
+                if body.aim.map_or(body.entity, |a| a.body) != b.owner {
+                    hit(body.entity, body.kind, b);
+                }
             }
         }
         for (e, g, t, _) in &targets {
@@ -1562,12 +1639,19 @@ fn tick_blasts(
         for (e, mut p) in &mut players {
             let feet = Vec3::from(p.mover.position);
             let centre = feet + Vec3::Y * projectiles::PLAYER_CENTRE;
-            if (centre - b.centre).length() > reach + p.radius || b.spared.get(&e).is_some_and(|&until| until > now) {
+            // Through the hero's guard, as every blow on a hero goes (a
+            // missile that just hit it keeps its burst off a quarter
+            // second).
+            if (centre - b.centre).length() > reach + p.radius
+                || b.spared.get(&e).is_some_and(|&until| until > now)
+                || !guard.open(e, now)
+            {
                 continue;
             }
             if damage > 2.0 {
                 b.spared.insert(e, now + spare as f64);
             }
+            guard.landed(e, damage, now);
             let (kind, push) = blast_on_hero(damage, b.kind, b.centre, feet);
             let amount = p.take_blow(damage, kind, push);
             if amount == 0.0 {
@@ -1611,7 +1695,7 @@ fn follow_blasts(
     for (entity, b, colour, mut transform, children) in &mut blasts {
         transform.translation = b.centre - Vec3::Y * b.drop;
         let reach = match b.shape {
-            BlastShape::Grow | BlastShape::Rides { .. } => {
+            BlastShape::Grow | BlastShape::Rides { .. } | BlastShape::Follows(..) => {
                 blast_front(b.life - b.age, b.life, b.radius).map_or(0.0, |(r, _)| r)
             }
             BlastShape::Aura(_) => b.radius,

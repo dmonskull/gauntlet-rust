@@ -1545,12 +1545,40 @@ in the game) and the bosses on the 30 Hz tick, interpolated for drawing.
     `ENEMYINFO` item of any kind, if flagged on screen or always active.
   - The statue's own animation states (`+0xC4`/`+0xCA`/`+0xC6`) are
     reduced to "play ACTIVE, then spawn".
-- **The stomp ring** (`DAMG` kind 3, ATTACK4) hurts heroes within its
-  radius at once. In the game it's a damaging effect in the projectile
-  table, lasting `+0x08` s.
-- **Projectile kinds** (1, 2, 8), breath cones (4), the safe rocks' kinds
-  (5, 6) and the boss's loot (9) are done (for bosses too); grabs (7)
-  aren't.
+- **Still effects** (kinds 2, 3, 8; `set_down`): the blow's effect where
+  its record puts it (record flag 1/0x800 on the critter's root at the
+  record's offset; 0x80 at the critter's home + offset; 0x40 at the move
+  node's point + the blow's offset, left there; else kinds 2/3 on the
+  move node at the blow's offset + the record's, kind 8 at the target's
+  feet + the blow's offset turned with the critter + the record's), for
+  its life (the record's, else its clip's), as a blast growing over that
+  life out to `DAMG +0x0C` — following the root or node when attached —
+  on the heroes (not with the blow's flag 0x1000) and, for all but
+  bosses, the monsters (never itself): the golem's and garm's stomp
+  rings, the drider's and wraith's attached attacks, the djinn's and
+  lich's at their target. Effects a critter's folder lacks (EXPRING,
+  NULLFX) come from the `WEAPONS` bank (`effects::BankEffect`). A record
+  with flag 2 shakes the camera as it starts (0.1, 90 fields, priority
+  100). Kinds 0 and 4 show their effects too; the game's slot for them
+  can hurt a hero it touches (radius `+0x08`, e.g. the lich's aura):
+  not done. A moving still effect (the garm's, speed 10) stays put.
+- **Missiles** (kind 1, `launch`, `projectiles::spawn_critter_missile`):
+  none without an effect the table holds; they hit with `DAMG +0x08` (the
+  missile's own radius, the slot's `+0x84`), are drawn at the effect
+  record's size (`SFXX +0x4C`), pass walls and items with the blow's flag
+  0x40 and the heroes with 0x1000. Where one stops (a hero, a wall, an
+  item, or its time running out) its hit record plays: the record's
+  sound there (faded, 0xE0, `0x8009d35c`), its effect for its clip, and —
+  with the effect — a blast out to `DAMG +0x0C` growing over that clip on
+  the heroes and monsters (not its own critter; items for magic), which
+  reaches a hero through its guard (so a direct hit's burst lands a
+  quarter second later, at its share then). Stand-ins: they fly the
+  missiles' 3 s (the game's end time is the effect record's life, else
+  its clip's, but a moving slot's is moved on in flight in a way not
+  traced); a glow stands in for effects whose textures the effects system
+  would supply; no trails or spin. Kinds 2 and 8 (still effects) do
+  nothing yet; breath cones (4), the safe rocks' kinds (5, 6) and the
+  boss's loot (9) are done (for bosses too); grabs (7) aren't.
 - **Timing.** Critter time starts at 0 each level. Moves that have never
   run count as long ago, so they're ready; the game's clock runs from boot.
 - **Only one target is tracked.** Condition `[6]` (distance from home) and

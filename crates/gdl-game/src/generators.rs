@@ -34,6 +34,9 @@ pub struct Generator {
     /// Strength 1–3: its monsters' tier (and its model, `GEN_<code><n>`).
     pub tier: i32,
     pub ai: i16,
+    /// A special generator's round of monster types and their AIs (realms
+    /// E and F; `enemy` is then the game's −2 or −3).
+    pub special: Option<SpecialRound>,
     /// Most of its monsters alive at once.
     pub max: u8,
     /// Spawn rate: the wait after each monster is 6 × this (video fields).
@@ -86,6 +89,35 @@ pub struct PlacedMonster {
 
 #[derive(Resource, Default)]
 pub struct PlacedMonsters(pub Vec<PlacedMonster>);
+
+/// The realms whose every generator is the special kind (the game's item
+/// builder renames realm 5's `CAT` and 6's `HEL`, before the placeholder
+/// swap): its strength becomes the tier here, it draws
+/// `GEN_SPECIAL<strength>` from the realm's items, and it makes a round of
+/// these four monster types at that tier, each with its AI — one round
+/// shared by every special generator (`docs/monsters.md`).
+const SPECIAL_GENERATORS: [(u32, i32, SpecialRound); 2] = [
+    (5, 2, [(16, 7), (23, 7), (14, 7), (13, 7)]),
+    (6, 3, [(2, 30), (24, 30), (20, 7), (25, 7)]),
+];
+
+/// A special generator's round: four monster types, each with its AI.
+pub type SpecialRound = [(i32, i16); 4];
+
+/// A realm's special generators: their tier (and strength) and round.
+pub fn special_generators(realm: u32) -> Option<(i32, SpecialRound)> {
+    SPECIAL_GENERATORS.iter().find(|s| s.0 == realm).map(|s| (s.1, s.2))
+}
+
+impl Generator {
+    /// The monster types (and tiers) it makes.
+    pub fn makes(&self) -> Vec<(i32, i32)> {
+        match self.special {
+            Some(round) => round.iter().map(|&(t, _)| (t, self.tier)).collect(),
+            None => vec![(self.enemy, self.tier)],
+        }
+    }
+}
 
 /// A placed Death's awareness.
 const PLACED_DEATH_AWARENESS: f32 = 1000.0;
@@ -146,23 +178,34 @@ pub fn from_population(
     collision: &LevelCollision,
     tuning: &LevelTuning,
     enemies: &LevelEnemies,
+    realm: u32,
 ) -> (Vec<Generator>, Vec<PlacedMonster>) {
     let mut generators = Vec::new();
     let mut placed = Vec::new();
     for (i, p) in population.placements.iter().enumerate() {
         let ty = population.resolved_type(p);
-        let Some(named) = ty.enemy() else { continue };
+        // In the special realms every generator is the special kind,
+        // whatever its type is named (their levels name it `SPECIAL`).
+        let special = special_generators(realm).filter(|_| ty.class == ItemClass::Generator);
+        let named = match (ty.enemy(), special) {
+            (Some(named), _) => named,
+            (None, Some(_)) => -1,
+            (None, None) => continue,
+        };
         if !p.active_for(1) {
             continue; // needs more players
         }
         // The realm's own monster for the placeholder name. Generators
         // substitute with tier 0 (the field holds their live count, 0, at
         // that point); placed monsters with their level.
-        let id = match p.params(ty.class) {
-            PlacementParams::Enemy { level, .. } => enemies.substitute(named, level as i32),
+        let id = match (p.params(ty.class), special) {
+            (_, Some((tier, _))) => -tier,
+            (PlacementParams::Enemy { level, .. }, _) => enemies.substitute(named, level as i32),
             _ => enemies.substitute(named, 0),
         };
-        if !enemies.has(id) || enemy::enemy_stats(id).is_none_or(|s| s.id >= enemy::FIRST_SPECIAL_TYPE && s.id != enemy::DEATH) {
+        if special.is_none()
+            && (!enemies.has(id) || enemy::enemy_stats(id).is_none_or(|s| s.id >= enemy::FIRST_SPECIAL_TYPE && s.id != enemy::DEATH))
+        {
             // Not loaded on this level (the game refuses these), or a boss
             // or scripted type (the critter system drives those; Death is
             // a monster like the others).
@@ -185,8 +228,11 @@ pub fn from_population(
                 generators.push(Generator {
                     placement: i,
                     enemy: id,
-                    tier: strength as i32,
+                    // A special generator's strength is its round's tier
+                    // (set after its hit points and defaults were taken).
+                    tier: special.map_or(strength as i32, |(tier, _)| tier),
                     ai: if ai < 0 { default_ai } else { ai },
+                    special: special.map(|(_, round)| round),
                     max: (max as f32 * tuning.generator_max) as u8,
                     rate: (rate as f32 * tuning.generator_rate) as u8,
                     alive: 0,
@@ -282,14 +328,15 @@ fn find_spot(
     level: &mut MonsterLevel,
     collision: &LevelCollision,
     g: &Generator,
+    made: i32,
     players: &[[f32; 3]],
     bodies: &[Body],
 ) -> Option<([f32; 3], f32)> {
-    let stats = enemy::enemy_stats(g.enemy)?;
+    let stats = enemy::enemy_stats(made)?;
     let from = [g.position[0], g.position[1] + stats.center_height, g.position[2]];
     let out = g.reach + stats.radius;
     let dir = [g.yaw.sin(), g.yaw.cos()];
-    let skip: u32 = if front_only(g.enemy) { 0xFFCE } else { 0 };
+    let skip: u32 = if front_only(made) { 0xFFCE } else { 0 };
     let first = level.random(8);
     let mut k = first;
     loop {
@@ -348,6 +395,7 @@ pub fn tick_generators(
     monsters: Query<(Entity, &Monster)>,
     mut generators: Query<(Entity, &mut Generator)>,
     stop: Res<crate::player_state::TimeStop>,
+    mut special_round: Local<u32>,
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     // Time stopped, they make nothing.
@@ -401,13 +449,27 @@ pub fn tick_generators(
             bodies.retain(|b| b.entity != v);
             live -= 1;
         }
-        let Some((spot, offset)) = find_spot(&mut level, &ground.0, &g, &feet, &bodies) else { continue };
+        // A special generator makes the next of its round (the round shared
+        // by them all goes on even when nothing comes of it); a type the
+        // level didn't load is refused.
+        let (made, ai) = match g.special {
+            Some(round) => {
+                let pick = round[(*special_round & 3) as usize];
+                *special_round = special_round.wrapping_add(1);
+                if !level.enemies.has(pick.0) {
+                    continue;
+                }
+                pick
+            }
+            None => (g.enemy, g.ai),
+        };
+        let Some((spot, offset)) = find_spot(&mut level, &ground.0, &g, made, &feet, &bodies) else { continue };
         let tier = g.tier;
         let random_bit = level.random(2) == 1;
         let new = NewMonster {
-            enemy: g.enemy,
+            enemy: made,
             tier,
-            ai: choose_ai(g.enemy, tier, g.ai, random_bit),
+            ai: choose_ai(made, tier, ai, random_bit),
             position: spot,
             facing: crate::locomotion::wrap(g.yaw + offset),
             generator: Some(entity),
@@ -417,8 +479,8 @@ pub fn tick_generators(
             throw_rate: 1.0,
         };
         let Some(e) = spawn_monster(&mut level, new, &mut commands) else { continue };
-        debug!("generator {} made enemy {} tier {tier} at {spot:?}", g.placement, g.enemy);
-        let stats = enemy::enemy_stats(g.enemy).expect("spawned a known type");
+        debug!("generator {} made enemy {made} tier {tier} at {spot:?}", g.placement);
+        let stats = enemy::enemy_stats(made).expect("spawned a known type");
         bodies.push(Body { entity: e, feet: spot, radius: stats.radius, step: stats.step() });
         live += 1;
         g.alive += 1;
