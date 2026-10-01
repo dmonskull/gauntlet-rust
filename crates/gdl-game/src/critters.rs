@@ -102,7 +102,7 @@ use crate::locomotion;
 use crate::mechanics::Mechanics;
 use crate::monsters::{MonsterLevel, MonsterTick, game_view, on_screen};
 use crate::play_camera::PlayCamera;
-use crate::player::Player;
+use crate::player::{GrabHero, Player, ReleaseHero, ThrowHero};
 use crate::player_state::{Cry, EnemyScale, HurtHero, PlayerState, TimeStop};
 use crate::population::{ContentModels, LevelPopulation};
 use crate::projectiles::{CritterMissile, CritterStop, cylinder_hit, load_atree, spawn_critter_missile};
@@ -701,6 +701,10 @@ pub struct CritterLevel {
     shake: bool,
     /// Effects the critters' folders don't hold, from the effect bank.
     bank_effects: Vec<BankEffect>,
+    /// Heroes grabbed, thrown and let go this tick (`player.rs`).
+    grabs: Vec<GrabHero>,
+    throws: Vec<ThrowHero>,
+    releases: Vec<Entity>,
 }
 
 /// A blow of kind 5 (at every safe rock) or 6 (throwing one down): its
@@ -973,6 +977,8 @@ pub struct Critter {
     /// Its body's target, at its centre.
     aim: Entity,
     blows_dealt: u32,
+    /// The hero its grab holds (the game's `+0x128`).
+    held: Option<Entity>,
     /// Hit points at the start of the last tick.
     hp_before: f32,
     /// The critter clock at its last tick (seconds since the level began).
@@ -1455,6 +1461,9 @@ fn setup_level(
         area_blasts: Vec::new(),
         shake: false,
         bank_effects: Vec::new(),
+        grabs: Vec::new(),
+        throws: Vec::new(),
+        releases: Vec::new(),
     };
 
     // The boss appears at the level's boss locator, dropped onto the floor
@@ -1755,6 +1764,7 @@ fn new_critter(
         spent: vec![false; spheres.len()],
         aim,
         blows_dealt: 0,
+        held: None,
         hp_before: hp,
         now: level.now,
         spheres,
@@ -2102,7 +2112,16 @@ fn tick_critters(
         } else {
             walk(c, &mv, &ty, &ground.0, &heroes, level.speed_scale);
         }
-        turn(c, &mv, &heroes);
+        // Holding a hero, it doesn't turn. Dying, it lets go (a safety:
+        // the game has nothing let go but the throw).
+        if c.held.is_none() {
+            turn(c, &mv, &heroes);
+        }
+        if c.state == CritterState::Dying
+            && let Some(h) = c.held.take()
+        {
+            level.releases.push(h);
+        }
         if c.frozen > 0.0 {
             c.frozen = (c.frozen - DT).max(0.0);
         } else {
@@ -2239,7 +2258,7 @@ fn act(
         c.blows_done |= bit;
         let Ok(d) = usize::try_from(mv.damage[slot]) else { continue };
         let Some(dmg) = c.kind.file.damage.get(d).cloned() else { continue };
-        deal(c, me, &dmg, first, (node_matrix, node_bone), heroes, level, blows, to_play, commands);
+        deal(c, me, &dmg, (slot, first), (node_matrix, node_bone), heroes, level, blows, to_play, commands);
     }
     for (k, (s, at)) in mv.sounds.iter().enumerate() {
         let bit = 1 << k;
@@ -2459,9 +2478,13 @@ fn rock_blows(
     mut blasts: MessageWriter<CritterBlast>,
     mut sounds: MessageWriter<PlaySoundAt>,
     (mut shakes, mut banked): (MessageWriter<crate::play_camera::Shake>, MessageWriter<BankEffect>),
+    (mut grabs, mut throws, mut releases): (MessageWriter<GrabHero>, MessageWriter<ThrowHero>, MessageWriter<ReleaseHero>),
 ) {
     let Some(mut level) = level else { return };
     let level = &mut *level;
+    grabs.write_batch(std::mem::take(&mut level.grabs));
+    throws.write_batch(std::mem::take(&mut level.throws));
+    releases.write_batch(std::mem::take(&mut level.releases).into_iter().map(|hero| ReleaseHero { hero }));
     // The still effects the critters set down this tick, the bank's
     // effects they show, and a shake.
     blasts.write_batch(std::mem::take(&mut level.area_blasts));
@@ -3159,6 +3182,15 @@ fn blow_bits(m: &CritterMove, frame: i32, done: u8) -> u8 {
     }
     let mut bits = 0;
     match m.kind {
+        // A grab: blow 1 every frame of its window, blow 2 once.
+        kind::GRAB => {
+            if m.hit_frames[0] <= frame && frame <= i32::from(m.hit_ends[0]) {
+                bits |= 1;
+            }
+            if m.hit_frames[1] >= 0 && done & 2 == 0 && m.hit_frames[1] <= frame {
+                bits |= 2;
+            }
+        }
         kind::SWEEP | kind::SWEEP_2 | kind::SWEEP_3 => {
             if m.hit_frames[0] <= frame && frame <= i32::from(m.hit_ends[0]) {
                 bits |= 1;
@@ -3200,7 +3232,7 @@ fn deal(
     c: &mut Critter,
     me: Entity,
     d: &CritterDamage,
-    first: bool,
+    (slot, first): (usize, bool),
     (node, node_bone): (Affine3A, Option<Entity>),
     heroes: &[Hero],
     level: &mut CritterLevel,
@@ -3236,6 +3268,11 @@ fn deal(
             launch(c, me, d, damage, level, commands);
             level.events.push("missile");
         }
+        return;
+    }
+    // A grab: blow 1 holds a hero, blow 2 throws it.
+    if d.kind == GRAB_BLOW {
+        grab(c, me, d, slot, damage, (node, node_bone), heroes, level, to_play, commands);
         return;
     }
     // Still effects doing their damage where they're set down.
@@ -3326,6 +3363,84 @@ fn deal(
     if first && !matches!(d.kind, 0 | 4) {
         debug!("critter {me:?}: damage kind {} not done yet", d.kind);
     }
+}
+
+/// A grab's blow kind.
+const GRAB_BLOW: i16 = 7;
+/// The throw's push is the body's forward with this much down, as a unit,
+/// × the blow's speed.
+const THROW_DOWN: f32 = -0.1;
+/// The hero's top point above its feet (`+0x838`): a held hero hangs that
+/// far below the node's point.
+const HERO_TOP: f32 = 4.4;
+
+/// A grab (`DAMG` kind 7; `docs/critters.md`, "7 — grab"): blow 1 (every
+/// frame of its window), while it holds nobody, finds the nearest hero its
+/// sphere reaches (no damage, no guard) and holds it on the move's node at
+/// the blow's offset, the hero's top there — the hit record's effect and
+/// sounds on it; blow 2 throws the hero it holds: the blow's damage (half
+/// for all but bosses while the enemies are shrunk), kind `| 0x8050`, a
+/// push along the body's forward tilted down by 0.1, × the blow's speed,
+/// and the hero guarded a quarter second.
+#[allow(clippy::too_many_arguments)]
+fn grab(
+    c: &mut Critter,
+    me: Entity,
+    d: &CritterDamage,
+    slot: usize,
+    mut damage: f32,
+    (node, node_bone): (Affine3A, Option<Entity>),
+    heroes: &[Hero],
+    level: &mut CritterLevel,
+    to_play: &mut Vec<PlaySoundAt>,
+    commands: &mut Commands,
+) {
+    let hit_record = usize::try_from(d.effects[1]).ok();
+    if slot == 0 {
+        if c.held.is_some() {
+            return;
+        }
+        let offset = node.matrix3 * Vec3::from(d.offset);
+        let at = Vec3::from(c.node_at.unwrap_or(c.position)) + offset;
+        let was = Vec3::from(c.node_was.unwrap_or(c.position)) + offset;
+        let found = heroes
+            .iter()
+            .filter(|h| {
+                let centre = Vec3::from(h.feet) + Vec3::Y * h.half;
+                cylinder_hit(was, at, centre, h.radius + d.radius, h.half + d.radius).is_some()
+            })
+            .min_by(|a, b| {
+                let d = |h: &Hero| (Vec3::from(h.feet) + Vec3::Y * h.half).distance(at);
+                d(a).total_cmp(&d(b))
+            });
+        let Some(h) = found else { return };
+        c.held = Some(h.entity);
+        level.grabs.push(GrabHero {
+            hero: h.entity,
+            node: node_bone,
+            offset: Vec3::from(d.offset) - Vec3::Y * HERO_TOP,
+            at: at - Vec3::Y * HERO_TOP,
+        });
+        if let Some(e) = hit_record {
+            level.shake |= effect_sounds(c, e, level.realm, to_play);
+            spawn_effect(c, e, Anchor::On(h.entity, Vec3::ZERO), Affine3A::IDENTITY, record_life(c, e), level, commands);
+        }
+        info!("critter {me:?} grabs the hero");
+        level.events.push("grab");
+        return;
+    }
+    let Some(hero) = c.held.take() else { return };
+    if c.class() != class::BOSS && level.enemy_scale < 1.0 {
+        damage *= SHRUNK_DEAL;
+    }
+    // The throw's kind (the blow's | 0x8050) makes the hero fall
+    // (`player.rs`); its damage lands later, plain.
+    let (s, co) = c.yaw.sin_cos();
+    let push = Vec3::new(s, THROW_DOWN, co).normalize_or_zero() * d.speed[0];
+    level.throws.push(ThrowHero { hero, damage, push });
+    level.guard.insert(hero, level.clock + f64::from(HIT_GUARD));
+    info!("critter {me:?} throws the hero: {damage:.0} damage, push {push:?}");
+    level.events.push("throw");
 }
 
 /// Where a critter's effect goes: on an entity (its root or a node), at a
@@ -3883,6 +3998,9 @@ mod tests {
             area_blasts: Vec::new(),
             shake: false,
             bank_effects: Vec::new(),
+            grabs: Vec::new(),
+            throws: Vec::new(),
+            releases: Vec::new(),
         }
     }
 
