@@ -4,7 +4,7 @@
 //! nothing is drawn (dev tool).
 //!
 //! ```text
-//! cargo run -p gdl-formats --example level_audit -- <game>/Gauntlet [level] [--triggers] [--anim] [--falls] [--walls]
+//! cargo run -p gdl-formats --example level_audit -- <game>/Gauntlet [level] [--triggers] [--anim] [--falls] [--walls] [--reach]
 //! ```
 //!
 //! With `--triggers`, every trigger the party has is listed too: where it
@@ -16,7 +16,13 @@
 //! shot-down walls, sinking rocks): their model, shape, links and the
 //! floor under each. With `--walls`, each secret wall's own triangles
 //! (their box in the world and the way they face) and a warp point on the
-//! floor 4 in front of it.
+//! floor 4 in front of it. With `--reach`, each of the party's triggers
+//! as the game builds and touches it — dropped onto its floor with the
+//! movers at their off heights (riding a moving one), touched from the
+//! hero's collision centre (2.5 up) within the type's reach and the
+//! hero's 2.5 — and whether a floor in its touch reaches it at the
+//! level's start, at rest or with every mover on (`REACH`; `NOREACH` when
+//! none does).
 //!
 //! Per level it lists:
 //! - `MOVER`: world nodes the game moves (or hides) because a trigger for
@@ -43,7 +49,7 @@
 //! level's models. Generators aren't checked (their models come with the
 //! realm's monsters).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use gdl_formats::anim::{AnimFile, ROTATION_BITS, TRANSLATION_BITS, rotation_matrix};
@@ -191,8 +197,9 @@ fn main() {
     let describe = args.iter().any(|a| a == "--anim");
     let falls = args.iter().any(|a| a == "--falls");
     let wall_list = args.iter().any(|a| a == "--walls");
+    let reach_check = args.iter().any(|a| a == "--reach");
     let mut plain = args.iter().filter(|a| !a.starts_with("--"));
-    let root = plain.next().expect("usage: level_audit <game>/Gauntlet [level] [--triggers] [--anim] [--falls] [--walls]").clone();
+    let root = plain.next().expect("usage: level_audit <game>/Gauntlet [level] [--triggers] [--anim] [--falls] [--walls] [--reach]").clone();
     let only = plain.next().map(|s| s.to_ascii_lowercase());
     let root = Path::new(&root);
     let mut levels: Vec<_> = std::fs::read_dir(root.join("LEVELS")).expect("LEVELS").flatten().map(|e| e.path()).collect();
@@ -369,6 +376,281 @@ fn main() {
             .collect();
         if !walls.is_empty() {
             note("WALL", format!("{} secret walls (placements {walls:?})", walls.len()), &mut lines);
+        }
+
+        // Where the party's triggers can be touched from, and in what
+        // order: the movers start at their off heights; a trigger the hero
+        // can touch with the movers at heights reached so far lets its
+        // target reach the height it sends it to (its chain's too), until
+        // nothing more is reached.
+        if reach_check && let Some(c0) = &collision {
+            struct Mv {
+                off: f32,
+                on: f32,
+                /// A bridge (kind flag 0x10): no heights; its floors are
+                /// there while it's shown (on; off with kind flag 0x20).
+                bridge: Option<bool>,
+            }
+            let movers: BTreeMap<usize, Mv> = registered
+                .iter()
+                .filter(|(n, _)| world.nodes[**n].flags & 0x800 == 0 && !in_mode(**n))
+                .map(|(&n, regs)| {
+                    let (mut off, mut on) = (0.1 * f32::from(regs[0].off), 0.1 * f32::from(regs[0].on));
+                    for r in &regs[1..] {
+                        if off == 0.0 {
+                            off = 0.1 * f32::from(r.off);
+                        }
+                        if on == 0.0 {
+                            on = 0.1 * f32::from(r.on);
+                        }
+                    }
+                    let k = regs[0].flags as u8;
+                    (n, Mv { off, on, bridge: (k & 0x10 != 0).then_some(k & 0x20 != 0) })
+                })
+                .collect();
+            // The movers at or above a node.
+            let above = |n: usize| -> Vec<usize> {
+                let (mut out, mut k, mut steps) = (Vec::new(), Some(n), 0);
+                while let Some(x) = k {
+                    if movers.contains_key(&x) {
+                        out.push(x);
+                    }
+                    k = parent[x];
+                    steps += 1;
+                    if steps > parent.len() {
+                        break;
+                    }
+                }
+                out
+            };
+            // The collision with every mover at its off height (bridges
+            // don't move), for the items' drop.
+            let mut start = c0.clone();
+            for n in 0..world.nodes.len() {
+                let dy: f32 = above(n).iter().filter_map(|m| movers.get(m)).filter(|m| m.bridge.is_none()).map(|m| m.off).sum();
+                if dy != 0.0 {
+                    start.set_pose(n, NodePose::translation([0.0, dy, 0.0]));
+                }
+            }
+            // Every floor down a line through the level at rest.
+            let floors = |x: f32, z: f32| -> Vec<(usize, f32)> {
+                let q = gdl_formats::collision::Query { disable_mask: 0, prefer_crossing: false, ..gdl_formats::collision::Query::floors(0.5) };
+                let [lo, hi] = c0.bounds;
+                let mut out = Vec::new();
+                let mut y = hi[1] + 1.0;
+                while let Some(h) = c0.cast([x, y, z], [x, lo[1] - 1.0, z], &q) {
+                    out.push((h.node, h.point[1]));
+                    y = h.point[1].min(y) - 0.55;
+                }
+                out
+            };
+            struct Touch {
+                placement: usize,
+                target: Option<usize>,
+                /// What it can do to its target: send it on, off.
+                on: bool,
+                off: bool,
+                next: u8,
+                id: u8,
+                centre: f32,
+                reach: f32,
+                ride: Option<usize>,
+                lines: Vec<(usize, f32)>,
+                at: [f32; 3],
+                /// Touched by the hero (not a hit switch, nor set by a chain).
+                touched: bool,
+                /// A hit switch: blows press it, from anywhere in reach.
+                hit: bool,
+                /// Counts only stood on this node or a child of it (flag
+                /// 0x100, or 0x400 dropped onto its target).
+                stand: Option<usize>,
+            }
+            let chained: HashSet<u8> = triggers.iter().filter(|t| t.5 && t.4 != 0).map(|t| t.4).collect();
+            let mut touches: Vec<Touch> = Vec::new();
+            for &(i, subtype, flags, id, next, active) in &triggers {
+                if !active {
+                    continue;
+                }
+                let p = &pop.placements[i];
+                let ty = pop.resolved_type(p);
+                let PlacementParams::Trigger { target, radius, .. } = p.params(ty.class) else { continue };
+                let target = target.filter(|&t| t < world.nodes.len());
+                let (on, off) = match flags {
+                    f if f & 1 != 0 => (false, true),
+                    f if f & 2 != 0 => (true, false),
+                    f if f & 4 != 0 => (true, true),
+                    _ => (true, false),
+                };
+                // Chained-to triggers and hit switches aren't touched.
+                let touched = subtype != 0x1F && !(id != 0 && chained.contains(&id));
+                let mut at = p.position;
+                let mut ride = None;
+                let mut dropped_on = None;
+                if !ty.keeps_height() {
+                    match start.floor_probe(at, 4.0, -10.0, 1.0, 0) {
+                        Some(h) => {
+                            at[1] = h.point[1] + 0.1;
+                            dropped_on = Some(h.node);
+                            if world.nodes[h.node].flags & 0x1000 != 0 {
+                                ride = Some(h.node);
+                            }
+                        }
+                        None => at[1] += 0.1,
+                    }
+                }
+                let on_target = |n: usize| target.is_some_and(|t| n == t || parent[n] == Some(t));
+                let stand = (flags & 0x100 != 0 || (flags & 0x400 != 0 && dropped_on.is_some_and(on_target))).then_some(target).flatten();
+                let across = match radius {
+                    0 if subtype == 0x1B => 2.0 * ty.extent[0],
+                    0 => ty.extent[0].max(ty.extent[2]),
+                    0xFF => 0.01,
+                    r => 0.5 * f32::from(r),
+                } + 1.5;
+                let mut lines = Vec::new();
+                if touched {
+                    for (dx, dz) in [(0.0, 0.0), (0.7, 0.0), (-0.7, 0.0), (0.0, 0.7), (0.0, -0.7)] {
+                        lines.extend(floors(at[0] + dx * across, at[2] + dz * across));
+                    }
+                }
+                touches.push(Touch {
+                    placement: i,
+                    target,
+                    on,
+                    off,
+                    next,
+                    id,
+                    centre: at[1] + ty.center_offset[1] + 1.0,
+                    reach: ty.extent[1] + 2.5,
+                    ride: if touched { ride } else { None },
+                    lines,
+                    at,
+                    touched,
+                    hit: subtype == 0x1F,
+                    stand,
+                });
+            }
+            // Heights each mover has reached (false off, true on).
+            let mut reached: BTreeMap<usize, BTreeSet<bool>> = movers.keys().map(|&n| (n, BTreeSet::from([false]))).collect();
+            let mut fired: BTreeSet<usize> = BTreeSet::new();
+            let height = |m: &Mv, on: bool| if on { m.on } else { m.off };
+            // Fires trigger `k` and its chain.
+            let fire = |k: usize, reached: &mut BTreeMap<usize, BTreeSet<bool>>| {
+                let mut cur = Some(k);
+                let mut steps = 0;
+                while let Some(c) = cur {
+                    let t = &touches[c];
+                    if let Some(set) = t.target.and_then(|n| reached.get_mut(&n)) {
+                        if t.on {
+                            set.insert(true);
+                        }
+                        if t.off {
+                            set.insert(false);
+                        }
+                    }
+                    cur = (t.next != 0).then(|| touches.iter().position(|o| o.id == t.next)).flatten();
+                    steps += 1;
+                    if steps > touches.len() {
+                        break;
+                    }
+                }
+            };
+            // Hit switches are shot from wherever the hero can see them.
+            for (k, t) in touches.iter().enumerate() {
+                if t.hit {
+                    fire(k, &mut reached);
+                }
+            }
+            loop {
+                let mut changed = false;
+                for (k, t) in touches.iter().enumerate() {
+                    if fired.contains(&k) || !t.touched {
+                        continue;
+                    }
+                    // The movers that matter here, and every mix of the
+                    // heights they've reached (at most 2^8).
+                    let mut relevant: BTreeSet<usize> = t.lines.iter().flat_map(|&(n, _)| above(n)).collect();
+                    if let Some(r) = t.ride {
+                        relevant.extend(above(r));
+                    }
+                    let relevant: Vec<usize> = relevant.into_iter().take(8).collect();
+                    let choices: Vec<Vec<bool>> = relevant.iter().map(|m| reached[m].iter().copied().collect()).collect();
+                    let mut mix = vec![0usize; relevant.len()];
+                    let mut hit = false;
+                    'mixes: loop {
+                        let pick = |n: usize| -> Option<bool> { relevant.iter().position(|&m| m == n).map(|j| choices[j][mix[j]]) };
+                        let shift = |n: usize| -> f32 {
+                            above(n)
+                                .iter()
+                                .filter_map(|m| movers.get(m).filter(|mv| mv.bridge.is_none()).map(|mv| height(mv, pick(*m).unwrap_or(false))))
+                                .sum()
+                        };
+                        let shown = |n: usize| -> bool {
+                            above(n).iter().all(|m| match movers[m].bridge {
+                                Some(reversed) => pick(*m).unwrap_or(false) != reversed,
+                                None => true,
+                            })
+                        };
+                        let start_shift = |n: usize| -> f32 { above(n).iter().filter_map(|m| movers.get(m).filter(|mv| mv.bridge.is_none()).map(|mv| mv.off)).sum() };
+                        let centre = t.centre + t.ride.map_or(0.0, |r| shift(r) - start_shift(r));
+                        let counts = |n: usize| t.stand.is_none_or(|s| n == s || parent[n] == Some(s));
+                        for &(n, y) in &t.lines {
+                            if shown(n) && counts(n) && (y + shift(n) + 2.5 - centre).abs() <= t.reach {
+                                hit = true;
+                                break 'mixes;
+                            }
+                        }
+                        // The next mix.
+                        let mut j = 0;
+                        while j < mix.len() {
+                            mix[j] += 1;
+                            if mix[j] < choices[j].len() {
+                                break;
+                            }
+                            mix[j] = 0;
+                            j += 1;
+                        }
+                        if j == mix.len() {
+                            break;
+                        }
+                    }
+                    if !hit {
+                        continue;
+                    }
+                    // It fires, and so does its chain.
+                    fired.insert(k);
+                    changed = true;
+                    fire(k, &mut reached);
+                }
+                if !changed {
+                    break;
+                }
+            }
+            for (k, t) in touches.iter().enumerate() {
+                if !t.touched {
+                    continue;
+                }
+                let what = t.target.map_or("nothing".to_string(), |n| format!("node {n} {}", world.nodes[n].name));
+                let rides = t.ride.map_or(String::new(), |n| format!(" riding {n} {}", world.nodes[n].name));
+                if fired.contains(&k) {
+                    lines.push(format!("  TOUCH {:4} ({what}) at ({:.1}, {:.2}, {:.1}){rides}", t.placement, t.at[0], t.at[1], t.at[2]));
+                } else {
+                    let under: Vec<String> =
+                        t.lines.iter().take(4).map(|&(n, y)| format!("{y:.2} {}", world.nodes[n].name)).collect();
+                    note(
+                        "REACH",
+                        format!(
+                            "trigger {} ({what}) at ({:.1}, {:.2}, {:.1}){rides} (touched from {:.2} to {:.2} under the feet): no floor the movers can reach is in it (floors at rest: {under:?})",
+                            t.placement,
+                            t.at[0],
+                            t.at[1],
+                            t.at[2],
+                            t.centre - 2.5 - t.reach,
+                            t.centre - 2.5 + t.reach
+                        ),
+                        &mut lines,
+                    );
+                }
+            }
         }
 
         // Secret walls: where their triangles are and a point in front.

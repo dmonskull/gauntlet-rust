@@ -80,8 +80,30 @@ type indices. `FUN_800646e4` loops while the class is −1, picking
 `FUN_800be93c` (X), `FUN_800be9e8` (Y), `FUN_800be894` (Z) — each
 post-multiplies, so for row vectors the result is Rx·Ry·Rz — then sets the
 translation, and calls `FUN_800646e4(item, placement, type, matrix)`.
-`FUN_80064140` then drops each item onto the floor below it (`"Bad Item
-floor pos"` when there's none).
+Once every item is made, `FUN_80063fb0` runs the mover update
+(`FUN_800629ec`) once — every trigger's target now stands at its off
+height — and `FUN_80064140` drops each item onto the floor below it: every
+item has an instance (its model, or a bare one), so all but the types that
+keep their height (`+0x0A` bit 0) — those flagged to have no model too.
+The floor is `FUN_8000d3c4`'s (4 above to 10 below, radius 1); the item
+ends 0.1 above it, or 0.1 above where it was with none (`"Bad Item floor
+pos"`). Then:
+
+- a floor on a moving node (flag `0x1000`) takes the item's instance
+  under its own (`FUN_800bb084`): the item rides it from then on — each
+  frame its matrix is its instance's (`FUN_8005a334`), so its touch shape
+  goes with it. A lift pad placed on its lowered lift rides it; one placed
+  under a raised one stays where it is.
+- a trigger for every player (flag `0x400`) whose floor is its target or a
+  child of it becomes one that counts only stood on there (`0x100`).
+
+The rewrite drops the items the same way (`items.rs`, with the movers'
+start poses from `mechanics::start_poses`; animated objects are still at
+rest then, as the game hasn't animated them yet) and moves every rider
+with its floor (`mechanics.rs`). It had dropped only items with a model,
+with the movers at rest, and moved lift pads with their target's pose
+from rest — which put a pad placed on a lowered lift that far below it
+(B5's 275, D4's 338 and 342).
 
 Parameters by class (from `FUN_800646e4` and the debug display
 `FUN_8002e650`, which prints `"ITEM %02X (%dP)"` and a line per class):

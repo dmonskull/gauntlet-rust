@@ -21,7 +21,7 @@ fn main() {
         }
         if seen.insert((class.clone(), ty.subtype, ty.name.clone())) {
             println!(
-                "{class:12} {:#04x} {:16} armour {:3} hp {:4} value {:#x} amount {} duration {} shape {} extent {:?}",
+                "{class:12} {:#04x} {:16} armour {:3} hp {:4} value {:#x} amount {} duration {} shape {} extent {:?} centre {:?} keeps height {} flags {:#x}",
                 ty.subtype,
                 ty.name,
                 ty.armor,
@@ -30,7 +30,10 @@ fn main() {
                 ty.amount,
                 ty.duration,
                 u16::from_le_bytes([ty.raw[8], ty.raw[9]]),
-                ty.extent
+                ty.extent,
+                ty.center_offset,
+                ty.keeps_height(),
+                ty.flags
             );
         }
     }

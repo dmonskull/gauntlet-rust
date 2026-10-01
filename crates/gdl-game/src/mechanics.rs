@@ -251,8 +251,6 @@ struct Trigger {
     action: u8,
     /// The pad's own animation is heading for this.
     shown: u8,
-    /// Rides its target (lift pads): its touch centre at rest.
-    rides: Option<[f32; 3]>,
     /// The camera point (locator index) whose index is this trigger's id:
     /// shown when it comes on.
     cut: Option<usize>,
@@ -314,6 +312,96 @@ struct Rotator {
     total: f32,
     touched: bool,
     done: bool,
+}
+
+/// The movers the item set-up registers (`docs/mechanics.md`,
+/// "Registration"): every trigger's target, for the party or not — the
+/// first registration setting its kind, flags, heights and sound, later
+/// ones filling heights still 0 and a sound still 0 or none, lift kinds
+/// merging — each at its off height.
+fn register_movers(pop: &Population, nodes: usize) -> (Vec<Mover>, HashMap<usize, usize>) {
+    let mut movers: Vec<Mover> = Vec::new();
+    let mut mover_of = HashMap::new();
+    for p in &pop.placements {
+        let ty = pop.resolved_type(p);
+        let PlacementParams::Trigger { target: Some(node), flags, sound, off, on, .. } = p.params(ty.class) else { continue };
+        if node >= nodes {
+            continue;
+        }
+        let kind = ty.subtype;
+        match mover_of.get(&node) {
+            Some(&i) => {
+                let mv: &mut Mover = &mut movers[i];
+                if (LIFTPAD..=LIFTEND).contains(&mv.kind) && (LIFTPAD..=LIFTEND).contains(&kind) {
+                    mv.kind = LIFTPAD;
+                }
+                if mv.off == 0.0 {
+                    mv.off = 0.1 * f32::from(off);
+                    mv.offset = mv.off;
+                }
+                if mv.on == 0.0 {
+                    mv.on = 0.1 * f32::from(on);
+                }
+                if mv.sound <= 0 {
+                    mv.sound = sound;
+                }
+            }
+            None => {
+                let (off, on) = (0.1 * f32::from(off), 0.1 * f32::from(on));
+                mover_of.insert(node, movers.len());
+                movers.push(Mover {
+                    node,
+                    kind,
+                    flags: default_flags(kind, flags) as u8,
+                    off,
+                    on,
+                    offset: off,
+                    state: 0,
+                    previous: 0,
+                    sound,
+                    alpha: 0,
+                });
+            }
+        }
+    }
+    (movers, mover_of)
+}
+
+/// The nodes in the animated mode: each animated object's, and every
+/// node under one (the loader passes the flag down).
+fn animated_nodes(pop: &Population, nodes: &LevelNodes) -> HashSet<usize> {
+    let table: HashSet<usize> = pop.animations.iter().map(|a| a.node).filter(|&n| n < nodes.nodes.len()).collect();
+    (0..nodes.nodes.len()).filter(|&n| nodes.group_of(n, &table).is_some()).collect()
+}
+
+/// Where the level's nodes stand as its items are dropped onto their
+/// floors: the item set-up runs the mover update once after making the
+/// items, so each mover's node — and everything under it — is at its off
+/// height (not bridges and particle nodes, which don't move, nor nodes in
+/// the animated mode, at rest till they play). Every node so moved, with
+/// its pose.
+pub fn start_poses(pop: &Population, nodes: &LevelNodes) -> HashMap<usize, NodePose> {
+    let (movers, _) = register_movers(pop, nodes.nodes.len());
+    let animated = animated_nodes(pop, nodes);
+    let offsets: HashMap<usize, f32> = movers
+        .iter()
+        .filter(|mv| mv.flags & BRIDGE == 0 && !animated.contains(&mv.node))
+        .filter(|mv| nodes.nodes[mv.node].flags & gdl_formats::collision::node_flags::PARTICLES == 0)
+        .map(|mv| (mv.node, mv.off))
+        .collect();
+    let root_set: HashSet<usize> = offsets.keys().copied().collect();
+    let mut roots: Vec<usize> = root_set.iter().copied().collect();
+    roots.sort_by_key(|&r| (nodes.depth(r), r));
+    let mut world: HashMap<usize, NodePose> = HashMap::new();
+    for &root in &roots {
+        let local = NodePose::translation([0.0, offsets[&root], 0.0]);
+        let above = nodes.parent[root].and_then(|p| nodes.group_of(p, &root_set)).and_then(|p| world.get(&p).copied());
+        world.insert(root, above.map_or(local, |parent| local.then(&parent)));
+    }
+    (0..nodes.nodes.len())
+        .filter_map(|n| nodes.group_of(n, &root_set).map(|r| (n, world[&r])))
+        .filter(|(_, pose)| !pose.is_rest())
+        .collect()
 }
 
 /// Node flags the animated objects play by (the game keeps them in the
@@ -475,6 +563,9 @@ pub struct Mechanics {
     animation_of: HashMap<usize, usize>,
     /// Roots drawn scaled: their scale and the point it's about.
     scales: HashMap<usize, ([f32; 3], [f32; 3])>,
+    /// The triggers for every player that the drop put on their target
+    /// have been made stand-on ones.
+    stand_rule: bool,
 }
 
 impl Mechanics {
@@ -563,60 +654,17 @@ fn setup(
     let Some(nodes) = nodes else { return };
     let pop = &population.population;
     let mut m = Mechanics::default();
+    (m.movers, m.mover_of) = register_movers(pop, nodes.nodes.len());
     for (placement, p) in pop.placements.iter().enumerate() {
         let ty = pop.resolved_type(p);
-        let party = p.active_for(1);
+        // Only the party's triggers and rotators run.
+        if !p.active_for(1) {
+            continue;
+        }
         match p.params(ty.class) {
-            PlacementParams::Trigger { target, flags, radius, sound, id, next, off, on } => {
+            PlacementParams::Trigger { target, flags, radius, id, next, off, on, .. } => {
                 let target = target.filter(|&t| t < nodes.nodes.len());
                 let flags = default_flags(ty.subtype, flags);
-                // The game registers every trigger's target as it makes the
-                // item, the first registration setting the mover's kind,
-                // heights and sound — a trigger for more players too, which
-                // is never touched but leaves its node at its off height
-                // (a bridge of its hidden).
-                if let Some(node) = target {
-                    let kind = ty.subtype;
-                    match m.mover_of.get(&node) {
-                        Some(&i) => {
-                            let mv = &mut m.movers[i];
-                            if (LIFTPAD..=LIFTEND).contains(&mv.kind) && (LIFTPAD..=LIFTEND).contains(&kind) {
-                                mv.kind = LIFTPAD;
-                            }
-                            // Heights the first left at 0 — and a sound of 0
-                            // or none — come from a later one.
-                            if mv.off == 0.0 {
-                                mv.off = 0.1 * f32::from(off);
-                                mv.offset = mv.off;
-                            }
-                            if mv.on == 0.0 {
-                                mv.on = 0.1 * f32::from(on);
-                            }
-                            if mv.sound <= 0 {
-                                mv.sound = sound;
-                            }
-                        }
-                        None => {
-                            let (off, on) = (0.1 * f32::from(off), 0.1 * f32::from(on));
-                            m.mover_of.insert(node, m.movers.len());
-                            m.movers.push(Mover {
-                                node,
-                                kind,
-                                flags: flags as u8,
-                                off,
-                                on,
-                                offset: off,
-                                state: 0,
-                                previous: 0,
-                                sound,
-                                alpha: 0,
-                            });
-                        }
-                    }
-                }
-                if !party {
-                    continue;
-                }
                 debug!(
                     "trigger {placement} {:#x} flags {flags:#x} at {:?} -> node {target:?} ({:?}) heights {off}/{on} id {id} next {next}",
                     ty.subtype,
@@ -641,13 +689,12 @@ fn setup(
                     timer: 0.0,
                     action: 0,
                     shown: 0,
-                    rides: None,
                     cut: (id != 0)
                         .then(|| pop.locators.iter().position(|l| l.kind == LocatorKind::Transmitter(9) && l.index == i16::from(id)))
                         .flatten(),
                 });
             }
-            PlacementParams::Rotator { target: Some(node), angle, limit } if party && node < nodes.nodes.len() => {
+            PlacementParams::Rotator { target: Some(node), angle, limit } if node < nodes.nodes.len() => {
                 m.rotators.push(Rotator {
                     placement,
                     node,
@@ -677,8 +724,7 @@ fn setup(
     // Animated objects: the loader puts their nodes (and every node under
     // them) in the animated mode; the item set-up has every trigger's
     // target play back to its first frame.
-    let table: HashSet<usize> = pop.animations.iter().map(|a| a.node).filter(|&n| n < nodes.nodes.len()).collect();
-    m.animated = (0..nodes.nodes.len()).filter(|&n| nodes.group_of(n, &table).is_some()).collect();
+    m.animated = animated_nodes(pop, &nodes);
     for a in pop.animations.iter().filter(|a| a.node < nodes.nodes.len()) {
         let Some(track) = a.track.clone() else { continue };
         m.animation_of.insert(a.node, m.animations.len());
@@ -762,6 +808,21 @@ fn tick(
         (Some(p), Some(s)) => (Some(p.mover.position), s.radius, s.half_height),
         _ => (None, 0.0, 0.0),
     };
+
+    // A trigger for every player (0x400) the item drop put on its target
+    // — or on a child of it — counts only while stood on there (the drop
+    // gives it flag 0x100).
+    if !mech.stand_rule && items.views().next().is_some() {
+        for t in &mut mech.triggers {
+            if t.flags & ALL_PLAYERS != 0
+                && let (Some(target), Some(floor)) = (t.target, items.view(t.placement).and_then(|v| v.floor_node))
+                && (floor == target || nodes.parent.get(floor).copied().flatten() == Some(target))
+            {
+                t.flags |= STAND_ON_TARGET;
+            }
+        }
+        mech.stand_rule = true;
+    }
 
     // Touches.
     if let (Some(feet), true) = (feet, alive) {
@@ -1134,27 +1195,16 @@ fn tick(
         }
     }
 
-    // Lift pads ride their lift.
-    for t in &mut mech.triggers {
-        let Some(target) = t.target else { continue };
-        if t.subtype != LIFTPAD && t.flags & STAND_ON_TARGET == 0 {
-            continue;
-        }
-        let Some(root) = nodes.group_of(target, &mech.root_set) else { continue };
-        let Some(pose) = world.get(&root) else { continue };
-        let rest = match t.rides {
-            Some(r) => r,
-            None => {
-                let Some(view) = items.view(t.placement) else { continue };
-                t.rides = Some(view.shape.centre);
-                view.shape.centre
-            }
-        };
-        if let Some((moved, Some(model))) = items.move_centre(t.placement, pose.apply(rest))
-            && moved != [0.0; 3]
+    // Items ride the moving floor the drop put them on (the game hangs
+    // them under its node): lift pads on their lifts, pickups on
+    // platforms.
+    for (placement, node) in items.riders() {
+        let Some(pose) = nodes.group_of(node, &mech.root_set).and_then(|root| world.get(&root)) else { continue };
+        if let Some((Some(model), at, rotation)) = items.ride(placement, pose)
             && let Ok(mut transform) = models.get_mut(model)
         {
-            transform.translation += Vec3::from(moved);
+            transform.translation = Vec3::from(at);
+            transform.rotation = Quat::from_mat3(&Mat3::from_cols_array(&rotation));
         }
     }
 
