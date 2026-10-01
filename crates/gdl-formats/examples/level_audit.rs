@@ -12,7 +12,8 @@
 //! With `--anim`, each animated object a trigger plays is described: the
 //! middle of each of its nodes' collision at rest, at its first frame
 //! (where the level starts it) and at its last (where the trigger takes
-//! it). With `--falls`, the falling obstacles (rock falls, leaves, debris,
+//! it); and each bursting one (node type `0x50000`) that goes round:
+//! where it bursts and how often. With `--falls`, the falling obstacles (rock falls, leaves, debris,
 //! shot-down walls, sinking rocks): their model, shape, links and the
 //! floor under each. With `--walls`, each secret wall's own triangles
 //! (their box in the world and the way they face) and a warp point on the
@@ -367,6 +368,26 @@ fn main() {
                         world.nodes[n].name, r[0], r[1], r[2], f[0], f[1], f[2], l[0], l[1], l[2]
                     ));
                 }
+            }
+            // The bursting ones (node type 0x50000) that go round: each
+            // bursts where its lap's last shown frame (the one before its
+            // last) puts it.
+            let bursting = |a: &&gdl_formats::world::ObjectAnimation| {
+                a.track.is_some() && !registered.contains_key(&a.node) && world.nodes[a.node].flags & 0x100F_0000 == 0x5_0000
+            };
+            for a in pop.animations.iter().filter(bursting) {
+                let origin = origins.get(a.node).copied().flatten().unwrap_or_default();
+                let at = animated_pose(a, f32::from(a.frames.saturating_sub(2)), origin).apply(origin);
+                let under = floor(at).map_or("no floor".to_string(), |y| format!("floor {y:.2}"));
+                lines.push(format!(
+                    "  BURST node {} {} every {:.1} s at ({:.1}, {:.1}, {:.1}); {under}",
+                    a.node,
+                    world.nodes[a.node].name,
+                    f32::from(a.frames.saturating_sub(1)) / 30.0,
+                    at[0],
+                    at[1],
+                    at[2]
+                ));
             }
         }
         let walls: Vec<usize> = pop
