@@ -16,6 +16,7 @@ use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode};
 
 use crate::bootstrap::artifacts_dir;
 use crate::controls::{self, Action, Bindings};
+use crate::party::MAX_PLAYERS;
 
 pub struct OptionsPlugin;
 
@@ -59,13 +60,9 @@ pub struct GameOptions {
     pub master_volume: f32,
     pub music_volume: f32,
     pub effects_volume: f32,
-    /// The game's Controls menu: the style (`controls::SCHEME_NAMES`), the
-    /// pad's rumble, attack aim (attacking in place turns toward the
-    /// target) and walk-into attack — on by default, as the game's.
-    pub scheme: usize,
-    pub rumble: bool,
-    pub auto_aim: bool,
-    pub auto_attack: bool,
+    /// The game's Controls menu, for each player (the game keeps them per
+    /// pad).
+    pub players: [PlayerOptions; MAX_PLAYERS],
     /// The game's Compass menu (Show / Hide).
     pub compass: bool,
     pub bindings: Bindings,
@@ -87,10 +84,7 @@ impl Default for GameOptions {
             master_volume: 0.25,
             music_volume: 1.0,
             effects_volume: 1.0,
-            scheme: 0,
-            rumble: true,
-            auto_aim: true,
-            auto_attack: true,
+            players: [PlayerOptions::default(); MAX_PLAYERS],
             compass: false,
             bindings: Bindings::default(),
             fullscreen: false,
@@ -100,6 +94,24 @@ impl Default for GameOptions {
             frame_rate: false,
             collision: false,
         }
+    }
+}
+
+/// A player's controls as the game's Controls menu sets them: the style
+/// (`controls::SCHEME_NAMES`), the pad's rumble, attack aim (attacking in
+/// place turns toward the target) and walk-into attack — on by default, as
+/// the game's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerOptions {
+    pub scheme: usize,
+    pub rumble: bool,
+    pub auto_aim: bool,
+    pub auto_attack: bool,
+}
+
+impl Default for PlayerOptions {
+    fn default() -> Self {
+        Self { scheme: 0, rumble: true, auto_aim: true, auto_attack: true }
     }
 }
 
@@ -125,6 +137,11 @@ impl GameOptions {
         o
     }
 
+    /// A player's controls.
+    pub fn player(&self, slot: usize) -> PlayerOptions {
+        self.players.get(slot).copied().unwrap_or_default()
+    }
+
     /// Reads one saved `key=value`.
     fn set(&mut self, k: &str, v: &str) {
         let num = |v: &str| v.parse::<f32>().ok().map(|x| x.clamp(0.0, 1.0));
@@ -137,10 +154,8 @@ impl GameOptions {
             "master_volume" => self.master_volume = num(v).unwrap_or(self.master_volume),
             "music_volume" => self.music_volume = num(v).unwrap_or(self.music_volume),
             "effects_volume" => self.effects_volume = num(v).unwrap_or(self.effects_volume),
-            "scheme" => self.scheme = v.parse::<usize>().ok().filter(|&s| s < controls::SCHEME_NAMES.len()).unwrap_or(0),
-            "rumble" => self.rumble = flag(v).unwrap_or(self.rumble),
-            "auto_aim" => self.auto_aim = flag(v).unwrap_or(self.auto_aim),
-            "auto_attack" => self.auto_attack = flag(v).unwrap_or(self.auto_attack),
+            // Before each player had their own: player 1's.
+            "scheme" | "rumble" | "auto_aim" | "auto_attack" => self.set(&format!("p1.{k}"), v),
             "compass" => self.compass = flag(v).unwrap_or(self.compass),
             "fullscreen" => self.fullscreen = flag(v).unwrap_or(self.fullscreen),
             "vsync" => self.vsync = flag(v).unwrap_or(self.vsync),
@@ -149,7 +164,17 @@ impl GameOptions {
             "frame_rate" => self.frame_rate = flag(v).unwrap_or(self.frame_rate),
             "collision" => self.collision = flag(v).unwrap_or(self.collision),
             _ => {
-                if let Some(name) = k.strip_prefix("key.")
+                if let Some((n, field)) = k.strip_prefix('p').and_then(|r| r.split_once('.'))
+                    && let Some(o) = n.parse::<usize>().ok().and_then(|n| self.players.get_mut(n.checked_sub(1)?))
+                {
+                    match field {
+                        "scheme" => o.scheme = v.parse::<usize>().ok().filter(|&s| s < controls::SCHEME_NAMES.len()).unwrap_or(0),
+                        "rumble" => o.rumble = flag(v).unwrap_or(o.rumble),
+                        "auto_aim" => o.auto_aim = flag(v).unwrap_or(o.auto_aim),
+                        "auto_attack" => o.auto_attack = flag(v).unwrap_or(o.auto_attack),
+                        _ => {}
+                    }
+                } else if let Some(name) = k.strip_prefix("key.")
                     && let Some(action) = Action::ALL.into_iter().find(|a| a.key() == name)
                 {
                     let inputs: Vec<_> = v.split(',').filter_map(|n| controls::input_from_name(n.trim())).collect();
@@ -169,14 +194,10 @@ impl GameOptions {
     pub fn save(&self) {
         let flag = |b: bool| if b { "1" } else { "0" };
         let mut body = format!(
-            "master_volume={}\nmusic_volume={}\neffects_volume={}\nscheme={}\nrumble={}\nauto_aim={}\nauto_attack={}\ncompass={}\nfullscreen={}\nvsync={}\ndev_keys={}\ndebug_overlay={}\nframe_rate={}\ncollision={}\n",
+            "master_volume={}\nmusic_volume={}\neffects_volume={}\ncompass={}\nfullscreen={}\nvsync={}\ndev_keys={}\ndebug_overlay={}\nframe_rate={}\ncollision={}\n",
             self.master_volume,
             self.music_volume,
             self.effects_volume,
-            self.scheme,
-            flag(self.rumble),
-            flag(self.auto_aim),
-            flag(self.auto_attack),
             flag(self.compass),
             flag(self.fullscreen),
             flag(self.vsync),
@@ -185,6 +206,16 @@ impl GameOptions {
             flag(self.frame_rate),
             flag(self.collision),
         );
+        for (i, o) in self.players.iter().enumerate() {
+            let n = i + 1;
+            body += &format!(
+                "p{n}.scheme={}\np{n}.rumble={}\np{n}.auto_aim={}\np{n}.auto_attack={}\n",
+                o.scheme,
+                flag(o.rumble),
+                flag(o.auto_aim),
+                flag(o.auto_attack)
+            );
+        }
         for (action, inputs) in &self.bindings.keys {
             let names: Vec<&str> = inputs.iter().map(|&i| controls::input_name(i)).collect();
             body += &format!("key.{}={}\n", action.key(), names.join(","));
@@ -258,15 +289,18 @@ mod tests {
 
     #[test]
     fn options_read_back_what_they_write() {
-        let mut o = GameOptions { scheme: 1, rumble: false, fullscreen: true, ..GameOptions::default() };
+        let mut o = GameOptions { fullscreen: true, ..GameOptions::default() };
+        o.players[2] = PlayerOptions { scheme: 1, rumble: false, ..PlayerOptions::default() };
         o.bindings.bind_key(Action::Magic, Input::Key(KeyCode::KeyK));
         o.bindings.bind_pad(Action::Combo, bevy::input::gamepad::GamepadButton::LeftTrigger);
         // What save writes, line by line, read into fresh options.
         let flag = |b: bool| if b { "1" } else { "0" };
         let mut lines = vec![
-            format!("scheme={}", o.scheme),
-            format!("rumble={}", flag(o.rumble)),
+            format!("p3.scheme={}", o.players[2].scheme),
+            format!("p3.rumble={}", flag(o.players[2].rumble)),
             format!("fullscreen={}", flag(o.fullscreen)),
+            // An old file's player 1.
+            "scheme=2".to_string(),
         ];
         for (action, inputs) in &o.bindings.keys {
             let names: Vec<&str> = inputs.iter().map(|&i| controls::input_name(i)).collect();
@@ -280,7 +314,9 @@ mod tests {
             let (k, v) = l.split_once('=').unwrap();
             back.set(k, v);
         }
-        assert_eq!((back.scheme, back.rumble, back.fullscreen), (1, false, true));
+        assert_eq!((back.players[2].scheme, back.players[2].rumble, back.fullscreen), (1, false, true));
+        assert_eq!(back.players[0].scheme, 2);
+        assert_eq!(back.players[1], PlayerOptions::default());
         assert_eq!(back.bindings, o.bindings);
     }
 }

@@ -51,12 +51,13 @@ fn rumble(
         .map(|h| (h.slot, h.kind))
         .chain(hits.read().filter(|h| h.amount > 0.0).map(|h| (h.slot, 0)))
         .collect();
-    if !options.rumble || camera.is_some_and(|c| c.in_cut()) {
+    if camera.is_some_and(|c| c.in_cut()) {
         return;
     }
     let solo = party.members().filter(|(_, m)| !m.devices.remote).count() == 1;
     for (slot, member) in party.members() {
-        if !member.state.alive {
+        // Each player's own Rumble Feature choice.
+        if !member.state.alive || !options.player(slot).rumble {
             continue;
         }
         let Some((level, fields)) =

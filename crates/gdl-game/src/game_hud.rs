@@ -258,7 +258,7 @@ struct PanelShow {
 fn draw(
     frontend: Option<Res<Frontend>>,
     party: Res<Party>,
-    players: Query<&Player>,
+    (players, pads): (Query<&Player>, Query<Entity, With<Gamepad>>),
     fonts: Option<Res<GameFonts>>,
     mut tex: Option<ResMut<UiTextures>>,
     mut images: ResMut<Assets<Image>>,
@@ -300,16 +300,29 @@ fn draw(
     if frontend.as_deref().is_some_and(|f| !f.playing() || f.menu_open()) {
         return;
     }
+    // With a pad connected that nobody plays with, the next free panel says
+    // so (not the game's: our auto-detection of a new player).
+    let free_pads = crate::party::free_pads(&party, pads.iter());
+    let next_free = (0..MAX_PLAYERS).find(|&s| party.get(s).is_none() && !frontend.as_deref().is_some_and(|f| f.waiting(s)));
     let mut p = Painter { draw: &mut draw, tex, images: &mut images };
     for slot in 0..MAX_PLAYERS {
         let x = PANEL_X + PANEL_WIDTH * slot as f32;
         let Some(member) = party.get(slot) else {
             // A slot nobody plays: its panel waits, `S3` over `S4` in the
-            // slot's dim colour, framed.
-            let [r, g, b] = NOT_JOINED[slot];
+            // slot's dim colour, framed — a player waiting to join at the
+            // tower in their colour, "IN TOWER".
+            let waiting = frontend.as_deref().is_some_and(|f| f.waiting(slot));
+            let [r, g, b] = if waiting { JOINED[slot] } else { NOT_JOINED[slot] };
             image(&mut p, "S3", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
             image(&mut p, "S4", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::srgb_u8(r, g, b));
             image(&mut p, "S4_FRAME", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
+            let [r, g, b] = NUMBER_COLOUR[slot];
+            let tint = Color::srgb_u8(r, g, b);
+            if waiting {
+                p.draw.text(&fonts, &TextStyle::new(FONT_8HI, 1.2, tint), -(x + 64.0), 340.0, "IN TOWER");
+            } else if free_pads > 0 && next_free == Some(slot) {
+                p.draw.text(&fonts, &TextStyle::new(FONT_8HI, 1.2, tint), -(x + 64.0), 340.0, "PRESS START");
+            }
             continue;
         };
         let out = frontend.as_deref().is_some_and(|f| f.hero_out(slot));

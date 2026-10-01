@@ -1022,7 +1022,7 @@ fn gather_inputs(
             if !mine {
                 continue;
             }
-            input.held |= crate::controls::held_pad(pad, options.scheme, &options);
+            input.held |= crate::controls::held_pad(pad, options.player(slot).scheme, &options);
             let (left, right) = crate::controls::pad_sticks(pad);
             if left.length() > 0.0 {
                 input.stick = left;
@@ -1122,7 +1122,8 @@ fn tick(
         let dir = right * raw.x + forward * raw.y;
         let stick = Stick { heading: dir.x.atan2(dir.z), magnitude: raw.length().min(1.0) };
         // The Robotron style's right stick (the GameCube's C-stick).
-        let c_raw = if options.scheme != crate::controls::ROBOTRON { Vec2::ZERO } else { input.c_stick };
+        let mine = options.player(p.slot);
+        let c_raw = if mine.scheme != crate::controls::ROBOTRON { Vec2::ZERO } else { input.c_stick };
         let c_dir = right * c_raw.x + forward * c_raw.y;
         let c_stick = Stick { heading: c_dir.x.atan2(c_dir.z), magnitude: c_raw.length().min(1.0) };
         p.previous = (p.mover.position, p.mover.facing);
@@ -1306,7 +1307,7 @@ fn tick(
         let mut walked_into = false;
         // The game's "walk-into attack" pad option (Auto Attack): walking
         // into a monster attacks it.
-        if options.auto_attack
+        if mine.auto_attack
             && !shielded
             && !charged
             && reaction == 0
@@ -1329,7 +1330,7 @@ fn tick(
         let aim = match found {
             // The C-stick attacks where it points.
             _ if c_aim.is_some() => c_aim.unwrap_or(wanted),
-            _ if strafing || !options.auto_aim => wanted,
+            _ if strafing || !mine.auto_aim => wanted,
             Some(f) => combat::heading_of(f.direction),
             None => facing,
         };
@@ -1541,7 +1542,7 @@ fn tick(
         let mut face = (magnitude > 0.0 && !keeps_facing && !stunned).then_some(stick.heading);
         // The "attack aim" option (Auto Aim): attacking in place turns the
         // hero toward the target.
-        if options.auto_aim && (1..=10).contains(&category) && category != 7 && !strafing && drive == 0.0 {
+        if mine.auto_aim && (1..=10).contains(&category) && category != 7 && !strafing && drive == 0.0 {
             face = Some(aim);
         }
         if reaction_face.is_some() {
