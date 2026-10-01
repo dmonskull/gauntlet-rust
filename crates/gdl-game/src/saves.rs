@@ -7,7 +7,8 @@
 //!
 //! A record holds what a character keeps between games: name, class and
 //! colour, level and experience, health, gold, keys, potions, runestones,
-//! the realms beaten and the quest's progress. Stand-ins: the memory card
+//! the realms beaten, the quest's progress and the secret characters
+//! unlocked. Stand-ins: the memory card
 //! screens aren't drawn (the characters are listed in the player's column),
 //! and experience isn't kept per class as the game's record does.
 
@@ -38,6 +39,9 @@ pub struct SavedCharacter {
     /// Stat points bought in the shop.
     #[serde(default)]
     pub bought: crate::player_state::StatBonus,
+    /// The secret characters unlocked (a bit per class from the ninth).
+    #[serde(default)]
+    pub secret_characters: u16,
 }
 
 impl SavedCharacter {
@@ -57,6 +61,7 @@ impl SavedCharacter {
             realms_beaten: state.realms_beaten,
             quest: state.quest.clone(),
             bought: state.bought,
+            secret_characters: state.secret_characters,
         }
     }
 
@@ -71,6 +76,7 @@ impl SavedCharacter {
         state.realms_beaten = self.realms_beaten;
         state.quest = self.quest.clone();
         state.bought = self.bought;
+        state.secret_characters = self.secret_characters;
         state.health = if self.health > 0.0 { self.health.min(state.max_health()) } else { state.max_health() };
     }
 

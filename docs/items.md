@@ -426,15 +426,9 @@ line is queued on the announcer's queue with no wait limit, unless a boss
 level's end has begun (`r13-0x7790` ≥ 3; [frontend.md](frontend.md), "The
 voice queues").
 
-**The secret realm's coins** (not done): there each gold pickup counts a
-coin for every player in play (`FUN_800a1458`: the level's secret
-character `0x80124568[r13-0x7224]`, 8–16; `+0x930` += 1, and for the
-HUD's count `+0x928` = `0x200` + the character, `+0x92C` = 60); at the
-level's need (`r13-0x7208`) each of them gets the character's bit
-(character − 8) in `+0xA8C`, `S_SECRETCHAR` is queued (`FUN_8009f368`)
-and `ALLCOINS` ("Congratulations! You have unlocked a secret character!")
-opens in the message box (`FUN_8006d7f4`, the group found by name
-`AllCoins`), and `r13-0x72E8` = 1 (the level's end, not traced).
+**The secret realm's coins**: each gold pickup there counts a coin for
+every player in play, and the last one unlocks the level's secret
+character — "The secret realm" below.
 
 Here (`pickup_notices.rs`): the plates for player 1's panel from
 `PickupNotice` messages — which the pickups in `items.rs` have yet to send
@@ -648,9 +642,9 @@ it and resets it when they leave; at the last action the hero goes out
 (`going_out.rs`, from `items.rs` as above, the light drawn through
 `fade.rs` `BodyLook` like a dying monster) and 50 fields later (a secret
 exit at once) `items.rs` sends `ChangeLevelTo` (`exits.rs`) for where the
-exit goes (`exit_goes_to`). Stand-ins: no shop on the way back, no ending
-movies, no secret-realm timer; the light's second round isn't seen (the
-hero is gone first, as in the game).
+exit goes (`exit_goes_to`). Stand-ins: no ending movies; the light's
+second round isn't seen (the hero is gone first, as in the game). The
+secret realm's timer and the way back from it: "The secret realm" below.
 
 Sounds ([audio-format.md](audio-format.md), "Positional sounds"): while
 a hero in play or going out has its exit count `+0x950` running (it
@@ -661,6 +655,167 @@ feet (`FUN_80077ccc` → `FUN_8009ca90`, 0x7F) and from then every sound
 item is stopped. Here the flame burns while the hero stands in an open
 exit that isn't secret and as it goes out through one (stand-in: from the
 first tick it stands there).
+
+### The secret realm
+
+Realm 12's nine levels, S1–S9 (`WDATA/SECRET.WAD`'s records, in folder
+order), are reached only through secret exits: A6 → S3, B2 → S4, C2 →
+S1, D3 → S2, G2 → S8, H2 → S5, I1 → S6, J3 → S7, K2 → S9 (and all nine in
+a row on the test level T2, x 43 down to 11 at (x, 0, −56)). They have
+no exits: a timer ends them.
+
+**The timer.** A level record (`LEVL`) flags a timed level with `+0x00`
+& 4 and gives its time at `+0x0C` (i16 seconds): only the secret
+realm's, S1 70, S2 40, S3 45, S4 50, S5 130, S6 100, S7 55, S8 70, S9 60
+(the other levels have 30 and no flags). As any level starts
+(`FUN_80053530` → `FUN_800553b4`) the last-coin flag `r13-0x72e8` is
+cleared and the level timer's four sprites are made (`0x80257000`:
+`TIMER` at (1, 1), two windows on `TIMER_SAND`, `SAND_ANIM` at (63, 58)
+— the hourglass the time stop borrows, [powers.md](powers.md) "`0x8`
+time stop"); on a timed level they're shown, but for the falling
+stream, and its time and the time left (`r13-0x72e4`, `r13-0x72e0`) are
+set to the seconds + 0.99 (`r2-0x6bb8`, summed in double). Each frame of play
+(`FUN_80054244` mode `0x4010` → `FUN_80054e78`, before the players'
+update):
+
+- once the opening shot is over (`r13-0x7340` = 0) the stream shows;
+- with more left than the record's seconds + 1 (`r2-0x6c30`), the time
+  and what's left are set to 5 (`r2-0x6c18`) — never met on the disc;
+- on a timed level, with no message box or menu up (`r13-0x7598`, which
+  the main loop also sets while `FUN_80070c24` has a menu open), no
+  hint freeze (`r13-0x738c`) and the opening over, the time left loses
+  the frame's seconds (`r13-0x7570`). Still above 0 (`r2-0x6c10`): each
+  whole second it crosses (truncated), unless the last coin is in, plays
+  the clock — `FUN_8009fe94(s)`: `S_SECRETCLOCK1` (`COMMON` `0x17`) for
+  an even second, `S_SECRETCLOCK2` (`0x18`) an odd one, `S_SECRETCLOCKEN`
+  (`0x19`) for 0, centred at 0x7F — and at 8 `S_TIMEISRUNNING`
+  (`FUN_8009f2bc`, `0xC0085`), below 6, while no secret exit is being
+  taken (`r13-0x72dc` = 0), `S_COUNT<s>` (`FUN_8009f3bc`, `0x80122C80[s]`
+  = `0x2000B` − s), centred at 0xE0; all three played straight, not
+  queued. The sand windows show the part gone, (60 × time − 60 × left)
+  / (60 × time) (`r2-0x6c08`), as the time stop's do.
+- At 0 or below: the four sprites are freed, the time left is 0,
+  `r13-0x72dc` = 13 (`0xD`) and the pickup plates go (`FUN_8007fb00`).
+
+(Under the mode flag `r13-0x7534 & 0x10` — not traced — a timed level's
+time is 100.99 s, the time gone is drawn as `"%.1f"`, and on a level of
+realm 12 its end sets `r13-0x72dc` = 2 and keeps the heroes' places.)
+
+While a hero holds a time stop the player update (`FUN_8009fee8`, after
+the timer) sets the same sprites to the time stop's time; when it ends
+they stay shown in realm 12. A camera cut doesn't stop the timer.
+
+**Out of time** (`r13-0x72dc` 13 … `0xFFFF`): the players' update sets
+`r13-0x72f4` (as for any `r13-0x72dc` > 2) and `FUN_80086cc8` sends every
+hero in play out (state 4, `+0x1F2` 0); `FUN_80077ccc` takes it at once —
+no 50 fields when `r13-0x72dc` ≠ 0 — with `S_TUNNEL` at the first one's
+feet, its model hidden, its destination `+0x830` = `r13-0x6f74`, the level
+the secret exit was taken from. When the level ends (`FUN_80054244`), a
+hero not out sends the party there — not to the tower, so no after-level
+screen — and the secret level counts as finished (`FUN_800a1560`, as for
+an exit); the load shows the plain `TRANSITION_SCREEN`
+(`FUN_8001a630(0x78, 1)`, not the level's map). With every hero dead the
+party goes to the tower as from any level.
+
+**The kept level.** Taking a secret exit (the item update, exit class:
+its players-on-it mask set, `r13-0x72dc` < 3, not yet used) sets
+`r13-0x72dc` = (its code & 0xFF) + 3 and `FUN_8008b92c(item, player,
+player +0x44)` keeps: the player and its place (`0x80284248`), the level
+(`r13-0x6f74` = `r13-0x72d8`), the camera's state (`FUN_8008bc68`), every
+item's type and flags `+0xC4` — `0xFFFF` for the exit itself, a free slot
+and an opened container (class 2, `+0xC8` > 0) — and each trigger
+target's state bytes `+0x16`/`+0x17` (`0x8025E3F0`, up to 150); the
+plates go. Coming back (`FUN_80053530` with that `r13-0x72dc`): no save
+(`FUN_8007a670` isn't called — nor at a secret level's start), then
+`FUN_8008b7c0` lays the kept level on the fresh one: the first hero in
+play at the kept place, the others beside it (`FUN_80080154(p, 2)`), the
+camera as it was and no opening shot (`FUN_80026ca4(1)`); each item of
+the kept type gets its flags back — freed ones freed, their models
+hidden; a generator kept without flag 1 is destroyed (armour `0xFF`,
+strength 0, freed) — any other is freed; the trigger targets get their
+state bytes. Then `r13-0x6f74` = −1. Monsters aren't kept: the level's
+generators start afresh and a placed monster made before (its item freed)
+doesn't come again.
+
+**The coins.** The secret levels' gold items are coins (`COIN_JACKAL` …
+`COIN_UNI`: subtype 1, amount 0) — 100 on each level, 25 for each player
+count, so one hero finds 25. The level's need `r13-0x7208` is the gold
+items made as it's built for the players in the game (`FUN_80063fb0`:
+class 1 subtype 1 that the player-count rule `FUN_80065d84` keeps). The
+pickup (`FUN_8005de3c` class 1) adds the amount, plays the coin sound and
+shows the `COINHUD` plate, sets `+0x95C` = 1 (which the player update
+turns into its action choice `0xE` outside realm 12, `r13-0x7240` — not
+traced further), and in realm 12 calls `FUN_800a1458` instead of raising
+hint `0x11`:
+
+- the character is `0x80124568[r13-0x7224]` by the level's index: S1–S9
+  10, 11, 9, 8, 16, 12, 15, 14, 13 — the jackal, tigress, falconess,
+  minotaur, sumner, ogre, hyena, medusa, unicorn (−1: none);
+- every player in play (state 1) counts it (`+0x930` += 1) and gets the
+  HUD's count: `+0x928` = `0x200` + the character, `+0x92C` = 60 s
+  (`r2-0x5224`; a gem's is 3);
+- once any has the need, each player in play gets the character's bit,
+  1 << (character − 8), in `+0xA8C`, and the pickup queues
+  `S_SECRETCHAR` (`FUN_8009f368`: `0x3B0025`, the announcer's queue, a
+  second's most wait, refused once a boss level's end has begun), opens
+  `AllCoins` page 0 for every player ("Congratulations! / You have
+  unlocked a secret character!", that line its voice) and sets
+  `r13-0x72e8` = 1 and the time left to 1 s (`r2-0x6804`): the level ends
+  a second of play after the box is put away, unheard.
+
+The count (`FUN_80074b08`, `+0x928` ≥ `0x200`): `"16_%sCOIN"` with the
+class's code (`0x8011F878`; the sumner's `16_SUM`, `r2-0x6000`) from the
+secret realm's items bank (`ITEMS/levelS`), 16 × 16 at (panel + 28, 288),
+and `"%d/%d"` (`+0x930`, `r13-0x7208`) in `8Hifonts` × 1.5, white, at
+(panel + 48, 292); it counts its 60 s down only in play with no menu
+and no key row, which a secret level never starts. Every level start
+resets `+0x930` to 0 and `+0x92C` to −1 (`FUN_80079ed8`). `+0xA8C` is
+part of the character (`+0xA80…`, the memory card's): on the select
+screen classes 8–15 can be picked with their bit, and the seventeenth
+(the sumner) is passed over without bit 8 (`FUN_8008db78`).
+
+**The opening.** Every level's opening shot zooms the level's name
+(record `+0x14`, `font32`, white) in at the top (`FUN_8002a73c`,
+`FUN_8002a574`: scale 0.025 up 0.025 a field to 2, y 48 − 16 × scale); a
+timed level adds `GRAB_GOLD` ("GRAB COINS BEFORE TIME RUNS OUT",
+`ENGLISH.ROM` group `0xB0`) in `0x160C03` centred at (256, 108) on a
+`SCROLL_A` panel (its text's width + 60 by its height + 16), and queues
+`S_GRAB` (`FUN_8009f2ec`, `0x10029`, the announcer, a second) as the name
+reaches full size. (Record flag 1 would show `SHOTS_STUN` with
+`S_SHOTSSTUN`; a realm's first level, `FIND_EXIT` with `S_FINDEXIT`, when
+`r13-0x7668` is set.)
+
+**Elsewhere in realm 12**: no key row as a level starts; the field count
+`r13-0x732c` (the play time, likely) doesn't count; the players' `+0xA2C`
+clock doesn't run (`FUN_80077f50`; neither traced); Quit Level is disabled
+([frontend.md](frontend.md)); the sound items play × 4 on S1 ("Sound
+items"). Record flag 8 (S5 alone): each hero in play carries a light in
+its colour (the player update: `FUN_800c0dd8` at its place raised by
+`r13-0x7d88`, `0x8011F9C0` + colour × 16), and `FUN_80067988` takes
+another branch — not traced.
+
+Here (`exits/secret_realm.rs`; the record's flag and seconds in
+`gdl-formats` `WorldLevel::timed`): the timer and its sounds on the 30 Hz
+tick (it waits for `PlayCamera::opening`; play's clock stops under menus
+and the message box), the hourglass from it (`game_hud.rs`), the time up
+sending the heroes out at once (`items::GoOut`) and back to the kept
+level (or the tower when a secret level was started on its own — a
+stand-in), the secret level finished; the kept level (`items.rs` at the
+secret exit: the placements gone or let out, the chests opened, the exit,
+the doors open, the placed monsters out) laid on as it's built — items
+gone, doors opened again, destroyed generators gone, placed monsters made
+before not made again, the heroes at the first one's place and facing.
+The coins: counted for every living hero, the HUD's count, the unlock
+(`PlayerState::secret_characters`, saved with the character), the line,
+the message and the last second. Stand-ins and gaps: the movers' and
+levers' states aren't kept (they start afresh: a lever pulled before can
+be pulled again), nor the camera; the opening shot plays and the level
+start saves the records unless `play_camera.rs` and `frontend.rs` ask
+`SecretReturn::coming_back_to`; the select screen doesn't open the
+unlocked classes yet (`secret_realm::class_open`); Quit Level isn't
+disabled; the opening's banners, the plain transition screen, the gold
+reaction and S5's lights aren't done; the plates aren't cleared at the
+secret exit or the time up (the next level's start clears them).
 
 ### Transporters
 
@@ -771,8 +926,7 @@ the barrels', critters' and Deaths' hints go to player 1.
 - Breaking containers, releasing contents as items, quest effects of
   runestones, legendary items, gems and scrolls, exits switched off by
   quests, the shop.
-- The announcer's class-name lines; the secret realm's coins
-  ("Pickup notices").
+- The announcer's class-name lines.
 - Four players.
 
 ## Experience and levels
@@ -1029,7 +1183,7 @@ first: `GDL_MENU="b@400,b@440,b@480,b@520,b@560,b@600"`).
 | a counter or wing open, a gate shut | `UNLOCKLEVEL`, `UNLOCKSECTION`; `NEEDCRYSTALS`, `NEEDGARGITEMS` | `S_CRYS4…`, `S_FNGS4WST`… | in the tower (below) | `quest.rs`, `mechanics.rs` |
 | the welcome, Garm | `WELCOMEMESSAGE`, `GARMMESSAGE` | | the tower ("The tower's welcome") | `tower.rs` |
 | a pickup | the plates, and the runestone count | `S_RUNEFOUND1`, `S_RUNE<n>` + `S_RUNEFOUND2` | any level ("Pickup notices") | `pickup_notices.rs` |
-| a secret character | `ALLCOINS` | `S_SECRETCHAR` | the secret realm's last coin ("Pickup notices") | not done |
+| a secret character | `ALLCOINS` | `S_SECRETCHAR` | the secret realm's last coin ("The secret realm") | `exits/secret_realm.rs` |
 
 ## Quest items and the tower's gates
 

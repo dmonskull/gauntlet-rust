@@ -20,20 +20,25 @@
 //! until the level ends: its panel is the plain one in its colour, with
 //! "IN TOWER", gold and health.
 //!
-//! While the hero's time stop runs, the level timer's hourglass at the
-//! top left shows the time it has left, and `S_HOURGLASS` loops.
+//! The level timer's hourglass at the top left: on a timed level (the
+//! secret realm's) the part of its time gone, the sand falling once the
+//! opening shot is over (`exits/secret_realm.rs`); while a hero's time
+//! stop runs, the time that has left instead, with `S_HOURGLASS` looping.
 //!
-//! Stand-in: the secret realm's coin count isn't drawn.
+//! On a secret level each coin taken shows the level's coins taken and
+//! all of them, under the character's coin, for 60 s.
 
 use bevy::prelude::*;
 use gdl_formats::font::{FONT_8HI, INITIALS};
 
 use crate::audio::{CALL_VOLUME, LoopSoundAt};
 use crate::critters::CritterLevel;
+use crate::exits::secret_realm::{self, COIN_COUNT, COIN_COUNT_SECONDS, LevelTimer, SECRET_REALM, SecretCoins};
 use crate::font::{Draw2d, GameFonts, Quad, TextStyle, UiTextures};
 use crate::frontend::Frontend;
 use crate::level::LoadedGame;
 use crate::party::{MAX_PLAYERS, Member, Party};
+use crate::play_camera::PlayCamera;
 use crate::player::Player;
 use crate::population::LevelPopulation;
 use crate::quest;
@@ -79,10 +84,11 @@ struct Hourglass {
     on: bool,
 }
 
-/// The level timer's hourglass while the hero's time is stopped, and its
-/// looping sound. Its layers go back to front as their sort keys say
-/// (frame 63913, stream 63912, sand 63911: read as depths, the smaller
-/// nearer — unconfirmed).
+/// The level timer's hourglass — on a timed level, or while a hero's time
+/// is stopped, showing the time stop's — and the time stop's looping
+/// sound. Its layers go back to front as their sort keys say (frame
+/// 63913, stream 63912, sand 63911: read as depths, the smaller nearer —
+/// unconfirmed).
 #[allow(clippy::too_many_arguments)]
 fn draw_hourglass(
     frontend: Option<Res<Frontend>>,
@@ -94,6 +100,7 @@ fn draw_hourglass(
     players: Query<&Player>,
     mut glass: Local<Hourglass>,
     time: Res<Time<Virtual>>,
+    (timer, camera): (Res<LevelTimer>, Option<Res<PlayCamera>>),
 ) {
     let g = &mut *glass;
     // The player whose time stop runs (the first, if several).
@@ -124,8 +131,16 @@ fn draw_hourglass(
         None => {}
     }
     g.on = on;
-    let Some(&(_, left)) = g.seen.first() else { return };
-    if !on || frontend.as_deref().is_some_and(|f| !f.playing() || f.menu_open()) {
+    // The time stop's part gone (its sand always falling), else the level
+    // timer's (its sand falling once the opening shot is over); the level
+    // timer's sprites go when its time is up.
+    let stopped = g.seen.first().filter(|_| on).map(|&(_, left)| {
+        let gone = if g.total > 0.0 { ((g.total - left) / g.total).clamp(0.0, 1.0) } else { 0.0 };
+        (gone, true)
+    });
+    let opening = camera.as_deref().is_some_and(PlayCamera::opening);
+    let Some((gone, stream)) = stopped.or_else(|| timer.running().then(|| (timer.gone(), !opening))) else { return };
+    if frontend.as_deref().is_some_and(|f| !f.playing() || f.menu_open()) {
         return;
     }
     if g.textures.is_none()
@@ -134,13 +149,12 @@ fn draw_hourglass(
         g.textures = Some(UiTextures::load(&mut game.install, &[HOURGLASS_BANK]));
     }
     let Some(tex) = g.textures.as_mut() else { return };
-    let gone = if g.total > 0.0 { ((g.total - left) / g.total).clamp(0.0, 1.0) } else { 0.0 };
 
     if let Some(frame) = tex.get("TIMER", &mut images) {
         draw.image(&frame, 1.0, 1.0, frame.size.x, frame.size.y, Color::WHITE);
     }
     let ticks = (time.elapsed_secs_f64() * 30.0) as u64;
-    if let Some(stream) = tex.frame("SAND_ANIM", 1 + (ticks % u64::from(SAND_FRAMES)) as u16, &mut images) {
+    if stream && let Some(stream) = tex.frame("SAND_ANIM", 1 + (ticks % u64::from(SAND_FRAMES)) as u16, &mut images) {
         draw.image(&stream, SAND_STREAM.x, SAND_STREAM.y, stream.size.x, stream.size.y, Color::WHITE);
     }
     if let Some(sand) = tex.get("TIMER_SAND", &mut images) {
@@ -186,8 +200,6 @@ const KEY_ROW_FIELDS: f32 = 300.0;
 /// The key row's colours: key i is lit by the boss of the realm in place i
 /// of the tower's order (`quest::boss_marks`).
 const KEY_COLOURS: [&str; 8] = ["BLU", "RED", "YEL", "GRE", "GRE", "RED", "YEL", "BLU"];
-/// Its levels start without the key row.
-const SECRET_REALM: u32 = 12;
 /// The thirteenth runestone (`RUNEE1`).
 const RUNE_13: i32 = 12;
 /// The boss intro's first state (`critters.rs`): the hero who brought the
@@ -270,9 +282,11 @@ fn draw(
     mut game: Option<ResMut<LoadedGame>>,
     real: Res<Time<Real>>,
     game_time: Res<Time<Virtual>>,
+    coins: Option<Res<SecretCoins>>,
 ) {
     // The key row starts as a level starts (not in the secret realm) and
-    // when a new runestone is picked up; a new pickup count starts its 3 s.
+    // when a new runestone is picked up; a new pickup count starts its 3 s
+    // (a coin's, 60 s).
     let mut started = false;
     if let Some(level) = population.as_ref().filter(|p| p.is_changed()) {
         started = quest::level_of(&level.level).is_none_or(|(realm, _)| realm != SECRET_REALM);
@@ -289,7 +303,7 @@ fn draw(
             && t.popup.is_none_or(|(_, seen)| at > seen)
         {
             t.popup = state.popup;
-            t.popup_left = POPUP_SECONDS;
+            t.popup_left = if state.popup.is_some_and(|(what, _)| what >= COIN_COUNT) { COIN_COUNT_SECONDS } else { POPUP_SECONDS };
         }
     }
 
@@ -330,7 +344,8 @@ fn draw(
         let textures = (&mut *level_textures, game.as_deref_mut(), population.as_deref());
         let intro_start = critters.as_ref().is_some_and(|c| c.intro == INTRO_START);
         let fields = (game_time.delta_secs(), real.delta_secs() * 60.0);
-        draw_panel(&mut p, &fonts, x, member, out, turbo, intro_start, &mut panels[slot], textures, fields);
+        let coin_need = coins.as_ref().map_or(0, |c| c.need);
+        draw_panel(&mut p, &fonts, x, member, out, turbo, intro_start, &mut panels[slot], textures, fields, coin_need);
     }
 }
 
@@ -350,6 +365,7 @@ fn draw_panel(
     show: &mut PanelShow,
     (level_textures, game, population): (&mut Option<UiTextures>, Option<&mut LoadedGame>, Option<&LevelPopulation>),
     (game_secs, real_fields): (f32, f32),
+    coin_need: u32,
 ) {
     let (state, choice) = (&member.state, &member.choice);
     let t = &mut show.timers;
@@ -410,13 +426,16 @@ fn draw_panel(
     if t.rune_13 {
         image(p, "RUNE13", x + 8.0, 340.0, Some(Vec2::splat(16.0)), Color::WHITE);
     }
+    // The quest icon is among the boss level's item textures, a secret
+    // level's coins among the secret realm's.
+    let coin = t.popup.is_some_and(|(what, _)| what >= COIN_COUNT) && popup_shows;
+    if (t.quest_icon || coin)
+        && level_textures.is_none()
+        && let (Some(game), Some(level)) = (game, population)
+    {
+        *level_textures = Some(UiTextures::load(&mut game.install, &[&items_bank(&level.level)]));
+    }
     if t.quest_icon {
-        // The icon is among the boss level's item textures.
-        if level_textures.is_none()
-            && let (Some(game), Some(level)) = (game, population)
-        {
-            *level_textures = Some(UiTextures::load(&mut game.install, &[&format!("ITEMS/{}", level.level)]));
-        }
         if let Some(icon) = level_textures.as_mut().and_then(|textures| textures.get("QUEST_ICON", p.images)) {
             p.draw.image(&icon, x + 104.0, 338.0, 16.0, 16.0, Color::WHITE);
         }
@@ -443,9 +462,14 @@ fn draw_panel(
     // (The `BTMBK_LEVL` plate is made off screen and hidden; only a
     // special mode shows it.)
 
-    // The last gem or gargoyle piece: its icon and count for 3 s.
+    // The last gem or gargoyle piece: its icon and count for 3 s; a
+    // secret level's coins for 60 s.
     let popup = t.popup.filter(|_| popup_shows).and_then(|(what, _)| {
-        let (icon, count, need) = if what < 0x100 {
+        let (icon, count, need) = if what >= COIN_COUNT {
+            let character = u8::try_from(what - COIN_COUNT).ok()?;
+            let count = |n: u32| i16::try_from(n).unwrap_or(i16::MAX);
+            return Some((secret_realm::coin_icon(character), count(state.coins), count(coin_need)));
+        } else if what < 0x100 {
             let c = usize::from(what);
             let need = *quest::CRYSTALS_NEEDED.get(c)?;
             // The art names the colours by three letters (`SM_CRYSTAL_ORA`);
@@ -461,7 +485,12 @@ fn draw_panel(
         Some((icon, if count < 0 { need } else { count }, need))
     });
     if let Some((icon, _, _)) = &popup {
-        image(p, icon, x + 28.0, 288.0, Some(Vec2::splat(16.0)), Color::WHITE);
+        // A coin's is among the level's item textures.
+        let own = if coin { level_textures.as_mut().and_then(|textures| textures.get(icon, p.images)) } else { None };
+        match own {
+            Some(i) => p.draw.image(&i, x + 28.0, 288.0, 16.0, 16.0, Color::WHITE),
+            None => image(p, icon, x + 28.0, 288.0, Some(Vec2::splat(16.0)), Color::WHITE),
+        }
     }
 
     let draw = &mut *p.draw;
@@ -569,8 +598,17 @@ fn turbo_meter(p: &mut Painter, x: f32, target: f32, shown_turbo: &mut f32, m: &
     m.timer += fields;
 }
 
-/// How long a pick-up's count shows.
+/// How long a pick-up's count shows (a coin's, `COIN_COUNT_SECONDS`).
 const POPUP_SECONDS: f32 = 3.0;
+
+/// A level's own item bank, which has its HUD icons: a boss level's quest
+/// icon, the secret realm's coins.
+fn items_bank(level: &str) -> String {
+    match quest::level_of(level) {
+        Some((realm, _)) if realm == SECRET_REALM => secret_realm::COIN_ICON_BANK.to_string(),
+        _ => format!("ITEMS/{level}"),
+    }
+}
 
 struct Painter<'a> {
     draw: &'a mut Draw2d,

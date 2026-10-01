@@ -17,12 +17,14 @@ asks for the tower's start entry nearest the camera's point
 `FUN_8007a4f4` (dying heroes back to state 1, health from the class
 record's saved copy).
 
-Then, after a normal exit (`r13-0x72dc` < 2) or one in the secret realm
-(12): `r13-0x6ee0` = 1 when no player record is in state 1 or 5 (every
-hero out — dead); the tower is loaded behind (`FUN_80053d1c`), the
+Then, with the exit kind `r13-0x72dc` below 2 (a normal exit) or 12 (an
+exit straight to the tower, `FUN_80077ccc`; nothing sets it):
+`r13-0x6ee0` = 1 when no player record is in state 1 or 5 (every hero out
+— dead); the tower is loaded behind (`FUN_80053d1c`), the
 `TRANSITION_SCREEN` sprite (512 × 320) covers it, the HUD panels are
-rebuilt. After a secret exit (`r13-0x72dc` ≥ 2, not 12) `r13-0x6ee0` = 1:
-no screen, the secret level comes next. `FUN_80054244` (mode `0x4010`)
+rebuilt. With any other kind `r13-0x6ee0` = 1: no screen. (A secret exit,
+3–11, and the secret realm's timer, 13, don't come here: the level after
+them isn't the tower — [items.md](items.md), "The secret realm".) `FUN_80054244` (mode `0x4010`)
 calls `FUN_8009a140(0)` when the level just left goes back to the tower,
 and mode `0x400E` (an ending movie) when `FUN_80019bec` returns 2.
 

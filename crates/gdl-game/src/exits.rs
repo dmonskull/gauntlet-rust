@@ -18,6 +18,11 @@
 //! records aren't always in the folders' order ([`LevelIds`]): the tower's
 //! second castle portal (`a2`) leads to `levelA6`, and finishing `levelA6`
 //! opens the third.
+//!
+//! The secret realm's levels have no exits: their timer sends the party
+//! back to the level whose secret exit it took ([`secret_realm`]).
+
+pub mod secret_realm;
 
 use bevy::prelude::*;
 use gdl_formats::{LevelOrder, WorldData};
@@ -67,12 +72,18 @@ pub struct ExitsPlugin;
 
 impl Plugin for ExitsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ChangeLevelTo>().add_systems(Startup, load_level_ids).add_systems(Update, change_level_to);
+        app.add_message::<ChangeLevelTo>()
+            .add_plugins(secret_realm::SecretRealmPlugin)
+            .add_systems(Startup, load_level_ids)
+            .add_systems(Update, change_level_to);
     }
 }
 
+/// Each realm WAD's level records: the level ids, and the timed levels'
+/// seconds.
 fn load_level_ids(mut commands: Commands, mut game: ResMut<LoadedGame>) {
     let mut order = LevelOrder::default();
+    let mut clocks = secret_realm::LevelClocks::default();
     let wads: Vec<String> = game
         .install
         .files()
@@ -85,11 +96,19 @@ fn load_level_ids(mut commands: Commands, mut game: ResMut<LoadedGame>) {
         .collect();
     for path in wads {
         match game.install.read(&path).map_err(|e| e.to_string()).and_then(|b| WorldData::parse(&b).map_err(|e| e.to_string())) {
-            Ok(world) => order.add(&world),
+            Ok(world) => {
+                order.add(&world);
+                for level in &world.levels {
+                    if let Some(seconds) = level.timed() {
+                        clocks.0.insert(level.folder().to_ascii_lowercase(), seconds);
+                    }
+                }
+            }
             Err(why) => warn!("{path}: {why}"),
         }
     }
     commands.insert_resource(LevelIds(order));
+    commands.insert_resource(clocks);
 }
 
 #[allow(clippy::too_many_arguments)]
