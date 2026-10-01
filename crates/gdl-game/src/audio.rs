@@ -10,14 +10,15 @@
 //! heroes); `N` steps through the current level's bank.
 //!
 //! Voice lines wait their turn in the game's two voice queues
-//! ([`QueueVoice`], [`VoiceQueues`]; `docs/frontend.md`, "The voice
-//! queues"): the heroes' own lines in one, the announcer's and the
-//! wizards' in the other.
+//! ([`QueueVoice`], [`QueueHeroLine`], [`VoiceQueues`]; `docs/frontend.md`,
+//! "The voice queues"): the heroes' own lines in one, panned from where
+//! the hero was as they're queued, the announcer's and the wizards' in the
+//! other, centred at `0xE0`.
 //!
 //! Anything missing or undecodable is logged and skipped — audio never
 //! stops the game from running.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -34,7 +35,7 @@ use crate::options::{GameOptions, SoundKind};
 use crate::play_camera::PlayCamera;
 use crate::player::Player;
 use crate::player_state::PlayerState;
-use crate::world::CurrentLevelStats;
+use crate::world::{CurrentLevelStats, LevelEntity};
 
 pub struct GameAudioPlugin;
 
@@ -48,6 +49,7 @@ impl Plugin for GameAudioPlugin {
             .add_message::<LoopSound>()
             .add_message::<LoopSoundAt>()
             .add_message::<QueueVoice>()
+            .add_message::<QueueHeroLine>()
             .init_resource::<AudioStatus>()
             .init_resource::<VoiceQueues>()
             .add_systems(Startup, load_audio_tables)
@@ -179,11 +181,40 @@ pub enum VoiceQueue {
     Announcer = 1,
 }
 
+impl VoiceQueue {
+    /// The requested volume a queued line plays at: every announcer's
+    /// line at `0xE0`; a hero's eating, poison and steal lines at `0xC0`
+    /// (its hurt cries ask for `0xE0`, [`QueueHeroLine`]).
+    fn volume(self) -> u8 {
+        match self {
+            Self::Heroes => HERO_LINE_VOLUME,
+            Self::Announcer => ANNOUNCER_VOLUME,
+        }
+    }
+}
+
+/// The announcer's lines' requested volume, and the heroes' own lines'
+/// (eating, poison).
+pub const ANNOUNCER_VOLUME: u8 = 0xE0;
+pub const HERO_LINE_VOLUME: u8 = 0xC0;
+
+/// A hero's own line for the heroes' queue, as the game queues them: at
+/// `volume`, panned from `at` (where the hero is) as it's queued, and
+/// dropped when it would wait more than a second.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct QueueHeroLine {
+    pub line: String,
+    pub volume: u8,
+    pub at: Vec3,
+}
+
 /// Queues a voice line (or a sentence of them) by catalog name: it plays
 /// once the lines queued before it are done. The first line is dropped when
 /// what is queued ahead would keep it waiting more than `most_wait`
 /// seconds (never, for `None`), or when the queue is full; the lines after
-/// it wait as long as it takes, and go with it when it's dropped.
+/// it wait as long as it takes, and go with it when it's dropped. They play
+/// centred at their queue's volume (the heroes' own lines, placed, go
+/// through [`QueueHeroLine`]).
 #[derive(Message, Clone, Debug)]
 pub struct QueueVoice {
     pub queue: VoiceQueue,
@@ -198,11 +229,6 @@ impl QueueVoice {
     /// An announcer line.
     pub fn announcer(line: impl Into<String>, most_wait: f32) -> Self {
         Self { queue: VoiceQueue::Announcer, lines: vec![line.into()], most_wait: Some(most_wait), gated: false }
-    }
-
-    /// A hero's own line: dropped when it would wait more than a second.
-    pub fn hero(line: impl Into<String>) -> Self {
-        Self { queue: VoiceQueue::Heroes, lines: vec![line.into()], most_wait: Some(HERO_MOST_WAIT), gated: false }
     }
 
     /// A line said right after the last.
@@ -225,11 +251,21 @@ const QUEUE_LINES: usize = 16;
 /// The voice queues count fields, 60 a second of real time.
 const FIELDS_PER_SECOND: f32 = 60.0;
 
-/// A queued line: its sound and how long it holds the queue, in fields.
+/// A queued line: its sound, how long it holds the queue (fields), and
+/// how it plays: its requested volume and the pan it was queued with.
 #[derive(Debug)]
 struct Line {
     name: String,
     fields: f32,
+    volume: u8,
+    pan: i32,
+}
+
+/// How a line is to play: its requested volume and pan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LineLook {
+    volume: u8,
+    pan: i32,
 }
 
 #[derive(Default)]
@@ -267,7 +303,7 @@ impl VoiceQueues {
 
     /// Appends a line `fields` long; `false` when it's dropped: the queue
     /// is full, or what's ahead of it runs more than `most_wait` seconds.
-    fn append(&mut self, queue: VoiceQueue, name: &str, fields: f32, most_wait: Option<f32>) -> bool {
+    fn append(&mut self, queue: VoiceQueue, name: &str, fields: f32, most_wait: Option<f32>, look: LineLook) -> bool {
         let now = self.now;
         let q = &mut self.queues[queue as usize];
         if q.lines.len() >= QUEUE_LINES {
@@ -282,14 +318,14 @@ impl VoiceQueues {
         if most_wait.is_some_and(|w| w * FIELDS_PER_SECOND < starts - now) {
             return false;
         }
-        q.lines.push_back(Line { name: name.into(), fields });
+        q.lines.push_back(Line { name: name.into(), fields, volume: look.volume, pan: look.pan });
         true
     }
 
     /// One step at field `now`: a queue whose first line hasn't started
     /// starts it; one whose first line is done takes it off (the next
-    /// starts on the following step). The lines to play now.
-    fn step(&mut self, now: f32) -> Vec<String> {
+    /// starts on the following step). The lines to play now, and how.
+    fn step(&mut self, now: f32) -> Vec<(String, LineLook)> {
         self.now = now;
         let mut start = Vec::new();
         for q in &mut self.queues {
@@ -297,7 +333,7 @@ impl VoiceQueues {
             match q.ends {
                 None => {
                     q.ends = Some(now + first.fields);
-                    start.push(first.name.clone());
+                    start.push((first.name.clone(), LineLook { volume: first.volume, pan: first.pan }));
                 }
                 Some(ends) if ends <= now => {
                     q.lines.pop_front();
@@ -311,14 +347,17 @@ impl VoiceQueues {
 }
 
 /// Queues the lines asked for and steps the queues, starting the lines
-/// whose turn has come.
+/// whose turn has come: centred at their queue's volume, or (a hero's own
+/// line) at its own volume and the pan from where the hero was as it was
+/// queued.
 fn step_voices(
     real: Res<Time<Real>>,
     stats: Option<Res<CurrentLevelStats>>,
-    tables: Res<AudioTables>,
     mut voices: ResMut<VoiceQueues>,
     mut requests: MessageReader<QueueVoice>,
-    mut play: MessageWriter<PlaySound>,
+    mut hero_lines: MessageReader<QueueHeroLine>,
+    camera: Option<Res<PlayCamera>>,
+    mut effects: Effects,
 ) {
     // A new level opens the announcer's queue again.
     if stats.is_some_and(|s| s.is_changed()) {
@@ -326,26 +365,36 @@ fn step_voices(
     }
     let now = voices.now + real.delta_secs() * FIELDS_PER_SECOND;
     voices.now = now;
+    let ear = camera.as_deref().map(ear);
+    let mut asked: Vec<(VoiceQueue, Vec<String>, Option<f32>, LineLook)> = Vec::new();
     for QueueVoice { queue, lines, most_wait, gated } in requests.read() {
         if *gated && voices.closed {
             info!("voice {lines:?} refused: the level's end has begun");
             continue;
         }
+        asked.push((*queue, lines.clone(), *most_wait, LineLook { volume: queue.volume(), pan: CENTRE_PAN }));
+    }
+    for h in hero_lines.read() {
+        let pan = ear.map_or(CENTRE_PAN, |(focus, right)| pan(h.at, focus, right));
+        asked.push((VoiceQueue::Heroes, vec![h.line.clone()], Some(HERO_MOST_WAIT), LineLook { volume: h.volume, pan }));
+    }
+    for (queue, lines, most_wait, look) in asked {
         for (i, name) in lines.iter().enumerate() {
             // A line lasts its sound's catalog length (a looping sound's is
             // negative: it's taken off at once); a sound the catalog
             // doesn't have, none.
-            let length = tables.catalog.as_ref().and_then(|c| c.find_sound(name)).map_or(0.0, |s| s.length);
-            let wait = if i == 0 { *most_wait } else { None };
-            if !voices.append(*queue, name, length * FIELDS_PER_SECOND, wait) {
+            let length = effects.tables.catalog.as_ref().and_then(|c| c.find_sound(name)).map_or(0.0, |s| s.length);
+            let wait = if i == 0 { most_wait } else { None };
+            if !voices.append(queue, name, length * FIELDS_PER_SECOND, wait, look) {
                 info!("voice {name} dropped: the {queue:?} queue is too long");
                 break;
             }
         }
     }
-    for name in voices.step(now) {
-        info!("voice line {name} starts");
-        play.write(PlaySound(name));
+    for (name, look) in voices.step(now) {
+        info!("voice line {name} starts: volume {}, pan {}", look.volume, look.pan);
+        let stereo = (look.pan != CENTRE_PAN).then(|| stereo_gains(look.pan));
+        effects.start(&name, Some(EffectLook { volume: look.volume, stereo }));
     }
 }
 
@@ -382,10 +431,13 @@ struct LoopChannel(&'static str, String);
 /// and with `follow_volume`, re-volumed the same way, heading for `volume`
 /// itself (the level items' loops). Asked for again while it plays, it
 /// only moves; if it has ended (a call that doesn't loop) it starts over; a
-/// different name starts the new one; none stops it.
+/// different name starts the new one; none stops it. A channel is its
+/// `key` and `slot` (the owner's numbering, for owners with many loops).
+/// Every one ends with the level.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct LoopSoundAt {
     pub key: &'static str,
+    pub slot: u32,
     pub name: Option<String>,
     pub at: Option<Vec3>,
     pub volume: u8,
@@ -395,12 +447,24 @@ pub struct LoopSoundAt {
 impl LoopSoundAt {
     /// Plays (or keeps playing and moves) `name` at `at`.
     pub fn at(key: &'static str, name: impl Into<String>, at: Vec3, volume: u8) -> Self {
-        Self { key, name: Some(name.into()), at: Some(at), volume, follow_volume: false }
+        Self { key, slot: 0, name: Some(name.into()), at: Some(at), volume, follow_volume: false }
     }
 
     /// Stops the channel.
     pub fn stop(key: &'static str) -> Self {
-        Self { key, name: None, at: None, volume: 0, follow_volume: false }
+        Self { key, slot: 0, name: None, at: None, volume: 0, follow_volume: false }
+    }
+
+    /// On slot `slot` of the key.
+    pub fn slot(mut self, slot: u32) -> Self {
+        self.slot = slot;
+        self
+    }
+
+    /// Its volume follows `volume` too.
+    pub fn follow_volume(mut self) -> Self {
+        self.follow_volume = true;
+        self
     }
 }
 
@@ -460,6 +524,7 @@ impl LiveGains {
 #[derive(Component)]
 struct FollowingLoop {
     key: &'static str,
+    slot: u32,
     name: String,
     at: Option<Vec3>,
     gains: Arc<LiveGains>,
@@ -494,6 +559,8 @@ struct AudioTables {
     banks: HashMap<usize, Arc<SoundBank>>,
     /// Next sound `N` plays from the current level's bank.
     next_sound: usize,
+    /// Loops whose sound couldn't be built (warned about once).
+    failed: HashSet<String>,
 }
 
 #[derive(Component)]
@@ -669,34 +736,43 @@ impl Effects<'_, '_> {
 }
 
 impl Effects<'_, '_> {
-    /// Starts a loop that follows something: its voice volume the call's
-    /// own × volume / 127, its pan the one it starts at; its decoder reads
-    /// the gains its channel sets every frame.
-    fn start_loop(&mut self, key: &'static str, name: &str, at: Option<Vec3>, volume: u8, follow_volume: bool, pan: f32) {
+    /// Starts a loop that follows something, as `r` asks: its voice volume
+    /// the call's own × volume / 127, its pan the one it starts at; its
+    /// decoder reads the gains its channel sets every frame. It goes with
+    /// the level. A sound that can't be built is warned about once.
+    fn start_loop(&mut self, r: &LoopSoundAt, name: &str, pan: f32) {
+        if self.tables.failed.contains(name) {
+            return;
+        }
         match build_sound(&mut self.game, &mut self.tables, name) {
             Ok(mut effect) => {
                 let gains = Arc::new(LiveGains::default());
                 let lp = FollowingLoop {
-                    key,
+                    key: r.key,
+                    slot: r.slot,
                     name: name.to_string(),
-                    at,
+                    at: r.at,
                     gains: gains.clone(),
                     pan,
-                    volume: f32::from(volume) * effect.gain,
-                    target_volume: follow_volume.then_some(f32::from(volume)),
+                    volume: f32::from(r.volume) * effect.gain,
+                    target_volume: r.follow_volume.then_some(f32::from(r.volume)),
                 };
                 gains.set(lp.gains_now());
                 effect.gain = 1.0;
                 effect.live = Some(gains);
-                debug!("loop {name} on {key} at {at:?}: volume {:.0}, pan {pan}", lp.volume);
+                debug!("loop {name} on {}/{} at {:?}: volume {:.0}, pan {pan}", r.key, r.slot, r.at, lp.volume);
                 self.commands.spawn((
                     lp,
                     SoundKind::Effect,
                     AudioPlayer(self.assets.add(effect)),
                     PlaybackSettings { volume: self.options.category(SoundKind::Effect), ..PlaybackSettings::DESPAWN },
+                    LevelEntity,
                 ));
             }
-            Err(e) => warn!("sound {name}: {e}"),
+            Err(e) => {
+                warn!("sound {name}: {e}");
+                self.tables.failed.insert(name.to_string());
+            }
         }
     }
 }
@@ -775,7 +851,7 @@ fn loop_sounds(
     // The latest request for each channel this frame (two game ticks in a
     // frame mustn't start a loop twice: a spawn shows next frame).
     let asked = requests.read().map(|LoopSound { key, name }| (*key, name.clone()));
-    for (key, name) in latest_by_channel(asked, |(k, _)| k) {
+    for (key, name) in latest_by_channel(asked, |(k, _)| *k) {
         let current = playing.iter().find(|(_, c)| c.0 == key);
         if current.is_some_and(|(_, c)| Some(&c.1) == name.as_ref()) {
             continue;
@@ -801,7 +877,7 @@ fn loop_sounds(
 /// The last request for each channel, in the order the channels were
 /// first asked for: two game ticks in one frame mustn't start a loop twice
 /// (a spawn only shows the next frame).
-fn latest_by_channel<T>(requests: impl Iterator<Item = T>, key: impl Fn(&T) -> &'static str) -> Vec<T> {
+fn latest_by_channel<T, K: PartialEq>(requests: impl Iterator<Item = T>, key: impl Fn(&T) -> K) -> Vec<T> {
     let mut latest: Vec<T> = Vec::new();
     for r in requests {
         match latest.iter().position(|l| key(l) == key(&r)) {
@@ -828,12 +904,12 @@ fn follow_loops(
         _ => CENTRE_PAN as f32,
     };
     // The latest request for each channel this frame.
-    for r in latest_by_channel(requests.read().cloned(), |r| r.key) {
-        let current = playing.iter_mut().find(|(_, l)| l.key == r.key);
-        match (r.name, current) {
+    for r in latest_by_channel(requests.read().cloned(), |r| (r.key, r.slot)) {
+        let current = playing.iter_mut().find(|(_, l)| l.key == r.key && l.slot == r.slot);
+        match (&r.name, current) {
             (None, Some((e, _))) => effects.commands.entity(e).try_despawn(),
             (None, None) => {}
-            (Some(name), Some((_, mut l))) if l.name == name => {
+            (Some(name), Some((_, mut l))) if l.name == *name => {
                 l.at = r.at;
                 if r.follow_volume {
                     l.target_volume = Some(f32::from(r.volume));
@@ -843,7 +919,7 @@ fn follow_loops(
                 if let Some((e, _)) = current {
                     effects.commands.entity(e).try_despawn();
                 }
-                effects.start_loop(r.key, &name, r.at, r.volume, r.follow_volume, aim(r.at));
+                effects.start_loop(&r, name, aim(r.at));
             }
         }
     }
@@ -1142,6 +1218,7 @@ mod tests {
         // A channel at the centre and its call's own volume plays as is.
         let l = FollowingLoop {
             key: "k",
+            slot: 0,
             name: String::new(),
             at: None,
             gains,
@@ -1221,18 +1298,26 @@ mod tests {
         }
     }
 
+    /// An announcer's line's look.
+    const SAID: LineLook = LineLook { volume: ANNOUNCER_VOLUME, pan: CENTRE_PAN };
+
+    /// The names of the lines a step starts.
+    fn names(started: Vec<(String, LineLook)>) -> Vec<String> {
+        started.into_iter().map(|(name, _)| name).collect()
+    }
+
     #[test]
     fn voice_lines_play_one_after_another() {
         use VoiceQueue::Announcer;
         let mut v = VoiceQueues::default();
-        assert!(v.append(Announcer, "A", 60.0, None));
-        assert!(v.append(Announcer, "B", 30.0, None));
+        assert!(v.append(Announcer, "A", 60.0, None, SAID));
+        assert!(v.append(Announcer, "B", 30.0, None, SAID));
         assert!(v.busy());
-        assert_eq!(v.step(0.0), ["A"]);
+        assert_eq!(names(v.step(0.0)), ["A"]);
         assert!(v.step(59.0).is_empty());
         // A is taken off at its end; B starts on the next step.
         assert!(v.step(60.0).is_empty());
-        assert_eq!(v.step(61.0), ["B"]);
+        assert_eq!(names(v.step(61.0)), ["B"]);
         assert!(v.step(91.0).is_empty());
         assert!(!v.busy());
     }
@@ -1240,35 +1325,39 @@ mod tests {
     #[test]
     fn voice_queues_run_side_by_side() {
         let mut v = VoiceQueues::default();
-        v.append(VoiceQueue::Heroes, "H", 10.0, None);
-        v.append(VoiceQueue::Announcer, "A", 10.0, None);
-        assert_eq!(v.step(0.0), ["H", "A"]);
+        let cry = LineLook { volume: 0xE0, pan: 40 };
+        v.append(VoiceQueue::Heroes, "H", 10.0, None, cry);
+        v.append(VoiceQueue::Announcer, "A", 10.0, None, SAID);
+        // Each line plays as it was queued.
+        assert_eq!(v.step(0.0), [("H".to_string(), cry), ("A".to_string(), SAID)]);
+        assert_eq!(VoiceQueue::Heroes.volume(), 0xC0);
+        assert_eq!(VoiceQueue::Announcer.volume(), 0xE0);
     }
 
     #[test]
     fn voice_line_dropped_when_it_would_wait_too_long() {
         use VoiceQueue::Announcer;
         let mut v = VoiceQueues::default();
-        v.append(Announcer, "A", 120.0, None);
+        v.append(Announcer, "A", 120.0, None, SAID);
         // 2 s ahead of it: a half-second line is dropped, a 10 s one isn't.
-        assert!(!v.append(Announcer, "B", 30.0, Some(0.5)));
-        assert!(v.append(Announcer, "C", 30.0, Some(10.0)));
+        assert!(!v.append(Announcer, "B", 30.0, Some(0.5), SAID));
+        assert!(v.append(Announcer, "C", 30.0, Some(10.0), SAID));
         // Once A has played a second: its last second and C's half wait.
         v.step(0.0);
         v.now = 60.0;
-        assert!(!v.append(Announcer, "D", 30.0, Some(1.4)));
-        assert!(v.append(Announcer, "E", 30.0, Some(1.5)));
+        assert!(!v.append(Announcer, "D", 30.0, Some(1.4), SAID));
+        assert!(v.append(Announcer, "E", 30.0, Some(1.5), SAID));
         // Nothing ahead: never dropped.
         let mut empty = VoiceQueues::default();
-        assert!(empty.append(Announcer, "F", 30.0, Some(0.0)));
+        assert!(empty.append(Announcer, "F", 30.0, Some(0.0), SAID));
     }
 
     #[test]
     fn voice_queue_holds_sixteen_lines() {
         let mut v = VoiceQueues::default();
         for _ in 0..QUEUE_LINES {
-            assert!(v.append(VoiceQueue::Heroes, "L", 1.0, None));
+            assert!(v.append(VoiceQueue::Heroes, "L", 1.0, None, SAID));
         }
-        assert!(!v.append(VoiceQueue::Heroes, "L", 1.0, None));
+        assert!(!v.append(VoiceQueue::Heroes, "L", 1.0, None, SAID));
     }
 }

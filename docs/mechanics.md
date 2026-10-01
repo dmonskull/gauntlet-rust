@@ -159,8 +159,9 @@ these (the node-flag check for 11 is left out) where the game does, at
 one-shots panned at the mover's node as it is that tick
 (`audio::PlaySoundAt`), the loop following the first mover moving
 (`audio::LoopSoundAt`), the rotators' grinding following the last one
-grinding on. Not done: the game plays a mover's stop sound only if its
-set's loop was playing.
+grinding on; a mover's stop sound only if its set's loop was the one
+playing (the one asked for the tick before), as the game's `FUN_800163c4`
+test has it.
 
 ## Trigger touch and update
 

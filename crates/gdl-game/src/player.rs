@@ -32,7 +32,7 @@ use gdl_formats::pdata::PlayerStats;
 
 use crate::actions::{self, Action, ActionState, Env, Strike};
 use crate::camera::FreeLook;
-use crate::audio::{LoopSound, PlaySound};
+use crate::audio::{CALL_VOLUME, LoopSoundAt, PlaySoundAt};
 use crate::character::{self, Animator, CharacterData};
 use crate::monsters::DeathMonster;
 use crate::combat::{self, Buttons, Hit, Intent, TargetKind, Targetable, button};
@@ -369,13 +369,20 @@ fn special_attack(special: u32, weapon: u32) -> Option<Action> {
 }
 
 /// The halo (armour bit): its drain of a Death, a point a tick, with
-/// `S_HALO` the first time, `S_DEATHDIE` going on at it and Death's drain
-/// effect on the hero.
+/// `S_HALO` the first time (panned at the hero's top, `0xE0`),
+/// `S_DEATHDIE` going on at the Death, Death's drain sound at the hero's
+/// feet (`S_DEATHSUCK`, looping) and Death's drain effect on the hero.
 const HALO: u32 = 0x8_0000;
 const HALO_DRAIN: f32 = 1.0;
 const HALO_SOUND: &str = "S_HALO";
+const HALO_VOLUME: u8 = 0xE0;
 const HALO_LOOP: &str = "halo_drain";
+const HALO_SUCK_LOOP: &str = "halo_suck";
 const DEATH_DIES: &str = "S_DEATHDIE";
+const DEATH_SUCK: &str = "S_DEATHSUCK";
+/// A potion going up as the magic shield (defending): its sound at the
+/// hero's collision centre.
+const TURBO_DEFENSE: &str = "S_TURBODEFENSE";
 const DEATH_BANK: &str = "MONSTERS/DEATH";
 const DEATH_ARC: &str = "DEATH_ARC";
 const DEATH_EXP: &str = "DEATH_EXP";
@@ -602,8 +609,8 @@ type HeroWriters<'w> = (
     MessageWriter<'w, BreathAt>,
     MessageWriter<'w, SpendPower>,
     MessageWriter<'w, ChopAt>,
-    MessageWriter<'w, PlaySound>,
-    MessageWriter<'w, LoopSound>,
+    MessageWriter<'w, PlaySoundAt>,
+    MessageWriter<'w, LoopSoundAt>,
     MessageWriter<'w, EffectOn>,
 );
 
@@ -1053,15 +1060,22 @@ fn tick(
             });
             if !p.halo_drank {
                 p.halo_drank = true;
-                sounds.write(PlaySound(HALO_SOUND.into()));
+                sounds.write(PlaySoundAt::panned(HALO_SOUND, position + Vec3::Y * crate::player_state::DEFAULT_HEAD, HALO_VOLUME));
             }
+            // Every tick: S_DEATHDIE at the Death — the game starts it
+            // again, panned, whenever it isn't playing (stand-in: one that
+            // follows it, at its centre for its `+0x54` point) — and the
+            // drain's sound at the hero's feet.
+            let death = f.position + Vec3::Y * gdl_formats::enemy::enemy_stats(crate::monsters::DEATH_TYPE).map_or(0.0, |s| s.center_height);
+            loops.write(LoopSoundAt::at(HALO_LOOP, DEATH_DIES, death, CALL_VOLUME));
+            loops.write(LoopSoundAt::at(HALO_SUCK_LOOP, DEATH_SUCK, position, CALL_VOLUME));
             if !p.halo_draining {
-                loops.write(LoopSound { key: HALO_LOOP, name: Some(DEATH_DIES.into()) });
                 let name = if experience { DEATH_EXP } else { DEATH_ARC };
                 riding.write(EffectOn { name, bank: Some(DEATH_BANK), on: entity, scale: 1.0 });
             }
         } else if p.halo_draining {
-            loops.write(LoopSound { key: HALO_LOOP, name: None });
+            loops.write(LoopSoundAt::stop(HALO_LOOP));
+            loops.write(LoopSoundAt::stop(HALO_SUCK_LOOP));
         }
         p.halo_draining = drinking.is_some();
         // Charging (SHOVE) into a monster or a critter other than a boss:
@@ -1264,6 +1278,10 @@ fn tick(
                 } else {
                     0
                 };
+                if mode == 1 {
+                    let centre = position + Vec3::Y * crate::projectiles::PLAYER_CENTRE;
+                    sounds.write(PlaySoundAt::panned(TURBO_DEFENSE, centre, CALL_VOLUME));
+                }
                 potions.write(UsePotion { hero: entity, feet: position, facing, mode, charge: p.magic.charge });
                 p.magic.flags = MagicState::USED;
             }
