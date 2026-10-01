@@ -517,6 +517,8 @@ struct Item {
     /// moving one (flag 0x1000) — how it rides it.
     floor_node: Option<usize>,
     ride: Option<Ride>,
+    /// The clip the model build started is still on (it goes round).
+    first_loops: bool,
 }
 
 impl Item {
@@ -534,11 +536,28 @@ impl Item {
         self.class() == ItemClass::Obstacle && own == SAFE_ROCK
     }
 
-    /// Starts `action` of the item's atree from its first frame.
+    /// Starts `action` of the item's atree from its first frame. A
+    /// restart takes the clip's loop flag from the action again.
     fn play(&mut self, action: usize) {
         self.action = action;
         self.frame = 0.0;
         self.done = false;
+        self.first_loops = false;
+    }
+
+    /// Whether the current clip goes round (the game's clip flag, anim
+    /// `+0x34` = item `+0xA4`): set from the action's own flag (`+0x24`)
+    /// at each start, but the model build sets it once the first clip
+    /// has started, so an item's first action goes round until the item
+    /// moves to another — keys, scrolls and the icons turn for good
+    /// though their `ACTIVE` doesn't loop. A trigger's update clears it
+    /// every frame; an exit's sets it for actions 0, 1 and 3.
+    fn loops(&self, own: bool) -> bool {
+        match self.class() {
+            ItemClass::Trigger => false,
+            ItemClass::Exit => matches!(self.action, 0 | 1 | 3),
+            _ => own || self.first_loops,
+        }
     }
 
     /// Advances the current action by `dt` seconds at its own rate.
@@ -547,11 +566,7 @@ impl Item {
             self.done = true;
             return;
         };
-        // A powerup turns round and round: the key's, key ring's, scroll's
-        // and the reflect and boost icons' ACTIVE carry no loop flag, but
-        // they keep turning in the original (the user's report; how the
-        // game replays them isn't traced).
-        let loops = a.loops() || self.class() == ItemClass::Powerup;
+        let loops = self.loops(a.loops());
         // A looping action finishing a cycle counts as its end for whatever
         // waits on it.
         let wrapped = character::advance_clip(&mut self.frame, dt, a.frames, a.rate, loops);
@@ -994,6 +1009,7 @@ impl LevelItems {
             falling: None,
             floor_node: None,
             ride: None,
+            first_loops: true,
         });
         placement
     }
@@ -1169,6 +1185,9 @@ pub(crate) fn build_items(
             falling: None,
             floor_node,
             ride,
+            // The build starts action 0; one made used starts action 1
+            // instead (unless its type steps actions, flag 4), a restart.
+            first_loops: flags & USED == 0 || flags & 4 != 0,
         });
     }
     let doors = out.iter().filter(|i| i.class() == ItemClass::Door).count();
@@ -2371,6 +2390,34 @@ mod tests {
             assert!(n < 300);
         }
         assert!(item.position[1] < -210.0);
+    }
+
+    #[test]
+    fn first_clips_go_round_until_the_action_changes() {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let mut items = LevelItems::default();
+        let key = ItemType { class: ItemClass::Powerup, subtype: 2, ..obstacle(0) };
+        let k = items.release(key, [0.0; 3], identity, None, 0);
+        let item = items.items.iter_mut().find(|i| i.placement == k).unwrap();
+        // The key's ACTIVE has no loop flag, but it's the clip the build
+        // started: round it goes, till another action starts.
+        assert!(item.loops(false));
+        item.play(1);
+        assert!(!item.loops(false) && item.loops(true));
+        // A pad never goes round; an exit's waiting and open actions do.
+        let pad = ItemType { class: ItemClass::Trigger, ..obstacle(0x18) };
+        let p = items.release(pad, [0.0; 3], identity, None, 0);
+        assert!(!items.items.iter().find(|i| i.placement == p).unwrap().loops(true));
+        let exit = ItemType { class: ItemClass::Exit, ..obstacle(0) };
+        let e = items.release(exit, [0.0; 3], identity, None, 0);
+        let item = items.items.iter_mut().find(|i| i.placement == e).unwrap();
+        let by_action: Vec<bool> = (0..5)
+            .map(|a| {
+                item.play(a);
+                item.loops(false)
+            })
+            .collect();
+        assert_eq!(by_action, [true, true, false, true, false]);
     }
 
     #[test]

@@ -224,6 +224,12 @@ The player update's item query runs it for each touched trigger:
 - Trigger flag `0x100`: counts only if the player stands on the target
   node or one of its direct children (walks `+0x2E` first child /
   `+0x2C` next sibling from the target) — lift pads ride on the lift.
+  The node the player stands on (`+0x8C4`) is set by `FUN_8008764c` only
+  when the floor check finds a floor (`FUN_800878a0` returns above 0); the
+  floor check clears it only when it finds no floor and the player isn't
+  moving across (under 0.001), so a hero walking off a lift still counts
+  as on it until it lands elsewhere or drops straight down (the rewrite's
+  `LevelCollision::player_floor` does the same).
 - Flag `0x400` (all players needed) with more than one player: hints
   `0x7E` / `0x7F`.
 - Sets the player's bit in `+0xCE` on this trigger and every trigger down
