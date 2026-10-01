@@ -357,6 +357,12 @@ impl ShowHint {
     pub fn to(player: usize, hint: Hint) -> Self {
         Self { hint, player }
     }
+
+    /// For every player (the game's player −1, shown as its player 4: the
+    /// shared ink, in the middle of the screen).
+    pub fn all(hint: Hint) -> Self {
+        Self { hint, player: MAX_PLAYERS }
+    }
 }
 
 /// The hint on screen: whose it is, its lines, font slot and scale, and

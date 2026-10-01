@@ -397,8 +397,9 @@ pub struct DeathState {
     timer: f32,
     /// Contacts it lets pass before it drains (`+0x2D4`: 1 when placed).
     delay: u8,
-    /// The hero it's draining or drained last (`+0x284`).
+    /// The hero it's draining or drained last (`+0x284`), and its slot.
     pub drained: Option<Entity>,
+    drained_slot: usize,
     /// It drank its fill and leaves (`+0x320`).
     pub left: bool,
     /// The nearest hero with the halo, which it runs from (`+0x328`).
@@ -1067,6 +1068,8 @@ pub fn on_screen(view: &Views, at: [f32; 3], radius: f32) -> bool {
 #[derive(Clone, Copy)]
 pub struct Target {
     pub entity: Entity,
+    /// Its player's slot.
+    pub slot: usize,
     pub feet: [f32; 3],
     /// Invisible: not picked.
     pub hidden: bool,
@@ -1123,6 +1126,7 @@ fn tick_monsters(
         .iter()
         .map(|(e, p)| Target {
             entity: e,
+            slot: p.slot,
             feet: p.mover.position,
             hidden: p.special_bits & power::INVISIBLE != 0,
             halo: p.armour_bits & HALO != 0,
@@ -1557,6 +1561,7 @@ fn death_touch(
     }
     m.death.timer += DEATH_DRAIN_FIELDS;
     m.death.drained = Some(hero.entity);
+    m.death.drained_slot = hero.slot;
     let experience = m.strength == 2;
     drains.write(DeathDrain { death: entity, hero: hero.entity, amount: m.stats.damage, experience });
     if !m.death.drain_effect {
@@ -1592,7 +1597,8 @@ fn leave_tick(
         return false;
     }
     if m.death.left && m.death.drained.is_some() {
-        hints.write(ShowHint::to(0, if m.strength == 2 { Hint::DeathLeftAfterExperience } else { Hint::DeathLeftAfterHealth }));
+        let hint = if m.strength == 2 { Hint::DeathLeftAfterExperience } else { Hint::DeathLeftAfterHealth };
+        hints.write(ShowHint::to(m.death.drained_slot, hint));
     }
     true
 }
