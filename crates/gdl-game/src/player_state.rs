@@ -308,6 +308,17 @@ impl Default for PlayerState {
 }
 
 impl PlayerState {
+    /// What the machines compare of a hero's record online (`online.rs`):
+    /// its numbers and holdings, not the HUD's popup.
+    pub fn sync_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.health.to_bits(), self.level, self.experience, self.gold, self.keys, &self.potions, &self.runestones).hash(&mut h);
+        (self.realms_beaten, self.alive, self.warning_timer).hash(&mut h);
+        format!("{:?} {:?} {:?}", self.powers, self.quest, self.bits).hash(&mut h);
+        h.finish()
+    }
+
     /// A new hero of `class`, as the game resets one: level 1, no
     /// experience, gold, keys or potions, 500 health.
     pub fn new(class: &str, stats: Option<&PlayerStats>) -> Self {

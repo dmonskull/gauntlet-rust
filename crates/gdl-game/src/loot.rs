@@ -184,8 +184,11 @@ fn spray_loot(
     heroes: Query<(), With<Player>>,
     mut flung: ResMut<Flung>,
     mut sweeps: MessageWriter<SweepItems>,
-    mut seed: Local<u32>,
+    (mut seed, mut new_game): (Local<u32>, MessageReader<crate::online::NewGame>),
 ) {
+    if new_game.read().count() > 0 {
+        *seed = 0;
+    }
     let (Some(mut items), Some(population)) = (items, population) else { return };
     for l in loot.read() {
         sweeps.write(SweepItems { at: l.at, damage: SWEEP_DAMAGE, radius: SWEEP_RADIUS, life: SWEEP_LIFE });

@@ -36,6 +36,8 @@ use crate::exits::ChangeLevelTo;
 use crate::font::{Draw2d, FontTexture, GameFonts, TextStyle, UiTextures};
 use crate::level::LoadedGame;
 use crate::message_box::MessageBox;
+use crate::online::{ColumnShow, Hero, Lobby, Lockstep, Message, NewGame, Online, OnlineFailed, Opening};
+use crate::play_camera::PlayCamera;
 use crate::options::GameOptions;
 use crate::party::{MAX_PLAYERS, Party};
 use crate::player::{Player, PlayerChoice};
@@ -66,10 +68,16 @@ impl Plugin for FrontendPlugin {
                     run,
                     draw,
                     level_started.run_if(resource_exists_and_changed::<LevelPopulation>),
-                    death,
+                    death.run_if(crate::online::lockstep_off),
                     show_backdrop,
                 )
                     .chain(),
+            )
+            // Online a death plays out on the network's ticks, alike on
+            // every machine.
+            .add_systems(
+                FixedUpdate,
+                death.run_if(crate::online::lockstep_on).after(crate::player::PlayerTick),
             );
     }
 }
@@ -278,6 +286,14 @@ enum Item {
     /// Title menu.
     Start,
     Options,
+    /// Play: a game on this machine, or online (host or join).
+    Local,
+    Online,
+    Host,
+    Join,
+    /// Online play's menu.
+    LeaveGame,
+    ConfirmLeave,
     /// Pause menus.
     Settings,
     ManageCharacter,
@@ -601,24 +617,35 @@ const fn confirm(title: &'static str, items: &'static [Entry]) -> MenuDef {
     }
 }
 
-static TITLE_MENU: MenuDef = MenuDef {
-    title: None,
-    x: -256.0,
-    y: 304.0,
-    arrow: true,
-    title_scale: 1.2,
-    item_scale: 1.0,
-    panel: None,
-    parch: false,
-    gar: false,
-    hints: false,
-    logo: false,
-    fade: false,
-    backdrop: false,
-    normal: EMBER,
-    glow: PURPLE,
-    items: &[e("Start", Item::Start), e("Options", Item::Options)],
-};
+/// The title's menus: under the logo, in embers.
+const fn title_menu(items: &'static [Entry]) -> MenuDef {
+    MenuDef {
+        title: None,
+        x: -256.0,
+        y: 304.0,
+        arrow: true,
+        title_scale: 1.2,
+        item_scale: 1.0,
+        panel: None,
+        parch: false,
+        gar: false,
+        hints: false,
+        logo: false,
+        fade: false,
+        backdrop: false,
+        normal: EMBER,
+        glow: PURPLE,
+        items,
+    }
+}
+
+static TITLE_MENU: MenuDef = title_menu(&[e("Start", Item::Start), e("Options", Item::Options)]);
+/// Start's choice (not the game's): play on this machine, or online.
+static PLAY_MENU: MenuDef = title_menu(&[e("Local Game", Item::Local), e("Online Game", Item::Online)]);
+static ONLINE_MENU: MenuDef = title_menu(&[e("Host Game", Item::Host), e("Join Game", Item::Join)]);
+/// Online play's Start menu: play goes on underneath.
+static ONLINE_GAME_MENU: MenuDef = game_menu("Online Game", true, &[e("Settings", Item::Settings), e("Leave Game", Item::LeaveGame)]);
+static LEAVE_GAME: MenuDef = confirm("Leave Game?", &[e("No", Item::No), e("Yes", Item::ConfirmLeave)]);
 static OPTIONS_MENU: MenuDef = game_menu(
     "Options",
     true,
@@ -879,6 +906,8 @@ impl Menu {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
     Title,
+    /// Online: hosting or joining under way (or why it didn't work).
+    Connecting,
     /// "Loading..." for a frame, then the tower loads behind the select
     /// screen.
     LoadingSelect,
@@ -933,6 +962,7 @@ impl Column {
                 colour: 0,
                 menu: new_load_menu(has_saves),
                 t: 0.0,
+                loaded: None,
             },
             ready: false,
         }
@@ -963,6 +993,8 @@ struct Select {
     colour: usize,
     menu: Menu,
     t: f32,
+    /// The saved character loaded (online it goes to the others).
+    loaded: Option<SavedCharacter>,
 }
 
 /// The front end's state.
@@ -1005,6 +1037,14 @@ pub struct Frontend {
     captured: Option<Captured>,
     /// The style the Control Style menu shows (kept only on Select).
     style_pick: usize,
+    /// Online: what this machine last told the others of its column, and
+    /// each remote player's hero once they're ready with it.
+    sent_show: Option<ColumnShow>,
+    sent_ready: bool,
+    remote_heroes: [Option<Hero>; MAX_PLAYERS],
+    /// A line under the title's menus (why going online didn't work), and
+    /// fields it has left.
+    notice: Option<(String, f32)>,
 }
 
 impl Frontend {
@@ -1028,6 +1068,10 @@ impl Frontend {
             capture: None,
             captured: None,
             style_pick: 0,
+            sent_show: None,
+            sent_ready: false,
+            remote_heroes: Default::default(),
+            notice: None,
         }
     }
 
@@ -1042,7 +1086,7 @@ impl Frontend {
     /// art ends at y 320 and the tower loaded behind it shows below, and
     /// GAME OVER is drawn over the level.
     fn full_screen(&self) -> bool {
-        matches!(self.screen, Screen::Title | Screen::LoadingSelect | Screen::LoadingGame)
+        matches!(self.screen, Screen::Title | Screen::Connecting | Screen::LoadingSelect | Screen::LoadingGame)
     }
 
     /// Whether a level is being played (menus may be open over it).
@@ -1178,7 +1222,7 @@ fn load_text(mut commands: Commands, mut game: ResMut<LoadedGame>) {
 // ---------------------------------------------------------------------------
 // Flow
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn run(
     mut fe: ResMut<Frontend>,
     real: Res<Time<Real>>,
@@ -1189,9 +1233,22 @@ pub(crate) fn run(
     mut options: ResMut<GameOptions>,
     mut saves: ResMut<Saves>,
     boxes: Res<MessageBox>,
+    mut commands: Commands,
+    (mut online, opening, failed, mut lock, mut new_game): (
+        Option<ResMut<Online>>,
+        Option<Res<Opening>>,
+        Option<Res<OnlineFailed>>,
+        ResMut<Lockstep>,
+        MessageWriter<NewGame>,
+    ),
+    (keys, mut camera): (Res<ButtonInput<KeyCode>>, Option<ResMut<PlayCamera>>),
 ) {
     let has_saves = !saves.file.characters.is_empty();
     let fields = real.delta_secs() * 60.0;
+    if let Some((_, left)) = fe.notice.as_mut() {
+        *left -= fields;
+    }
+    fe.notice = fe.notice.take().filter(|(_, left)| *left > 0.0);
     fe.t += fields;
     for m in &mut fe.menus {
         m.t += fields;
@@ -1220,6 +1277,20 @@ pub(crate) fn run(
 
     match fe.screen {
         Screen::Title => {
+            // `GDL_ONLINE=host|join` (testing): straight to hosting, or to
+            // joining once the invite is there (`GDL_INVITE_FILE`).
+            let auto = std::env::var("GDL_ONLINE").unwrap_or_default();
+            if fe.t > 30.0 && online.is_none() && opening.is_none() && failed.is_none() && fe.frame < 2000 {
+                if auto == "host" {
+                    crate::online::host(&mut commands, &game);
+                    fe.go(Screen::Connecting);
+                } else if auto == "join"
+                    && let Some(code) = crate::online::paste_invite()
+                    && crate::online::join(&mut commands, &game, &code).is_ok()
+                {
+                    fe.go(Screen::Connecting);
+                }
+            }
             if fe.menus.is_empty() {
                 if p.start || p.accept {
                     fe.menus.push(Menu::new(&TITLE_MENU));
@@ -1229,21 +1300,79 @@ pub(crate) fn run(
                     Item::No => {
                         fe.menus.pop();
                     }
-                    Item::Start => {
+                    Item::Start => fe.menus.push(Menu::new(&PLAY_MENU)),
+                    Item::Local => {
                         fe.menus.clear();
                         fe.go(Screen::LoadingSelect);
                     }
+                    Item::Online => fe.menus.push(Menu::new(&ONLINE_MENU)),
+                    Item::Host => {
+                        crate::online::host(&mut commands, &game);
+                        fe.menus.clear();
+                        fe.go(Screen::Connecting);
+                    }
+                    Item::Join => match crate::online::paste_invite() {
+                        Some(code) => match crate::online::join(&mut commands, &game, &code) {
+                            Ok(()) => {
+                                fe.menus.clear();
+                                fe.go(Screen::Connecting);
+                            }
+                            Err(e) => fe.notice = Some((format!("Can't join: {e}"), 400.0)),
+                        },
+                        None => fe.notice = Some(("Copy your friend's invite code first".into(), 400.0)),
+                    },
                     Item::Options => fe.menus.push(Menu::new(&OPTIONS_MENU)),
                     other => open_submenu(&mut fe.menus, other),
                 }
+            }
+        }
+        Screen::Connecting => {
+            let over = online.as_ref().and_then(|o| match &o.phase {
+                crate::online::Phase::Over(why) => Some(why.clone()),
+                _ => None,
+            });
+            if let Some(why) = over {
+                commands.insert_resource(OnlineFailed(why));
+                crate::online::leave(&mut commands, &mut lock);
+            } else if online.as_ref().is_some_and(|o| o.phase == crate::online::Phase::Lobby && o.me.is_some()) {
+                fe.go(Screen::LoadingSelect);
+            }
+            if p.back || (failed.is_some() && (p.accept || p.start)) {
+                crate::online::leave(&mut commands, &mut lock);
+                commands.remove_resource::<OnlineFailed>();
+                fe.go(Screen::Title);
+                fe.menus = vec![Menu::new(&TITLE_MENU), Menu::new(&PLAY_MENU), Menu::new(&ONLINE_MENU)];
             }
         }
         Screen::LoadingSelect => {
             // One frame shows "Loading..." before the load stalls a frame.
             if fe.t > 2.0 {
                 to_level.write(ChangeLevelTo::to(TOWER));
-                start_select(&mut fe, SelectFor::NewGame, has_saves, &party, &mut changes);
+                let how = match online.as_ref().and_then(|o| o.me) {
+                    Some(me) => SelectFor::Online(me),
+                    None => SelectFor::NewGame,
+                };
+                start_select(&mut fe, how, has_saves, &party, &mut changes);
                 fe.go(Screen::Select);
+            }
+        }
+        Screen::Select if online.is_some() => {
+            select_tick(&mut fe);
+            let online = online.as_deref_mut().expect("online");
+            if online.host && keys.just_pressed(KeyCode::KeyC) && let Some(code) = online.invite.clone() {
+                online.copied = crate::online::copy_invite(&code);
+            }
+            if let crate::online::Phase::Over(why) = online.phase.clone() {
+                commands.insert_resource(OnlineFailed(why));
+                crate::online::leave(&mut commands, &mut lock);
+                changes.write(PartyChange::Clear);
+                fe.columns = Default::default();
+                fe.go(Screen::Connecting);
+            } else {
+                online_lobby(&mut fe, online, &party, &mut changes, &mut saves, (&mut lock, &mut new_game));
+                if fe.screen == Screen::Title {
+                    crate::online::leave(&mut commands, &mut lock);
+                }
             }
         }
         Screen::Select => {
@@ -1252,7 +1381,10 @@ pub(crate) fn run(
         }
         Screen::LoadingGame => {
             if fe.t > 2.0 {
-                to_level.write(ChangeLevelTo::to(TOWER));
+                // `GDL_ONLINE_LEVEL=<level>` (testing): an online game
+                // starts there instead.
+                let level = std::env::var("GDL_ONLINE_LEVEL").ok().filter(|_| lock.on);
+                to_level.write(ChangeLevelTo::to(level.as_deref().unwrap_or(TOWER)));
                 fe.go(Screen::Playing);
             }
         }
@@ -1263,12 +1395,19 @@ pub(crate) fn run(
                 // Start: a player's own device pauses their game; one nobody
                 // holds asks to join.
                 if let Some((device, _)) = fe.pressed_by.iter().find(|(_, p)| p.start).copied() {
+                    if lock.on {
+                        // Online: this machine's player's settings are
+                        // player 1's here, and play goes on.
+                        fe.menu_slot = 0;
+                        fe.menus.push(Menu::new(&ONLINE_GAME_MENU));
+                    } else {
                     match party.members().find(|(_, m)| device.among(&m.devices)) {
                         Some((slot, _)) => {
                             fe.menu_slot = slot;
                             fe.menus.push(Menu::new(if in_tower { &TOWER_MENU } else { &GAME_MENU }));
                         }
                         None => join(&mut fe, device, in_tower, has_saves, &party, &mut changes),
+                    }
                     }
                 }
             } else if let Some(item) = fe.menus.last_mut().and_then(|m| m.update(&p)) {
@@ -1280,6 +1419,12 @@ pub(crate) fn run(
                         fe.menus.push(Menu::new(if in_tower { &TOWER_SETTINGS } else { &LEVEL_SETTINGS }))
                     }
                     Item::QuitGame => fe.menus.push(Menu::new(&QUIT_GAME)),
+                    Item::LeaveGame => fe.menus.push(Menu::new(&LEAVE_GAME)),
+                    Item::ConfirmLeave => {
+                        crate::online::leave(&mut commands, &mut lock);
+                        fe.menus.clear();
+                        fe.go(Screen::GameOver);
+                    }
                     Item::QuitLevel => fe.menus.push(Menu::new(&ABORT_LEVEL)),
                     Item::ConfirmQuitGame => {
                         fe.menus.clear();
@@ -1313,10 +1458,53 @@ pub(crate) fn run(
         }
     }
 
-    let frozen = fe.frozen() || boxes.is_open();
-    if frozen != virt.is_paused() {
-        if frozen { virt.pause() } else { virt.unpause() }
+    if lock.on {
+        // Online the network's ticks drive the game (`online.rs`): the
+        // front end only holds it while it isn't in play.
+        lock.held = fe.screen != Screen::Playing;
+        if fe.screen == Screen::Playing {
+            let over = online.as_ref().and_then(|o| match &o.phase {
+                crate::online::Phase::Over(why) => Some(why.clone()),
+                _ => None,
+            });
+            if let Some(why) = over {
+                warn!("online game over: {why}");
+                crate::online::leave(&mut commands, &mut lock);
+                fe.menus.clear();
+                fe.notice = Some((format!("Online game ended: {why}"), 600.0));
+                fe.go(Screen::GameOver);
+            } else if let (Some(o), Some(camera)) = (online.as_ref(), camera.as_deref_mut()) {
+                camera.watching = watched(&fe, &party, o.me, camera.watching, &p);
+            }
+        }
+    } else {
+        let frozen = fe.frozen() || boxes.is_open();
+        if frozen != virt.is_paused() {
+            if frozen { virt.pause() } else { virt.unpause() }
+        }
     }
+}
+
+/// Online: whose camera this machine shows — its own hero's while it's
+/// standing, else a teammate's (L and R pick another).
+fn watched(fe: &Frontend, party: &Party, me: Option<usize>, was: Option<usize>, p: &Pressed) -> Option<usize> {
+    let me = me?;
+    let standing = |s: usize| party.state(s).is_some_and(|st| st.alive) && !fe.hero_out(s);
+    if standing(me) {
+        return Some(me);
+    }
+    let others: Vec<usize> = (0..MAX_PLAYERS).filter(|&s| s != me && standing(s)).collect();
+    if others.is_empty() {
+        return Some(me);
+    }
+    let at = was.and_then(|w| others.iter().position(|&s| s == w));
+    let i = match at {
+        Some(i) if p.r => (i + 1) % others.len(),
+        Some(i) if p.l => (i + others.len() - 1) % others.len(),
+        Some(i) => i,
+        None => 0,
+    };
+    Some(others[i])
 }
 
 fn open_submenu(menus: &mut Vec<Menu>, item: Item) {
@@ -1469,6 +1657,9 @@ enum SelectFor {
     /// Manage Character from the tower: the players in the game, ready —
     /// but the one who asked, at their character menu.
     Manage,
+    /// The online lobby: this machine's player in their slot (the others'
+    /// columns open as they come).
+    Online(usize),
 }
 
 /// Starts the select screen.
@@ -1482,6 +1673,15 @@ fn start_select(fe: &mut Frontend, how: SelectFor, has_saves: bool, party: &Part
             let mut devices = fe.last_device.only();
             devices.keyboard = true;
             fe.columns[0] = Some(Column::new(devices, has_saves));
+        }
+        SelectFor::Online(me) => {
+            changes.write(PartyChange::Clear);
+            fe.sent_show = None;
+            fe.sent_ready = false;
+            fe.remote_heroes = Default::default();
+            if me < MAX_PLAYERS {
+                fe.columns[me] = Some(Column::new(Devices { keyboard: true, ..Devices::default() }, has_saves));
+            }
         }
         SelectFor::Manage => {
             let asker = fe.last_device;
@@ -1731,6 +1931,7 @@ fn select_column(
                     // Even the same class and colour: a new record, the
                     // saved one laid on it (`player_state::new_member`).
                     info!("player {}: loaded {} the {} ({}), level {}", slot + 1, c.name, c.class, c.variant, c.level);
+                    s.loaded = Some(c.clone());
                     changes.write(PartyChange::Set {
                         slot,
                         choice: PlayerChoice { class: c.class.clone(), variant: c.variant.clone() },
@@ -1826,6 +2027,7 @@ fn select_column(
                 // hero: a fresh record.
                 let fresh = member.map(|m| &m.choice) != Some(&picked) || !s.from_character_menu;
                 info!("player {}: {} the {} ({})", slot + 1, s.name, picked.class, picked.variant);
+                s.loaded = None;
                 changes.write(PartyChange::Set { slot, choice: picked, name: s.name.clone(), saved: None, fresh, devices });
                 if s.from_character_menu {
                     s.step = Step::Character;
@@ -1848,6 +2050,208 @@ fn select_column(
         }
     }
     ColumnEvent::None
+}
+
+// ---------------------------------------------------------------------------
+// Online lobby (`online.rs`)
+
+/// The online lobby on the select screen: this machine's devices drive its
+/// own column, the others' columns show what their players pick, and once
+/// everyone in is ready the host starts with Start (or, testing, as soon
+/// as `GDL_ONLINE_PLAYERS` are ready).
+fn online_lobby(
+    fe: &mut Frontend,
+    online: &mut Online,
+    party: &Party,
+    changes: &mut MessageWriter<PartyChange>,
+    saves: &mut Saves,
+    (lock, new_game): (&mut Lockstep, &mut MessageWriter<NewGame>),
+) {
+    let Some(me) = online.me.filter(|&m| m < MAX_PLAYERS) else { return };
+    for m in std::mem::take(&mut online.inbox) {
+        match m {
+            Lobby::Joined { slot } if slot != me && slot < MAX_PLAYERS => {
+                if fe.columns[slot].is_none() {
+                    let mut c = Column::new(Devices { remote: true, ..Devices::default() }, true);
+                    c.select.menu.column = COLUMN[slot];
+                    fe.columns[slot] = Some(c);
+                }
+            }
+            Lobby::Left { slot } if slot != me && slot < MAX_PLAYERS => {
+                fe.columns[slot] = None;
+                fe.remote_heroes[slot] = None;
+            }
+            Lobby::Column { slot, show } if slot != me && slot < MAX_PLAYERS => {
+                let column = fe.columns[slot].get_or_insert_with(|| Column::new(Devices { remote: true, ..Devices::default() }, true));
+                apply_show(column, slot, &show);
+            }
+            Lobby::Hero { slot, hero } if slot != me && slot < MAX_PLAYERS => {
+                if let Some(c) = fe.columns[slot].as_mut() {
+                    c.ready = hero.is_some();
+                }
+                fe.remote_heroes[slot] = hero;
+            }
+            Lobby::Begin(heroes) => {
+                begin_online(fe, online, &heroes, changes, lock, new_game);
+                return;
+            }
+            _ => {}
+        }
+    }
+    // `GDL_ONLINE_HERO=<class>` (testing): this machine's player picks a
+    // new hero of that class at once.
+    if let Ok(class) = std::env::var("GDL_ONLINE_HERO")
+        && fe.t > 30.0
+        && let Some(c) = fe.columns[me].as_mut()
+        && !c.ready
+        && c.select.step == Step::NewOrLoad
+    {
+        c.select.class = CLASSES.iter().position(|k| k.eq_ignore_ascii_case(&class)).unwrap_or(0);
+        c.select.colour = me % COLOURS.len();
+        c.select.name = format!("NET{}", me + 1);
+        c.select.step = Step::Class;
+        c.ready = true;
+    }
+    let everyone_ready = fe.columns.iter().flatten().all(|c| c.ready)
+        && fe.columns.iter().enumerate().all(|(s, c)| c.is_none() || s == me || fe.remote_heroes[s].is_some());
+    let wanted = std::env::var("GDL_ONLINE_PLAYERS").ok().and_then(|v| v.parse::<usize>().ok());
+    let ready_count = fe.columns.iter().flatten().filter(|c| c.ready).count();
+    let frame = fe.frame;
+    let presses: Vec<Pressed> = fe.pressed_by.iter().map(|(_, p)| *p).filter(Pressed::any).collect();
+    let mut start = online.host && everyone_ready && wanted.is_some_and(|n| ready_count >= n);
+    for p in presses {
+        if online.host && everyone_ready && p.start {
+            start = true;
+            break;
+        }
+        let Some(column) = fe.columns[me].as_mut() else { continue };
+        match select_column(column, me, &p, party, changes, saves, frame) {
+            ColumnEvent::None => {}
+            ColumnEvent::Leave | ColumnEvent::Title => {
+                // Backing out of the lobby leaves the online game.
+                fe.columns = Default::default();
+                changes.write(PartyChange::Clear);
+                fe.menus.clear();
+                fe.go(Screen::Title);
+                return;
+            }
+        }
+    }
+    // The others see this machine's column, and its hero once ready.
+    if let Some(c) = fe.columns[me].as_ref() {
+        let show = show_of(c);
+        if online.resend || fe.sent_show.as_ref() != Some(&show) {
+            online.send(&Message::Column { slot: me as u8, show: show.clone() });
+            fe.sent_show = Some(show);
+        }
+        if online.resend || fe.sent_ready != c.ready {
+            online.send(&Message::Hero { slot: me as u8, hero: c.ready.then(|| hero_of(c)) });
+            fe.sent_ready = c.ready;
+        }
+        online.resend = false;
+    }
+    if start && let Some(mine) = fe.columns[me].as_ref().filter(|c| c.ready).map(hero_of) {
+        let mut heroes = vec![(me, mine)];
+        heroes.extend(fe.remote_heroes.iter().enumerate().filter_map(|(s, h)| Some((s, h.clone()?))));
+        heroes.sort_by_key(|(s, _)| *s);
+        info!("online: the host starts with {} players", heroes.len());
+        online.start_game(&heroes);
+        begin_online(fe, online, &heroes, changes, lock, new_game);
+    }
+}
+
+/// Every machine starts the online game alike: the party as the host sent
+/// it (this machine's player on its own devices, the others' over the
+/// network), the game afresh, lockstep from tick 0, into the tower.
+fn begin_online(
+    fe: &mut Frontend,
+    online: &mut Online,
+    heroes: &[(usize, Hero)],
+    changes: &mut MessageWriter<PartyChange>,
+    lock: &mut Lockstep,
+    new_game: &mut MessageWriter<NewGame>,
+) {
+    changes.write(PartyChange::Clear);
+    for (slot, h) in heroes {
+        let devices = if online.me == Some(*slot) {
+            Devices { keyboard: true, ..Devices::default() }
+        } else {
+            Devices { remote: true, ..Devices::default() }
+        };
+        changes.write(PartyChange::Set {
+            slot: *slot,
+            choice: PlayerChoice { class: h.class.clone(), variant: h.variant.clone() },
+            name: h.name.clone(),
+            saved: h.saved.clone().map(Box::new),
+            fresh: true,
+            devices,
+        });
+    }
+    new_game.write(NewGame);
+    lock.begin();
+    online.phase = crate::online::Phase::Playing;
+    fe.columns = Default::default();
+    fe.menus.clear();
+    fe.waiting = [None; MAX_PLAYERS];
+    fe.dead_for = [0.0; MAX_PLAYERS];
+    fe.out = [false; MAX_PLAYERS];
+    fe.leaving = false;
+    fe.fresh_hero = [true; MAX_PLAYERS];
+    fe.menu_slot = 0;
+    fe.go(Screen::LoadingGame);
+}
+
+const STEPS: [Step; 7] = [Step::NewOrLoad, Step::Character, Step::ConfirmQuit, Step::LoadList, Step::Name, Step::NameShown, Step::Class];
+
+/// A column as the others see it.
+fn show_of(c: &Column) -> ColumnShow {
+    let s = &c.select;
+    ColumnShow {
+        step: STEPS.iter().position(|&x| x == s.step).unwrap_or(0) as u8,
+        class: s.class as u8,
+        colour: s.colour as u8,
+        name: s.name.clone(),
+        letter: s.letter,
+        selected: s.menu.selected as u8,
+        ready: c.ready,
+    }
+}
+
+/// A remote player's column from what they sent. Their saved characters
+/// aren't this machine's to list: their load list shows as New / Load.
+fn apply_show(c: &mut Column, slot: usize, show: &ColumnShow) {
+    let step = STEPS.get(show.step as usize).copied().unwrap_or(Step::NewOrLoad);
+    let s = &mut c.select;
+    if s.step != step {
+        s.menu = match step {
+            Step::Character => character_menu(true),
+            Step::ConfirmQuit => Menu::new(&YES_NO),
+            Step::LoadList => new_load_menu(true).selecting(Item::Load),
+            _ => new_load_menu(true),
+        };
+        s.menu.column = COLUMN[slot];
+        s.t = 0.0;
+    }
+    s.step = step;
+    s.class = (show.class as usize).min(CLASSES.len() - 1);
+    s.colour = (show.colour as usize) % COLOURS.len();
+    s.name = show.name.chars().take(8).collect();
+    s.letter = show.letter;
+    if step != Step::LoadList {
+        s.menu.selected = show.selected as usize;
+    }
+    c.ready = show.ready;
+}
+
+/// The hero a ready column brings (with its saved record, if loaded).
+fn hero_of(c: &Column) -> Hero {
+    let s = &c.select;
+    Hero {
+        class: CLASSES[s.class.min(CLASSES.len() - 1)].to_string(),
+        variant: COLOURS[s.colour % COLOURS.len()].to_string(),
+        name: s.name.clone(),
+        saved: s.loaded.clone(),
+    }
 }
 
 /// A player quitting their character: out of the game, or with nobody else
@@ -1978,6 +2382,23 @@ fn death(
 // ---------------------------------------------------------------------------
 // Drawing
 
+/// Splits text into lines of at most `width` characters, at spaces.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    for word in text.split_whitespace() {
+        let line = lines.last_mut().expect("a line");
+        if !line.is_empty() && line.len() + 1 + word.len() > width {
+            lines.push(word.to_string());
+        } else {
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+    }
+    lines
+}
+
 fn rgb(c: [u8; 3]) -> Color {
     Color::srgb_u8(c[0], c[1], c[2])
 }
@@ -1995,7 +2416,7 @@ pub(crate) fn pulse(t: f32) -> f32 {
     0.5 + 0.5 * (tri / 40.0)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn draw(
     fe: Res<Frontend>,
     mut draw: ResMut<Draw2d>,
@@ -2005,11 +2426,26 @@ fn draw(
     strings: Option<Res<Strings>>,
     stats: Option<Res<ClassStats>>,
     options: Res<GameOptions>,
+    (online, opening, failed, lock, party, camera): (
+        Option<Res<Online>>,
+        Option<Res<Opening>>,
+        Option<Res<OnlineFailed>>,
+        Res<Lockstep>,
+        Res<Party>,
+        Option<Res<PlayCamera>>,
+    ),
 ) {
     let (Some(fonts), Some(tex), Some(strings), Some(stats)) = (fonts, tex.as_deref_mut(), strings, stats) else {
         return;
     };
     let mut d = Painter { draw: &mut draw, fonts: &fonts, tex, images: &mut images };
+    let small = |d: &mut Painter, y: f32, text: &str, colour: Color| {
+        let style = TextStyle::new(FONT32, 0.5, colour);
+        for (i, line) in wrap(text, 52).iter().enumerate() {
+            let x = 256.0 - (d.fonts.width(FONT32, 0.5, line) / 2.0).trunc();
+            d.draw.text(d.fonts, &style, x, y + 14.0 * i as f32, line);
+        }
+    };
     match fe.screen {
         Screen::Title => {
             title(&mut d, fe.t);
@@ -2025,8 +2461,59 @@ fn draw(
             }
             d.draw.shimmer(d.fonts, FONT32, 1.0, -256.0, 320.0, "Loading...", rgb(PURPLE), pulse(fe.t));
         }
-        Screen::Select => select_screen(&mut d, &fe, &strings, &stats),
-        Screen::Playing => {}
+        Screen::Connecting => {
+            title(&mut d, fe.t);
+            let (text, hint) = match (&failed, &opening, online.as_deref()) {
+                (Some(f), _, _) => (format!("Couldn't go online: {}", f.0), "Press A to go back"),
+                (None, Some(_), _) => ("Creating the game...".to_string(), "Press B to cancel"),
+                _ => ("Joining the game...".to_string(), "Press B to cancel"),
+            };
+            if failed.is_some() {
+                small(&mut d, 300.0, &text, Color::WHITE);
+            } else {
+                d.draw.shimmer(d.fonts, FONT32, 1.0, -256.0, 304.0, &text, rgb(PURPLE), pulse(fe.t));
+            }
+            small(&mut d, 350.0, hint, Color::srgb(0.8, 0.8, 0.8));
+        }
+        Screen::Select => {
+            select_screen(&mut d, &fe, &strings, &stats);
+            if let Some(o) = online.as_deref() {
+                let ready = fe.columns.iter().flatten().all(|c| c.ready);
+                let (line1, line2) = if o.host {
+                    let code = match (&o.invite, o.copied) {
+                        (Some(_), true) => "Invite code copied: paste it to your friends (C copies it again)".to_string(),
+                        (Some(code), false) => format!("Invite code: {code}"),
+                        (None, _) => "Getting the invite code...".to_string(),
+                    };
+                    (code, if ready { "Everyone's ready: press Start to begin" } else { "Waiting for everyone to be ready" })
+                } else {
+                    ("Online game".to_string(), if ready { "Waiting for the host to start" } else { "Pick your hero" })
+                };
+                small(&mut d, 328.0, &line1, Color::WHITE);
+                small(&mut d, 358.0, line2, rgb(PURPLE));
+            }
+        }
+        Screen::Playing => {
+            if let Some(o) = online.as_deref() {
+                if lock.waited > crate::online::WAIT_SHOWN {
+                    let who: Vec<String> = o.waiting_slots().iter().map(|s| format!("Player {}", s + 1)).collect();
+                    let text = if who.is_empty() { "Waiting for the network...".to_string() } else { format!("Waiting for {}...", who.join(", ")) };
+                    small(&mut d, 176.0, &text, Color::WHITE);
+                }
+                for (i, (text, _)) in o.notices.iter().enumerate() {
+                    small(&mut d, 60.0 + 16.0 * i as f32, text, Color::WHITE);
+                }
+                if o.desync.is_some() {
+                    small(&mut d, 30.0, "Out of sync with the other players", Color::srgb(1.0, 0.3, 0.3));
+                }
+                if let (Some(me), Some(w)) = (o.me, camera.as_deref().and_then(|c| c.watching))
+                    && w != me
+                {
+                    let name = party.get(w).map_or_else(|| format!("Player {}", w + 1), |m| m.name.replace('_', " "));
+                    small(&mut d, 350.0, &format!("Watching {name}  (L / R: another player)"), Color::WHITE);
+                }
+            }
+        }
         Screen::GameOver => {
             // The game types it out one letter per 8 fields after 60,
             // each letter already in its final place.
@@ -2038,6 +2525,11 @@ fn draw(
             let part: String = text.chars().take(shown).collect();
             d.draw.text(d.fonts, &style, left, 120.0, &part);
         }
+    }
+    if let Some((text, _)) = &fe.notice
+        && matches!(fe.screen, Screen::Title | Screen::GameOver)
+    {
+        small(&mut d, 364.0, text, Color::WHITE);
     }
     // Only the innermost menu is up: opening a sub-menu closes its parent.
     if let Some(m) = fe.menus.last() {

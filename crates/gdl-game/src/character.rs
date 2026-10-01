@@ -17,7 +17,14 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, animate.in_set(Animate));
+        app.add_systems(Update, animate.in_set(Animate))
+            // Online the clips move on with the network's ticks, as the
+            // game reads where they are (`online.rs`); drawing still poses
+            // them every frame.
+            .add_systems(
+                FixedUpdate,
+                advance_clips.run_if(crate::online::lockstep_on).before(crate::player::PlayerTick),
+            );
     }
 }
 
@@ -670,8 +677,21 @@ pub fn spawn_character(
     (root, model.bounds.0, model.bounds.1)
 }
 
+/// Online: each clip's frame moves on a tick's worth.
+fn advance_clips(time: Res<Time>, mut animators: Query<&mut Animator>) {
+    for mut a in &mut animators {
+        if a.hold {
+            continue;
+        }
+        let Some(action) = a.clips.actions.get(a.action) else { continue };
+        let (frames, rate, loops) = (action.frames, action.rate, action.loops());
+        advance_clip(&mut a.frame, time.delta_secs(), frames, rate, loops);
+    }
+}
+
 fn animate(
     time: Res<Time>,
+    lock: Res<crate::online::Lockstep>,
     mut animators: Query<&mut Animator>,
     mut bones: Query<&mut Transform>,
     mut slots: Query<(&mut Mesh3d, &mut MeshMaterial3d<LevelMaterial>, &mut Visibility)>,
@@ -683,7 +703,9 @@ fn animate(
         }
         let Some(action) = a.clips.actions.get(a.action) else { continue };
         let (frames, rate, loops) = (action.frames, action.rate, action.loops());
-        advance_clip(&mut a.frame, time.delta_secs(), frames, rate, loops);
+        if !lock.on {
+            advance_clip(&mut a.frame, time.delta_secs(), frames, rate, loops);
+        }
         // Tracks are sampled between keys; past the last frame they hold it.
         let sample_at = a.frame.min(f32::from(frames.saturating_sub(1)));
 

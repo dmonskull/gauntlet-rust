@@ -767,6 +767,14 @@ impl CritterLevel {
         self.light.offset
     }
 
+    /// What the machines compare online (`online.rs`).
+    pub fn sync_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.rng, self.now.to_bits(), self.clock.to_bits(), self.intro, self.boss_dead, self.players).hash(&mut h);
+        h.finish()
+    }
+
     fn random(&mut self) -> f32 {
         // xorshift32; the game has its own generator.
         let mut x = self.rng;
@@ -1865,7 +1873,7 @@ fn tick_critters(
         .collect();
 
     let view = game_view(camera.as_deref());
-    wake_statues(level, mechanics, population.as_deref(), &heroes, view.as_ref(), &mut statues, &mut commands);
+    wake_statues(level, mechanics, population.as_deref(), &heroes, &view, &mut statues, &mut commands);
 
     let intro_before = level.intro;
     let mut blows: Vec<Blow> = Vec::new();
@@ -2638,7 +2646,7 @@ fn wake_statues(
     mechanics: Option<ResMut<Mechanics>>,
     population: Option<&LevelPopulation>,
     heroes: &[Hero],
-    view: Option<&bevy::camera::primitives::Frustum>,
+    view: &crate::monsters::Views,
     statues: &mut Query<&mut Animator, With<StatueModel>>,
     commands: &mut Commands,
 ) {

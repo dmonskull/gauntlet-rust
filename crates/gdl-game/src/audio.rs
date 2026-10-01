@@ -55,9 +55,21 @@ impl Plugin for GameAudioPlugin {
             .add_systems(Startup, load_audio_tables)
             .add_systems(
                 Update,
-                (level_music, audio_keys, step_voices, play_sounds, play_sounds_at, stop_sounds, loop_sounds, follow_loops)
+                (
+                    level_music,
+                    audio_keys,
+                    step_voices.run_if(crate::online::lockstep_off),
+                    play_sounds,
+                    play_sounds_at,
+                    stop_sounds,
+                    loop_sounds,
+                    follow_loops,
+                )
                     .chain(),
-            );
+            )
+            // Online the queues run on the network's ticks (two fields
+            // each): a level change waits on them alike everywhere.
+            .add_systems(crate::online::NetTick, step_voices.in_set(NetVoices));
     }
 }
 
@@ -160,13 +172,13 @@ pub fn stereo_gains(pan: i32) -> [f32; 2] {
 /// Where the positional sounds are heard from: the camera's focus (the
 /// target of its view) and its right, level.
 fn ear(camera: &PlayCamera) -> (Vec3, Vec3) {
-    let (eye, target) = camera.view();
+    let (eye, target) = camera.screen_view();
     let (eye, target) = (Vec3::from(eye), Vec3::from(target));
     let ahead = Vec3::new(target.x - eye.x, 0.0, target.z - eye.z);
     let ahead = if ahead.length_squared() > 1e-8 {
         ahead.normalize()
     } else {
-        Vec3::new(camera.yaw().sin(), 0.0, camera.yaw().cos())
+        Vec3::new(camera.screen_yaw().sin(), 0.0, camera.screen_yaw().cos())
     };
     (target, Vec3::new(ahead.z, 0.0, -ahead.x))
 }
@@ -244,6 +256,10 @@ impl QueueVoice {
     }
 }
 
+/// The voice queues' step on a network tick (`online.rs`).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NetVoices;
+
 /// The heroes' lines' longest wait, seconds.
 const HERO_MOST_WAIT: f32 = 1.0;
 /// Lines a queue holds.
@@ -293,6 +309,11 @@ impl VoiceQueues {
     /// doesn't end while one does.
     pub fn busy(&self) -> bool {
         self.queues.iter().any(|q| !q.lines.is_empty())
+    }
+
+    /// Empty, for a new game (online, every machine alike).
+    pub fn clear(&mut self) {
+        *self = Self::default();
     }
 
     /// Refuses the announcer's lines from now until the next level starts
@@ -350,8 +371,10 @@ impl VoiceQueues {
 /// whose turn has come: centred at their queue's volume, or (a hero's own
 /// line) at its own volume and the pan from where the hero was as it was
 /// queued.
+#[allow(clippy::too_many_arguments)]
 fn step_voices(
     real: Res<Time<Real>>,
+    lock: Res<crate::online::Lockstep>,
     stats: Option<Res<CurrentLevelStats>>,
     mut voices: ResMut<VoiceQueues>,
     mut requests: MessageReader<QueueVoice>,
@@ -363,7 +386,7 @@ fn step_voices(
     if stats.is_some_and(|s| s.is_changed()) {
         voices.closed = false;
     }
-    let now = voices.now + real.delta_secs() * FIELDS_PER_SECOND;
+    let now = voices.now + if lock.on { 2.0 } else { real.delta_secs() * FIELDS_PER_SECOND };
     voices.now = now;
     let ear = camera.as_deref().map(ear);
     let mut asked: Vec<(VoiceQueue, Vec<String>, Option<f32>, LineLook)> = Vec::new();

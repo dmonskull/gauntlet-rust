@@ -176,3 +176,67 @@ delay raised by hand and from round trips, the host leaving), the wire
 format and invite codes, and a real iroh host and client in one process
 over loopback with relays off. `-- --ignored` adds a test through n0's
 public relays with the long and the short codes.
+
+## In the game (`crates/gdl-game/src/online.rs`)
+
+**Menus.** Title → Start → *Local Game* (the game's own flow) or *Online
+Game* → *Host Game* / *Join Game*. Hosting brings the session up on another
+thread and copies the invite code to the clipboard (C on the lobby copies
+it again); joining takes the code from the clipboard. Either way the lobby
+is the select screen: this machine's devices drive its own column (New, or
+Load a hero saved on this machine — its record goes to the others), the
+other columns show what their players pick (`Message::Column`,
+`Message::Hero`). With everyone ready the host presses Start: it sends the
+party (`Message::Begin`) and starts lockstep; every machine builds the same
+party, writes `NewGame` (what the game keeps between levels starts afresh)
+and loads the tower.
+
+**Lockstep.** `Lockstep.on` from then on. Each frame, before the fixed loop,
+`drive` sends this machine's controls (`player::sample_online`: its devices,
+neutral under a menu) and, when a tick is due by the wall clock and the game
+is settled, takes the tick's bundle into `Inputs` and moves the paused
+`Time<Virtual>` by exactly what makes the fixed loop run that one tick (and
+how far into the next it is, for drawing between ticks). At most one tick a
+frame, so the systems that run each frame see the state after every tick;
+no tick while a level change settles (`level_work` from `exits.rs` /
+`world.rs`, a new `LevelPopulation`, the front end loading: 4 quiet frames).
+After the fixed loop the `NetTick` schedule runs: the message box (it
+freezes play for everyone — the tick is then the box's alone — and any
+player's B puts a page away), the voice queues (2 fields a tick; level
+changes wait on them), players whose machine left (gone from the first
+tick without their controls), and every 30 ticks the state hash
+(`GDL_SYNC_LOG=1` logs its parts).
+
+Online these run on the ticks instead of each frame: a hero's death
+(`frontend::death`), the clips' frames (`character::advance_clips`; the
+game reads them), the tower's speeches and unlock announcements, the
+level-start shot's skip (any player's press). Each player's auto-aim,
+auto-attack and Robotron style ride with their controls
+(`SlotInput::AUTO_AIM` …), so every machine plays each hero by its own
+player's settings; the items' on-screen test uses the game's views, not the
+window's camera.
+
+**Cameras.** `PlayCamera` keeps one rig per hero online, each following its
+hero alone: a hero's stick turns by its own camera, the on-screen tests take
+every standing hero's view, and each machine draws its own hero's
+(`watching`) — a teammate's while its own is down or out, L / R picking
+another. Cuts, the level-start shot and boss cameras stay everyone's.
+
+**In play.** Start opens *Online Game*: Settings, Leave Game; play goes on
+underneath. Dead heroes are out until the level ends, as the original's (their
+gold from the level goes with the restored record). The screen says who the
+game waits for after half a second, notices who left, and warns when the
+machines' hashes differ.
+
+**Not online yet**: joining after the start, Manage Character, the shops.
+
+**Testing.** `tools/online_test.sh [seconds]` runs a host and a client on
+this machine over loopback (`GDL_NET_LOCAL=1`, the invite through
+`GDL_INVITE_FILE`), heroes picked by `GDL_ONLINE_HERO`, started by
+`GDL_ONLINE_PLAYERS=2`, scripted sticks; it compares their hashes tick by
+tick. `GDL_ONLINE_LEVEL=levelA1` starts the game on a level.
+
+**Machines of different kinds.** Lockstep needs the same floating-point
+results everywhere. Builds of the same version on the same kind of machine
+match; a different OS or CPU can differ in the last bit of a sine or an
+arctangent, and the hash check then warns ("Out of sync").

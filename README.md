@@ -9,6 +9,14 @@ This project ships no game assets and no code copied from the original
 binary. Point it at a copy of the game you already own and it reads that
 copy's own data at runtime.
 
+## Play
+
+[PLAYING.md](PLAYING.md) is the players' guide: starting the game, local
+co-op, and **online co-op** (Title → Start → Online Game → Host / Join, the
+invite code through the clipboard). `tools/package.sh` builds a release zip
+for this machine; the `build` GitHub workflow builds Windows, macOS and
+Linux ones.
+
 ## Run
 
 ```bash

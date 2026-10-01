@@ -659,22 +659,50 @@ pub struct PlayerSpawn;
 /// Scripted buttons (`GDL_BUTTONS`, for the first player), and ticks since
 /// the heroes appeared.
 #[derive(Resource, Default)]
-struct Controls {
+pub(crate) struct Controls {
     script: Vec<(u32, Option<(u64, u64)>)>,
+    /// `GDL_STICK="x,y"`: the first player's stick, held throughout.
+    stick: Option<Vec2>,
     ticks: u64,
+}
+
+impl Controls {
+    /// The scripted stick and buttons for tick `tick`, over a player's own.
+    fn apply_script(&self, input: &mut SlotInput, tick: u64) {
+        if let Some(v) = self.stick {
+            input.stick = v;
+        }
+        for &(bits, range) in &self.script {
+            if range.is_none_or(|(a, b)| (a..=b).contains(&tick)) {
+                input.held |= bits;
+            }
+        }
+    }
 }
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Time::<Fixed>::from_hz(locomotion::TICK_HZ))
-            .insert_resource(Controls { script: button_script(), ..default() })
+            .insert_resource(Controls { script: button_script(), stick: script_stick(), ..default() })
             .init_resource::<HeroPad>()
             .init_resource::<HeroModels>()
             .init_resource::<Inputs>()
             // Loaded again whenever a player's choice changes (the front
             // end's character select); the next level spawn uses it.
             .add_systems(Update, load_heroes.run_if(resource_changed::<Party>).before(PlayerSpawn))
-            .add_systems(FixedUpdate, ((gather_inputs, hop).before(PlayerTick), tick.in_set(PlayerTick)))
+            .add_systems(
+                FixedUpdate,
+                ((gather_inputs.run_if(crate::online::lockstep_off), hop).before(PlayerTick), tick.in_set(PlayerTick)),
+            )
+            // Online the controls come from the session's bundles; this
+            // machine's go out every frame (`online.rs`).
+            .add_systems(
+                bevy::app::RunFixedMainLoop,
+                sample_online
+                    .run_if(crate::online::lockstep_on)
+                    .in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop)
+                    .before(crate::online::drive),
+            )
             .add_systems(FixedUpdate, (apply_powers, show_body_looks).after(crate::player_state::PowersTick))
             .add_systems(Update, level_stats)
             .add_systems(
@@ -961,6 +989,13 @@ fn named_button(name: &str) -> Option<u32> {
     })
 }
 
+/// `GDL_STICK="x,y"` (testing): the first player's stick.
+fn script_stick() -> Option<Vec2> {
+    let s = std::env::var("GDL_STICK").ok()?;
+    let (x, y) = s.split_once(',')?;
+    Some(Vec2::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
 /// `GDL_BUTTONS`: `name` (held throughout) or `name@from-to` (held for
 /// those ticks, inclusive), comma-separated.
 fn button_script() -> Vec<(u32, Option<(u64, u64)>)> {
@@ -1000,10 +1035,6 @@ fn gather_inputs(
     controls.ticks += 1;
     let locals: Vec<usize> = party.members().filter(|(_, m)| !m.devices.remote).map(|(i, _)| i).collect();
     let solo = locals.len() == 1;
-    let script_stick = std::env::var("GDL_STICK").ok().and_then(|s| {
-        let (x, y) = s.split_once(',')?;
-        Some(Vec2::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
-    });
     for slot in 0..MAX_PLAYERS {
         let Some(member) = party.get(slot) else {
             inputs.slots[slot] = SlotInput::default();
@@ -1012,37 +1043,82 @@ fn gather_inputs(
         if member.devices.remote {
             continue;
         }
-        let mut input = SlotInput::default();
-        if member.devices.keyboard || solo {
-            input.held |= crate::controls::held_keys(&keys, &mouse, &options);
-            input.stick = crate::controls::stick_keys(&keys, &options);
-        }
-        for (pad_entity, pad) in &pads {
-            let mine = member.devices.pad == Some(pad_entity) || (solo && party.slot_of_pad(pad_entity).is_none());
-            if !mine {
-                continue;
-            }
-            input.held |= crate::controls::held_pad(pad, options.player(slot).scheme, &options);
-            let (left, right) = crate::controls::pad_sticks(pad);
-            if left.length() > 0.0 {
-                input.stick = left;
-            }
-            if right.length() > 0.0 {
-                input.c_stick = right;
-            }
-        }
+        let mut input = read_devices(member.devices, solo, slot, (&keys, &mouse, &options), &pads, &party);
         if locals.first() == Some(&slot) {
-            if let Some(v) = script_stick {
-                input.stick = v;
-            }
-            for &(bits, range) in &controls.script {
-                if range.is_none_or(|(a, b)| (a..=b).contains(&controls.ticks)) {
-                    input.held |= bits;
-                }
-            }
+            controls.apply_script(&mut input, controls.ticks);
         }
         inputs.slots[slot] = input;
     }
+}
+
+/// What a local player's devices give now: the keyboard and mouse, their
+/// pad — alone on this machine, every pad nobody else holds — and their
+/// own settings (`settings` is the slot whose options are theirs) riding
+/// along with the buttons.
+fn read_devices(
+    devices: crate::party::Devices,
+    solo: bool,
+    settings: usize,
+    (keys, mouse, options): (&ButtonInput<KeyCode>, &ButtonInput<MouseButton>, &GameOptions),
+    pads: &Query<(Entity, &Gamepad)>,
+    party: &Party,
+) -> SlotInput {
+    let mut input = SlotInput::default();
+    let mine = options.player(settings);
+    if devices.keyboard || solo {
+        input.held |= crate::controls::held_keys(keys, mouse, options);
+        input.stick = crate::controls::stick_keys(keys, options);
+        if [KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyH].iter().any(|&k| keys.pressed(k)) {
+            input.held |= SlotInput::BACK;
+        }
+    }
+    for (pad_entity, pad) in pads {
+        let ours = devices.pad == Some(pad_entity) || (solo && party.slot_of_pad(pad_entity).is_none());
+        if !ours {
+            continue;
+        }
+        input.held |= crate::controls::held_pad(pad, mine.scheme, options);
+        let (left, right) = crate::controls::pad_sticks(pad);
+        if left.length() > 0.0 {
+            input.stick = left;
+        }
+        if right.length() > 0.0 {
+            input.c_stick = right;
+        }
+        // The GameCube's B (west); an Xbox pad's B (east).
+        if pad.pressed(GamepadButton::West) || pad.pressed(GamepadButton::East) {
+            input.held |= SlotInput::BACK;
+        }
+    }
+    input.with_settings(mine)
+}
+
+/// Online: this machine's player's controls every frame, for the session
+/// (`online.rs`). A menu open over play takes them; their settings are
+/// player 1's on this machine. `GDL_BUTTONS`/`GDL_STICK` count online
+/// ticks here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sample_online(
+    (keys, mouse, options): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>, Res<GameOptions>),
+    pads: Query<(Entity, &Gamepad)>,
+    party: Res<Party>,
+    controls: Res<Controls>,
+    online: Option<Res<crate::online::Online>>,
+    lock: Res<crate::online::Lockstep>,
+    fe: Option<Res<crate::frontend::Frontend>>,
+    mut local: ResMut<crate::online::LocalControls>,
+) {
+    let Some(me) = online.and_then(|o| o.me) else { return };
+    let Some(member) = party.get(me) else {
+        local.0 = SlotInput::default();
+        return;
+    };
+    let mut input = read_devices(member.devices, true, 0, (&keys, &mouse, &options), &pads, &party);
+    if fe.is_some_and(|f| f.menu_open()) {
+        input = SlotInput::default().with_settings(options.player(0));
+    }
+    controls.apply_script(&mut input, u64::from(lock.tick) + 1);
+    local.0 = input;
 }
 
 /// The clip an action plays: its own, or for the low power finisher the
@@ -1061,7 +1137,7 @@ fn clip_for(animator: &Animator, action: Action) -> usize {
 #[allow(clippy::too_many_arguments)]
 fn tick(
     time: Res<Time>,
-    (inputs, options): (Res<Inputs>, Res<GameOptions>),
+    inputs: Res<Inputs>,
     (free_look, boxes, scene): (Res<FreeLook>, Res<crate::message_box::MessageBox>, Res<crate::tower_scenes::Scene>),
     play_camera: Option<Res<PlayCamera>>,
     ground: Option<Res<LevelGround>>,
@@ -1097,9 +1173,12 @@ fn tick(
     // level); the game's heading is
     // the camera's yaw + the stick's angle, so right is +X facing +Z (on
     // the screen's right: the picture is mirrored, `camera.rs`).
-    let yaw = play_camera.as_deref().map_or(0.0, PlayCamera::yaw);
-    let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
-    let right = Vec3::new(forward.z, 0.0, -forward.x);
+    // Online each hero's stick turns by its own camera (`play_camera.rs`).
+    let axes = |slot: usize| {
+        let yaw = play_camera.as_deref().map_or(0.0, |c| c.yaw_of(slot));
+        let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+        (forward, Vec3::new(forward.z, 0.0, -forward.x))
+    };
     let body = PlayerCollision::default();
     let candidates = || targets.iter().map(|(e, t, target)| (e, t.translation(), target));
 
@@ -1110,8 +1189,10 @@ fn tick(
         if !state.alive {
             continue;
         }
-        let input = if deaf { SlotInput::default() } else { inputs.slots.get(p.slot).copied().unwrap_or_default() };
-        let (raw, held) = (input.stick, input.held);
+        // The player's own settings ride with their controls (`party.rs`).
+        let mine = inputs.slots.get(p.slot).copied().unwrap_or_default();
+        let input = if deaf { SlotInput::default() } else { mine };
+        let (raw, held) = (input.stick, input.buttons());
         let buttons = Buttons::from_held(held, p.held);
         p.held = held;
         // For what else reads the pad (the power menu): presses wait until
@@ -1119,11 +1200,11 @@ fn tick(
         if let Some(pressed) = hero_pad.pressed.get_mut(p.slot) {
             *pressed |= buttons.pressed;
         }
+        let (forward, right) = axes(p.slot);
         let dir = right * raw.x + forward * raw.y;
         let stick = Stick { heading: dir.x.atan2(dir.z), magnitude: raw.length().min(1.0) };
         // The Robotron style's right stick (the GameCube's C-stick).
-        let mine = options.player(p.slot);
-        let c_raw = if mine.scheme != crate::controls::ROBOTRON { Vec2::ZERO } else { input.c_stick };
+        let c_raw = if !mine.robotron() { Vec2::ZERO } else { input.c_stick };
         let c_dir = right * c_raw.x + forward * c_raw.y;
         let c_stick = Stick { heading: c_dir.x.atan2(c_dir.z), magnitude: c_raw.length().min(1.0) };
         p.previous = (p.mover.position, p.mover.facing);
@@ -1307,7 +1388,7 @@ fn tick(
         let mut walked_into = false;
         // The game's "walk-into attack" pad option (Auto Attack): walking
         // into a monster attacks it.
-        if mine.auto_attack
+        if mine.auto_attack()
             && !shielded
             && !charged
             && reaction == 0
@@ -1330,7 +1411,7 @@ fn tick(
         let aim = match found {
             // The C-stick attacks where it points.
             _ if c_aim.is_some() => c_aim.unwrap_or(wanted),
-            _ if strafing || !mine.auto_aim => wanted,
+            _ if strafing || !mine.auto_aim() => wanted,
             Some(f) => combat::heading_of(f.direction),
             None => facing,
         };
@@ -1542,7 +1623,7 @@ fn tick(
         let mut face = (magnitude > 0.0 && !keeps_facing && !stunned).then_some(stick.heading);
         // The "attack aim" option (Auto Aim): attacking in place turns the
         // hero toward the target.
-        if mine.auto_aim && (1..=10).contains(&category) && category != 7 && !strafing && drive == 0.0 {
+        if mine.auto_aim() && (1..=10).contains(&category) && category != 7 && !strafing && drive == 0.0 {
             face = Some(aim);
         }
         if reaction_face.is_some() {

@@ -38,6 +38,11 @@ leaves co-op out.
 
 ## What's left
 
+- Online co-op: joining after the start, Manage Character and the shops
+  online; recovering from an out-of-sync game (today it only warns);
+  cross-platform float determinism (sines and arctangents may differ in the
+  last bit between OSes).
+
 In order, top first. Each line names its doc, where the decoding is.
 
 ### 1. Now: regressions and blockers

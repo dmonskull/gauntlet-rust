@@ -51,7 +51,8 @@ impl Plugin for ExitsPlugin {
     }
 }
 
-fn change_level_to(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn change_level_to(
     mut requests: MessageReader<ChangeLevelTo>,
     mut pending: Local<Option<ChangeLevelTo>>,
     voices: Res<VoiceQueues>,
@@ -59,6 +60,7 @@ fn change_level_to(
     mut party: ResMut<Party>,
     mut trail: ResMut<LevelTrail>,
     mut change: MessageWriter<ChangeLevel>,
+    mut lock: ResMut<crate::online::Lockstep>,
 ) {
     // Several at once: the last one wins.
     if let Some(request) = requests.read().last() {
@@ -89,4 +91,6 @@ fn change_level_to(
         trail.finished = Some(leaving.clone());
     }
     change.write(ChangeLevel(to as isize - game.current as isize));
+    // Online the next tick waits for the level to settle (`online.rs`).
+    lock.level_work = true;
 }

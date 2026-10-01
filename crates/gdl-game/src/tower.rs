@@ -52,11 +52,15 @@ impl Plugin for TowerPlugin {
                     .run_if(resource_exists_and_changed::<LevelPopulation>)
                     .after(quest::seed_tests)
                     .after(follow_levels),
-                speeches,
+                speeches.run_if(crate::online::lockstep_off),
                 wind_on.before(Animate),
                 idle_wizard,
+                fresh_game,
             ),
         )
+        // Online the speeches start on the network's ticks, alike on every
+        // machine (`online.rs`).
+        .add_systems(FixedUpdate, speeches.run_if(crate::online::lockstep_on).after(crate::player::PlayerTick))
         .init_resource::<TowerSpeeches>()
         .init_resource::<LevelTrail>();
     }
@@ -69,6 +73,14 @@ impl Plugin for TowerPlugin {
 #[derive(Resource, Default)]
 pub struct LevelTrail {
     pub finished: Option<String>,
+}
+
+/// A new game online: the tower starts as it does for a fresh game.
+fn fresh_game(mut new_game: MessageReader<crate::online::NewGame>, mut speeches: ResMut<TowerSpeeches>, mut trail: ResMut<LevelTrail>) {
+    if new_game.read().count() > 0 {
+        *speeches = TowerSpeeches::default();
+        *trail = LevelTrail::default();
+    }
 }
 
 fn follow_levels(population: Res<LevelPopulation>, mut trail: ResMut<LevelTrail>) {
