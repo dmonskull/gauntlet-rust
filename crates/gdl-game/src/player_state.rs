@@ -705,7 +705,7 @@ fn take_damage(
     mut hurts: MessageReader<HurtHero>,
     mut heals: MessageReader<HealPlayer>,
     mut party: ResMut<Party>,
-    camera: Option<Res<crate::play_camera::PlayCamera>>,
+    (camera, boss): (Option<Res<crate::play_camera::PlayCamera>>, Option<Res<crate::critters::BossWatch>>),
     heroes: Query<&crate::player::Player>,
     (mut cries, time): (Local<[Cries; MAX_PLAYERS]>, Res<Time>),
     (mut sounds, mut lines, mut announce): (MessageWriter<PlaySoundAt>, MessageWriter<QueueHeroLine>, MessageWriter<QueueVoice>),
@@ -720,8 +720,9 @@ fn take_damage(
     for c in cries.iter_mut() {
         c.wait -= FIELDS_PER_TICK;
     }
-    // No harm comes to the heroes during a camera cut.
-    let cut = camera.is_some_and(|c| c.in_cut());
+    // No harm comes to the heroes during a camera cut, nor once a boss's
+    // end sequence has begun (the game's hurt routine refuses them all).
+    let cut = camera.is_some_and(|c| c.in_cut()) || boss.is_some_and(|b| b.ending);
     let blows: Vec<HurtHero> = hits
         .read()
         .map(|h| HurtHero { slot: h.slot, amount: h.amount, kind: 0, cry: Cry::Hurt })

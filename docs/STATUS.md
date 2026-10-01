@@ -27,7 +27,7 @@ leaves co-op out.
 | Hero movement, camera, cuts | 7 | 97 % | the step cut under the boss camera |
 | Hero combat, magic, power-ups | 10 | 88 % | rapid fire's rate, missile streaks, magic element models, the legendary weapon's throw |
 | Monsters and generators | 9 | 77 % | most AIs run the chase stand-in; no actor-vs-actor collision (they do ride moving floors) |
-| Bosses and critters | 9 | 77 % | missile lifetimes, the areas' cones and guards, stumps, look nodes, no harm in the end sequence (a player hook) |
+| Bosses and critters | 9 | 78 % | missile lifetimes, the areas' guards, stumps, look nodes |
 | Items, pickups, doors, exits, hazards | 6 | 95 % | random item types, the keys' turning traced, the secret realm's kept movers and camera |
 | Level mechanics (triggers, lifts, animated objects, secret walls, falls) | 8 | 86 % | E2's debris, subtype 1 rotators; the G–T tour's leads (G2, G3, G4, H3, J3, K3, T1, the I2/J3/S3 triggers it found unregistered) |
 | What each level places and hides | 5 | 90 % | every level audited statically (the last round: A5, A6, J, K, L, S, T, DEMO1); random item types take the first choice; the stray objects likely the debug markers (now off) |
@@ -35,7 +35,7 @@ leaves co-op out.
 | Quest, tower, saving | 5 | 92 % | the unlocked secret characters on the select screen, per-class records, memory card screens |
 | Front end, menus, HUD, hints | 7 | 85 % | options, the attract loop, the hints' plates, the memory card screens |
 | Audio | 5 | 85 % | music switching and ducking, menu sounds, footstep pan |
-| Co-op (2–4 players) | 6 | 72 % | co-op combos, the monsters' crowd penalty |
+| Co-op (2–4 players) | 6 | 72 % | co-op combos (decoded: [coop.md](coop.md)), the monsters' crowd penalty |
 | Speed and stability | 2 | 85 % | the animated objects' cost unmeasured; warm-up hitches |
 
 ## What's left
@@ -143,9 +143,6 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
   growing blast's life, a second for a steady one); the element's default
   wall effect when a missile with a burst radius but no hit record stops;
   non-bosses' missiles and slots hitting monsters.
-- No hero can be hurt once the end sequence runs (the game's hurt
-  routine refuses every blow while `r13-0x7790` ≠ 0): needs a hook in
-  `player.rs` (`BossWatch::ending`).
 - Critter missiles' lifetime (3 s stand-in), trails and spin.
 - Where the heroes go after a boss (`levelL1` stand-in: the game's
   `0x80054d18` takes the players' `+0x830`, else the tower's `0xD00`).
