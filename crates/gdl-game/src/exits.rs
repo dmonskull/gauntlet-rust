@@ -12,8 +12,15 @@
 //! (the next level's exits open, `quest.rs`) and kept as the last level
 //! finished (the tower's speeches, `tower.rs`). Quitting the level or every
 //! hero out finishes nothing (`docs/items.md`, "Exits").
+//!
+//! Levels are known to the game by id — a realm and an index into the
+//! realm WAD's level records, whose names are the folders — and the
+//! records aren't always in the folders' order ([`LevelIds`]): the tower's
+//! second castle portal (`a2`) leads to `levelA6`, and finishing `levelA6`
+//! opens the third.
 
 use bevy::prelude::*;
+use gdl_formats::{LevelOrder, WorldData};
 
 use crate::audio::VoiceQueues;
 use crate::level::LoadedGame;
@@ -43,12 +50,46 @@ impl ChangeLevelTo {
     }
 }
 
+/// Which folder each of the game's level ids loads, from every realm WAD's
+/// level records (`docs/level-population.md`, "Exit codes"): exits name
+/// levels by id, and a finished level is marked by its id.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct LevelIds(pub LevelOrder);
+
+impl LevelIds {
+    /// A level folder's realm and index (the tower's included).
+    pub fn id(&self, folder: &str) -> Option<(u32, u32)> {
+        self.0.id(folder)
+    }
+}
+
 pub struct ExitsPlugin;
 
 impl Plugin for ExitsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ChangeLevelTo>().add_systems(Update, change_level_to);
+        app.add_message::<ChangeLevelTo>().add_systems(Startup, load_level_ids).add_systems(Update, change_level_to);
     }
+}
+
+fn load_level_ids(mut commands: Commands, mut game: ResMut<LoadedGame>) {
+    let mut order = LevelOrder::default();
+    let wads: Vec<String> = game
+        .install
+        .files()
+        .iter()
+        .filter(|f| {
+            let f = f.to_ascii_uppercase();
+            f.starts_with("WDATA/") && f.ends_with(".WAD")
+        })
+        .cloned()
+        .collect();
+    for path in wads {
+        match game.install.read(&path).map_err(|e| e.to_string()).and_then(|b| WorldData::parse(&b).map_err(|e| e.to_string())) {
+            Ok(world) => order.add(&world),
+            Err(why) => warn!("{path}: {why}"),
+        }
+    }
+    commands.insert_resource(LevelIds(order));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -61,6 +102,7 @@ pub(crate) fn change_level_to(
     mut trail: ResMut<LevelTrail>,
     mut change: MessageWriter<ChangeLevel>,
     mut lock: ResMut<crate::online::Lockstep>,
+    ids: Option<Res<LevelIds>>,
 ) {
     // Several at once: the last one wins.
     if let Some(request) = requests.read().last() {
@@ -78,10 +120,14 @@ pub(crate) fn change_level_to(
         return;
     };
     let leaving = &game.levels[game.current].name;
-    // Each player still in play gets the level marked.
+    // Each player still in play gets the level marked, by its id.
+    let id = match ids.as_deref() {
+        Some(ids) => ids.id(leaving),
+        None => quest::level_of(leaving),
+    };
     if request.finishing
         && party.any(|s| s.alive)
-        && let Some((realm, level)) = quest::level_of(leaving)
+        && let Some((realm, level)) = id
         && realm != quest::TOWER
     {
         info!("{leaving} finished");

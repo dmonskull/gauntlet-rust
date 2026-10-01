@@ -223,6 +223,71 @@ impl WorldLevel {
     }
 }
 
+/// Which folder each of the game's level ids loads. A level id is a realm
+/// and an index (`realm << 8 | index`; an exit's code `a2` is the castle's
+/// index 1), and the index picks the realm WAD's level record — the first
+/// one past the last — whose name is the folder (`docs/level-population.md`,
+/// "Exit codes"). The records aren't always in the folders' order: on the
+/// disc the castle's go A1, A6, A2, A3, A4, A5, the dream's J1, J2, J3, J6,
+/// J4, J5 and the sky's K2, K3, K4, K1, K5, each realm's boss level last.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LevelOrder {
+    /// Realm id → its level records' names, in order.
+    realms: std::collections::BTreeMap<u32, Vec<String>>,
+}
+
+impl LevelOrder {
+    /// Adds a realm WAD's level records.
+    pub fn add(&mut self, world: &WorldData) {
+        self.add_names(world.levels.iter().map(|l| l.name.as_str()));
+    }
+
+    /// Adds level record names (`A1`), in their WAD's order; each goes to
+    /// the realm its letter names.
+    pub fn add_names<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
+        for name in names {
+            if let Some(realm) = realm_of(name) {
+                self.realms.entry(realm).or_default().push(name.to_string());
+            }
+        }
+    }
+
+    /// The folder the level with this id loads (`levelA6` for the castle's
+    /// index 1). With no records for the realm, the folder its index names.
+    pub fn folder(&self, realm: u32, index: u32) -> Option<String> {
+        match self.realms.get(&realm) {
+            Some(names) => {
+                let name = names.get(index as usize).or(names.first())?;
+                Some(format!("level{name}"))
+            }
+            None => {
+                let letter = crate::population::REALM_LETTERS.iter().find(|(_, id)| *id == realm)?.0;
+                Some(format!("level{letter}{}", index + 1))
+            }
+        }
+    }
+
+    /// A level folder's id: its record's realm and index (`levelA6`: 1, 1).
+    /// With no records for its realm, the index its digit names.
+    pub fn id(&self, folder: &str) -> Option<(u32, u32)> {
+        let name = folder.get(..5).filter(|p| p.eq_ignore_ascii_case("level")).map(|_| &folder[5..])?;
+        let realm = realm_of(name)?;
+        match self.realms.get(&realm) {
+            Some(names) => names.iter().position(|n| n.eq_ignore_ascii_case(name)).map(|i| (realm, i as u32)),
+            None => {
+                let digit = name.get(1..)?.parse::<u32>().ok()?;
+                Some((realm, digit.checked_sub(1)?))
+            }
+        }
+    }
+}
+
+/// A level name's realm id, from its letter (`A6`: the castle, 1).
+fn realm_of(name: &str) -> Option<u32> {
+    let letter = name.chars().next()?.to_ascii_uppercase();
+    crate::population::REALM_LETTERS.iter().find(|(l, _)| *l == letter).map(|(_, id)| *id)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LevelAudio {
     /// Sound bank the level loads, by catalog name (`CASTLE`, `PYRAMID`).
@@ -429,6 +494,55 @@ mod tests {
         assert_eq!(audio("castle6", 1, &[2]).stream_path(0, 1), "STREAMS/castle6_2.ads");
         assert_eq!(audio("desert2", 3, &[1, 2, 1]).stream_path(1, 0), "STREAMS/desert2b_1.ads");
         assert_eq!(audio("forest5", 2, &[1, 2, 0]).part_count(2), 1);
+    }
+
+    #[test]
+    fn level_ids_load_their_realms_records() {
+        let mut order = LevelOrder::default();
+        order.add_names(["A1", "A6", "A2", "A3", "A4", "A5"]);
+        order.add_names(["L1", "L2"]);
+        // The castle's second level (`a2`) is A6; its boss A5 the sixth.
+        assert_eq!(order.folder(1, 1).as_deref(), Some("levelA6"));
+        assert_eq!(order.folder(1, 5).as_deref(), Some("levelA5"));
+        assert_eq!(order.id("levelA6"), Some((1, 1)));
+        assert_eq!(order.id("LEVELA2"), Some((1, 2)));
+        // Past the last record: the first (the tower has no L3).
+        assert_eq!(order.folder(13, 2).as_deref(), Some("levelL1"));
+        assert_eq!(order.id("levelL3"), None);
+        // A realm without records: the folder its index names.
+        assert_eq!(order.folder(2, 0).as_deref(), Some("levelB1"));
+        assert_eq!(order.id("levelB6"), Some((2, 5)));
+        assert_eq!(order.id("DEMO1"), None);
+    }
+
+    /// On the disc: the castle, dream and sky realms' records aren't in
+    /// their folders' order, and every realm's boss level is its last.
+    #[test]
+    fn real_level_ids_end_with_the_boss() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT")
+            .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let Ok(dir) = std::fs::read_dir(std::path::Path::new(&root).join("WDATA")) else {
+            eprintln!("skipping: no WDATA folder");
+            return;
+        };
+        let mut order = LevelOrder::default();
+        let mut levels = Vec::new();
+        for path in dir.flatten().map(|e| e.path()) {
+            let Ok(w) = WorldData::parse(&std::fs::read(&path).unwrap()) else { continue };
+            order.add(&w);
+            levels.push(w.levels.iter().map(|l| (l.name.clone(), l.boss_camera.is_some())).collect::<Vec<_>>());
+        }
+        for realm in &levels {
+            let bosses: Vec<usize> = realm.iter().enumerate().filter(|(_, (_, b))| *b).map(|(i, _)| i).collect();
+            assert!(bosses.is_empty() || bosses == [realm.len() - 1], "{realm:?}");
+        }
+        let folders = |realm: u32, n: u32| (0..n).map(|i| order.folder(realm, i).unwrap()).collect::<Vec<_>>();
+        assert_eq!(folders(1, 6), ["levelA1", "levelA6", "levelA2", "levelA3", "levelA4", "levelA5"]);
+        assert_eq!(folders(10, 6), ["levelJ1", "levelJ2", "levelJ3", "levelJ6", "levelJ4", "levelJ5"]);
+        assert_eq!(folders(11, 5), ["levelK2", "levelK3", "levelK4", "levelK1", "levelK5"]);
+        assert_eq!(folders(2, 6), ["levelB1", "levelB2", "levelB3", "levelB4", "levelB5", "levelB6"]);
+        assert_eq!((order.id("levelK1"), order.id("levelJ5"), order.id("levelS9")), (Some((11, 3)), Some((10, 5)), Some((12, 8))));
+        assert_eq!(order.folder(13, 2).as_deref(), Some("levelL1"));
     }
 
     /// Every boss level has a boss camera; B6's is the one decoded.

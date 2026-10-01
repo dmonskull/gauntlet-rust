@@ -30,4 +30,6 @@ pub use rvz::{RvzError, RvzReader};
 pub use texture::{RgbaImage, TextureError, TextureFormat};
 pub use population::{ItemClass, PlayerStart, Population, PopulationError};
 pub use world::{WorldError, WorldFile, WorldNode};
-pub use world_data::{BossCamera, LevelAudio, LevelCamera, LevelLight, LevelTuning, RealmEnemy, WorldData, WorldDataError, WorldLevel};
+pub use world_data::{
+    BossCamera, LevelAudio, LevelCamera, LevelLight, LevelOrder, LevelTuning, RealmEnemy, WorldData, WorldDataError, WorldLevel,
+};
