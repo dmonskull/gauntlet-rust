@@ -100,8 +100,23 @@ the actions the player update hits with through `FUN_80088b88` (−1 none):
 | `+0x20` | ? | 12 |
 | `+0x22` | action `0x7B` | 13 |
 
-A hero `DAMG` record as `FUN_80088b88` (record, the action's time now and
-last tick) reads it — the rest isn't traced:
+A hero `DAMG` record makes an **effect slot**, as a critter's blow does
+([critters.md](critters.md) "What a `DAMG` does"): `FUN_80089114(hero,
+record, at node?, partner's offset)` starts the slot from the record's
+`SFXX` effect (`+0x48`, `FUN_800896e0`) at `+0x2C/+0x30/+0x34` in the hero's
+frame (kind 2: in the node's frame), turned by `+0x20` (yaw) and `+0x28`
+(pitch), and sets its flags by kind — 2: `0xE`, 3: `0x3A`, 4, 6, 7, 9:
+`0x2A`; with `0x101` in versus mode (`0x8027487c` = 2) else `0x300`; flag
+`0x40` clears `4`; the blow bits' `0x20000` carried — then, with damage
+(`+0x38`; negative: × the hero's strength `+0x104`): damage, `+0x24`, the
+blow bits (`+0x04`), `+0x0C` (radius), `+0x14`, a life (`+0x18`, from now),
+the owner (hero + 1), the hit effect (`SFXX +0x4A`, its flag `0x10` →
+slot `0x200000`), a trail (`SFXX +0x4C`, scaled by `+0x1C`; record flag
+`0x800` → slot `0x8000`), its size (`+0x0C`, else `+0x08`, × a constant),
+and a velocity: speed between `+0x3C` and `+0x40` along the facing (flag 4:
+the facing as is; kind 2 turned by `+0x20`, and with flag 8 by `+0x28`),
+gravity `+0x44` (`FUN_80093688`). With no damage only the hit effect is
+set. Field by field, as `FUN_80088b88` reads it — the rest isn't traced:
 `+0x00` i16 kind (0 and 5 nothing; 2, 3, 4 and others a hit through
 `FUN_80089114`, its third argument 0 for kind 2; 10 an area through
 `FUN_80030094`, stepped `+0x14` apart along the facing out to `+0x20`,
