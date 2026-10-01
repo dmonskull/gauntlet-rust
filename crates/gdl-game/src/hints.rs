@@ -5,22 +5,55 @@
 //! messages — scrolls, the tower's notices — are the message box's,
 //! `message_box.rs`.) The announcer's line waits in the announcer's voice
 //! queue, dropped if more than half a second is queued ahead of it.
-//! Stand-in: hints are drawn as plain centred text for a fixed time.
+//!
+//! The box (`docs/items.md`, "Hints"): the `Scroll_A` parchment at three
+//! quarters, 64 wider than the text's widest line and 16 taller than its
+//! lines × (font height + 8), centred over the player's panel (x 64 for
+//! player 1, y 250) and kept on screen; the lines in the group's font and
+//! scale, 2 apart, centred in it, in the player's dark ink (player 1's
+//! `0x1F1F00`). It stays up for 60 fields a line and 30 more, waiting and
+//! hidden during a camera cut. After each hint, the tutorial ones wait a
+//! while before the next: 0, 2, 4, 7 seconds, then 10 each time.
+//! Stand-in: hints shown once are remembered for the session, not in the
+//! character's record.
 
 use bevy::prelude::*;
 use gdl_formats::text::TextRom;
 
 use crate::audio::QueueVoice;
 use crate::character;
+use crate::font::{Draw2d, Flush2d, GameFonts, TextStyle, UiTextures};
+use crate::frontend::Frontend;
 use crate::level::LoadedGame;
-use crate::message_box::MessageBox;
+use crate::message_box::{DrawBox, MessageBox};
+use crate::play_camera::PlayCamera;
 use crate::player::PlayerChoice;
 use crate::player_state::PlayerState;
 
-/// How long a hint stays up. Stand-in: the game's hint timing isn't traced.
-const HINT_SECONDS: f32 = 3.0;
+/// A hint stays up this many fields a line, and this many more.
+const FIELDS_A_LINE: f32 = 60.0;
+const FIELDS_MORE: f32 = 30.0;
+/// The waits after each hint before the next tutorial hint (fields); the
+/// last repeats.
+const COOLDOWNS: [f32; 5] = [0.0, 120.0, 240.0, 420.0, 600.0];
 /// A hint's line is dropped when it would wait longer than this, seconds.
 const VOICE_MOST_WAIT: f32 = 0.5;
+/// The box: its panel, how see-through (the game's 0x40: alpha 0x60 of
+/// 0x80), the margins its text gets across and down, the gap its height
+/// is measured with and the gap its lines are drawn with.
+const PANEL: &str = "Scroll_A";
+const PANEL_ALPHA: f32 = 0.75;
+const MARGIN_ACROSS: f32 = 64.0;
+const MARGIN_DOWN: f32 = 16.0;
+const MEASURE_GAP: f32 = 8.0;
+const LINE_GAP: f32 = 2.0;
+/// Player 1's panel: the box's centre, and its ink.
+const CENTRE: (f32, f32) = (64.0, 250.0);
+const INK: [u8; 3] = [0x1F, 0x1F, 0x00];
+/// The box stays within x 0–511 and y 2–304 (the panels' top).
+const SCREEN_RIGHT: f32 = 511.0;
+const SCREEN_TOP: f32 = 2.0;
+const PANELS_TOP: f32 = 304.0;
 
 /// The hints items raise, by the game's hint number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -209,6 +242,49 @@ const LEGENDARY_VOICES: [&str; 11] = [
 ];
 
 impl Hint {
+    /// The game's hint number.
+    fn number(self) -> u8 {
+        match self {
+            Self::KillDeathWithMagic => 0,
+            Self::UseKeyOnDoor => 1,
+            Self::UseKeyOnChest => 2,
+            Self::MagicFull => 3,
+            Self::KeysFull => 4,
+            Self::CollectMagicFirst => 6,
+            Self::UseMagic => 7,
+            Self::SaveKeys => 8,
+            Self::Transporter => 9,
+            Self::ShootPotion => 0xE,
+            Self::EatMeat => 0xF,
+            Self::EatFruit => 0x10,
+            Self::CollectGold => 0x11,
+            Self::SecretWalls => 0x14,
+            Self::AvoidObjects => 0x15,
+            Self::SomeBarrels => 0x1B,
+            Self::PoisonedFood => 0x1C,
+            Self::LevelUp => 0x22,
+            Self::ThrowMagic => 0x5E,
+            Self::MagicShield => 0x5F,
+            Self::Legendary(n) => 0x71 + n.clamp(1, 11),
+            Self::DeathDrainsExperience => 0x80,
+            Self::DeathLeftAfterExperience => 0x81,
+            Self::DeathDrainsHealth => 0x82,
+            Self::DeathLeftAfterHealth => 0x83,
+            Self::HealthFull => 0x85,
+            Self::GeneralsCarryItems => 0x86,
+            Self::ExplosionsDestroyItems => 0x87,
+            Self::GasSpoilsFood => 0x88,
+            Self::ChestsExplode => 0x89,
+            Self::DefeatGargoyles => 0x8A,
+            Self::Power(n) => n,
+        }
+    }
+
+    /// The tutorial hints, which wait out the cool-down after a hint.
+    fn waits(self) -> bool {
+        matches!(self.number(), 0..0x1D | 0x2C | 0x2D | 0x37 | 0x50)
+    }
+
     /// Text group, announcer line, and whether it's shown only once (the
     /// game's mode 0 hints repeat; the rest are remembered once shown).
     fn entry(self) -> (std::borrow::Cow<'static, str>, &'static str, bool) {
@@ -261,13 +337,24 @@ impl Hint {
 #[derive(Message, Clone, Copy, Debug)]
 pub struct ShowHint(pub Hint);
 
-/// The hint on screen, for the status overlay.
+/// The hint on screen: its lines, font slot and scale, and fields left.
+struct Up {
+    lines: Vec<String>,
+    slot: usize,
+    scale: f32,
+    fields: f32,
+}
+
+/// The hint on screen, those shown, and the tutorial hints' cool-down.
 #[derive(Resource, Default)]
 pub struct Hints {
-    pub text: Option<String>,
-    left: f32,
+    up: Option<Up>,
     shown: Vec<Hint>,
     rom: Option<TextRom>,
+    /// Fields before the next tutorial hint may show, and how many hints
+    /// have set it this level.
+    cooldown: f32,
+    count: usize,
 }
 
 impl Hints {
@@ -275,6 +362,42 @@ impl Hints {
     pub fn seen(&self, hint: Hint) -> bool {
         self.shown.contains(&hint)
     }
+
+    /// The hint on screen, as one line (the debug overlay).
+    pub fn text(&self) -> Option<String> {
+        self.up.as_ref().map(|u| u.lines.join(" "))
+    }
+}
+
+/// The wait the `count`th hint of a level sets before the next tutorial
+/// hint (fields).
+fn cooldown(count: usize) -> f32 {
+    COOLDOWNS[count.min(COOLDOWNS.len() - 1)]
+}
+
+/// The box round `lines` (width of the widest, height as measured): its
+/// left and top, size, and the centre its text is drawn about — the
+/// panel's centre, moved to keep the box on screen.
+fn place_box(widest: f32, measured: f32) -> ((f32, f32), (f32, f32), (f32, f32)) {
+    let (w, h) = (widest + MARGIN_ACROSS, measured + MARGIN_DOWN);
+    let (mut cx, mut cy) = CENTRE;
+    let mut x = cx - (w / 2.0).trunc();
+    if x < 0.0 {
+        cx -= x;
+        x = 0.0;
+    } else if x + w > SCREEN_RIGHT {
+        cx -= x + w - SCREEN_RIGHT;
+        x = SCREEN_RIGHT - w;
+    }
+    let mut y = cy - (h / 2.0).trunc();
+    if y < SCREEN_TOP {
+        cy += SCREEN_TOP - y;
+        y = SCREEN_TOP;
+    } else if y + h > PANELS_TOP {
+        cy += PANELS_TOP - (y + h);
+        y = PANELS_TOP - h;
+    }
+    ((x, y), (w, h), (cx, cy))
 }
 
 pub struct HintsPlugin;
@@ -284,7 +407,8 @@ impl Plugin for HintsPlugin {
         app.add_message::<ShowHint>()
             .init_resource::<Hints>()
             .add_systems(Startup, load_text)
-            .add_systems(Update, show_hints);
+            .add_systems(Update, show_hints)
+            .add_systems(PostUpdate, draw_hint.before(DrawBox).before(Flush2d));
     }
 }
 
@@ -325,45 +449,97 @@ fn show_hints(
     time: Res<Time>,
     mut hints: ResMut<Hints>,
     boxes: Res<MessageBox>,
+    camera: Option<Res<PlayCamera>>,
+    population: Option<Res<crate::population::LevelPopulation>>,
     mut requests: MessageReader<ShowHint>,
     mut voice: MessageWriter<QueueVoice>,
     choice: Option<Res<PlayerChoice>>,
     state: Option<Res<PlayerState>>,
 ) {
+    // A level's load clears the box and the cool-down.
+    if population.is_some_and(|p| p.is_changed()) {
+        hints.up = None;
+        hints.cooldown = 0.0;
+        hints.count = 0;
+    }
     // Play is frozen under the message box.
     if boxes.is_open() {
         requests.clear();
         return;
     }
-    if hints.text.is_some() {
-        hints.left -= time.delta_secs();
-        if hints.left <= 0.0 {
-            hints.text = None;
+    let fields = time.delta_secs() * 60.0;
+    hints.cooldown = (hints.cooldown - fields).max(0.0);
+    // The box's time runs out of camera cuts only.
+    if !camera.is_some_and(|c| c.in_cut())
+        && let Some(up) = hints.up.as_mut()
+    {
+        up.fields -= fields;
+        if up.fields < 1.0 {
+            hints.up = None;
         }
     }
     for &ShowHint(hint) in requests.read() {
         let (group, line, once) = hint.entry();
-        // All of these share one priority, so one up blocks the next.
-        if hints.text.is_some() || (once && hints.seen(hint)) {
+        // All of these share one priority, so one up blocks the next; the
+        // tutorial ones wait out the cool-down.
+        if hints.up.is_some() || (once && hints.seen(hint)) || (hint.waits() && hints.cooldown > 0.0) {
             continue;
         }
         let pojo = state.as_ref().is_some_and(|s| s.bits.special & POJO != 0);
         // The game fills a hint's `%d` with the hero's level.
         let level = state.as_ref().map_or(1, |s| s.level).to_string();
-        let Some(text) = hints.rom.as_ref().and_then(|rom| {
-            let lines = &rom.group(&group)?.strings;
-            let lines: Vec<String> =
-                lines.iter().map(|l| fill_hero(l, rom, hint, choice.as_deref(), pojo).replace("%d", &level)).collect();
-            Some(lines.join(" "))
+        let Some(up) = hints.rom.as_ref().and_then(|rom| {
+            let g = rom.group(&group)?;
+            let lines = g
+                .strings
+                .iter()
+                .map(|l| fill_hero(l, rom, hint, choice.as_deref(), pojo).replace("%d", &level))
+                .collect::<Vec<_>>();
+            let font = rom.fonts.get(g.font as usize).map_or(0, |f| gdl_formats::font::slot_for_rom_font(f));
+            let fields = lines.len() as f32 * FIELDS_A_LINE + FIELDS_MORE;
+            Some(Up { lines, slot: font, scale: g.scale[0], fields })
         }) else {
             continue;
         };
-        // The font is ASCII-only.
-        hints.text = Some(text.chars().filter(char::is_ascii).collect());
-        info!("hint: {}", hints.text.as_deref().unwrap_or_default());
-        hints.left = HINT_SECONDS;
+        info!("hint: {}", up.lines.join(" / "));
+        hints.up = Some(up);
         hints.shown.push(hint);
+        hints.cooldown = cooldown(hints.count);
+        hints.count += 1;
         voice.write(QueueVoice::announcer(line, VOICE_MOST_WAIT).gated());
+    }
+}
+
+/// Draws the hint's box and lines over play (not on the front end's
+/// screens or under a menu, and hidden during a camera cut).
+#[allow(clippy::too_many_arguments)]
+fn draw_hint(
+    hints: Res<Hints>,
+    frontend: Option<Res<Frontend>>,
+    boxes: Res<MessageBox>,
+    camera: Option<Res<PlayCamera>>,
+    fonts: Option<Res<GameFonts>>,
+    mut tex: Option<ResMut<UiTextures>>,
+    mut images: ResMut<Assets<Image>>,
+    mut draw: ResMut<Draw2d>,
+) {
+    let (Some(up), Some(fonts), Some(tex)) = (hints.up.as_ref(), fonts, tex.as_deref_mut()) else { return };
+    if frontend.is_some_and(|f| !f.playing() || f.menu_open()) || boxes.is_open() || camera.is_some_and(|c| c.in_cut()) {
+        return;
+    }
+    let widest = up.lines.iter().map(|l| fonts.width(up.slot, up.scale, l)).fold(0.0, f32::max);
+    let height = fonts.line_height(up.slot, up.scale).trunc();
+    let ((x, y), (w, h), (cx, cy)) = place_box(widest, up.lines.len() as f32 * (height + MEASURE_GAP));
+    if let Some(panel) = tex.get(PANEL, &mut images) {
+        draw.image(&panel, x, y, w, h, Color::srgba(1.0, 1.0, 1.0, PANEL_ALPHA));
+    }
+    let ink = TextStyle::new(up.slot, up.scale, Color::srgb_u8(INK[0], INK[1], INK[2]));
+    let step = height + LINE_GAP;
+    let block = height + step * (up.lines.len() as f32 - 1.0);
+    let mut line_y = (cy - (block / 2.0).trunc()).trunc();
+    for l in &up.lines {
+        draw.text(&fonts, &ink, -cx, line_y, l);
+        line_y += step;
     }
 }
 
@@ -389,6 +565,27 @@ mod tests {
         }
         let (_, _, once) = Hint::Power(POJO_HINT).entry();
         assert!(!once);
+    }
+
+    #[test]
+    fn the_box_keeps_over_the_panel_and_on_screen() {
+        // "COLLECT GOLD / TO BUY POWERUPS" in the 8 × 8 font: 120 wide,
+        // two lines measured 16 each — a 184 × 48 box whose left would be
+        // at 64 − 92, so it's moved to the screen's edge and its text
+        // with it.
+        let ((x, y), (w, h), (cx, cy)) = place_box(120.0, 32.0);
+        assert_eq!((x, y, w, h), (0.0, 226.0, 184.0, 48.0));
+        assert_eq!((cx, cy), (92.0, 250.0));
+        // A narrow one sits centred on the panel.
+        let ((x, _), (w, _), (cx, _)) = place_box(40.0, 16.0);
+        assert_eq!((x, w, cx), (12.0, 104.0, 64.0));
+    }
+
+    #[test]
+    fn tutorial_hints_wait_longer_each_time() {
+        assert_eq!((0..7).map(cooldown).collect::<Vec<_>>(), [0.0, 120.0, 240.0, 420.0, 600.0, 600.0, 600.0]);
+        assert!(Hint::CollectGold.waits() && Hint::UseKeyOnDoor.waits());
+        assert!(!Hint::LevelUp.waits() && !Hint::HealthFull.waits() && !Hint::Power(0x23).waits());
     }
 
     #[test]

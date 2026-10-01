@@ -1,6 +1,7 @@
 //! The hero's status as a debug line at the top left (F1 with
 //! `GDL_DEV_KEYS=1`, or `GDL_DEBUG_HUD=1`; the game's own panel is `game_hud.rs`): health, level,
-//! gold, keys, potions, running powerups, and the hint on screen.
+//! gold, keys, potions, running powerups, and the hint on screen (the
+//! game's hint box is `hints.rs`).
 //! Bevy's built-in font is ASCII-only, so all text here is ASCII.
 
 use bevy::prelude::*;
@@ -71,29 +72,29 @@ fn update(
     if let Ok(mut text) = hint.single_mut()
         && hints.is_changed()
     {
-        text.0 = hints.text.clone().unwrap_or_default();
+        text.0 = hints.text().unwrap_or_default();
     }
 }
 
 type HudTexts = Or<(With<StatusText>, With<HintText>)>;
 
-/// The status and hints only show while a level is played, not on the
-/// title, select or loading screens. The status line is a debugging aid
-/// now that the game's own panel is drawn (`game_hud.rs`): F1 (with
-/// `GDL_DEV_KEYS=1`) or `GDL_DEBUG_HUD=1` shows it.
+/// The status and hint lines only show while a level is played, not on
+/// the title, select or loading screens, and only as a debugging aid now
+/// that the game's own panel and hint box are drawn (`game_hud.rs`,
+/// `hints.rs`): F1 (with `GDL_DEV_KEYS=1`) or `GDL_DEBUG_HUD=1` shows them.
 fn show_in_play(
     frontend: Option<Res<crate::frontend::Frontend>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut debug: Local<Option<bool>>,
-    mut texts: Query<(&mut Visibility, Has<StatusText>), HudTexts>,
+    mut texts: Query<&mut Visibility, HudTexts>,
 ) {
     let debug = debug.get_or_insert_with(|| std::env::var("GDL_DEBUG_HUD").is_ok_and(|v| !v.is_empty() && v != "0"));
     if crate::dev_keys() && keys.just_pressed(KeyCode::F1) {
         *debug = !*debug;
     }
     let playing = frontend.is_none_or(|f| f.playing());
-    for (mut v, status) in &mut texts {
-        let want = if playing && (!status || *debug) { Visibility::Inherited } else { Visibility::Hidden };
+    for mut v in &mut texts {
+        let want = if playing && *debug { Visibility::Inherited } else { Visibility::Hidden };
         v.set_if_neq(want);
     }
 }
