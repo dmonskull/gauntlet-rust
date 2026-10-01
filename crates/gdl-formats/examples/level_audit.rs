@@ -4,7 +4,7 @@
 //! nothing is drawn (dev tool).
 //!
 //! ```text
-//! cargo run -p gdl-formats --example level_audit -- <game>/Gauntlet [level] [--triggers] [--anim]
+//! cargo run -p gdl-formats --example level_audit -- <game>/Gauntlet [level] [--triggers] [--anim] [--falls]
 //! ```
 //!
 //! With `--triggers`, every trigger the party has is listed too: where it
@@ -12,7 +12,9 @@
 //! With `--anim`, each animated object a trigger plays is described: the
 //! middle of each of its nodes' collision at rest, at its first frame
 //! (where the level starts it) and at its last (where the trigger takes
-//! it).
+//! it). With `--falls`, the falling obstacles (rock falls, leaves, debris,
+//! shot-down walls, sinking rocks): their model, shape, links and the
+//! floor under each.
 //!
 //! Per level it lists:
 //! - `MOVER`: world nodes the game moves (or hides) because a trigger for
@@ -185,8 +187,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let listing = args.iter().any(|a| a == "--triggers");
     let describe = args.iter().any(|a| a == "--anim");
+    let falls = args.iter().any(|a| a == "--falls");
     let mut plain = args.iter().filter(|a| !a.starts_with("--"));
-    let root = plain.next().expect("usage: level_audit <game>/Gauntlet [level] [--triggers]").clone();
+    let root = plain.next().expect("usage: level_audit <game>/Gauntlet [level] [--triggers] [--anim] [--falls]").clone();
     let only = plain.next().map(|s| s.to_ascii_lowercase());
     let root = Path::new(&root);
     let mut levels: Vec<_> = std::fs::read_dir(root.join("LEVELS")).expect("LEVELS").flatten().map(|e| e.path()).collect();
@@ -363,6 +366,36 @@ fn main() {
             .collect();
         if !walls.is_empty() {
             note("WALL", format!("{} secret walls (placements {walls:?})", walls.len()), &mut lines);
+        }
+
+        // Crumbling floors: what they are and what's under them.
+        if falls {
+            for (i, p) in pop.placements.iter().enumerate() {
+                let ty = pop.resolved_type(p);
+                if !p.active_for(1) || ty.class != ItemClass::Obstacle || !matches!(ty.subtype, 0x28 | 0x31 | 0x33..=0x35) {
+                    continue;
+                }
+                let f = |o: usize| f32::from_le_bytes(ty.raw[o..o + 4].try_into().unwrap());
+                let extents = [f(0x0C), f(0x10), f(0x14), f(0x18)];
+                let under = collision.as_ref().and_then(|c| c.floor_probe(p.position, 4.0, -10.0, 1.0, 0));
+                let floor = under.map_or("no floor".to_string(), |h| {
+                    let n = &world.nodes[h.node];
+                    format!("floor {:.2} on node {} {} (flags {:#x})", h.point[1], h.node, n.name, n.flags)
+                });
+                let model = if has_model(p.model_name(ty), &items, &level) { "" } else { " (no model found)" };
+                lines.push(format!(
+                    "  FALL  {i:4} {:#x} {} model {}{model} shape {} extents {extents:?} links {:?} rot {:?} at ({:.1}, {:.1}, {:.1}); {floor}",
+                    ty.subtype,
+                    ty.name,
+                    p.model_name(ty),
+                    shape(ty),
+                    p.links,
+                    p.rotation,
+                    p.position[0],
+                    p.position[1],
+                    p.position[2]
+                ));
+            }
         }
 
         // The party's triggers, for checking them in the game.

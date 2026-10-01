@@ -290,9 +290,47 @@ Items shape 1 (cylinder) on the disc: powerups (extent 0.5, 2 — gold
 | DOOR | closed: if the hero moves toward it (hero's move · (door − hero) ≥ 0), a key opens it (key −1, flag `0x1`, door sound, walk-through this tick); no key: hint 1 and block. Opening: blocks |
 | DAMAGETILE | while active (states 2/4): `FUN_80078560(amount × level factor)` with a per-hero cooldown |
 | EXIT | stands in: sets the hero's bit in `+0xE0` (returns 2) |
-| OBSTACLE | blocks, except crumbling floors (`0x28`, `0x35`, `0x31`: they start falling) |
+| OBSTACLE | blocks, except the falling ones (`0x28`, `0x35`, `0x31`: they're set off, below; `0x33`, `0x34` walked through) and a safe rock with `+0xDE` ≤ 0 |
 | TRANSPORTER | stands in (returns 2); `FUN_80086e44` records it in the hero's `+0x8AC` |
 | ENEMYINFO | a placed monster's item (a statue till its critter is made): with its range `+0xE8` ≥ 0 it's woken (`+0xE4 \|= 1`, [critters.md](critters.md) "Placed critters"); blocks within the type's radius (`+0x0C`) |
+
+### Falling obstacles
+
+Obstacles `0x28` (rock falls — `B3ROCKFALL_R7`… — and crumbling bits,
+183 on the disc), `0x31` (falling leaves, D3/D4), `0x34` (walls that fall
+once shot down: `A6SHOOTFALL_#0`…, F1, I1; shape 4, their own collision
+triangles), `0x35` (sinking rocks: F1, F2, H2, H3, I2, I3, I5) and `0x33`
+(E2's debris) fall once set off — item flag 1:
+
+- **Touch** (`FUN_8005d71c`, class 10): `0x28` and `0x35` set off with
+  `FUN_8009d154` and `0x31` with `FUN_8009d104` — the realm's sound,
+  faded at the item at `0xE0` (`0x80123274`: A `S_FALLAWAY`, B
+  `S_ROCKBREAK`, C `S_LIMBBREAKC`, D `S_LIMBBREAK`, E `S_ROCKBREAKE`, F
+  `S_ROCKBREAKF` — F2 `S_ROCKBREAKF2` — G `S_ROCKBREAKG`, H
+  `S_LIMBBREAKH`, I `S_ICEBREAK` — I5 `S_ICEBREAKY`; leaves `0x801232AC`:
+  D `S_LEAFBREAK`, I `S_WOODBREAKI`); the hero walks on (returns 0).
+  Their touch shape is a cylinder 15 across, 20 up and down (shape 1), so
+  a hero walking toward one within 15 sets it off. `0x33` and `0x34` are
+  walked through.
+- **Blows** (`FUN_8005c1c8`, class 10, as the barrels): one that takes
+  its last hit point sets off (flag 1, `S_BARREL_WOOD<realm>`) and stays;
+  others sound `S_WEAPONHITWOOD` and flash.
+- **E2's debris** (`0x33`, the item update's `0x80062670` case): each
+  time the boss's stage counter `r13-0x71A0` moves on (`FUN_80063c44`, for
+  boss `0x2A`) it's thrown: stage 1 up at 20 + random 10, 2 at 30 +
+  random 15, 3 away from the boss's spot at 10 and up at 50 + random 100;
+  then it falls like the rest.
+- **The fall** (the item update, class 10, only while on screen or flag
+  `0x40`): the item's matrix to angles (`FUN_800bd05c`, the locator
+  builder's inverse), X += spin × `0x8011C354[slot & 7]` × dt and Z +=
+  spin × `0x8011C354[~slot & 7]` × dt (steps −4…−1, 1…4), built again
+  (`FUN_800bd344`); fall speed −= 2 a frame (leaves 1), position += speed
+  × dt; spin 20° a second (sinking rocks 1°, leaves 10°). Below the kill
+  height − 200 (`r13-0x7278`, `r2-0x6668`) it's freed. Its model and — a
+  wall's — collision go with it.
+
+(`items.rs`: `fall`, `fall_items`; the debris isn't thrown yet — the
+boss's stage changes come from the critters' code.)
 
 ### Picking up (`FUN_8005de3c`)
 

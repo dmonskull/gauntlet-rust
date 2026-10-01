@@ -7,8 +7,11 @@
 //!
 //! Each tick, after the player has moved: every live item the hero
 //! reaches is touched (the item type's shape and extents against the
-//! hero's radius and height), blocking items push the hero back out,
-//! and at most one powerup is picked up.
+//! hero's radius and height; secret walls by their own collision
+//! triangles), blocking items push the hero back out, and at most one
+//! powerup is picked up. Rock falls, sinking rocks and falling leaves the
+//! hero comes near — and walls shot down — fall spinning out of the level
+//! (`docs/items.md`, "Falling obstacles").
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -49,7 +52,7 @@ impl Plugin for ItemsPlugin {
             .add_systems(FixedUpdate, tick.in_set(ItemTick))
             .add_systems(
                 Update,
-                (build_items.run_if(resource_exists_and_changed::<LevelPopulation>), attach_models, pose_items, show_rocks)
+                (build_items.run_if(resource_exists_and_changed::<LevelPopulation>), attach_models, pose_items, show_rocks, place_falling)
                     .chain(),
             );
     }
@@ -150,8 +153,8 @@ const EATERS: [&str; 8] = ["WAR", "VAL", "WIZ", "ARC", "DWF", "KNI", "SOR", "JES
 /// An item type's collision shape (`+0x08`) and extents, placed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shape {
-    /// 0 none, 1 upright cylinder, 2 sphere, 3 box, 4 the obstacle test
-    /// (walls; not ported).
+    /// 0 none, 1 upright cylinder, 2 sphere, 3 box, 4 walls (their own
+    /// collision triangles, `Wall`).
     pub kind: u16,
     /// `extent[0]`: radius.
     pub radius: f32,
@@ -305,7 +308,8 @@ fn normalize(v: &mut [f32; 2]) {
 /// collision triangles its placement names (`+0x04` first, `+0x06`
 /// count), in the item's frame, and where the item stands.
 struct Wall {
-    triangles: Vec<CollisionTriangle>,
+    triangles: Arc<[CollisionTriangle]>,
+    /// Where the item is now (a shot-down one falls).
     position: [f32; 3],
     /// Row vectors: world = local · rotation + position.
     rotation: [f32; 9],
@@ -315,7 +319,7 @@ impl Wall {
     /// The placement's triangles, if it names any.
     fn of(collision: &LevelCollision, links: [i16; 2], position: [f32; 3], rotation: [f32; 9]) -> Option<Self> {
         let (first, count) = (usize::try_from(links[0]).ok()?, usize::try_from(links[1]).ok()?);
-        let triangles = collision.triangles.get(first..first.checked_add(count)?)?.to_vec();
+        let triangles: Arc<[CollisionTriangle]> = collision.triangles.get(first..first.checked_add(count)?)?.into();
         (!triangles.is_empty()).then_some(Self { triangles, position, rotation })
     }
 
@@ -363,6 +367,90 @@ fn wall_contact(w: &Wall, from: [f32; 3], to: [f32; 3], r: f32) -> Option<Contac
 /// query tests from.
 const HERO_CENTRE: f32 = 2.5;
 
+/// Obstacles that fall once set off (`docs/items.md`, "Falling
+/// obstacles"): rock falls (and crumbling floors), falling leaves, the
+/// boss's debris (E2; set off by the boss, not wired), walls that fall
+/// once shot down, sinking rocks.
+const ROCK_FALL: i32 = 0x28;
+const LEAF_FALL: i32 = 0x31;
+const DEBRIS: i32 = 0x33;
+const SHOT_FALL: i32 = 0x34;
+const ROCK_SINK: i32 = 0x35;
+
+fn falls(subtype: i32) -> bool {
+    matches!(subtype, ROCK_FALL | LEAF_FALL | SHOT_FALL | ROCK_SINK)
+}
+
+/// What a fall takes off its speed each update, and its spin (radians a
+/// second, times a step of [`SPIN_STEPS`]): leaves 1 and 10°, sinking
+/// rocks 2 and 1°, the rest 2 and 20°.
+fn fall_rates(subtype: i32) -> (f32, f32) {
+    match subtype {
+        LEAF_FALL => (1.0, 10f32.to_radians()),
+        ROCK_SINK => (2.0, 1f32.to_radians()),
+        _ => (2.0, 20f32.to_radians()),
+    }
+}
+
+/// The spin's steps; an item spins about its X by the one its slot picks
+/// (`& 7`) and about its Z by the one its slot's complement picks.
+const SPIN_STEPS: [f32; 8] = [-4.0, -3.0, -2.0, -1.0, 1.0, 2.0, 3.0, 4.0];
+/// A falling item is gone this far below the level's kill height.
+const FALL_GONE: f32 = 200.0;
+/// The falls' requested volume.
+const FALL_VOLUME: u8 = 0xE0;
+
+/// A rock fall's or sinking rock's sound when it's set off, by realm id
+/// (A–K = 1–11; F2 and I5 have their own).
+fn rock_fall_sound(realm: usize, level: usize) -> Option<&'static str> {
+    Some(match (realm, level) {
+        (6, 1) => "S_ROCKBREAKF2",
+        (9, 4) => "S_ICEBREAKY",
+        (1, _) => "S_FALLAWAY",
+        (2, _) => "S_ROCKBREAK",
+        (3, _) => "S_LIMBBREAKC",
+        (4, _) => "S_LIMBBREAK",
+        (5, _) => "S_ROCKBREAKE",
+        (6, _) => "S_ROCKBREAKF",
+        (7, _) => "S_ROCKBREAKG",
+        (8, _) => "S_LIMBBREAKH",
+        (9, _) => "S_ICEBREAK",
+        _ => return None,
+    })
+}
+
+/// Falling leaves' sound, by realm id: the forest's and the ice realm's.
+fn leaf_fall_sound(realm: usize) -> Option<&'static str> {
+    match realm {
+        4 => Some("S_LEAFBREAK"),
+        9 => Some("S_WOODBREAKI"),
+        _ => None,
+    }
+}
+
+/// One update of a falling item (the game's obstacle update, run while
+/// it's on screen or always active): it spins — its matrix taken to the
+/// locator builder's angles, X and Z turned on, built again — its fall
+/// speeds up, it moves; once well below the level it's gone.
+fn fall(item: &mut Item, dt: f32, kill: f32) -> bool {
+    let (gravity, spin) = fall_rates(item.ty.subtype);
+    let slot = item.placement;
+    let mut a = crate::population::locator_euler(item.rotation);
+    a[0] += spin * SPIN_STEPS[slot & 7] * dt;
+    a[2] += spin * SPIN_STEPS[!slot & 7] * dt;
+    item.rotation = crate::population::locator_matrix(a);
+    let v = item.falling.get_or_insert([0.0; 3]);
+    v[1] -= gravity;
+    let v = *v;
+    item.position = std::array::from_fn(|i| item.position[i] + v[i] * dt);
+    item.shape = Shape::of(&item.ty, item.position, item.rotation);
+    if let Some(w) = item.wall.as_mut() {
+        w.position = item.position;
+        w.rotation = item.rotation;
+    }
+    item.position[1] < kill - FALL_GONE
+}
+
 /// One placed item's run-time state (the game's `0xF0`-byte item record).
 struct Item {
     placement: usize,
@@ -407,7 +495,12 @@ struct Item {
     /// A container's contents, resolved.
     contents: Option<ItemType>,
     /// Shape 4: its own collision triangles.
-    wall: Option<Arc<Wall>>,
+    wall: Option<Wall>,
+    /// Where it stands and how it's turned (row vectors), and — falling —
+    /// its speed (units a second).
+    position: [f32; 3],
+    rotation: [f32; 9],
+    falling: Option<[f32; 3]>,
 }
 
 impl Item {
@@ -489,6 +582,8 @@ struct Transport {
 pub struct LevelItems {
     items: Vec<Item>,
     realm: usize,
+    /// The level within its realm (0 the first).
+    level: usize,
     doors: usize,
     /// The hero's feet at the end of the last tick.
     last_feet: Option<[f32; 3]>,
@@ -848,6 +943,9 @@ impl LevelItems {
             model: None,
             contents: None,
             wall: None,
+            position,
+            rotation,
+            falling: None,
         });
         placement
     }
@@ -959,8 +1057,7 @@ pub(crate) fn build_items(
         let shape = Shape::of(&ty, position, rotation);
         let wall = (shape.kind == 4)
             .then(|| ground.as_ref().and_then(|g| Wall::of(&g.0, placement.links, position, rotation)))
-            .flatten()
-            .map(Arc::new);
+            .flatten();
         out.push(Item {
             placement: index,
             shape,
@@ -985,6 +1082,9 @@ pub(crate) fn build_items(
             model: None,
             contents,
             wall,
+            position,
+            rotation,
+            falling: None,
         });
     }
     let doors = out.iter().filter(|i| i.class() == ItemClass::Door).count();
@@ -996,7 +1096,8 @@ pub(crate) fn build_items(
     }
     // The secret realm's first level record is levelS1.
     let secret_first = population.level.eq_ignore_ascii_case(SECRET_FIRST_LEVEL);
-    *items = LevelItems { items: out, realm, doors, scrolls, ambient, secret_first, ..default() };
+    let level = population.level.chars().last().and_then(|c| c.to_digit(10)).map_or(0, |d| d.saturating_sub(1) as usize);
+    *items = LevelItems { items: out, realm, level, doors, scrolls, ambient, secret_first, ..default() };
 }
 
 /// An exit's destination code (`g1`) as a realm id and level (0 the
@@ -1310,6 +1411,7 @@ fn tick(
     };
     update_items(items, dt, &mut commands);
     run(items, dt, &mut state, ground.as_deref(), &mut players, &cameras, &mut out, &mut change);
+    fall_items(items, dt, ground.as_deref(), &cameras, &mut commands);
     items.woken.append(&mut out.woken);
     // Poison eaten is a poison blow on the hero, through its armour powers
     // and its reactions (the gold armour's heal comes back negative); the
@@ -1518,7 +1620,7 @@ fn touch(
     picked: &mut bool,
     out: &mut Out,
 ) -> Touch {
-    let (doors, realm) = (items.doors, items.realm);
+    let (doors, realm, level) = (items.doors, items.realm, items.level);
     let item = &mut items.items[i];
     match item.class() {
         ItemClass::Powerup => {
@@ -1591,8 +1693,20 @@ fn touch(
         }
         ItemClass::Generator => Touch::Block,
         ItemClass::Obstacle => match item.ty.subtype {
-            // Crumbling floors and the like are walked over.
-            0x28 | 0x31 | 0x33..=0x35 => Touch::Pass,
+            // A rock fall, sinking rock or falling leaves is set off (with
+            // its realm's sound) and walked through.
+            ROCK_FALL | LEAF_FALL | ROCK_SINK => {
+                if item.flags & USED == 0 {
+                    item.flags |= USED;
+                    let name = if item.ty.subtype == LEAF_FALL { leaf_fall_sound(realm) } else { rock_fall_sound(realm, level) };
+                    if let Some(name) = name {
+                        out.sounds.push(PlaySoundAt::faded(name, Vec3::from(item.position), FALL_VOLUME));
+                    }
+                }
+                Touch::Pass
+            }
+            // Debris and shot-down walls are walked through.
+            DEBRIS | SHOT_FALL => Touch::Pass,
             // A safe rock only while it stands.
             SAFE_ROCK if item.stage <= 0 => Touch::Pass,
             _ => Touch::Block,
@@ -1877,11 +1991,49 @@ fn update_items(items: &mut LevelItems, dt: f32, commands: &mut Commands) {
             continue;
         }
         match item.class() {
+            // Falling obstacles fall (`fall_items`).
+            ItemClass::Obstacle if falls(item.ty.subtype) => {}
             // Broken barrels and obstacles step through their actions like
             // opened doors and chests (`breakables.rs` marks them used).
             ItemClass::Door | ItemClass::Container | ItemClass::Obstacle if item.flags & USED != 0 => open_step(item),
             _ => {}
         }
+    }
+}
+
+/// Falling obstacles set off — touched, or shot down (`breakables.rs`
+/// marks them used) — fall while they're on screen (or always active).
+fn fall_items(
+    items: &mut LevelItems,
+    dt: f32,
+    ground: Option<&LevelGround>,
+    cameras: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    commands: &mut Commands,
+) {
+    let kill = ground.map_or(f32::MIN, |g| g.0.kill_height());
+    for item in &mut items.items {
+        if item.gone || item.class() != ItemClass::Obstacle || !falls(item.ty.subtype) || item.flags & USED == 0 {
+            continue;
+        }
+        if item.flags & ALWAYS_ACTIVE == 0 && !on_screen(cameras, item.shape.centre) {
+            continue;
+        }
+        if fall(item, dt, kill) {
+            debug!("falling item {} gone below the level", item.placement);
+            item.gone = true;
+            if let Some(m) = item.model.take() {
+                commands.entity(m).try_despawn();
+            }
+        }
+    }
+}
+
+/// A falling item's model goes where it is now.
+fn place_falling(items: Res<LevelItems>, mut models: Query<&mut Transform>) {
+    for item in items.items.iter().filter(|i| i.falling.is_some() && !i.gone) {
+        let Some(mut t) = item.model.and_then(|m| models.get_mut(m).ok()) else { continue };
+        t.translation = Vec3::from(item.position);
+        t.rotation = Quat::from_mat3(&Mat3::from_cols_array(&item.rotation));
     }
 }
 
@@ -2079,6 +2231,69 @@ mod tests {
         }
     }
 
+    fn obstacle(subtype: i32) -> ItemType {
+        ItemType {
+            class: ItemClass::Obstacle,
+            subtype,
+            name: String::new(),
+            choices: Vec::new(),
+            extent: [15.0, 20.0, 0.0, 0.0],
+            center_offset: [0.0; 3],
+            value: 0,
+            amount: 0,
+            armor: -1,
+            hit_points: 0,
+            flags: 0,
+            duration: 0,
+            raw: [0; 0x50],
+        }
+    }
+
+    #[test]
+    fn a_rock_fall_spins_and_drops_out_of_the_level() {
+        let mut items = LevelItems { realm: 2, ..default() };
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let placement = items.release(obstacle(ROCK_FALL), [5.0, 30.0, -2.0], identity, None, 0);
+        let item = items.items.iter_mut().find(|i| i.placement == placement).unwrap();
+        // Two units a second slower each update, from rest: after a second
+        // (30 updates) it's going 60 down and has fallen 31.
+        for _ in 0..30 {
+            assert!(!fall(item, 1.0 / 30.0, -10.0));
+        }
+        assert_eq!(item.falling.map(|v| v[1]), Some(-60.0));
+        assert!((item.position[1] - (30.0 - 31.0)).abs() < 1e-3, "{:?}", item.position);
+        assert_eq!((item.position[0], item.position[2]), (5.0, -2.0));
+        // Spinning about its X and Z by its slot's steps (20° a second each),
+        // its matrix still a rotation; its touch centre follows it.
+        let r = item.rotation;
+        let det = r[0] * (r[4] * r[8] - r[5] * r[7]) - r[1] * (r[3] * r[8] - r[5] * r[6]) + r[2] * (r[3] * r[7] - r[4] * r[6]);
+        assert!((det - 1.0).abs() < 1e-4 && r != identity, "{r:?}");
+        // (Its centre is 1 up the item's own Y: row 1 of its matrix.)
+        assert!((0..3).all(|k| (item.shape.centre[k] - (item.position[k] + r[3 + k])).abs() < 1e-4), "{:?}", item.shape.centre);
+        // Gone once 200 below the kill height.
+        let mut n = 0;
+        while !fall(item, 1.0 / 30.0, -10.0) {
+            n += 1;
+            assert!(n < 300);
+        }
+        assert!(item.position[1] < -210.0);
+    }
+
+    #[test]
+    fn falls_by_kind_and_their_sounds() {
+        assert_eq!(fall_rates(LEAF_FALL), (1.0, 10f32.to_radians()));
+        assert_eq!(fall_rates(ROCK_SINK), (2.0, 1f32.to_radians()));
+        assert_eq!(fall_rates(SHOT_FALL), (2.0, 20f32.to_radians()));
+        assert!(falls(ROCK_FALL) && falls(SHOT_FALL) && !falls(DEBRIS) && !falls(SAFE_ROCK));
+        assert_eq!(rock_fall_sound(1, 0), Some("S_FALLAWAY"));
+        assert_eq!(rock_fall_sound(6, 0), Some("S_ROCKBREAKF"));
+        assert_eq!(rock_fall_sound(6, 1), Some("S_ROCKBREAKF2"));
+        assert_eq!(rock_fall_sound(9, 4), Some("S_ICEBREAKY"));
+        assert_eq!(rock_fall_sound(10, 0), None);
+        assert_eq!(leaf_fall_sound(4), Some("S_LEAFBREAK"));
+        assert_eq!(leaf_fall_sound(1), None);
+    }
+
     #[test]
     fn cylinder_touch_and_slide() {
         let s = shape(1);
@@ -2155,7 +2370,7 @@ mod tests {
             triangle(n, [-5.0, 0.0, 0.0], [5.0, 10.0, 0.0], [-5.0, 10.0, 0.0]),
         ];
         let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let w = Wall { triangles, position: [0.0, 0.0, 20.0], rotation: identity };
+        let w = Wall { triangles: triangles.into(), position: [0.0, 0.0, 20.0], rotation: identity };
         // Walking into it: pushed back out to a radius from it.
         let c = wall_contact(&w, [0.0, 0.0, 23.0], [0.0, 0.0, 21.0], 1.5).expect("a contact");
         assert!((c.out[2] - 21.5).abs() < 1e-3 && c.out[0].abs() < 1e-3, "{c:?}");

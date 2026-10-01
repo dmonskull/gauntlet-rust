@@ -210,6 +210,25 @@ pub fn locator_matrix(r: [f32; 3]) -> [f32; 9] {
     ]
 }
 
+/// The angles [`locator_matrix`] builds `m` from — the game's own
+/// matrix-to-angles routine for that builder, which a falling item's spin
+/// goes through each update (`items.rs`): z from row 0's X and Y, x from
+/// row 2's Y, y from row 2; within 1e-4 of straight up or down x is ±π/2,
+/// z 0 and y from row 0.
+pub fn locator_euler(m: [f32; 9]) -> [f32; 3] {
+    if (1.0 - m[7].abs()).abs() < 1e-4 {
+        let x = if m[7] <= 0.0 { -std::f32::consts::FRAC_PI_2 } else { std::f32::consts::FRAC_PI_2 };
+        return [x, (-m[2]).atan2(m[0]), 0.0];
+    }
+    let z = (-m[1]).atan2(m[4]);
+    let cz = z.cos();
+    if cz == 0.0 {
+        return if z <= 0.0 { [m[7].atan2(m[1]), (-m[5]).atan2(m[3]), z] } else { [m[7].atan2(-m[1]), m[5].atan2(-m[3]), z] };
+    }
+    let cx = m[4] / cz;
+    [m[7].atan2(cx), (m[6] / cx).atan2(m[8] / cx), z]
+}
+
 fn game_rotation(euler: [f32; 3]) -> Quat {
     // Row-major for row vectors, read as columns = the column-vector matrix.
     Quat::from_mat3(&Mat3::from_cols_array(&rotation_matrix(euler)))
@@ -1088,6 +1107,19 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locator_angles_come_back() {
+        for a in [[0.3, -1.1, 2.0], [0.0, 0.0, 0.0], [-1.2, 2.9, -0.4], [1.5, 0.2, 0.1]] {
+            let m = locator_matrix(a);
+            let back = locator_matrix(locator_euler(m));
+            assert!(m.iter().zip(back).all(|(x, y)| (x - y).abs() < 1e-4), "{a:?}: {m:?} vs {back:?}");
+        }
+        // A placement's matrix goes through it unchanged too.
+        let p = gdl_formats::population::rotation_matrix([0.4, 1.3, -0.7]);
+        let back = locator_matrix(locator_euler(p));
+        assert!(p.iter().zip(back).all(|(x, y)| (x - y).abs() < 1e-4), "{p:?} vs {back:?}");
+    }
 
     #[test]
     fn locators_turn_the_other_way_from_placements() {
