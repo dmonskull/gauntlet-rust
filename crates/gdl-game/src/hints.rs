@@ -83,6 +83,9 @@ pub enum Hint {
     SaveKeys,
     /// 9: after a transporter.
     Transporter,
+    /// 0xB: a hero has stood in an exit for 6 fields while the others
+    /// haven't come (co-op).
+    WaitForOthers,
     /// 0xF: food worth 100 or more.
     EatMeat,
     /// 0x10: food worth 50–99.
@@ -260,6 +263,7 @@ impl Hint {
             Self::UseMagic => 7,
             Self::SaveKeys => 8,
             Self::Transporter => 9,
+            Self::WaitForOthers => 0xB,
             Self::ShootPotion => 0xE,
             Self::EatMeat => 0xF,
             Self::EatFruit => 0x10,
@@ -313,6 +317,7 @@ impl Hint {
             Self::MagicShield => ("MAGICSHIELD", "S_SHIELDMAGIC", true),
             Self::SaveKeys => ("SAVEKEYS", "S_SAVEKEYS", true),
             Self::Transporter => ("TRANSPORTERSMOVEYOU", "S_TRANSPORTER", true),
+            Self::WaitForOthers => ("HOWTOEXIT", "S_SAMEEXIT", true),
             Self::EatMeat => ("EATMEAT", "S_MEATGIVES", true),
             Self::EatFruit => ("EATFRUIT", "S_FRUITGIVES", true),
             Self::ShootPotion => ("SHOOTPOTIONLESSER", "S_SHOOTINGMAGIC", true),

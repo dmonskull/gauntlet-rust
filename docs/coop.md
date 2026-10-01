@@ -82,8 +82,5 @@ the next player on a level picked from the command line.
 
 ## Not yet
 
-- The screen after a level (progress, shop, save/edit player).
-- Each player's own hint box at their panel; the "wait for the others"
-  hint at an exit (hint `0xB`).
 - Co-op combos (two heroes' combo attack); monsters' crowd penalty in
   their choice of target.
