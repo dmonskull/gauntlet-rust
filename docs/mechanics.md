@@ -603,9 +603,12 @@ after the hero moves:
   (`LevelCollision::set_pose`), and `world.rs` draws the subtree's model
   placements as one `MovingGroup` entity posed each frame (interpolated
   between ticks).
-- **Riding**: lift pads (and triggers flagged 0x100) move their touch
-  shape and model with their target. The hero standing on a moving node
-  is carried by the node's change of pose (feet, floor and facing).
+- **Riding**: every item the level's drop put on a moving node's floor
+  (lift pads, pickups on platforms) moves its touch shape and model with
+  that node's pose ([level-population.md](level-population.md),
+  "Placements"); a trigger for every player dropped onto its target counts
+  only stood on there. The hero standing on a moving node is carried by
+  the node's change of pose (feet, floor and facing).
 
 `GDL_WARP="x,y,z"` starts the hero somewhere else for testing (on
 levelA4 `-132.1,21,-1` is the LIFTPAD of `A4ELEV8`: the hero rides it down

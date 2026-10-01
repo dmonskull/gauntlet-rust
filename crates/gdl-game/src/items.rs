@@ -22,6 +22,7 @@ use gdl_formats::texmod::TexModKind;
 use gdl_formats::population::{
     ItemClass, ItemType, PlacementParams, REALM_LETTERS, level_for_code, rotation_matrix,
 };
+use gdl_formats::collision::NodePose;
 use gdl_formats::{CollisionTriangle, LevelCollision, MoveParams};
 
 use crate::audio::{CALL_VOLUME, HERO_LINE_VOLUME, LoopSoundAt, PlaySoundAt, QueueHeroLine};
@@ -30,6 +31,7 @@ use crate::character;
 use crate::effects::EffectAt;
 use crate::exits::ChangeLevelTo;
 use crate::hints::{Hint, Hints, ShowHint};
+use crate::mechanics::LevelNodes;
 use crate::message_box::ShowMessage;
 use crate::pickup_notices::PickupNotice;
 use crate::level_material::LevelMaterial;
@@ -225,7 +227,8 @@ pub struct Contact {
 /// a round item or out of a box along its shallowest side.
 pub fn contact(s: &Shape, pass_through: bool, from: [f32; 3], to: [f32; 3], r: f32, h: f32) -> Option<Contact> {
     let reach = s.radius + r;
-    let (dx, dy, dz) = (to[0] - s.centre[0], to[1] - s.centre[1], to[2] - s.centre[2]);
+    // The game tests from the hero's collision centre, 2.5 above `to`.
+    let (dx, dy, dz) = (to[0] - s.centre[0], to[1] + HERO_CENTRE - s.centre[1], to[2] - s.centre[2]);
     if reach * reach < dx * dx + dz * dz {
         return None;
     }
@@ -451,6 +454,15 @@ fn fall(item: &mut Item, dt: f32, kill: f32) -> bool {
     item.position[1] < kill - FALL_GONE
 }
 
+/// Where an item that rides a moving floor stands relative to it: its
+/// position and turn (row vectors) with the floor's node at rest.
+#[derive(Clone, Copy, Debug)]
+struct Ride {
+    node: usize,
+    position: [f32; 3],
+    rotation: [f32; 9],
+}
+
 /// One placed item's run-time state (the game's `0xF0`-byte item record).
 struct Item {
     placement: usize,
@@ -501,6 +513,10 @@ struct Item {
     position: [f32; 3],
     rotation: [f32; 9],
     falling: Option<[f32; 3]>,
+    /// The node of the floor the level's drop found under it, and — a
+    /// moving one (flag 0x1000) — how it rides it.
+    floor_node: Option<usize>,
+    ride: Option<Ride>,
 }
 
 impl Item {
@@ -638,6 +654,8 @@ pub struct ItemView<'a> {
     pub contents: Option<&'a ItemType>,
     /// Its model, while it has one.
     pub model: Option<Entity>,
+    /// The node of the floor the level's drop put it on.
+    pub floor_node: Option<usize>,
 }
 
 /// Placement numbers of items released at run time (container contents)
@@ -669,12 +687,44 @@ impl LevelItems {
             rock: item.is_safe_rock() && item.stage >= 0,
             statue: item.statue,
             contents: item.contents.as_ref(),
+            floor_node: item.floor_node,
             model: item.model,
         }
     }
 
     pub fn view(&self, placement: usize) -> Option<ItemView<'_>> {
         self.find(placement).map(Self::view_of)
+    }
+
+    /// The items riding a moving floor (placement, the floor's node), but
+    /// those falling.
+    pub fn riders(&self) -> Vec<(usize, usize)> {
+        self.items
+            .iter()
+            .filter(|i| !i.gone && i.falling.is_none() && !(falls(i.ty.subtype) && i.class() == ItemClass::Obstacle && i.flags & USED != 0))
+            .filter_map(|i| i.ride.map(|r| (i.placement, r.node)))
+            .collect()
+    }
+
+    /// Puts a riding item where its floor's `pose` takes it: its touch
+    /// shape (and a wall's triangles) follow. Its model, position and turn
+    /// (row vectors) for the caller to place the model.
+    pub fn ride(&mut self, placement: usize, pose: &NodePose) -> Option<(Option<Entity>, [f32; 3], [f32; 9])> {
+        let i = self.find_mut(placement)?;
+        let r = i.ride?;
+        i.position = pose.apply(r.position);
+        // World turn = rest turn · poseᵀ (row vectors).
+        let m = &pose.rotation;
+        i.rotation = std::array::from_fn(|k| {
+            let (row, col) = (k / 3, k % 3);
+            (0..3).map(|j| r.rotation[row * 3 + j] * m[col * 3 + j]).sum()
+        });
+        i.shape = Shape::of(&i.ty, i.position, i.rotation);
+        if let Some(w) = i.wall.as_mut() {
+            w.position = i.position;
+            w.rotation = i.rotation;
+        }
+        Some((i.model, i.position, i.rotation))
     }
 
     /// Every item not freed yet.
@@ -707,15 +757,6 @@ impl LevelItems {
         if let Some(i) = self.find_mut(placement) {
             i.flags |= flags;
         }
-    }
-
-    /// Moves the item's touch shape to `centre` (a pad riding its lift);
-    /// returns how far it moved and its model, for the caller to move too.
-    pub fn move_centre(&mut self, placement: usize, centre: [f32; 3]) -> Option<([f32; 3], Option<Entity>)> {
-        let i = self.find_mut(placement)?;
-        let old = i.shape.centre;
-        i.shape.centre = centre;
-        Some(([centre[0] - old[0], centre[1] - old[1], centre[2] - old[2]], i.model))
     }
 
     /// Sets what taking a powerup gives (`+0xE0`): gold blown to junk,
@@ -946,6 +987,8 @@ impl LevelItems {
             position,
             rotation,
             falling: None,
+            floor_node: None,
+            ride: None,
         });
         placement
     }
@@ -971,9 +1014,21 @@ pub(crate) fn build_items(
     mut items: ResMut<LevelItems>,
     population: Res<LevelPopulation>,
     ground: Option<Res<LevelGround>>,
+    nodes: Option<Res<LevelNodes>>,
     state: Option<Res<PlayerState>>,
 ) {
     let pop = &population.population;
+    // The items are dropped with the movers at their off heights (the
+    // game runs the mover update once first), and those landing on a
+    // moving node's floor (flag 0x1000) ride it.
+    let starts = nodes.as_ref().map(|n| crate::mechanics::start_poses(pop, n)).unwrap_or_default();
+    let dropping = ground.as_ref().map(|g| {
+        let mut c = (*g.0).clone();
+        for (&node, &pose) in &starts {
+            c.set_pose(node, pose);
+        }
+        c
+    });
     let realm = population
         .level
         .strip_prefix("level")
@@ -1002,13 +1057,32 @@ pub(crate) fn build_items(
         }
         let rotation = rotation_matrix(placement.rotation);
         let mut position = placement.position;
-        // Items with a model are dropped to the floor (+0.1) unless their
-        // type keeps its height — the same as the models are placed.
-        if placement.flags & 2 == 0
-            && !ty.keeps_height()
-            && let Some(y) = ground.as_ref().and_then(|g| g.0.floor_height(position))
-        {
-            position[1] = y + 0.1;
+        // Every item is dropped onto the floor below it (4 above to 10
+        // below, radius 1) and lifted 0.1 — left where it is, 0.1 up, with
+        // none — unless its type keeps its height.
+        let mut floor_node = None;
+        let mut ride = None;
+        if !ty.keeps_height() {
+            match dropping.as_ref().and_then(|c| c.floor_probe(position, 4.0, -10.0, 1.0, 0).map(|h| (h, c))) {
+                Some((hit, c)) => {
+                    position[1] = hit.point[1] + 0.1;
+                    floor_node = Some(hit.node);
+                    if c.nodes[hit.node].flags & gdl_formats::collision::node_flags::MOVES != 0 {
+                        let at = starts.get(&hit.node).copied().unwrap_or(NodePose::REST);
+                        let m = &at.rotation;
+                        ride = Some(Ride {
+                            node: hit.node,
+                            position: at.inverse_apply(position),
+                            // Rest turn = world turn · pose (row vectors).
+                            rotation: std::array::from_fn(|k| {
+                                let (row, col) = (k / 3, k % 3);
+                                (0..3).map(|j| rotation[row * 3 + j] * m[j * 3 + col]).sum()
+                            }),
+                        });
+                    }
+                }
+                None => position[1] += 0.1,
+            }
         }
         let mut flags = ty.flags;
         if placement.flags & 1 != 0 {
@@ -1088,6 +1162,8 @@ pub(crate) fn build_items(
             position,
             rotation,
             falling: None,
+            floor_node,
+            ride,
         });
     }
     let doors = out.iter().filter(|i| i.class() == ItemClass::Door).count();
@@ -1139,6 +1215,14 @@ fn attach_models(
             Some(item) => {
                 item.model = Some(entity);
                 item.atree = rig.map(|r| r.atree.clone());
+                // Where the item's drop put it (with the movers at their
+                // off heights).
+                let place = Transform {
+                    translation: Vec3::from(item.position),
+                    rotation: Quat::from_mat3(&Mat3::from_cols_array(&item.rotation)),
+                    scale: transform.scale,
+                };
+                commands.entity(entity).insert(place);
                 let shown = vec![(0, Some(0)); rig.map_or(0, |r| r.flipbooks.len())];
                 let pose = ItemPose { action: 0, frame: 0.0, tracks: None, shown, texture: None, copies: HashMap::new() };
                 commands.entity(entity).insert(pose);
@@ -2390,8 +2474,22 @@ mod tests {
 
     #[test]
     fn sphere_reach_is_3d() {
+        // A sphere at height 1 reaching 2.5 (its radius and the hero's)
+        // touches the hero's collision centre — 2.5 above its feet — 2
+        // above it (feet at 0.5), not 3 (feet at 1.5).
         let s = shape(2);
-        assert!(contact(&s, true, [0.0, 3.0, 0.0], [0.0, 3.0, 0.0], 1.5, 2.5).is_some());
-        assert!(contact(&s, true, [0.0, 4.0, 0.0], [0.0, 4.0, 0.0], 1.5, 2.5).is_none());
+        assert!(contact(&s, true, [0.0, 0.5, 0.0], [0.0, 0.5, 0.0], 1.5, 2.5).is_some());
+        assert!(contact(&s, true, [0.0, 1.5, 0.0], [0.0, 1.5, 0.0], 1.5, 2.5).is_none());
+    }
+
+    #[test]
+    fn touches_reach_from_the_collision_centre() {
+        // A pad's centre 2.4 below the hero's feet and 7.9 above them are
+        // both within its reach of 3 and the hero's 2.5 from 2.5 up: the
+        // window is 3 below the feet to 8 above.
+        let s = Shape { reach: 3.0, ..shape(1) };
+        let at = |feet: f32| contact(&s, true, [0.0, feet, 0.0], [0.0, feet, 0.0], 1.5, 2.5).is_some();
+        assert!(at(1.0 + 2.4) && at(1.0 - 7.9));
+        assert!(!at(1.0 + 3.1) && !at(1.0 - 8.1));
     }
 }
