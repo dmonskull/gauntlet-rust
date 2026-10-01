@@ -201,6 +201,35 @@ the levelA2 Death barrel).
 
 ## Latest check
 
+**Session end 2026-10-01, `master` at `e231026`** (build, clippy, tests
+pass; keys checked turning in game). Done this session: the A1 lift
+regression (a teleport swept the touch test across secret walls); the
+crystal sparkle that never ended (effect emitters stop with their
+effect); keys turning (the game's rule: an item's first action loops
+until its action changes); developer keys off unless `GDL_DEV_KEYS=1`
+(`I` swapped every item for a debug marker — likely the user's "stray
+objects": **ask the user to confirm**); hints in the game's own box
+(parchment, font, ink, timing, cool-down); the helper's audit rounds 2–3
+(items drop onto the movers' start heights and ride them, touches from
+the hero's centre, bursting animated objects, levels B1–I5 audited).
+The trigger tour on the merged build passed A1–F1 but for leads the
+helper explained (hit switches, chained or ordered triggers, D2 307 and
+C1 433 unreachable in the original too); G1–T3 weren't toured.
+
+**Next, in order:** 1) tour G1–T3 (`tools/tour.sh`), then the all-levels
+smoke test (`tools/smoke.sh`) and a look over its screenshots (32
+character bones changed with the track-flag fix); 2) the bursts' blast in
+`effects.rs` (damage 50, radius 6 in realms I/K, else 5; kind 0x800 / 0x21;
+no owner) — `mechanics.rs` needs one line to send it; 3) the frame rate
+with the animated objects (`GDL_FPS=1`, logs need
+`RUST_LOG=bevy_diagnostic=info`); 4) F2's arena (only its north half has
+floor collision; 21 rock falls hang under the floor) — look in play;
+5) the audit's last realms: A5, A6, J, K, L, S, T, DEMO1 (J4 335/366/422/
+429 and L1/L3 pads flagged); 6) then [STATUS.md](STATUS.md)'s list.
+The helper's worktree branch is fully merged; give it the next round.
+
+Earlier:
+
 2026-10-01, on `ef1f596` (the level audit's first round merged: the
 world's animated objects — A2's drawbridges, the plank, the diving board,
 B2's snakes, B3's rock groups —, secret walls blocking until broken,

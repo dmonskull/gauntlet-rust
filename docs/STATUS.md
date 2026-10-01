@@ -62,7 +62,7 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
 - Look at characters after the track-flag fix (`flags & 0x0FFF`), which
   changed 32 character bones ([animation-format.md](animation-format.md)).
 - Measure the frame rate with the 1,608 animated objects (`GDL_FPS=1`).
-- Trace how the game keeps keys turning (the helper has it).
+- Done since: keys turn by the game's rule (`dd18546`); hints in the game's box (`cd179ab`); levels E1–I5 audited and bursting objects burst (`e231026`; their blast still to add in `effects.rs`).
 
 ### 2. Level fidelity (the user's top priority)
 
