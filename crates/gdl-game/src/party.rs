@@ -193,9 +193,13 @@ impl SlotInput {
     /// everyone: the command rides with their controls for a moment.
     pub const OPEN_SHOP: u32 = 0x40;
     pub const OPEN_INVENTORY: u32 = 0x80;
+    /// Online, the host's camera choice (`GameOptions::online_cameras`):
+    /// every machine switches between each player's own camera and the
+    /// shared co-op one on the tick it changes.
+    pub const OWN_CAMERAS: u32 = 0x20;
     /// The settings' bits.
     pub const SETTINGS: u32 = Self::AUTO_AIM | Self::AUTO_ATTACK | Self::ROBOTRON;
-    const EXTRAS: u32 = Self::SETTINGS | Self::BACK | Self::OPEN_SHOP | Self::OPEN_INVENTORY;
+    const EXTRAS: u32 = Self::SETTINGS | Self::BACK | Self::OPEN_SHOP | Self::OPEN_INVENTORY | Self::OWN_CAMERAS;
 
     /// The game's buttons held, without the extras.
     pub fn buttons(&self) -> u32 {
@@ -236,6 +240,21 @@ pub struct Inputs {
     pub slots: [SlotInput; MAX_PLAYERS],
 }
 
+/// A menu, message box or screen over play has just closed: the buttons
+/// held then (the B that closed it) don't reach the heroes until they're
+/// let go (`player.rs`).
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct InputGate {
+    pub swallow: bool,
+}
+
+/// One slot's buttons through the gate: those in `mask` (held as a menu
+/// closed) are dropped while still held; let go, they count again.
+pub fn gate_buttons(held: u32, mask: &mut u32) -> u32 {
+    *mask &= held;
+    held & !*mask
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +279,18 @@ mod tests {
         party.leave(0);
         assert_eq!(party.free_slot(), Some(0));
         assert_eq!(party.members().map(|(i, _)| i).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn a_button_held_as_a_menu_closes_waits_to_be_let_go() {
+        let b = 0x100;
+        // B closed the menu: masked while held.
+        let mut mask = b;
+        assert_eq!(gate_buttons(b, &mut mask), 0);
+        assert_eq!(gate_buttons(b | 0x200, &mut mask), 0x200);
+        // Let go, then pressed again: it counts.
+        assert_eq!(gate_buttons(0, &mut mask), 0);
+        assert_eq!(gate_buttons(b, &mut mask), b);
     }
 
     #[test]

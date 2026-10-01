@@ -216,8 +216,12 @@ auto-attack and Robotron style ride with their controls
 player's settings; the items' on-screen test uses the game's views, not the
 window's camera.
 
-**Cameras.** `PlayCamera` keeps one rig per hero online, each following its
-hero alone: a hero's stick turns by its own camera, the on-screen tests take
+**Cameras.** The host chooses (Start → Camera; `GameOptions::online_cameras`,
+riding with its controls as `SlotInput::OWN_CAMERAS`, so every machine
+switches on the same tick): **Each Player** (the default) or **Overhead**,
+the game's one co-op camera over the level for everyone, as in local co-op.
+With each player's own, `PlayCamera` keeps one rig per hero, each following
+its hero alone: a hero's stick turns by its own camera, the on-screen tests take
 every standing hero's view, and each machine draws its own hero's
 (`watching`) — a teammate's while its own is down or out, L / R picking
 another. Cuts, the level-start shot and boss cameras stay everyone's.
