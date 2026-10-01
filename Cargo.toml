@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/gdl-formats", "crates/gdl-install", "crates/gdl-game"]
+members = ["crates/gdl-formats", "crates/gdl-install", "crates/gdl-game", "crates/gdl-net"]
 
 [workspace.package]
 version = "0.1.0"
