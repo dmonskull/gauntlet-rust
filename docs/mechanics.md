@@ -203,9 +203,17 @@ every trigger's target starts at its first frame and holds there (and
 non-targets go round), a switch plays it on, and its cut — which holds
 while the node has `0x8000000` — ends when it gets there. Going round,
 a node of type `0x50000` (`flags & 0x100F0000`: H1's fire, the I realm's
-minecarts) bursts (`FUN_80055e60`: an effect and sound by realm) and it
-and its parents hide (instance flag 2, node flag `0x10000000`) until the
-next lap's first two frames.
+minecarts, all top-level nodes) bursts where it is (`FUN_80055e04` with the
+node's world position): `FUN_80055e60` makes an effect — in the ice and
+sky realms (9, 11) the realm items' `WORLD_EXP` (effect `0x5E`, looked up
+by name in the realm's and the level's item banks when the effects load, `FUN_800972dc`, into `0x80284E60`; EXPLOSION when it isn't there),
+else EXPLOSION (`0x16`) — through `FUN_800933f8`, gives it a blast
+(`FUN_80093768`: damage 50, radius 6 and kind `0x800` in realms 9/11, 5
+and `0x21` elsewhere, no owner) and scale (`FUN_800940a0`: 1 × 1 × 1 in
+9/11, 1.5 × 1 × 1.5 elsewhere), and sounds the realm's burst
+(`0x8012386C`: only the ice realm's `S_MINECAREXPLO`, at `0x7F`, faded);
+then it and its parents hide (instance flag 2, node flag `0x10000000`)
+until the next lap's frame is below 2.
 
 On A2 the triggers' objects are its drawbridges — `A2SUPPORTA`–`D`, each
 carrying a floor (`A2FLOOR#n`, moving collision), stand raised 70–80° at
@@ -224,6 +232,12 @@ The player update's item query runs it for each touched trigger:
 - Trigger flag `0x100`: counts only if the player stands on the target
   node or one of its direct children (walks `+0x2E` first child /
   `+0x2C` next sibling from the target) — lift pads ride on the lift.
+  The node the player stands on (`+0x8C4`) is set by `FUN_8008764c` only
+  when the floor check finds a floor (`FUN_800878a0` returns above 0); the
+  floor check clears it only when it finds no floor and the player isn't
+  moving across (under 0.001), so a hero walking off a lift still counts
+  as on it until it lands elsewhere or drops straight down (the rewrite's
+  `LevelCollision::player_floor` does the same).
 - Flag `0x400` (all players needed) with more than one player: hints
   `0x7E` / `0x7F`.
 - Sets the player's bit in `+0xCE` on this trigger and every trigger down
@@ -622,8 +636,10 @@ from their tracks each tick as above — the movers aimed at them drive
 the play flags, the cut that shows one waits for it (`node_moving`), the
 damaging walls read the run-time flags (`Mechanics::node_flags`). Their
 scale is drawn (about the node) but their collision doesn't scale (not
-confirmed either way); the bursting type `0x50000` doesn't burst or hide
-yet.
+confirmed either way). A bursting one (type `0x50000`) hides for the tick
+its lap ends and shows the realm's explosion (`EffectAt`) and the ice
+realm's sound where it burst; the explosion's blast (50 damage out to 5
+or 6) is `effects.rs`'s and isn't there yet.
 
 Stand-ins and gaps: triggers run on or off screen; subtype 1 rotators;
 only the hero (not monsters) holds a mover by standing on it. Hazards and

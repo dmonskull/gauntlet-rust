@@ -29,7 +29,8 @@
 //! monsters) hold a mover still by standing on it; an animated object's
 //! scale is drawn but its collision doesn't scale (not confirmed), and
 //! the bursting ones (node type 0x50000: H1's fire, the I realm's
-//! minecarts) don't burst or hide as their loop comes round.
+//! minecarts) show their explosion and sound as their loop comes round
+//! but its blast doesn't hurt yet (`effects.rs`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -40,6 +41,7 @@ use gdl_formats::population::{LocatorKind, PlacementParams, Population};
 use gdl_formats::WorldNode;
 
 use crate::audio::{LoopSoundAt, PlaySoundAt};
+use crate::effects::EffectAt;
 use crate::items::{self, LevelItems};
 use crate::level_material::LevelMaterial;
 use crate::monsters::MonsterLevel;
@@ -436,6 +438,10 @@ struct Animation {
     local: NodePose,
     /// The track's scale, where it has one.
     scale: Option<[f32; 3]>,
+    /// Bursts as its loop comes round (node type 0x50000), and is hidden
+    /// for it now.
+    bursts: bool,
+    burst_hidden: bool,
 }
 
 /// Where an animated object's track puts its node, about the node's
@@ -461,21 +467,25 @@ fn animated_pose(track: &Track, pose: &Pose, origin: [f32; 3]) -> NodePose {
 /// unless it goes round and round while time is stopped — moves the frame
 /// on: back to the first frame (`PLAY_BACK`), on to the last (`PLAY_ON`)
 /// or round (neither), flagging the end it's at and whether it animated.
-fn play_animation(a: &mut Animation, play: &mut u32, stopped: bool, origin: [f32; 3]) {
+/// A bursting one (node type `0x50000`) going round bursts where it is as
+/// its lap ends and is hidden till the next lap's first frames: where it
+/// burst.
+fn play_animation(a: &mut Animation, play: &mut u32, stopped: bool, origin: [f32; 3]) -> Option<[f32; 3]> {
     let (back, on) = (*play & PLAY_BACK != 0, *play & PLAY_ON != 0);
     if back && on {
         *play &= !ANIMATING;
-        return;
+        return None;
     }
     let pose = a.track.sample(a.frame);
     a.local = animated_pose(&a.track, &pose, origin);
     a.scale = SCALE_BITS.iter().any(|&b| a.track.flags & b != 0).then_some(pose.scale);
     let round = !back && !on;
     if stopped && round {
-        return;
+        return None;
     }
     *play = (*play & !(AT_START | AT_END)) | ANIMATING;
     let last = f32::from(a.frames.saturating_sub(1));
+    let mut burst = None;
     if back {
         a.frame -= ANIMATION_FPS * DT;
         if a.frame < 0.0 {
@@ -487,12 +497,41 @@ fn play_animation(a: &mut Animation, play: &mut u32, stopped: bool, origin: [f32
         if a.frame.trunc() >= last {
             if round {
                 a.frame = 0.0;
+                if a.bursts && !a.burst_hidden {
+                    a.burst_hidden = true;
+                    burst = Some(a.local.apply(origin));
+                }
             } else {
                 a.frame = last;
                 *play &= !ANIMATING;
             }
             *play |= AT_END;
+        } else if a.frame < BURST_SHOWN && a.burst_hidden {
+            a.burst_hidden = false;
         }
+    }
+    burst
+}
+
+/// A burst node shows again once its next lap has this many frames to go
+/// past the first.
+const BURST_SHOWN: f32 = 2.0;
+/// Node types (`flags & 0x100F0000`) that burst as their loop comes round.
+const BURSTS: u32 = 0x5_0000;
+const BURST_TYPE: u32 = 0x100F_0000;
+/// The burst's sound in the ice realm (the only one with one) and its
+/// requested volume.
+const BURST_SOUND: &str = "S_MINECAREXPLO";
+const BURST_VOLUME: u8 = 0x7F;
+
+/// What a burst shows by realm id: the ice and sky realms the realm's
+/// own `WORLD_EXP` (from its items), at 1; the rest the effect table's
+/// EXPLOSION at 1.5 across (the game's 1.5 × 1 × 1.5).
+fn burst_effect(realm: usize) -> (&'static str, Option<&'static str>, f32) {
+    match realm {
+        9 => ("WORLD_EXP", Some("ITEMS/levelI"), 1.0),
+        11 => ("WORLD_EXP", Some("ITEMS/levelK"), 1.0),
+        _ => ("EXPLOSION", None, 1.5),
     }
 }
 
@@ -728,7 +767,17 @@ fn setup(
     for a in pop.animations.iter().filter(|a| a.node < nodes.nodes.len()) {
         let Some(track) = a.track.clone() else { continue };
         m.animation_of.insert(a.node, m.animations.len());
-        m.animations.push(Animation { node: a.node, frames: a.frames, track, frame: 0.0, local: NodePose::REST, scale: None });
+        let bursts = nodes.nodes[a.node].flags & BURST_TYPE == BURSTS;
+        m.animations.push(Animation {
+            node: a.node,
+            frames: a.frames,
+            track,
+            frame: 0.0,
+            local: NodePose::REST,
+            scale: None,
+            bursts,
+            burst_hidden: false,
+        });
     }
     for mv in &m.movers {
         m.play.insert(mv.node, PLAY_BACK);
@@ -796,6 +845,7 @@ fn tick(
     level: Option<Res<MonsterLevel>>,
     mut messages: MessageWriter<ShowMessage>,
     (camera, time_stop): (Option<Res<PlayCamera>>, Option<Res<TimeStop>>),
+    mut effects: MessageWriter<EffectAt>,
 ) {
     let (Some(mut mech), Some(nodes), Some(mut items), Some(mut ground)) = (mechanics, nodes, items, ground) else {
         return;
@@ -1004,9 +1054,18 @@ fn tick(
         .is_some_and(|(hold, _)| (CUT_HOLDS_ANIMATIONS..=ENDLESS_CUT).contains(&hold));
     if !cut_holds {
         let stopped = time_stop.as_ref().is_some_and(|t| t.0);
+        let (name, bank, scale) = burst_effect(items.realm());
         for a in &mut mech.animations {
             let play = mech.play.entry(a.node).or_default();
-            play_animation(a, play, stopped, nodes.origin[a.node]);
+            if let Some(at) = play_animation(a, play, stopped, nodes.origin[a.node]) {
+                // A burst: the realm's explosion where it is (its blast is
+                // `effects.rs`'s, not here yet), the ice realm's sound.
+                debug!("animated node {} bursts at {at:?}", a.node);
+                effects.write(EffectAt { name, bank, at: Vec3::from(at), facing: 0.0, scale });
+                if items.realm() == 9 {
+                    sounds.write(PlaySoundAt::faded(BURST_SOUND, Vec3::from(at), BURST_VOLUME));
+                }
+            }
         }
     }
 
@@ -1124,6 +1183,8 @@ fn tick(
             c.set_disable(mv.node, disable);
         }
     }
+    // A burst animated object is hidden till its next lap starts.
+    hidden.extend(mech.animations.iter().filter(|a| a.burst_hidden).map(|a| a.node));
     mech.hidden = hidden;
     mech.fades = fades;
 
@@ -1362,7 +1423,16 @@ mod tests {
     /// A track turning about Y through `keys` (frame, angle), `frames` long.
     fn turning(frames: u16, keys: &[(u16, f32)]) -> Animation {
         let keys = keys.iter().map(|&(f, y)| (f, Pose { rotation: [0.0, y, 0.0], ..Pose::default() })).collect();
-        Animation { node: 0, frames, track: Track { flags: 0x0002, keys }, frame: 0.0, local: NodePose::REST, scale: None }
+        Animation {
+            node: 0,
+            frames,
+            track: Track { flags: 0x0002, keys },
+            frame: 0.0,
+            local: NodePose::REST,
+            scale: None,
+            bursts: false,
+            burst_hidden: false,
+        }
     }
 
     #[test]
@@ -1401,6 +1471,22 @@ mod tests {
         assert_eq!(drive_animation(0x02, true, &mut st, &mut play), None);
         play_animation(&mut a, &mut play, false, [0.0; 3]);
         assert_eq!((a.frame, play & ANIMATING), (0.0, 0));
+    }
+
+    #[test]
+    fn bursting_animations_burst_as_their_lap_ends() {
+        let mut a = turning(3, &[(0, 0.0), (2, 0.5)]);
+        a.bursts = true;
+        let mut play = 0;
+        let origin = [4.0, 1.0, -2.0];
+        // Frames 0, 1, then round: it bursts where it is, hidden till the
+        // next lap's first frames.
+        assert_eq!(play_animation(&mut a, &mut play, false, origin), None);
+        let burst = play_animation(&mut a, &mut play, false, origin);
+        assert!(burst.is_some_and(|b| (0..3).all(|k| (b[k] - origin[k]).abs() < 1e-4)), "{burst:?}");
+        assert!(a.burst_hidden);
+        assert_eq!(play_animation(&mut a, &mut play, false, origin), None);
+        assert!(!a.burst_hidden);
     }
 
     #[test]
