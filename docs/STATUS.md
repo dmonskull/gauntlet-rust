@@ -1,7 +1,9 @@
 # Status: how close the rewrite is to the original
 
 Assessed 2026-10-01 on `master` after the level audit's second round
-(`04b2745`; the first estimate, on `ef1f596`, was 81 % / 76 %). Update
+(`04b2745`; the first estimate, on `ef1f596`, was 81 % / 76 %); local
+co-op re-scored after it landed (3 % → 65 %). Online co-op is an addition,
+not counted. Update
 this file when an area moves; [HANDOFF.md](HANDOFF.md) has the
 day-to-day state and the job queue.
 
@@ -10,7 +12,7 @@ day-to-day state and the job queue.
 | measure | estimate |
 | --- | --- |
 | **Faithful to the original, one player** (what a single hero plays through) | **≈ 82 %** |
-| **Done overall** (everything the original does, 2–4 player co-op included, every level checked, no known issues) | **≈ 77 %** |
+| **Done overall** (everything the original does, 2–4 player co-op included, every level checked, no known issues) | **≈ 80 %** |
 
 These are judgements, not measurements. Each area below gets a weight (how
 much of the game it is) and a share done (what's confirmed against the
@@ -22,7 +24,7 @@ leaves co-op out.
 | --- | --- | --- | --- |
 | Disc, files and formats | 6 | 97 % | a few WORLDS/WDATA words, the `SNDS` chunk |
 | Level look (geometry, lightmaps, blending, texture animation, particles) | 10 | 88 % | action texture wipes, the hand and weapon glows, effect lights, exact particle maths, shadows |
-| Hero movement, camera, cuts | 7 | 95 % | the step cut under the boss camera, co-op framing |
+| Hero movement, camera, cuts | 7 | 97 % | the step cut under the boss camera |
 | Hero combat, magic, power-ups | 10 | 88 % | rapid fire's rate, missile streaks, magic element models, the legendary weapon's throw |
 | Monsters and generators | 9 | 75 % | most AIs run the chase stand-in; no actor-vs-actor collision |
 | Bosses and critters | 9 | 72 % | grabs, effect-slot contact damage, missile lifetimes, the boss key, stumps, the health meter |
@@ -33,7 +35,7 @@ leaves co-op out.
 | Quest, tower, saving | 5 | 88 % | the secret realm's coins, per-class records, memory card screens |
 | Front end, menus, HUD, hints | 7 | 75 % | shop, inventory, options, attract loop, the hints' plates |
 | Audio | 5 | 85 % | music switching and ducking, menu sounds, footstep pan |
-| Co-op (2–4 players) | 6 | 3 % | not started beyond the data and the waiting panels |
+| Co-op (2–4 players) | 6 | 65 % | the after-level progress and shop screen (and joining there), co-op combos, the monsters' crowd penalty, the exits' wait-for-the-others hint |
 | Speed and stability | 2 | 85 % | the animated objects' cost unmeasured; warm-up hitches |
 
 ## What's left

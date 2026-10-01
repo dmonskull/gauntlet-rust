@@ -15,6 +15,62 @@ Ready-to-run builds for Windows, macOS and Linux are on the
 [Releases page](https://github.com/dmonskull/gauntlet-rust/releases):
 unzip, run `gdl-game`, and pick your own copy of the game when it asks.
 
+## Progress
+
+How close the rewrite is to the original GameCube game, judged area by area
+against the original's own code ([docs/STATUS.md](docs/STATUS.md) has the
+details and the full to-do list):
+
+| | |
+| --- | --- |
+| **Faithful to the original, one player** | `████████░░` **≈ 82 %** |
+| **Done overall** (2–4 player co-op, every level checked, no known issues) | `████████░░` **≈ 80 %** |
+
+| area | done |
+| --- | --- |
+| Disc, files and formats | `██████████` 97 % |
+| Level look (geometry, lighting, texture animation, particles) | `█████████░` 88 % |
+| Hero movement, camera, cuts | `██████████` 97 % |
+| Hero combat, magic, power-ups | `█████████░` 88 % |
+| Monsters and generators | `████████░░` 75 % |
+| Bosses and critters | `███████░░░` 72 % |
+| Items, pickups, doors, exits, hazards | `█████████░` 91 % |
+| Level mechanics (triggers, lifts, moving objects, secret walls) | `████████░░` 84 % |
+| What each level places and hides | `████████░░` 82 % |
+| Every level played start to exit | `███░░░░░░░` 25 % |
+| Quest, tower, saving | `█████████░` 88 % |
+| Front end, menus, HUD, hints | `████████░░` 75 % |
+| Audio | `█████████░` 85 % |
+| Local co-op (2–4 players) | `███████░░░` 65 % |
+| Speed and stability | `█████████░` 85 % |
+
+### Beyond the original
+
+- **Online co-op** for up to four players over the internet: invite codes,
+  no port forwarding, each player with their own screen, camera and
+  settings, watching a teammate while down.
+- Windows, macOS and Linux; any window size, widescreen included.
+- Keyboard and mouse with rebindable keys, or any pad — each player can
+  switch between them at will.
+- Reads your disc image directly (`.iso`, `.gcm`, `.rvz`) or an extracted
+  folder.
+
+### Still to do, biggest first
+
+1. Play every level from start to exit and finish the level-by-level audit
+   (47 of 67 levels left): levers, lifts, doors and keys all working.
+2. Monsters: several AIs still use a stand-in chase; monsters don't yet push
+   each other.
+3. Bosses: grabs, the lich's aura damage, the boss key, the health meter.
+4. Screens: the shop and inventory, the after-level progress screen,
+   options, the memory card screens, the attract mode.
+5. Effects: texture wipes, effect lights, weapon and hand glows, exact
+   particle maths.
+6. Audio: music switching and ducking.
+7. Co-op: co-op combos, the monsters' crowd penalty, the exits'
+   wait-for-the-others hint. Online: joining after the start, Manage
+   Character and the shops online, recovering from an out-of-sync game.
+
 ## Play
 
 [PLAYING.md](PLAYING.md) is the players' guide: starting the game, local
