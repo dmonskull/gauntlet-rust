@@ -328,7 +328,8 @@ panned by its position (`FUN_80015694`), whenever it isn't playing
   Death's feet `+0x34` (its AI, `FUN_800460a8`), and at the hero's feet
   `+0x44` while its halo drains a Death (`FUN_8007c4f0`) — one voice for
   both (priority 0x6F);
-- the items' ambient sounds (`FUN_800a00ec`), re-volumed as well.
+- the items' ambient sounds (`FUN_800a00ec`), re-volumed as well (below,
+  "The sound items").
 
 **The volume.** The driver sets a voice's volume to requested × the call's
 own (the bank's `vol`, 0–127) / 127, less the ducking (`FUN_800d2698`),
@@ -360,9 +361,10 @@ items' `+0x34` the place, `+0x54` the centre, the blows on items taking it
 | footsteps | `FUN_8009e804` | fade | the hero's feet | 0x7F |
 | the hero's throw, amulet or super-shot sounds | `FUN_8009ee70` | fade | the hero's feet | 0x7F |
 | turbo attacks, `S_POJOTURBO` | `FUN_8009ed88` | pan | the hero's feet | 0xE0 |
-| `S_PLAYERDIES` and the class's death cry | `FUN_8009ea88` | pan | the hero's feet | 0x7F / 0xE0 |
-| a blow on the hero: `S_PLYRDMG`, `S_PLYRDMG2`, `S_PLYRDMG3` by its kind | `FUN_8009eb14` | pan | the hero's feet | 0x7F |
-| the class's death line `S_<CLS>DIE1` | `FUN_8009f198` | pan | the hero's feet | 0xE0 |
+| the hero dies: `S_PLAYERDIES`, then the class's `S_<CLS>DIE2` (the Pojo's `S_POJOPOISON`) | `FUN_8009ea88` | pan | the hero's feet | 0x7F / 0xE0 |
+| a blow on the hero: `S_PLYRDMG`, `S_PLYRDMG2`, `S_PLYRDMG3` by its kind; a big grunt's, knight's or lizard's `S_PLYRDMG5` / `S_PLYRDMG4` (below "The hero's cries") | `FUN_8009eb14` | pan | the hero's feet | 0x7F |
+| the class's scream `S_<CLS>DIE1` (the Pojo's `S_POJOPAIN`; not while invulnerable) | `FUN_8009f198` | pan | the hero's feet | 0xE0 |
+| the class's pain lines `S_<CLS>PAIN1`–`4`; its poisoned line `S_<CLS>POISON` | `FUN_8009f220`; `FUN_8009f010` | the heroes' voice queue, panned from the hero's feet as queued | — | 0xE0; 0xC0 |
 | potions `S_POTION1`–`4`, shields `S_SHIELD1`–`4` | `FUN_8009e860` | pan | the hero's feet | 0x7F |
 | damage tiles (`0x80122FF4` by realm and tile; `S_FIREHOLE2` for `S_FIREHOLE` on the dragon's level, boss 0x22) | `FUN_8009e8a4` | pan | the hero's feet | 0x7F (`S_TENTACLES`, `S_TENTACLESD` 0xB4) |
 | `S_TUNNEL` (going out through an exit) | `FUN_8009ca90` | pan | the hero's feet | 0x7F |
@@ -372,15 +374,16 @@ items' `+0x34` the place, `+0x54` the centre, the blows on items taking it
 | `S_LEVITATEDOWN`, `S_UNGROW`, `S_UNPOJO` | `FUN_8009cd28`, `FUN_8009cd98`, `FUN_8009cdd8` | pan | the hero's top | 0xE0 |
 | `S_UNSHRINK` | `FUN_8009cd68` | centred | — | 0xE0 |
 | `S_WARN` | `FUN_8009e9d0` | centred | — | by health: 0xCA at 10 or less, 0xB1 below 25, 0x98 below 100, else 0x7F |
-| `S_TURBODEFENSE` | `FUN_8009ebc8` | pan | the hero's `+0x64` | 0x7F |
-| pickups | `FUN_8009c630`, `FUN_8009c670`, `FUN_8009c718`, `FUN_8009c7e0`, `FUN_8009c870` | centred | — | 0x7F (powers by value) |
+| `S_TURBODEFENSE`: a potion going up as the magic shield (magic while defending, `+0x956 & 2`) | `FUN_8009ebc8` from `FUN_80080d3c` | pan | the hero's collision centre `+0x64` (feet + 2.5) | 0x7F |
+| pickups: keys `S_PICKUPKEY`, runes `S_PICKUPRUNE`, potions and the rest `S_PICKUPMAGIC`, powers by value (`S_PICKUPSPECIAL`, `S_PICKUPSHIELD`, `S_LEVITATEUP`, `S_GROW`, `S_SHRINK`, `S_POJO`), gold `S_PICKUPMAGIC` — in the secret realm (12) `S_PKUPBRONZE<n>` for 50, `S_PKUPSILVER<n>` for 100, else `S_PKUPGOLD<n>`, `n` the player (`0x80123514`…) | `FUN_8009c630`, `FUN_8009c670`, `FUN_8009c718`, `FUN_8009c7e0`, `FUN_8009c870` | centred | — | 0x7F; `S_GROW`, `S_SHRINK` 0xB4 |
 | `S_CHEST`, the doors' sounds | `FUN_8009c8b0`, `FUN_8009c8e0` | fade | the item's centre | 0x7F |
-| `S_TRANSPORT<realm>` | `FUN_8009c1c4` | fade | the transporter gone to | 0x7F |
+| `S_TRANSPORT<realm>` | `FUN_8009c1c4` from `FUN_80086ab8` | fade | the transporter gone to, its `+0x34` | 0x7F |
 | `S_TICKY` (a timed chest) | `FUN_8009d330` | centred | — | 0xE0 |
 | a generator hurt / destroyed | `FUN_8009bfac` / `FUN_8009c010` | fade | its centre, 2 up | 0xB4 / 0x7F |
-| barrels: wood, explosive, gas (`S_BARREL_…<realm>`) | `FUN_8009d2b0`, `FUN_8009d210`, `FUN_8009d260` | fade | its centre, 2 up | 0xE0 |
-| `S_SECRETWALL`, an obstacle's own hit sound | `FUN_8009c128` | fade | its centre, 2 up | 0x7F / its record's |
-| `S_WEAPONHITWOOD` (blows on wood) | `FUN_8009e784` | fade | its centre, 2 up | 0x7F |
+| barrels breaking: wood, explosive, gas (`S_BARREL_…<realm>`) | `FUN_8009d2b0`, `FUN_8009d210`, `FUN_8009d260` (`FUN_8005c1c8`) | fade | its centre, 2 up | 0xE0 |
+| a CHESTEXP going off: the explosive barrel's sound | `FUN_8009d210` from the item update `FUN_800606e8` (type `0x2C` at state 2) | fade | the chest's centre | 0xE0 |
+| a secret wall (obstacle `0x2A`): broken `S_SECRETWALL`; standing, the level record's hit sound (`*(r13-0x72C0)+0x2C` table, by the level's `+0x64` record's `+0x12`) | `FUN_8009c128` | fade | its centre, 2 up | 0x7F / the record's (0 → 0xE0) |
+| `S_WEAPONHITWOOD`: a blow leaving a barrel or other obstacle standing | `FUN_8009e784` | fade | its centre, 2 up | 0x7F |
 | a crumbling floor starting to fall (`0x801232AC` by realm, and `FUN_8009d154`'s) | `FUN_8009d104`, `FUN_8009d154` | fade | the item | 0xE0 |
 | bridges `S_BRIDCL<r>`/`S_BRIDOP<r>`; movers by kind (`0x80123354`) | `FUN_8009c938`, `FUN_8009c9a4`; `FUN_8009ca10` | pan | the mover | 0xE0 |
 | a monster's hit and death sounds | `FUN_8009d6c0`, `FUN_8009d7b4` | fade | its feet | 0xE0 |
@@ -392,10 +395,93 @@ items' `+0x34` the place, `+0x54` the centre, the blows on items taking it
 | `S_RICOCHET` | `FUN_8009e7b4` | fade, at most once a second (`r2-0x5310`) | the missile | 0x7F |
 | `S_SPLASH`, effects' own sounds (`FUN_8009d35c`) | `FUN_8009ce18`, `FUN_8009d35c` | fade | the effect | 0xB4; the record's |
 | the tower's chimes and knocks (`S_STNDGLASS`, `S_RUNEHIT`, `S_RUNEFALL`, `S_SHRD8`, `S_SHRDS127`) | `FUN_8009bc98` | centred (`pos` 0) | — | 0xFF |
+| `S_EXITFLAME` (loop) | `FUN_8009ce48` | pan, following | the hero in the exit, its top | 0xE0 |
+| the sound items' loops | `FUN_800a00ec` | pan, following, re-volumed | the item's place | 224 × nearness (below) |
 
 The voice queues' lines carry a pan too: the heroes' (queue 0) are panned
 from the hero's position as they're queued (`FUN_800167a4`); the
-announcer's are centred.
+announcer's are centred, every one at 0xE0 (each append in the binary
+passes it).
+
+**The hero's cries** (`FUN_80078560`, the damage routine: health, then
+the cries; `docs/powers.md` has the armour part). Its callers pass a
+sound mode:
+
+- 0 silent: poisoned food (`FUN_8005de3c`), a missile of flag `0x2000`,
+  and a monster's blow (`FUN_8004dec0`) that played its own sound: a big
+  monster's (size `+0x23C` > 2) of type 4, 5 or 10 (grunt, knight,
+  lizard) plays `S_PLYRDMG5` (tier `+0x206` < 2) or `S_PLYRDMG4` at the
+  hero's feet (`FUN_8009eb14(player, 4 / 3)`); a big one of type 2, 8 or
+  11 (demon, mummy, tree), or any small one but the type `0x1F`, its
+  strike (`FUN_8009d8c4`: `S_<name>STRIKE` / `S_<name>BITE` by type and
+  tier, built with the hit sounds by `FUN_8009d940`; fade, its feet,
+  0xB4);
+- 1 the hurt (most callers: monsters' other blows, critters', missiles',
+  the hurting walls, Death's drain);
+- 2 a pain line, 3 the scream: the damage tiles (`FUN_8005d71c` case 8:
+  mode 3 for tile subtypes 0, 3, 4 — spikes, saws and blades, the first
+  tentacles — else 2).
+
+The hero dying (health below 1, in play `+0xE8` = 1): `S_PLAYERDIES`
+(0x7F) and the class's death cry (`0x80122FD4`: `S_<CLS>DIE2`; the Pojo,
+special `0x400`, `S_POJOPOISON`; 0xE0), panned at its feet. Living
+through it, with `before` / `after` its health rounded (+ 0.5) and every
+blow above 0 added to a count (`+0x924`):
+
+- `before` > 150 ≥ `after`: hint `0xD`, whose table entry has no text
+  (`FUN_800a4268` returns 0 at once), so the announcer's warning
+  `FUN_8009f82c(1)`; else `before` > 50 ≥ `after`: `FUN_8009f82c(2 or
+  3)` by the parity of the field count `r13-0x7578`. The warnings are
+  sentences (`FUN_8009f9e0`, gated like the other announcer's lines): the
+  hero's name (`S_<colour><class>2`, the Pojo's `S_POJO2`), then
+  `S_BADLY` (1 s), `S_LIFEFORCE` (2, 1 s) or `S_ABOUT` (3, 0.5 s;
+  `S_NEEDSFOOD` for any other number, 2 s);
+- otherwise by the mode: 2 a pain line (if the blow was above 0), the
+  count to 0; 3 the scream `FUN_8009f198` (`0x80122D2C`: `S_<CLS>DIE1`,
+  the Pojo's `S_POJOPAIN`; not while invulnerable, armour `0x10000`),
+  the count to 0; 1 a pain line if the blow took 61 or more at once (the
+  count to 0), or once the count reaches 30 (30 off it) — either way
+  mode 0 from then;
+- still mode 1: a blow without poison plays its hurt sound if the hero's
+  wait `+0x1F0` has run out (the frame update takes the fields off it),
+  `S_PLYRDMG` (`0x80122F84`, by player), `S_PLYRDMG2` with kind
+  `0x20000`, else `S_PLYRDMG3` with `0x40000`, panned at the feet, 0x7F,
+  and the wait goes to 30 fields; a poison blow (kind `0x800`) the
+  class's poisoned line instead.
+
+The pain line (`FUN_8009f220`) is one of the class's four
+(`0x80122CAC`: `S_<CLS>PAIN1`–`4` by a random 0–3; the Pojo's
+`S_POJOPAIN`), queued in the heroes' queue at 0xE0; the poisoned line
+(`FUN_8009f010`, `0x80122DEC`) at 0xC0. The tables hold the eight
+classes; a secret character's class index reads past them.
+
+**The sound items** (class 13, `FUN_800646e4` making them from the
+placement): `+0x30` → `+0xDC` reach, `+0x34` → `+0xE8`, `+0x38` →
+`+0xEC` flags, `+0x3A` → `+0xEE`; with `+0xE8` 0 the placement's name
+(uppercased) is looked up in the catalog → `+0xE0`. Each item update
+(`FUN_800606e8`):
+
+- `+0xE8` 0: with `d` the distance from its place to the nearest hero in
+  play (`FUN_80063658`, 1000 with none), its nearness is 1 within its
+  reach (or for a reach ≤ 2), else 2 × (1.5 × reach − `d`) / reach; above
+  0 (or with a start pending) `FUN_800a00ec(nearness, id, place, flags)`
+  plays it: requested volume 224 × nearness × the level record's `+0x98`
+  (1.0 on every level on the disc) — 16 while time stands still
+  (`r13-0x731C`), a cut is on (`r13-0x774C`) or `FUN_800a33a4` — never
+  below 0, and on the secret realm's first level record (S1) × 4,
+  clamped to 64–255; priority `0x70` (3 with flag `0x2`); started
+  (panned) when it has no voice — a call that ends starts again — then
+  re-volumed and re-panned every update. Flag `0x1` also sets the
+  music's duck (`r13-0x6ECC`, `r13-0x7CE0`). Out of reach (nearness 0)
+  it's stopped (`FUN_800a00cc`), as every item's is once the first hero
+  is out (`r13-0x7344`) or in modes `0x4014` / `0x400C`.
+- `+0xE8` ≥ 1 (nameless): the one in reach with the highest picks the
+  music (`r13-0x720C` = `+0xE8` − 1, `r13-0x7210` = its flags) — not
+  traced further.
+
+On the disc 542 sound placements; their names cover 108 sounds, 88 of
+them loops, 17 one-shots (mostly the secret realm's) and 3 the catalog
+lacks (`S_GUS`, `S_LENNARD`, `S_TYLER`).
 
 Here (`audio.rs`): `PlaySoundAt { name, at, volume, fade }` —
 `panned`, `faded`, `centred` — does the pan and the fade above as the
@@ -409,9 +495,10 @@ sound plays exactly as a `PlaySound`): stereo here, so the surround pan —
 in front of the focus or behind it — isn't applied, and a sound behind
 pans by its side pan like one in front. There's no mono option.
 
-`LoopSoundAt { key, name, at, volume, follow_volume }` is a loop that
-follows something: one per channel `key`, sent by its owner every tick
-with where the thing is now (`LoopSoundAt::at`; `stop` ends it). It starts
+`LoopSoundAt { key, slot, name, at, volume, follow_volume }` is a loop
+that follows something: one per channel (`key` and `slot`, the owner's
+numbering), sent by its owner every tick with where the thing is now
+(`LoopSoundAt::at`; `stop` ends it), ended with the level. It starts
 panned from `at` at the call's volume × `volume` / 127; while it plays,
 each frame its pan slides toward the one for where `at` is now by at most
 8 a game tick (240 a second, the short way round the 512 to the turn), and
@@ -419,21 +506,46 @@ with `follow_volume` its volume toward `volume` itself the same way (the
 items' quirk above). A call that doesn't loop and has ended is started
 again by the next request, as the game's owners do. Only the last request
 for a channel in a frame counts (two ticks in one frame don't start a
-loop twice; the same for `LoopSound`, which still plays centred).
+loop twice; the same for `LoopSound`, which still plays centred). A loop
+whose sound isn't in the catalog is warned about once.
+
+The voice queues play their lines as queued: the announcer's centred at
+0xE0, a `QueueVoice` on the heroes' queue centred at 0xC0, a hero's own
+line (`QueueHeroLine`: eating, poison, pain) at its volume and the pan
+from where the hero was as it was queued.
 
 Placed so far: the footsteps; the x-ray; the tower's chimes (centred, at
 0xFF); the powers' ends and `S_WARN` (`player_state.rs`); the damage tiles
 (`hazards.rs`); the bridges', movers' and rotators' one-shots and their two
-loops (`mechanics.rs`); a monster's hit and death sounds, a generator's
-hurt and destroyed, a critter's hit sounds, `S_DEATHDIE` when Death is
-killed (`damage.rs`); the runner's yell, Death's laugh and Death's drain
-loop (`monsters.rs`); the hourglass's loop (`game_hud.rs`). Stand-ins: the
-runner's yell is at its centre (the game's `+0x44` point, which the port
-also uses for its effects), a generator's sounds at its place raised 2
-(the game's are at its centre raised 2). Not done: the voice queues' pans;
-`S_EXITFLAME` and `S_TUNNEL` aren't played; nor are the hero's own cries
-(`S_PLYRDMG*`, `S_PLAYERDIES`, the death lines) and the items' ambient
-loops.
+loops, a mover's stop sound only when its set's loop was playing
+(`mechanics.rs`); a monster's hit and death sounds, a generator's hurt and
+destroyed, a critter's hit sounds, `S_DEATHDIE` when Death is killed
+(`damage.rs`); the runner's yell, Death's laugh and Death's drain loop
+(`monsters.rs`); the hourglass's loop (`game_hud.rs`); the pickups, the
+chests', doors' and transporters' sounds, `S_TICKY`, `S_TUNNEL`, the
+exit's flame and the sound items' loops (`items.rs`); the blows on
+barrels, walls and obstacles and a CHESTEXP's (`breakables.rs`); the
+halo's drain (`S_HALO`, `S_DEATHDIE` at the Death, `S_DEATHSUCK` at the
+hero) and `S_TURBODEFENSE` (`player.rs`); the hero's cries and the
+announcer's health warnings (`player_state.rs`: `HurtHero` says a blow's
+kind and `Cry` mode; a plain `DamagePlayer` is kind 0, mode 1;
+`damage.rs` voices the monsters' blows and Death's drain, `hazards.rs`
+the tiles, `items.rs` poisoned food).
+
+Stand-ins: the runner's yell is at its centre (the game's `+0x44` point,
+which the port also uses for its effects), a generator's sounds at its
+place raised 2 (the game's are at its centre raised 2); the halo's
+`S_DEATHDIE` follows the Death (at its centre for `+0x54`) where the game
+pans each start; the transporter's sound is at the hero's landing point
+under the transporter's centre; the exit's flame burns as soon as the
+hero stands in an exit (the game's once the hero's exit count `+0x950`
+runs, `FUN_80086cc8`); the warnings' parity is the game clock's field
+count. Not
+done: the monsters' strikes and bites (their names), a standing secret
+wall's level sound, the music's duck under a sound item (flag `0x1`) and the
+music zones (`+0xE8` ≥ 1), the crumbling floors (not ported); senders in
+`critters.rs`, `projectiles.rs` and `effects.rs` still send
+`DamagePlayer` (kind 0, mode 1); the game's 12 voices (no limit here).
 
 ## Not done / unconfirmed
 

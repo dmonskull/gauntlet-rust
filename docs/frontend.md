@@ -550,7 +550,12 @@ boss end's gate, on real time. In them: the hints (0.5 s, gated), the
 message box's line (the tower's unlocks, 10 s), the tower wizard's pieces
 (10 s) and ranks (the hero's name, then `S_EXP…`, 5 s), the bosses'
 wizard (10 s), the runestone count (no limit, gated;
-`pickup_notices.rs`), and the heroes' eating and poison lines. Every level
+`pickup_notices.rs`), the health warnings (the hero's name then
+`S_BADLY`, `S_LIFEFORCE` or `S_ABOUT`, gated; `player_state.rs`), and the
+heroes' eating, poison and pain lines (`QueueHeroLine`). The lines play
+as queued: the announcer's centred at `0xE0`, the heroes' at their own
+volumes (`0xC0`; pain `0xE0`) panned from where the hero was as they were
+queued ([audio-format.md](audio-format.md), "The hero's cries"). Every level
 change by name waits while a queue holds a line (`exits.rs`): an exit,
 the boss level's end, the last hero out (`frontend.rs`, `death`: once
 the DEATH action is over outside the tower the hero is out — the HUD
@@ -559,9 +564,9 @@ level change to the tower is asked for), the menus. Stand-ins: the old
 level keeps running during the wait even where the game's is frozen (a
 level start's own wait, `FUN_800a097c`); the queues aren't emptied and
 the voices aren't stopped as the new level starts (they're empty by
-then); lines aren't panned and there's no 12-voice limit, so the priority
-does nothing. Not done: the level's name lines and the opening's wait,
-the health warnings, the taunts, the hurt cries.
+then); there's no 12-voice limit, so the priority does nothing. Not
+done: the level's name lines and the opening's wait, the taunts, the
+steal lines (another player's item).
 
 The save (`FUN_8007a670(p, 1)`, from `FUN_80053530`) happens when a level
 outside the tower starts, except in the secret realm (12) and in `levelE2`

@@ -4,13 +4,15 @@
 //! rule). It outlives levels, like the game's record does.
 //!
 //! Other systems change it through [`PlayerState`]'s methods or, to hurt the
-//! hero without touching its internals, by writing a [`DamagePlayer`]
-//! message.
+//! hero without touching its internals, by writing a [`DamagePlayer`] (or a
+//! [`HurtHero`], which says how the blow is voiced) message. The hero's
+//! cries as it's hurt and as it dies are the game's damage routine's
+//! (`docs/audio-format.md`, "The hero's cries").
 
 use bevy::prelude::*;
 use gdl_formats::pdata::PlayerStats;
 
-use crate::audio::PlaySoundAt;
+use crate::audio::{CALL_VOLUME, PlaySoundAt, QueueHeroLine, QueueVoice};
 use crate::level::LoadedGame;
 use crate::player::{PlayerChoice, PlayerSpawn, PlayerTick};
 use crate::population::LevelPopulation;
@@ -49,6 +51,34 @@ pub const DEFAULT_HEAD: f32 = 4.4;
 #[derive(Message, Clone, Copy, Debug)]
 pub struct DamagePlayer {
     pub amount: f32,
+}
+
+/// How a blow on the hero is voiced: the game's damage routine's sound mode,
+/// which whoever lands the blow chooses (`docs/audio-format.md`, "The
+/// hero's cries").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cry {
+    /// Nothing: the sender played its own sound (a big monster's blow), or
+    /// it's poisoned food.
+    Silent,
+    /// The hurt sound by the blow's kind, at most every half second, and a
+    /// pain line for a blow of 61 or more, or each 30 health lost.
+    #[default]
+    Hurt,
+    /// A pain line (fire holes and the like).
+    Pain,
+    /// The class's scream, `S_<CLS>DIE1` (spikes, blades, tentacles).
+    Scream,
+}
+
+/// Hurts the hero by `amount` like [`DamagePlayer`], for a blow of `kind`
+/// voiced as `cry`. A `DamagePlayer` is a blow of kind 0 voiced
+/// [`Cry::Hurt`].
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct HurtHero {
+    pub amount: f32,
+    pub kind: u32,
+    pub cry: Cry,
 }
 
 /// Heals the hero the way the game's heal routine does (refused at full
@@ -459,6 +489,7 @@ pub struct PlayerStatePlugin;
 impl Plugin for PlayerStatePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<DamagePlayer>()
+            .add_message::<HurtHero>()
             .add_message::<SpendPower>()
             .add_message::<HealPlayer>()
             .init_resource::<PlayerState>()
@@ -502,28 +533,238 @@ fn new_hero(
     commands.insert_resource(state);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn take_damage(
     mut hits: MessageReader<DamagePlayer>,
+    mut hurts: MessageReader<HurtHero>,
     mut heals: MessageReader<HealPlayer>,
     mut state: ResMut<PlayerState>,
     camera: Option<Res<crate::play_camera::PlayCamera>>,
+    heroes: Query<&crate::player::Player>,
+    (mut cries, choice, time): (Local<Cries>, Option<Res<PlayerChoice>>, Res<Time>),
+    (mut sounds, mut lines, mut announce): (MessageWriter<PlaySoundAt>, MessageWriter<QueueHeroLine>, MessageWriter<QueueVoice>),
 ) {
     for h in heals.read() {
         if state.alive {
             state.heal(h.amount);
         }
     }
+    cries.wait -= FIELDS_PER_TICK;
     // No harm comes to the hero during a camera cut.
     let cut = camera.is_some_and(|c| c.in_cut());
-    for hit in hits.read() {
+    let blows: Vec<HurtHero> =
+        hits.read().map(|h| HurtHero { amount: h.amount, kind: 0, cry: Cry::Hurt }).chain(hurts.read().copied()).collect();
+    let feet = heroes.iter().next().map(|p| Vec3::from(p.mover.position));
+    for hit in blows {
         if cut {
             continue;
         }
+        let (in_play, before) = (state.alive, state.health);
         let died = state.damage(hit.amount);
         debug!("the hero takes {:.1}: {:.1} health", hit.amount, state.health);
         if died {
             info!("the hero has died");
         }
+        // Only a hero in play cries out, at its feet.
+        let Some(feet) = feet.filter(|_| in_play) else { continue };
+        let hero = Hero {
+            class: &state.class,
+            pojo: state.bits.special & power::POJO != 0,
+            invulnerable: state.bits.armour & crate::damage::resists::INVULNERABLE != 0,
+        };
+        // The field count's parity picks between two warnings.
+        let even = ((time.elapsed_secs() * 60.0) as u64).is_multiple_of(2);
+        let voiced = if died { death_cries(hero) } else { cries.voice(hero, before, state.health, hit, even) };
+        for v in voiced {
+            debug!("the hero cries {v:?}");
+            match v {
+                Voiced::Sound(name, volume) => {
+                    sounds.write(PlaySoundAt::panned(name, feet, volume));
+                }
+                Voiced::Line(line, volume) => {
+                    lines.write(QueueHeroLine { line, volume, at: feet });
+                }
+                Voiced::Warning(line, most_wait) => {
+                    let name = hero_name_line(choice.as_deref(), hero.pojo);
+                    announce.write(QueueVoice::announcer(name, most_wait).then(line).gated());
+                }
+            }
+        }
+    }
+}
+
+/// The classes whose cries the game's tables hold (the secret characters
+/// read past them).
+const CRYING_CLASSES: [&str; 8] = ["WAR", "VAL", "WIZ", "ARC", "DWF", "KNI", "SOR", "JES"];
+/// The hurt sounds by the blow's kind: `0x20000`, then `0x40000`, else
+/// the plain one.
+const HURT_KIND_2: u32 = 0x2_0000;
+const HURT_KIND_3: u32 = 0x4_0000;
+/// Poison (the blow kind): its hurt is the class's poisoned line.
+const POISON_KIND: u32 = 0x800;
+/// The hurt sound waits this many fields before it plays again.
+const HURT_WAIT: i32 = 30;
+/// A pain line for a blow this big, or every this much health lost.
+const BIG_BLOW: i32 = 61;
+const PAIN_EVERY: f32 = 30.0;
+/// The announcer's warnings as the health falls past 150 ("needs food,
+/// badly") and past 50 (its life force running out or it about to die,
+/// by the field count's parity): the line after the hero's name, and the
+/// sentence's longest wait.
+const WARN_HIGH: (i32, &str, f32) = (150, "S_BADLY", 1.0);
+const WARN_LOW: i32 = 50;
+const WARN_LOW_EVEN: (&str, f32) = ("S_LIFEFORCE", 1.0);
+const WARN_LOW_ODD: (&str, f32) = ("S_ABOUT", 0.5);
+/// The colours' codes in the hero's name lines, and the Pojo's name.
+const NAME_COLOURS: [&str; 4] = ["YEL", "BLU", "RED", "GRE"];
+const POJO_NAME: &str = "S_POJO2";
+
+/// The hero's name as the announcer says it first (`S_BLUWAR2`, "Blue
+/// Warrior"; the Pojo's `S_POJO2`).
+fn hero_name_line(choice: Option<&PlayerChoice>, pojo: bool) -> String {
+    if pojo {
+        return POJO_NAME.into();
+    }
+    let colour = choice.and_then(|c| NAME_COLOURS.iter().position(|n| c.variant.to_ascii_uppercase().starts_with(n))).unwrap_or(0);
+    let class = choice.and_then(|c| crate::character::class_index(&c.class)).unwrap_or(0);
+    crate::tower_scenes::Rank { level: 0, class, colour }.name_line()
+}
+/// Requested volumes: the hurt sounds and `S_PLAYERDIES`, a scream and the
+/// death cry, the pain lines, the poisoned line.
+const SCREAM_VOLUME: u8 = 0xE0;
+const PAIN_VOLUME: u8 = 0xE0;
+const POISONED_VOLUME: u8 = 0xC0;
+
+/// The hero crying out: its class, whether it's the Pojo, whether it's
+/// invulnerable.
+#[derive(Clone, Copy, Debug)]
+struct Hero<'a> {
+    class: &'a str,
+    pojo: bool,
+    invulnerable: bool,
+}
+
+impl Hero<'_> {
+    fn cries(&self) -> bool {
+        CRYING_CLASSES.contains(&self.class)
+    }
+}
+
+/// A cry: a sound played at the hero's feet, or a line in the heroes'
+/// voice queue, each at its requested volume; or the announcer's warning
+/// (a line after the hero's name, and its longest wait).
+#[derive(Clone, Debug, PartialEq)]
+enum Voiced {
+    Sound(String, u8),
+    Line(String, u8),
+    Warning(&'static str, f32),
+}
+
+/// The hero's death cries: `S_PLAYERDIES`, and the class's `S_<CLS>DIE2`
+/// (the Pojo's `S_POJOPOISON`).
+fn death_cries(hero: Hero) -> Vec<Voiced> {
+    let mut out = vec![Voiced::Sound("S_PLAYERDIES".into(), CALL_VOLUME)];
+    if hero.cries() {
+        let cry = if hero.pojo { "S_POJOPOISON".to_string() } else { format!("S_{}DIE2", hero.class) };
+        out.push(Voiced::Sound(cry, SCREAM_VOLUME));
+    }
+    out
+}
+
+/// What the game's damage routine remembers between blows: the fields
+/// until the hurt sound may play again, the damage counted toward the
+/// next pain line, and its dice.
+#[derive(Default)]
+struct Cries {
+    wait: i32,
+    lost: f32,
+    seed: u32,
+}
+
+impl Cries {
+    /// The cries for a blow `hit` the hero lived through, its health going
+    /// from `before` to `after`; `even`, the field count's parity.
+    fn voice(&mut self, hero: Hero, before: f32, after: f32, hit: HurtHero, even: bool) -> Vec<Voiced> {
+        let mut out = Vec::new();
+        let hurts = hit.amount > 0.0;
+        if hurts {
+            self.lost += hit.amount;
+        }
+        let (was, now) = ((before + 0.5) as i32, (after + 0.5) as i32);
+        let mut cry = hit.cry;
+        if was > WARN_HIGH.0 && now <= WARN_HIGH.0 {
+            out.push(Voiced::Warning(WARN_HIGH.1, WARN_HIGH.2));
+        } else if was > WARN_LOW && now <= WARN_LOW {
+            let (line, wait) = if even { WARN_LOW_EVEN } else { WARN_LOW_ODD };
+            out.push(Voiced::Warning(line, wait));
+        } else {
+            match cry {
+                Cry::Pain => {
+                    if hurts {
+                        out.extend(self.pain_line(hero));
+                    }
+                    self.lost = 0.0;
+                }
+                Cry::Scream => {
+                    if !hero.invulnerable && hero.cries() {
+                        let scream = if hero.pojo { "S_POJOPAIN".to_string() } else { format!("S_{}DIE1", hero.class) };
+                        out.push(Voiced::Sound(scream, SCREAM_VOLUME));
+                    }
+                    self.lost = 0.0;
+                }
+                Cry::Hurt if was - now < BIG_BLOW => {
+                    if self.lost >= PAIN_EVERY {
+                        self.lost -= PAIN_EVERY;
+                        if hurts {
+                            out.extend(self.pain_line(hero));
+                        }
+                        cry = Cry::Silent;
+                    }
+                }
+                Cry::Hurt => {
+                    if hurts {
+                        out.extend(self.pain_line(hero));
+                    }
+                    cry = Cry::Silent;
+                    self.lost = 0.0;
+                }
+                Cry::Silent => {}
+            }
+        }
+        if cry == Cry::Hurt {
+            if hit.kind & POISON_KIND != 0 {
+                if hurts && hero.cries() {
+                    let line = if hero.pojo { "S_POJOPOISON".to_string() } else { format!("S_{}POISON", hero.class) };
+                    out.push(Voiced::Line(line, POISONED_VOLUME));
+                }
+            } else if self.wait < 1 {
+                if hurts {
+                    out.push(Voiced::Sound(hurt_sound(hit.kind).into(), CALL_VOLUME));
+                }
+                self.wait = HURT_WAIT;
+            }
+        }
+        out
+    }
+
+    /// One of the class's four pain lines (the Pojo's own); none for the
+    /// classes the game's table doesn't hold.
+    fn pain_line(&mut self, hero: Hero) -> Option<Voiced> {
+        self.seed = self.seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        let n = (self.seed >> 16) % 4 + 1;
+        let line = if hero.pojo { "S_POJOPAIN".to_string() } else { format!("S_{}PAIN{n}", hero.class) };
+        hero.cries().then_some(Voiced::Line(line, PAIN_VOLUME))
+    }
+}
+
+/// The hurt sound for a blow of `kind`.
+fn hurt_sound(kind: u32) -> &'static str {
+    if kind & HURT_KIND_2 != 0 {
+        "S_PLYRDMG2"
+    } else if kind & HURT_KIND_3 != 0 {
+        "S_PLYRDMG3"
+    } else {
+        "S_PLYRDMG"
     }
 }
 
@@ -686,6 +927,91 @@ fn powers_and_warning(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const WAR: Hero = Hero { class: "WAR", pojo: false, invulnerable: false };
+
+    fn hurt(amount: f32, kind: u32, cry: Cry) -> HurtHero {
+        HurtHero { amount, kind, cry }
+    }
+
+    fn sound(name: &str, volume: u8) -> Voiced {
+        Voiced::Sound(name.into(), volume)
+    }
+
+    /// A blow's cries, the field count even.
+    fn voice(c: &mut Cries, hero: Hero, before: f32, after: f32, hit: HurtHero) -> Vec<Voiced> {
+        c.voice(hero, before, after, hit, true)
+    }
+
+    #[test]
+    fn a_hurt_hero_cries_at_most_every_half_second() {
+        let mut c = Cries::default();
+        assert_eq!(voice(&mut c, WAR, 500.0, 490.0, hurt(10.0, 0, Cry::Hurt)), [sound("S_PLYRDMG", 0x7F)]);
+        // Its wait: nothing until 30 fields have passed.
+        assert_eq!(voice(&mut c, WAR, 490.0, 480.0, hurt(10.0, 0, Cry::Hurt)), []);
+        c.wait -= HURT_WAIT;
+        assert_eq!(voice(&mut c, WAR, 480.0, 475.0, hurt(5.0, 0x2_0000, Cry::Hurt)), [sound("S_PLYRDMG2", 0x7F)]);
+        (c.wait, c.lost) = (0, 0.0);
+        assert_eq!(voice(&mut c, WAR, 475.0, 470.0, hurt(5.0, 0x4_0000, Cry::Hurt)), [sound("S_PLYRDMG3", 0x7F)]);
+        // Silent blows say nothing; poison says the class's line.
+        c.wait = 0;
+        assert_eq!(voice(&mut c, WAR, 470.0, 460.0, hurt(10.0, 0, Cry::Silent)), []);
+        c.lost = 0.0;
+        assert_eq!(voice(&mut c, WAR, 460.0, 455.0, hurt(5.0, POISON_KIND, Cry::Hurt)), [Voiced::Line("S_WARPOISON".into(), 0xC0)]);
+    }
+
+    #[test]
+    fn big_blows_and_lost_health_bring_pain_lines() {
+        let mut c = Cries::default();
+        // 61 at once: a pain line in place of the hurt sound.
+        let v = voice(&mut c, WAR, 400.0, 339.0, hurt(61.0, 0, Cry::Hurt));
+        assert!(matches!(&v[..], [Voiced::Line(l, 0xE0)] if l.starts_with("S_WARPAIN")), "{v:?}");
+        // Every 30 lost: a pain line, the rest counted on.
+        c.wait = 0;
+        assert_eq!(voice(&mut c, WAR, 339.0, 319.0, hurt(20.0, 0, Cry::Hurt)), [sound("S_PLYRDMG", 0x7F)]);
+        c.wait = 0;
+        let v = voice(&mut c, WAR, 319.0, 304.0, hurt(15.0, 0, Cry::Hurt));
+        assert!(matches!(&v[..], [Voiced::Line(..)]), "{v:?}");
+        assert_eq!(c.lost, 5.0);
+        // Crossing 150 health: the announcer's warning in place of the
+        // pain line; the hurt sound still plays.
+        c.wait = 0;
+        assert_eq!(
+            voice(&mut c, WAR, 151.0, 80.0, hurt(71.0, 0, Cry::Hurt)),
+            [Voiced::Warning("S_BADLY", 1.0), sound("S_PLYRDMG", 0x7F)]
+        );
+        // Past 50: by the field count's parity.
+        c.wait = 0;
+        assert_eq!(c.voice(WAR, 60.0, 50.0, hurt(10.0, 0, Cry::Pain), true), [Voiced::Warning("S_LIFEFORCE", 1.0)]);
+        assert_eq!(c.voice(WAR, 51.0, 40.0, hurt(11.0, 0, Cry::Pain), false), [Voiced::Warning("S_ABOUT", 0.5)]);
+        // Both in one blow: the first.
+        assert_eq!(c.voice(WAR, 200.0, 10.0, hurt(190.0, 0, Cry::Silent), true), [Voiced::Warning("S_BADLY", 1.0)]);
+    }
+
+    #[test]
+    fn tiles_scream_or_groan() {
+        let mut c = Cries::default();
+        assert_eq!(voice(&mut c, WAR, 500.0, 490.0, hurt(10.0, 0x80, Cry::Scream)), [sound("S_WARDIE1", 0xE0)]);
+        let pojo = Hero { pojo: true, ..WAR };
+        assert_eq!(voice(&mut c, pojo, 490.0, 480.0, hurt(10.0, 0x80, Cry::Scream)), [sound("S_POJOPAIN", 0xE0)]);
+        let tough = Hero { invulnerable: true, ..WAR };
+        assert_eq!(voice(&mut c, tough, 480.0, 480.0, hurt(0.0, 0x80, Cry::Scream)), []);
+        let v = voice(&mut c, WAR, 480.0, 470.0, hurt(10.0, 0x80, Cry::Pain));
+        assert!(matches!(&v[..], [Voiced::Line(l, 0xE0)] if l.starts_with("S_WARPAIN")), "{v:?}");
+        // The secret characters' cries aren't in the game's tables; their
+        // hurt sounds are.
+        let minotaur = Hero { class: "MIN", ..WAR };
+        assert_eq!(voice(&mut c, minotaur, 470.0, 460.0, hurt(10.0, 0x80, Cry::Scream)), []);
+        c.wait = 0;
+        assert_eq!(voice(&mut c, minotaur, 460.0, 450.0, hurt(10.0, 0, Cry::Hurt)), [sound("S_PLYRDMG", 0x7F)]);
+    }
+
+    #[test]
+    fn the_death_cries() {
+        assert_eq!(death_cries(WAR), [sound("S_PLAYERDIES", 0x7F), sound("S_WARDIE2", 0xE0)]);
+        assert_eq!(death_cries(Hero { pojo: true, ..WAR })[1], sound("S_POJOPOISON", 0xE0));
+        assert_eq!(death_cries(Hero { class: "MIN", ..WAR }), [sound("S_PLAYERDIES", 0x7F)]);
+    }
 
     #[test]
     fn the_warning_grows_louder() {

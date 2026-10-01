@@ -11,7 +11,8 @@
 //! weaker) and are gone at 0 with their model. Blows on them earn five
 //! times a blow on one of their monsters.
 //!
-//! Monster blows (`MonsterHit`) hurt the hero through `DamagePlayer`.
+//! Monster blows (`MonsterHit`) hurt the hero through `HurtHero`, voiced
+//! as the game's monster blow does it (`blow_cry`).
 //!
 //! The flinch/knockdown and push the blow causes play out in the monster's
 //! next tick (`monsters.rs`).
@@ -42,7 +43,7 @@ use crate::generators::Generator;
 use crate::hints::{Hint, ShowHint};
 use crate::monsters::{self, DeathDrain, Monster, MonsterHit, MonsterLevel};
 use crate::player::Player;
-use crate::player_state::{DamagePlayer, EnemyScale, HealPlayer, PlayerState};
+use crate::player_state::{Cry, EnemyScale, HealPlayer, HurtHero, PlayerState};
 use crate::player::PlayerTick;
 use crate::population::{GeneratorLooks, PlacementIndex};
 
@@ -415,7 +416,7 @@ fn death_drains(
     mut drains: MessageReader<DeathDrain>,
     mut players: Query<&mut Player>,
     mut state: Option<ResMut<PlayerState>>,
-    mut damage: MessageWriter<DamagePlayer>,
+    mut damage: MessageWriter<HurtHero>,
     mut hints: MessageWriter<ShowHint>,
 ) {
     for d in drains.read() {
@@ -431,7 +432,7 @@ fn death_drains(
         } else {
             let amount = p.take_blow(-d.amount, hit_kind::DRAIN, Vec3::ZERO);
             if amount != 0.0 {
-                damage.write(DamagePlayer { amount });
+                damage.write(HurtHero { amount, kind: hit_kind::DRAIN, cry: Cry::Hurt });
             }
             hints.write(ShowHint(Hint::DeathDrainsHealth));
         }
@@ -451,9 +452,9 @@ fn hurt_hero(
     mut hits: MessageReader<MonsterHit>,
     monsters: Query<&Monster>,
     mut players: Query<&mut Player>,
-    mut damage: MessageWriter<DamagePlayer>,
+    mut damage: MessageWriter<HurtHero>,
     enemies: Res<EnemyScale>,
-    (mut turned, mut heal): (MessageWriter<Hit>, MessageWriter<HealPlayer>),
+    (mut turned, mut heal, mut sounds): (MessageWriter<Hit>, MessageWriter<HealPlayer>, MessageWriter<PlaySoundAt>),
 ) {
     for hit in hits.read() {
         let Ok(mut p) = players.get_mut(hit.player) else { continue };
@@ -461,9 +462,17 @@ fn hurt_hero(
         // strong attack knocks back, one type knocks down, small monsters'
         // blows only make the hero flinch — and shrunk, every one is a
         // small monster's.
-        let (mut flags, mut push, mut blow) = (0u32, Vec3::ZERO, hit.damage);
+        let (mut flags, mut push, mut blow, mut cry) = (0u32, Vec3::ZERO, hit.damage, Cry::Hurt);
         if let Ok(m) = monsters.get(hit.monster) {
             let big = m.stats.step > monsters::BIG_STEP;
+            // How the blow sounds: a big grunt's, knight's or lizard's
+            // with its own hurt sound at the hero's feet, the hero
+            // silent.
+            let (own, voiced) = blow_cry(m.enemy, big, m.tier);
+            if let Some(name) = own {
+                sounds.write(PlaySoundAt::panned(name, Vec3::from(p.mover.position), CALL_VOLUME));
+            }
+            cry = voiced;
             if enemies.shrunk() {
                 flags = hit_kind::SMALL_MONSTER;
             } else {
@@ -504,14 +513,49 @@ fn hurt_hero(
         }
         let amount = p.take_blow(blow, flags, push);
         if amount != 0.0 {
-            damage.write(DamagePlayer { amount });
+            damage.write(HurtHero { amount, kind: flags, cry });
         }
+    }
+}
+
+/// Monster types by how their blows on a hero sound (the game's monster
+/// blow): a big grunt, knight or lizard plays a hurt sound of its own; a
+/// big demon, mummy or tree — and every small monster but the "it" — its
+/// strike or bite (`S_<name>STRIKE`/`BITE`, not built here); the rest
+/// leave it to the hero's cries.
+const OWN_HURT_TYPES: [i32; 3] = [4, 5, 10];
+const STRIKING_TYPES: [i32; 3] = [2, 8, 11];
+const IT_TYPE: i32 = 0x1F;
+
+/// A monster's blow on a hero: the hurt sound it plays itself (at the
+/// hero's feet) and how the hero's cries go — silent when the monster's
+/// own sound answers for it.
+fn blow_cry(enemy: i32, big: bool, tier: i32) -> (Option<&'static str>, Cry) {
+    if big && OWN_HURT_TYPES.contains(&enemy) {
+        (Some(if tier < 2 { "S_PLYRDMG5" } else { "S_PLYRDMG4" }), Cry::Silent)
+    } else if (big && STRIKING_TYPES.contains(&enemy)) || (!big && enemy != IT_TYPE) {
+        (None, Cry::Silent)
+    } else {
+        (None, Cry::Hurt)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn how_monster_blows_sound() {
+        // A big grunt: its own hurt sound by tier, the hero silent.
+        assert_eq!(blow_cry(4, true, 1), (Some("S_PLYRDMG5"), Cry::Silent));
+        assert_eq!(blow_cry(10, true, 3), (Some("S_PLYRDMG4"), Cry::Silent));
+        // A big demon or any small monster: its strike (not built).
+        assert_eq!(blow_cry(2, true, 1), (None, Cry::Silent));
+        assert_eq!(blow_cry(4, false, 1), (None, Cry::Silent));
+        // The "it", and other big monsters: the hero's cries.
+        assert_eq!(blow_cry(IT_TYPE, false, 1), (None, Cry::Hurt));
+        assert_eq!(blow_cry(24, true, 1), (None, Cry::Hurt));
+    }
 
     fn plain(damage: f32, armour: f32) -> f32 {
         resist(damage, &mut 0, armour, 0, false)

@@ -19,7 +19,7 @@ use crate::items::{self, LevelItems};
 use crate::mechanics::LevelNodes;
 use crate::monsters::MonsterLevel;
 use crate::player::{Player, PlayerTick};
-use crate::player_state::{DamagePlayer, PlayerState};
+use crate::player_state::{Cry, DamagePlayer, HurtHero, PlayerState};
 use crate::population::LevelPopulation;
 
 pub struct HazardsPlugin;
@@ -49,6 +49,12 @@ const TILE_SOUNDS: [[&str; 7]; 12] = [
     ["", "S_FIREHOLEJ", "", "", "", "", ""],
     ["", "S_FIREHOLEK", "", "", "", "", ""],
 ];
+
+/// How a tile's blow is voiced: spikes (0), saws and blades (3) and the
+/// first tentacles (4) make the hero scream, the rest groan.
+fn tile_cry(subtype: i32) -> Cry {
+    if matches!(subtype, 0 | 3 | 4) { Cry::Scream } else { Cry::Pain }
+}
 
 /// The tentacles' sounds play louder than their calls' own.
 fn tile_volume(name: &str) -> u8 {
@@ -170,7 +176,7 @@ fn tiles(
     level: Option<Res<MonsterLevel>>,
     state: Option<Res<PlayerState>>,
     mut players: Query<&mut Player>,
-    mut hurt: MessageWriter<DamagePlayer>,
+    mut hurt: MessageWriter<HurtHero>,
     mut sounds: MessageWriter<PlaySoundAt>,
     mut hints: MessageWriter<ShowHint>,
     stop: Res<crate::player_state::TimeStop>,
@@ -261,7 +267,7 @@ fn tiles(
         };
         let amount = p.take_blow(t.damage * damage_scale, flags, push);
         if amount != 0.0 {
-            hurt.write(DamagePlayer { amount });
+            hurt.write(HurtHero { amount, kind: flags, cry: tile_cry(t.subtype) });
         }
         if let Some(name) = TILE_SOUNDS.get(realm).and_then(|row| row.get(t.subtype.clamp(0, 6) as usize))
             && !name.is_empty()
@@ -350,6 +356,10 @@ mod tests {
         assert_eq!(tile_sound("S_FIREHOLE", DRAGON_BOSS), "S_FIREHOLE2");
         assert_eq!(tile_sound("S_FIREHOLE", -1), "S_FIREHOLE");
         assert_eq!(tile_sound("S_FIREHOLEC", DRAGON_BOSS), "S_FIREHOLEC");
+        assert_eq!(tile_cry(0), Cry::Scream);
+        assert_eq!(tile_cry(1), Cry::Pain);
+        assert_eq!(tile_cry(4), Cry::Scream);
+        assert_eq!(tile_cry(5), Cry::Pain);
     }
 
     #[test]

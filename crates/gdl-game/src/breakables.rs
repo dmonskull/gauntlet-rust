@@ -25,6 +25,12 @@
 //! or set off, explodes once it's open (`docs/mechanics.md`, "Blows on
 //! items").
 //!
+//! A blow's sounds are faded and panned at the item's centre raised 2
+//! (`docs/audio-format.md`, "Positional sounds"): the barrels' breaking,
+//! exploding and gas sounds at `0xE0`, `S_SECRETWALL` and a standing
+//! obstacle's `S_WEAPONHITWOOD` at the calls' own; a CHESTEXP ticks
+//! centred and explodes at its centre.
+//!
 //! Stand-ins: a monster inside (a Death) comes out at tier 1 straight away;
 //! a shootable wall's in-between hits are silent (the level's own hit sound
 //! isn't looked up); safe rocks (which break into pieces) aren't hittable;
@@ -35,7 +41,7 @@ use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use gdl_formats::population::{ItemClass, ItemType, PlacementParams, rotation_matrix};
 
-use crate::audio::PlaySound;
+use crate::audio::{CALL_VOLUME, PlaySoundAt};
 use crate::combat::{Hit, TargetKind, Targetable};
 use crate::effects::{EffectAt, Exploder, ExplosionAt};
 use crate::flash::{self, FlashColours};
@@ -139,6 +145,15 @@ const PIECES_FX: &str = "CHESTDEST";
 const SMOKE_FX: &str = "DESTSMOKE";
 /// Monster type of Death.
 const DEATH: i32 = 0x1E;
+/// A blow on a standing barrel or obstacle.
+const WOOD_HIT: &str = "S_WEAPONHITWOOD";
+
+/// A blow's sounds play this far above the item's centre; the barrels'
+/// at this requested volume.
+const BLOW_SOUND_RISE: f32 = 2.0;
+const BARREL_VOLUME: u8 = 0xE0;
+/// A CHESTEXP's tick and explosion's requested volume.
+const CHEST_EXP_VOLUME: u8 = 0xE0;
 
 /// Barrel sounds by realm id (A–K = 1–11): breaking, exploding, gas.
 fn barrel_sound(kind: &str, realm: usize) -> Option<String> {
@@ -193,7 +208,7 @@ fn hits(
     mut level: Option<ResMut<MonsterLevel>>,
     players: Query<(), With<Player>>,
     mut explosions: MessageWriter<ExplosionAt>,
-    (mut sounds, mut effects): (MessageWriter<PlaySound>, MessageWriter<EffectAt>),
+    (mut sounds, mut effects): (MessageWriter<PlaySoundAt>, MessageWriter<EffectAt>),
     mut hints: MessageWriter<ShowHint>,
     transforms: Query<&Transform>,
 ) {
@@ -226,6 +241,8 @@ fn hits(
             b.hit_points = (b.hit_points - (dealt + 0.5) as i32).max(0);
         }
         let dead = b.hit_points == 0;
+        // Where its sounds are.
+        let blow_at = Vec3::from(centre) + Vec3::Y * BLOW_SOUND_RISE;
         // A hero's blow that does damage to a secret wall (a nameless
         // obstacle) tells of them.
         if class == ItemClass::Obstacle && nameless && hit.kind & NO_DAMAGE == 0 && !hit.ranged && players.contains(hit.attacker) {
@@ -252,7 +269,7 @@ fn hits(
                     items.set_flags(b.placement, USED);
                     if subtype == BARREL {
                         if let Some(s) = barrel_sound("WOOD", realm) {
-                            sounds.write(PlaySound(s));
+                            sounds.write(PlaySoundAt::faded(s, blow_at, BARREL_VOLUME));
                         }
                         hints.write(ShowHint(Hint::SomeBarrels));
                     }
@@ -276,7 +293,7 @@ fn hits(
             ItemClass::Obstacle => match subtype {
                 WALL => {
                     if dead {
-                        sounds.write(PlaySound("S_SECRETWALL".into()));
+                        sounds.write(PlaySoundAt::faded("S_SECRETWALL", blow_at, CALL_VOLUME));
                         items.free(b.placement, &mut commands);
                         info!("secret wall {} broken", b.placement);
                     }
@@ -287,7 +304,7 @@ fn hits(
                         let poison = subtype == POI_BARREL;
                         let (kind, damage) = if poison { ("GAS", POISON_DAMAGE) } else { ("EXPLO", EXPLOSION_DAMAGE) };
                         if let Some(s) = barrel_sound(kind, realm) {
-                            sounds.write(PlaySound(s));
+                            sounds.write(PlaySoundAt::faded(s, blow_at, BARREL_VOLUME));
                         }
                         // The game's explosion effect, owned by nobody:
                         // it hurts heroes, monsters and items (other
@@ -301,16 +318,18 @@ fn hits(
                             by: Exploder::Barrel,
                         });
                         info!("barrel {} {}", b.placement, if subtype == EXP_BARREL { "explodes" } else { "lets out gas" });
+                    } else {
+                        sounds.write(PlaySoundAt::faded(WOOD_HIT, blow_at, CALL_VOLUME));
                     }
                 }
                 _ => {
                     if dead {
                         items.set_flags(b.placement, USED);
                         if let Some(s) = barrel_sound("WOOD", realm) {
-                            sounds.write(PlaySound(s));
+                            sounds.write(PlaySoundAt::faded(s, blow_at, BARREL_VOLUME));
                         }
                     } else {
-                        sounds.write(PlaySound("S_WEAPONHITWOOD".into()));
+                        sounds.write(PlaySoundAt::faded(WOOD_HIT, blow_at, CALL_VOLUME));
                     }
                 }
             },
@@ -440,7 +459,7 @@ fn apply_blow(
     models: Option<&ContentModels>,
     level: Option<&mut MonsterLevel>,
     commands: &mut Commands,
-    (effects, sounds, hints): (&mut MessageWriter<EffectAt>, &mut MessageWriter<PlaySound>, &mut MessageWriter<ShowHint>),
+    (effects, sounds, hints): (&mut MessageWriter<EffectAt>, &mut MessageWriter<PlaySoundAt>, &mut MessageWriter<ShowHint>),
 ) {
     let Some(v) = items.view(placement) else { return };
     let (name, centre) = (v.ty.name.clone(), v.shape.centre);
@@ -478,7 +497,7 @@ fn apply_blow(
             items.set_flags(placement, USED | items::ALWAYS_ACTIVE);
             items.play(placement, open_action);
             items.set_state(placement, 2);
-            sounds.write(PlaySound(items::CHEST_EXP_TICK.into()));
+            sounds.write(PlaySoundAt::centred(items::CHEST_EXP_TICK, CHEST_EXP_VOLUME));
         }
     }
 }
@@ -550,7 +569,7 @@ fn blasted_items(
     contents: Option<Res<ContentModels>>,
     mut level: Option<ResMut<MonsterLevel>>,
     transforms: Query<&Transform>,
-    (mut effects, mut sounds, mut hints): (MessageWriter<EffectAt>, MessageWriter<PlaySound>, MessageWriter<ShowHint>),
+    (mut effects, mut sounds, mut hints): (MessageWriter<EffectAt>, MessageWriter<PlaySoundAt>, MessageWriter<ShowHint>),
 ) {
     let Some(mut items) = items else {
         blasts.clear();
@@ -603,16 +622,16 @@ fn chest_explosions(
     level: Option<Res<MonsterLevel>>,
     transforms: Query<&Transform>,
     mut explosions: MessageWriter<ExplosionAt>,
-    (mut sounds, mut hints): (MessageWriter<PlaySound>, MessageWriter<ShowHint>),
+    (mut sounds, mut hints): (MessageWriter<PlaySoundAt>, MessageWriter<ShowHint>),
 ) {
     let Some(mut items) = items else { return };
-    let open: Vec<(usize, Transform)> = items
+    let open: Vec<(usize, Transform, [f32; 3])> = items
         .views()
         .filter(|v| v.live && v.ty.class == ItemClass::Container && v.ty.subtype == items::CHEST_EXP && v.state >= 2)
-        .map(|v| (v.placement, item_pose(&v, &transforms)))
+        .map(|v| (v.placement, item_pose(&v, &transforms), v.shape.centre))
         .collect();
     let hazard_scale = level.as_ref().map_or(1.0, |l| l.tuning.hazard_damage);
-    for (placement, pose) in open {
+    for (placement, pose, centre) in open {
         let (facing, _, _) = pose.rotation.to_euler(EulerRot::YXZ);
         explosions.write(ExplosionAt {
             owner: Entity::PLACEHOLDER,
@@ -623,7 +642,7 @@ fn chest_explosions(
             by: Exploder::Chest { facing },
         });
         if let Some(s) = barrel_sound("EXPLO", items.realm()) {
-            sounds.write(PlaySound(s));
+            sounds.write(PlaySoundAt::faded(s, Vec3::from(centre), CHEST_EXP_VOLUME));
         }
         items.free(placement, &mut commands);
         hints.write(ShowHint(Hint::ChestsExplode));

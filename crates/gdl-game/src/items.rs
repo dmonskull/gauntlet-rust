@@ -21,7 +21,7 @@ use gdl_formats::population::{
 };
 use gdl_formats::{LevelCollision, MoveParams};
 
-use crate::audio::{PlaySound, QueueVoice};
+use crate::audio::{CALL_VOLUME, HERO_LINE_VOLUME, LoopSoundAt, PlaySoundAt, QueueHeroLine};
 use crate::combat::hit_kind;
 use crate::character;
 use crate::effects::EffectAt;
@@ -31,7 +31,7 @@ use crate::message_box::ShowMessage;
 use crate::pickup_notices::PickupNotice;
 use crate::level_material::LevelMaterial;
 use crate::player::{Player, PlayerTick};
-use crate::player_state::{DamagePlayer, FIELDS_PER_TICK, Heal, PlayerState, power};
+use crate::player_state::{Cry, FIELDS_PER_TICK, Heal, HurtHero, PlayerState, TimeStop, power};
 use crate::quest;
 use crate::population::{ContentModels, ItemRig, LevelPopulation, PlacementIndex};
 use crate::world::LevelGround;
@@ -385,10 +385,31 @@ impl Item {
     }
 }
 
-/// An exit the hero is taking: fields left before the level changes.
+/// An exit the hero is taking: fields left before the level changes, and
+/// whether it's a secret one.
 struct Leaving {
     to: String,
     fields: i32,
+    secret: bool,
+}
+
+/// A placed sound item (class 13) that plays its sound about it: the
+/// placement's name is the sound, `+0x30` how far it carries at full
+/// volume, `+0x34` 0 (others pick the music, not done), `+0x38` flags.
+struct Ambient {
+    name: String,
+    at: Vec3,
+    reach: f32,
+    playing: bool,
+}
+
+impl Ambient {
+    /// From a sound placement: its name and reach, when it's an ambient one.
+    fn of(name: &str, params: &[u8; 12], at: Vec3) -> Option<Self> {
+        let reach = f32::from_le_bytes(params[0..4].try_into().ok()?);
+        let zone = i16::from_le_bytes([params[4], params[5]]);
+        (zone == 0 && !name.is_empty()).then(|| Self { name: name.to_ascii_uppercase(), at, reach, playing: false })
+    }
 }
 
 /// A transport under way.
@@ -410,6 +431,13 @@ pub struct LevelItems {
     transport: Option<Transport>,
     transport_cooldown: i32,
     leaving: Option<Leaving>,
+    /// The hero stood in an open exit this tick (its flame burns).
+    in_exit: bool,
+    flame: bool,
+    /// The placed sound items' loops, and whether this is the secret
+    /// realm's first level (where they're louder).
+    ambient: Vec<Ambient>,
+    secret_first: bool,
     /// Items released so far this level (container contents).
     released: usize,
     /// The level's scroll texts (`SCROLLSA1`).
@@ -788,6 +816,7 @@ pub(crate) fn build_items(
         .and_then(|c| REALM_LETTERS.iter().find(|(l, _)| l.eq_ignore_ascii_case(&c)))
         .map_or(0, |(_, id)| *id as usize);
     let mut out = Vec::new();
+    let mut ambient = Vec::new();
     for (index, placement) in pop.placements.iter().enumerate() {
         // One player: the rest are hidden and never touched.
         if !placement.active_for(1) {
@@ -850,6 +879,10 @@ pub(crate) fn build_items(
             // A scroll's is the page of the level's scroll texts it shows,
             // numbered from 1.
             (ItemClass::Powerup, PlacementParams::Powerup { count }) if ty.subtype == SCROLL => amount = *count as i32,
+            // A sound item has no model: it stays where it's placed.
+            (ItemClass::Sound, _) => {
+                ambient.extend(Ambient::of(&placement.name, &placement.params, Vec3::from(placement.position)));
+            }
             _ => {}
         }
         out.push(Item {
@@ -881,7 +914,12 @@ pub(crate) fn build_items(
     let shut = out.iter().filter(|i| i.flags & CLOSED != 0).count();
     info!("{}: {} items in play ({doors} doors, {shut} exits shut)", population.level, out.len());
     let scrolls = format!("SCROLLS{}", population.level.strip_prefix("level").unwrap_or_default().to_ascii_uppercase());
-    *items = LevelItems { items: out, realm, doors, scrolls, ..default() };
+    if !ambient.is_empty() {
+        info!("{} ambient sounds: {:?}", ambient.len(), ambient.iter().map(|a| a.name.as_str()).collect::<Vec<_>>());
+    }
+    // The secret realm's first level record is levelS1.
+    let secret_first = population.level.eq_ignore_ascii_case(SECRET_FIRST_LEVEL);
+    *items = LevelItems { items: out, realm, doors, scrolls, ambient, secret_first, ..default() };
 }
 
 /// An exit's destination code (`g1`) as a realm id and level (0 the
@@ -1077,7 +1115,7 @@ enum Touch {
 
 /// Sounds and hints a tick raises, sent when it ends.
 struct Out<'a> {
-    sounds: Vec<String>,
+    sounds: Vec<PlaySoundAt>,
     /// The hero's own lines, for the heroes' voice queue.
     voices: Vec<String>,
     /// Poison the hero has eaten, dealt as blows once the items are done.
@@ -1097,12 +1135,28 @@ struct Out<'a> {
     scrolls: String,
     /// Game seconds.
     now: f32,
+    /// The level's realm id.
+    realm: usize,
 }
 
 impl Out<'_> {
+    /// A pickup's sound: centred, at the call's own volume.
     fn sound(&mut self, name: &str) {
+        self.sound_as(name, CALL_VOLUME);
+    }
+
+    /// Centred, at `volume`.
+    fn sound_as(&mut self, name: &str, volume: u8) {
         if !name.is_empty() {
-            self.sounds.push(name.into());
+            self.sounds.push(PlaySoundAt::centred(name, volume));
+        }
+    }
+
+    /// Faded and panned at `at`, at the call's own volume (the chests',
+    /// doors' and transporters').
+    fn sound_at(&mut self, name: &str, at: [f32; 3]) {
+        if !name.is_empty() {
+            self.sounds.push(PlaySoundAt::faded(name, Vec3::from(at), CALL_VOLUME));
         }
     }
 
@@ -1148,15 +1202,15 @@ fn tick(
     mut players: Query<&mut Player>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mut commands: Commands,
-    mut sounds: MessageWriter<PlaySound>,
-    mut voices: MessageWriter<QueueVoice>,
-    mut hints: MessageWriter<ShowHint>,
-    mut messages: MessageWriter<ShowMessage>,
+    (mut sounds, mut loops): (MessageWriter<PlaySoundAt>, MessageWriter<LoopSoundAt>),
+    mut voices: MessageWriter<QueueHeroLine>,
+    (mut hints, mut messages): (MessageWriter<ShowHint>, MessageWriter<ShowMessage>),
     seen: Res<Hints>,
     mut change: MessageWriter<ChangeLevelTo>,
     mut effects: MessageWriter<EffectAt>,
-    mut hurt: MessageWriter<DamagePlayer>,
+    mut hurt: MessageWriter<HurtHero>,
     mut notices: MessageWriter<PickupNotice>,
+    (stop, camera): (Res<TimeStop>, Option<Res<crate::play_camera::PlayCamera>>),
 ) {
     let dt = time.delta_secs();
     let items = &mut *items;
@@ -1175,22 +1229,31 @@ fn tick(
         seen: &seen,
         scrolls,
         now,
+        realm: items.realm,
     };
     update_items(items, dt, &mut commands);
     run(items, dt, &mut state, ground.as_deref(), &mut players, &cameras, &mut out, &mut change);
     items.woken.append(&mut out.woken);
     // Poison eaten is a poison blow on the hero, through its armour powers
-    // and its reactions (the gold armour's heal comes back negative).
+    // and its reactions (the gold armour's heal comes back negative); the
+    // food's own line is its only cry.
     if let Ok(mut player) = players.single_mut() {
         for amount in out.poison.drain(..) {
             let taken = player.take_blow(amount, hit_kind::POISON, Vec3::ZERO);
             if taken != 0.0 {
-                hurt.write(DamagePlayer { amount: taken });
+                hurt.write(HurtHero { amount: taken, kind: hit_kind::POISON, cry: Cry::Silent });
             }
         }
     }
-    sounds.write_batch(out.sounds.into_iter().map(PlaySound));
-    voices.write_batch(out.voices.into_iter().map(QueueVoice::hero));
+    let feet = players.iter().next().map(|p| Vec3::from(p.mover.position));
+    sounds.write_batch(out.sounds);
+    // The hero's own lines, panned from where it is.
+    if let Some(at) = feet {
+        voices.write_batch(out.voices.into_iter().map(|line| QueueHeroLine { line, volume: HERO_LINE_VOLUME, at }));
+    }
+    exit_flame(items, feet, &mut loops);
+    let quiet = stop.0 || camera.is_some_and(|c| c.in_cut());
+    ambient_sounds(items, feet.filter(|_| state.alive), quiet, &mut loops);
     hints.write_batch(out.hints.into_iter().map(ShowHint));
     messages.write_batch(out.messages);
     notices.write_batch(out.notices);
@@ -1233,7 +1296,7 @@ fn run(
     out: &mut Out,
     change: &mut MessageWriter<ChangeLevelTo>,
 ) {
-
+    items.in_exit = false;
     let Ok(mut player) = players.single_mut() else {
         items.last_feet = None;
         return;
@@ -1322,7 +1385,7 @@ fn run(
         player.mover.position = feet;
     }
 
-    exits(items, &on_exit);
+    items.in_exit = exits(items, &on_exit, feet, out);
     if let Some(t) = on_transporter {
         start_transport(items, t, r, ground.map(|g| &*g.0), cameras, out);
     } else if items.transport_cooldown > 0 {
@@ -1404,7 +1467,7 @@ fn touch(
             } else if item.flags & LOCKED != 0 && item.state == 0 && item.flags & USED == 0 {
                 if state.use_key() {
                     info!("chest {} opened with a key; {} left", item.ty.name, state.keys);
-                    out.sound("S_CHEST");
+                    out.sound_at("S_CHEST", item.shape.centre);
                     item.flags |= USED;
                     open_chest(items, i, state, out);
                 } else {
@@ -1427,7 +1490,7 @@ fn touch(
                 info!("door {} opened with a key; {} left", item.ty.name, state.keys);
                 item.flags |= USED;
                 let sub = item.ty.subtype.clamp(0, 3) as usize;
-                out.sound(DOOR_SOUNDS.get(realm).map_or("", |row| row[sub]));
+                out.sound_at(DOOR_SOUNDS.get(realm).map_or("", |row| row[sub]), item.shape.centre);
                 Touch::Pass
             } else {
                 out.hint(Hint::UseKeyOnDoor);
@@ -1466,7 +1529,7 @@ fn open_chest(items: &mut LevelItems, i: usize, state: &mut PlayerState, out: &m
     chest.play(1.min(chest.action_count().saturating_sub(1)));
     if chest.ty.subtype == CHEST_EXP {
         chest.flags |= ALWAYS_ACTIVE;
-        out.sound(CHEST_EXP_TICK);
+        out.sound_as(CHEST_EXP_TICK, CHEST_EXP_TICK_VOLUME);
         return;
     }
     let Some(ty) = chest.contents.clone() else { return };
@@ -1501,7 +1564,7 @@ fn pick_up(
             let gold = (*amount).max(0) as u32;
             state.add_gold(gold);
             out.notice(1, gold as i32);
-            out.sound("S_PICKUPMAGIC");
+            out.sound(gold_sound(out.realm, gold));
             if gold > 24 {
                 out.hint(Hint::CollectGold);
             }
@@ -1569,7 +1632,8 @@ fn pick_up(
             if let Some(h) = Hint::for_power(subtype, value) {
                 out.hint(h);
             }
-            out.sound(power_sound(subtype, value));
+            let (sound, volume) = power_sound(subtype, value);
+            out.sound_as(sound, volume);
             out.notice(subtype, 0);
             true
         }
@@ -1631,17 +1695,37 @@ fn pick_up(
     }
 }
 
-/// The sound a powerup plays.
-fn power_sound(subtype: i32, value: u32) -> &'static str {
+/// The sound a powerup plays and its requested volume (the growth and the
+/// shrink louder).
+fn power_sound(subtype: i32, value: u32) -> (&'static str, u8) {
     match subtype {
-        9 if value & 1 != 0 => "S_LEVITATEUP",
-        9 if value & 0x100 != 0 => "S_GROW",
-        9 if value & 0x200 != 0 => "S_SHRINK",
-        9 if value & 0x400 != 0 => "S_POJO",
-        6 if value & 0x20_0000 != 0 => "S_PICKUPSHIELD",
-        _ => "S_PICKUPSPECIAL",
+        9 if value & 1 != 0 => ("S_LEVITATEUP", CALL_VOLUME),
+        9 if value & 0x100 != 0 => ("S_GROW", LOUD_POWER_VOLUME),
+        9 if value & 0x200 != 0 => ("S_SHRINK", LOUD_POWER_VOLUME),
+        9 if value & 0x400 != 0 => ("S_POJO", CALL_VOLUME),
+        6 if value & 0x20_0000 != 0 => ("S_PICKUPSHIELD", CALL_VOLUME),
+        _ => ("S_PICKUPSPECIAL", CALL_VOLUME),
     }
 }
+const LOUD_POWER_VOLUME: u8 = 0xB4;
+
+/// Gold's sound: in the secret realm player 1's coin sound by the amount
+/// (50 bronze, 100 silver, else gold), elsewhere `S_PICKUPMAGIC`.
+fn gold_sound(realm: usize, gold: u32) -> &'static str {
+    if realm != SECRET_REALM {
+        return "S_PICKUPMAGIC";
+    }
+    match gold {
+        50 => "S_PKUPBRONZE1",
+        100 => "S_PKUPSILVER1",
+        _ => "S_PKUPGOLD1",
+    }
+}
+/// The secret realm's id, and its first level record (`SECRET.WAD`'s).
+const SECRET_REALM: usize = 12;
+const SECRET_FIRST_LEVEL: &str = "levelS1";
+/// A CHESTEXP ticks at this requested volume, centred.
+const CHEST_EXP_TICK_VOLUME: u8 = 0xE0;
 
 /// The hero's eating sound: the class's eating effect, or — one time in
 /// four in the game — its voice line (the archer has one per fruit).
@@ -1737,9 +1821,12 @@ fn open_step(item: &mut Item) {
 
 /// Exits the hero stands in this tick: the portal steps through its
 /// actions while the hero stays, and when the last one has played the hero
-/// leaves for the exit's level. Secret exits go at once.
-fn exits(items: &mut LevelItems, on_exit: &[usize]) {
+/// leaves for the exit's level, `S_TUNNEL` panned at its feet. Secret
+/// exits go at once. Whether the hero stands in an open exit (not a secret
+/// one: those have no flame).
+fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Out) -> bool {
     let mut go = None;
+    let mut standing = false;
     for (i, item) in items.items.iter_mut().enumerate() {
         if item.class() != ItemClass::Exit || item.gone || item.flags & CLOSED != 0 {
             continue;
@@ -1753,6 +1840,7 @@ fn exits(items: &mut LevelItems, on_exit: &[usize]) {
             }
             continue;
         }
+        standing |= !secret;
         let dest = match &item.params {
             PlacementParams::Exit { destination: Some(code) } => level_for_code(code),
             // Stand-in: an exit without a code (a realm's last level) goes
@@ -1761,7 +1849,7 @@ fn exits(items: &mut LevelItems, on_exit: &[usize]) {
         };
         if secret {
             item.flags |= USED;
-            go = dest;
+            go = dest.map(|to| (to, true));
             break;
         }
         let last = item.action_count().saturating_sub(1).min(4);
@@ -1772,14 +1860,83 @@ fn exits(items: &mut LevelItems, on_exit: &[usize]) {
             item.play(next);
         } else if item.done || last == 0 {
             item.flags |= USED;
-            go = dest;
+            go = dest.map(|to| (to, false));
             break;
         }
     }
-    if let Some(to) = go {
-        // The hero's exit takes 50 fields before the level changes.
-        items.leaving = Some(Leaving { to, fields: 50 });
+    if let Some((to, secret)) = go {
+        // The hero's exit takes 50 fields before the level changes; the
+        // first hero out goes with the tunnel's sound.
+        items.leaving = Some(Leaving { to, fields: 50, secret });
+        out.sounds.push(PlaySoundAt::panned(TUNNEL_SOUND, Vec3::from(feet), CALL_VOLUME));
     }
+    standing
+}
+
+/// Going out through an exit.
+const TUNNEL_SOUND: &str = "S_TUNNEL";
+/// The exit's flame: a loop at the hero standing in an exit (its top
+/// point, 4.4 above its feet), louder than its call.
+const EXIT_FLAME: &str = "S_EXITFLAME";
+const EXIT_FLAME_CHANNEL: &str = "exit_flame";
+const EXIT_FLAME_VOLUME: u8 = 0xE0;
+const HERO_TOP: f32 = 4.4;
+
+/// The exit's flame burns while the hero stands in an open exit, and as it
+/// goes out through one.
+fn exit_flame(items: &mut LevelItems, feet: Option<Vec3>, loops: &mut MessageWriter<LoopSoundAt>) {
+    let burning = items.in_exit || items.leaving.as_ref().is_some_and(|l| !l.secret);
+    match feet.filter(|_| burning) {
+        Some(feet) => {
+            loops.write(LoopSoundAt::at(EXIT_FLAME_CHANNEL, EXIT_FLAME, feet + Vec3::Y * HERO_TOP, EXIT_FLAME_VOLUME));
+        }
+        None if items.flame => {
+            loops.write(LoopSoundAt::stop(EXIT_FLAME_CHANNEL));
+        }
+        None => {}
+    }
+    items.flame = burning;
+}
+
+/// The placed sound items' loops: on while the hero is near (full within
+/// the item's reach, fading out to half again as far), at 224 × that —
+/// 16 while time stands still or a cut is on; four times louder (64 to
+/// 255) on the secret realm's first level — following the volume as the
+/// hero moves, and all stopped once the hero goes out.
+fn ambient_sounds(items: &mut LevelItems, feet: Option<Vec3>, quiet: bool, loops: &mut MessageWriter<LoopSoundAt>) {
+    let gone_out = items.leaving.is_some();
+    let secret_first = items.secret_first;
+    for (i, a) in items.ambient.iter_mut().enumerate() {
+        let distance = feet.map_or(NO_HERO, |f| f.distance(a.at));
+        let near = ambient_near(distance, a.reach);
+        if near > 0.0 && !gone_out {
+            let volume = ambient_volume(near, quiet, secret_first);
+            loops.write(LoopSoundAt::at(AMBIENT_CHANNEL, a.name.clone(), a.at, volume).slot(i as u32).follow_volume());
+            a.playing = true;
+        } else if a.playing {
+            loops.write(LoopSoundAt::stop(AMBIENT_CHANNEL).slot(i as u32));
+            a.playing = false;
+        }
+    }
+}
+const AMBIENT_CHANNEL: &str = "ambient";
+/// The distance taken with no hero in play.
+const NO_HERO: f32 = 1000.0;
+
+/// How near the hero is for an ambient sound reaching `reach`: 1 within
+/// it (or for a reach of 2 or less), falling to 0 at 1.5 × the reach.
+fn ambient_near(distance: f32, reach: f32) -> f32 {
+    if distance < reach || reach <= 2.0 { 1.0 } else { 2.0 * (1.5 * reach - distance) / reach }
+}
+
+/// An ambient sound's requested volume at nearness `near` (the level
+/// record's scale, 1 on every level, left out).
+fn ambient_volume(near: f32, quiet: bool, secret_first: bool) -> u8 {
+    let mut v = if quiet { 16 } else { (224.0 * near).max(0.0) as i32 };
+    if secret_first {
+        v = (v * 4).clamp(64, 255);
+    }
+    v.clamp(0, 255) as u8
 }
 
 /// The hero stands on transporter `t`: if its partner is on screen and
@@ -1809,7 +1966,9 @@ fn start_transport(
     let mut to = [p.shape.centre[0], p.shape.centre[1] - 1.0, p.shape.centre[2]];
     let Some(floor) = ground.and_then(|g| g.floor_probe(to, 4.0, -10.0, radius, 0)) else { return };
     to[1] = floor.point[1];
-    out.sound(TRANSPORT_SOUNDS.get(items.realm).copied().unwrap_or(""));
+    // Faded at the transporter gone to (stand-in: where the hero lands,
+    // under its centre, for its place).
+    out.sound_at(TRANSPORT_SOUNDS.get(items.realm).copied().unwrap_or(""), to);
     items.transport = Some(Transport { to, fields: TRANSPORT_FIELDS });
 }
 
@@ -1855,6 +2014,32 @@ mod tests {
         assert!((c.out[2] - -2.5).abs() < 1e-5 && (c.out[0] - 0.5).abs() < 1e-5, "{c:?}");
         // Beside the box: no touch though inside the radius.
         assert!(contact(&s, false, [4.6, 0.0, -2.4], [4.6, 0.0, -2.3], 1.5, 2.5).is_none());
+    }
+
+    #[test]
+    fn pickup_and_ambient_sounds() {
+        assert_eq!(power_sound(9, 0x100), ("S_GROW", 0xB4));
+        assert_eq!(power_sound(9, 1), ("S_LEVITATEUP", 0x7F));
+        assert_eq!(gold_sound(12, 50), "S_PKUPBRONZE1");
+        assert_eq!(gold_sound(12, 100), "S_PKUPSILVER1");
+        assert_eq!(gold_sound(12, 25), "S_PKUPGOLD1");
+        assert_eq!(gold_sound(1, 50), "S_PICKUPMAGIC");
+        // Full within the reach, gone at 1.5 × it.
+        assert_eq!(ambient_near(10.0, 20.0), 1.0);
+        assert_eq!(ambient_near(25.0, 20.0), 0.5);
+        assert!(ambient_near(31.0, 20.0) < 0.0);
+        assert_eq!(ambient_near(100.0, 2.0), 1.0);
+        assert_eq!(ambient_volume(1.0, false, false), 224);
+        assert_eq!(ambient_volume(0.5, false, false), 112);
+        assert_eq!(ambient_volume(1.0, true, false), 16);
+        assert_eq!(ambient_volume(0.05, false, true), 64);
+        assert_eq!(ambient_volume(1.0, false, true), 255);
+        let mut params = [0u8; 12];
+        params[0..4].copy_from_slice(&15.0f32.to_le_bytes());
+        let a = Ambient::of("s_waterfall", &params, Vec3::ZERO).unwrap();
+        assert_eq!((a.name.as_str(), a.reach), ("S_WATERFALL", 15.0));
+        params[4] = 1;
+        assert!(Ambient::of("S_WATERFALL", &params, Vec3::ZERO).is_none());
     }
 
     #[test]
