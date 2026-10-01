@@ -1566,6 +1566,8 @@ struct Out<'a> {
     /// The plates the pickups show over the panel (`pickup_notices.rs`).
     notices: Vec<PickupNotice>,
     seen: &'a Hints,
+    /// Whose touches these are (their hints).
+    slot: usize,
     /// The level's scroll texts.
     scrolls: String,
     /// Game seconds.
@@ -1653,7 +1655,7 @@ fn tick(
     update_items(items, dt, &mut commands);
     // Going out: the level changes once the heroes' fields are up.
     let leaving = step_leaving(items, &mut change);
-    let new_out = |items: &LevelItems| Out {
+    let new_out = |items: &LevelItems, slot: usize| Out {
         sounds: Vec::new(),
         voices: Vec::new(),
         poison: Vec::new(),
@@ -1664,6 +1666,7 @@ fn tick(
         woken: Vec::new(),
         notices: Vec::new(),
         seen: &seen,
+        slot,
         scrolls: items.scrolls.clone(),
         now,
         realm: items.realm,
@@ -1678,7 +1681,7 @@ fn tick(
     for slot in order {
         let Some(mut player) = players.iter_mut().find(|p| p.slot == slot) else { continue };
         let Some(state) = party.state_mut(slot) else { continue };
-        let mut out = new_out(items);
+        let mut out = new_out(items, slot);
         let exits_here = if leaving { None } else { run_hero(items, dt, state, ground.as_deref(), &mut player, &cameras, &mut out) };
         if state.alive {
             living += 1;
@@ -1698,11 +1701,11 @@ fn tick(
         for n in &mut out.notices {
             n.slot = slot;
         }
-        flush(out, at, items, (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects));
+        flush(out, (at, slot), items, (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects));
     }
     // The portal steps on while every living hero stands in it; a secret
     // exit takes them as soon as one does.
-    let mut out = new_out(items);
+    let mut out = new_out(items, 0);
     let mut on_exit: Vec<usize> = match stood.split_first() {
         Some((first, rest)) if stood.len() == living => {
             first.iter().copied().filter(|i| rest.iter().all(|e| e.contains(i))).collect()
@@ -1725,7 +1728,7 @@ fn tick(
             }
         }
     }
-    flush(out, Vec3::from(first_feet), items, (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects));
+    flush(out, (Vec3::from(first_feet), 0), items, (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects));
     fall_items(items, dt, ground.as_deref(), &cameras, &mut commands);
     exit_flame(items, feet_all.first().copied(), &mut loops);
     let quiet = stop.0 || camera.is_some_and(|c| c.in_cut());
@@ -1736,7 +1739,7 @@ fn tick(
 #[allow(clippy::type_complexity)]
 fn flush(
     out: Out,
-    at: Vec3,
+    (at, slot): (Vec3, usize),
     items: &mut LevelItems,
     (sounds, voices, hints, messages, notices, effects): (
         &mut MessageWriter<PlaySoundAt>,
@@ -1751,7 +1754,7 @@ fn flush(
     items.woken.append(&mut woken);
     sounds.write_batch(s);
     voices.write_batch(v.into_iter().map(|line| QueueHeroLine { line, volume: HERO_LINE_VOLUME, at }));
-    hints.write_batch(h.into_iter().map(ShowHint));
+    hints.write_batch(h.into_iter().map(|hint| ShowHint::to(slot, hint)));
     messages.write_batch(m);
     notices.write_batch(n);
     effects.write_batch(e.into_iter().map(|(name, at)| EffectAt {
@@ -2161,7 +2164,7 @@ fn pick_up(
                 out.hint(Hint::MagicFull);
                 return false;
             }
-            let hint = [Hint::UseMagic, Hint::ThrowMagic, Hint::MagicShield].into_iter().find(|h| !out.seen.seen(*h));
+            let hint = [Hint::UseMagic, Hint::ThrowMagic, Hint::MagicShield].into_iter().find(|h| !out.seen.seen(out.slot, *h));
             if let Some(h) = hint {
                 out.hint(h);
             }
@@ -2771,6 +2774,7 @@ mod tests {
             woken: Vec::new(),
             notices: Vec::new(),
             seen,
+            slot: 0,
             scrolls: String::new(),
             now: 0.0,
             realm: 1,

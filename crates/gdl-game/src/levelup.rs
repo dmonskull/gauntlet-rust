@@ -99,7 +99,7 @@ fn watch_level(
         match change(before, state.level) {
             Some(Change::Rose) => {
                 info!("player {} level {before} → {}: the level-up flash", slot + 1, state.level);
-                hints.write(ShowHint(Hint::LevelUp));
+                hints.write(ShowHint::to(slot, Hint::LevelUp));
                 flashes.write(EffectOn { name: LEVELUP_FLASHES[colour], bank: None, on: hero, scale: 1.0 });
             }
             Some(Change::Fell) => {

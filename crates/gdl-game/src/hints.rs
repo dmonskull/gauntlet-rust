@@ -28,7 +28,7 @@ use crate::level::LoadedGame;
 use crate::message_box::{DrawBox, MessageBox};
 use crate::play_camera::PlayCamera;
 use crate::player::PlayerChoice;
-use crate::party::Party;
+use crate::party::{MAX_PLAYERS, Party};
 
 /// A hint stays up this many fields a line, and this many more.
 const FIELDS_A_LINE: f32 = 60.0;
@@ -49,7 +49,13 @@ const MEASURE_GAP: f32 = 8.0;
 const LINE_GAP: f32 = 2.0;
 /// Player 1's panel: the box's centre, and its ink.
 const CENTRE: (f32, f32) = (64.0, 250.0);
-const INK: [u8; 3] = [0x1F, 0x1F, 0x00];
+/// Each player's panel follows the first's this far apart; a hint for
+/// every player is centred here.
+const PANEL_WIDTH: f32 = 128.0;
+const CENTRE_ALL: (f32, f32) = (256.0, 192.0);
+/// The players' inks (dark yellow, blue, red, green) and everyone's.
+const INKS: [[u8; 3]; MAX_PLAYERS] = [[0x1F, 0x1F, 0x00], [0x00, 0x00, 0x1F], [0x1F, 0x00, 0x00], [0x00, 0x1F, 0x00]];
+const INK_ALL: [u8; 3] = [0x16, 0x0C, 0x03];
 /// The box stays within x 0–511 and y 2–304 (the panels' top).
 const SCREEN_RIGHT: f32 = 511.0;
 const SCREEN_TOP: f32 = 2.0;
@@ -333,12 +339,25 @@ impl Hint {
     }
 }
 
-/// Asks for a hint; dropped if one is already up or it was shown before.
+/// Asks for a hint for a player (by slot; past the last slot, for every
+/// one, as the game's player 4); dropped if one is already up or it was
+/// shown before.
 #[derive(Message, Clone, Copy, Debug)]
-pub struct ShowHint(pub Hint);
+pub struct ShowHint {
+    pub hint: Hint,
+    pub player: usize,
+}
 
-/// The hint on screen: its lines, font slot and scale, and fields left.
+impl ShowHint {
+    pub fn to(player: usize, hint: Hint) -> Self {
+        Self { hint, player }
+    }
+}
+
+/// The hint on screen: whose it is, its lines, font slot and scale, and
+/// fields left.
 struct Up {
+    player: usize,
     lines: Vec<String>,
     slot: usize,
     scale: f32,
@@ -349,7 +368,9 @@ struct Up {
 #[derive(Resource, Default)]
 pub struct Hints {
     up: Option<Up>,
-    shown: Vec<Hint>,
+    /// By slot: the hints each player has seen (the game keeps them in the
+    /// player's record).
+    shown: [Vec<Hint>; MAX_PLAYERS],
     rom: Option<TextRom>,
     /// Fields before the next tutorial hint may show, and how many hints
     /// have set it this level.
@@ -358,9 +379,13 @@ pub struct Hints {
 }
 
 impl Hints {
-    /// Whether `hint` has been shown (so the next in a chain is used).
-    pub fn seen(&self, hint: Hint) -> bool {
-        self.shown.contains(&hint)
+    /// Whether a player (any, for [`ShowHint::ALL`]) has seen `hint` (so
+    /// the next in a chain is used).
+    pub fn seen(&self, player: usize, hint: Hint) -> bool {
+        match self.shown.get(player) {
+            Some(seen) => seen.contains(&hint),
+            None => self.shown.iter().any(|s| s.contains(&hint)),
+        }
     }
 
     /// The hint on screen, as one line (the debug overlay).
@@ -378,9 +403,9 @@ fn cooldown(count: usize) -> f32 {
 /// The box round `lines` (width of the widest, height as measured): its
 /// left and top, size, and the centre its text is drawn about — the
 /// panel's centre, moved to keep the box on screen.
-fn place_box(widest: f32, measured: f32) -> ((f32, f32), (f32, f32), (f32, f32)) {
+fn place_box(player: usize, widest: f32, measured: f32) -> ((f32, f32), (f32, f32), (f32, f32)) {
     let (w, h) = (widest + MARGIN_ACROSS, measured + MARGIN_DOWN);
-    let (mut cx, mut cy) = CENTRE;
+    let (mut cx, mut cy) = if player < MAX_PLAYERS { (CENTRE.0 + PANEL_WIDTH * player as f32, CENTRE.1) } else { CENTRE_ALL };
     let mut x = cx - (w / 2.0).trunc();
     if x < 0.0 {
         cx -= x;
@@ -455,8 +480,6 @@ fn show_hints(
     mut voice: MessageWriter<QueueVoice>,
     party: Res<Party>,
 ) {
-    // Stand-in until each player has a box of their own: the first player's.
-    let (choice, state) = (party.choice(0), party.state(0));
     // A level's load clears the box and the cool-down.
     if population.is_some_and(|p| p.is_changed()) {
         hints.up = None;
@@ -479,13 +502,15 @@ fn show_hints(
             hints.up = None;
         }
     }
-    for &ShowHint(hint) in requests.read() {
+    for &ShowHint { hint, player } in requests.read() {
         let (group, line, once) = hint.entry();
         // All of these share one priority, so one up blocks the next; the
         // tutorial ones wait out the cool-down.
-        if hints.up.is_some() || (once && hints.seen(hint)) || (hint.waits() && hints.cooldown > 0.0) {
+        if hints.up.is_some() || (once && hints.seen(player, hint)) || (hint.waits() && hints.cooldown > 0.0) {
             continue;
         }
+        // The hero it's about (the first player's for a hint for all).
+        let (choice, state) = if player < MAX_PLAYERS { (party.choice(player), party.state(player)) } else { (party.choice(0), party.state(0)) };
         let pojo = state.is_some_and(|s| s.bits.special & POJO != 0);
         // The game fills a hint's `%d` with the hero's level.
         let level = state.map_or(1, |s| s.level).to_string();
@@ -498,13 +523,16 @@ fn show_hints(
                 .collect::<Vec<_>>();
             let font = rom.fonts.get(g.font as usize).map_or(0, |f| gdl_formats::font::slot_for_rom_font(f));
             let fields = lines.len() as f32 * FIELDS_A_LINE + FIELDS_MORE;
-            Some(Up { lines, slot: font, scale: g.scale[0], fields })
+            Some(Up { player, lines, slot: font, scale: g.scale[0], fields })
         }) else {
             continue;
         };
         info!("hint: {}", up.lines.join(" / "));
         hints.up = Some(up);
-        hints.shown.push(hint);
+        match hints.shown.get_mut(player) {
+            Some(seen) => seen.push(hint),
+            None => hints.shown.iter_mut().for_each(|s| s.push(hint)),
+        }
         hints.cooldown = cooldown(hints.count);
         hints.count += 1;
         voice.write(QueueVoice::announcer(line, VOICE_MOST_WAIT).gated());
@@ -530,11 +558,12 @@ fn draw_hint(
     }
     let widest = up.lines.iter().map(|l| fonts.width(up.slot, up.scale, l)).fold(0.0, f32::max);
     let height = fonts.line_height(up.slot, up.scale).trunc();
-    let ((x, y), (w, h), (cx, cy)) = place_box(widest, up.lines.len() as f32 * (height + MEASURE_GAP));
+    let ((x, y), (w, h), (cx, cy)) = place_box(up.player, widest, up.lines.len() as f32 * (height + MEASURE_GAP));
     if let Some(panel) = tex.get(PANEL, &mut images) {
         draw.image(&panel, x, y, w, h, Color::srgba(1.0, 1.0, 1.0, PANEL_ALPHA));
     }
-    let ink = TextStyle::new(up.slot, up.scale, Color::srgb_u8(INK[0], INK[1], INK[2]));
+    let [r, g, b] = INKS.get(up.player).copied().unwrap_or(INK_ALL);
+    let ink = TextStyle::new(up.slot, up.scale, Color::srgb_u8(r, g, b));
     let step = height + LINE_GAP;
     let block = height + step * (up.lines.len() as f32 - 1.0);
     let mut line_y = (cy - (block / 2.0).trunc()).trunc();
@@ -574,11 +603,11 @@ mod tests {
         // two lines measured 16 each — a 184 × 48 box whose left would be
         // at 64 − 92, so it's moved to the screen's edge and its text
         // with it.
-        let ((x, y), (w, h), (cx, cy)) = place_box(120.0, 32.0);
+        let ((x, y), (w, h), (cx, cy)) = place_box(0, 120.0, 32.0);
         assert_eq!((x, y, w, h), (0.0, 226.0, 184.0, 48.0));
         assert_eq!((cx, cy), (92.0, 250.0));
         // A narrow one sits centred on the panel.
-        let ((x, _), (w, _), (cx, _)) = place_box(40.0, 16.0);
+        let ((x, _), (w, _), (cx, _)) = place_box(0, 40.0, 16.0);
         assert_eq!((x, w, cx), (12.0, 104.0, 64.0));
     }
 
