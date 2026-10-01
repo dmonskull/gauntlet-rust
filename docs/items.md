@@ -604,7 +604,12 @@ the tower. A secret exit goes to its secret level. The way back to the
 tower passes the shop (`FUN_8009a140(0)`, mode `0x4012`: `SHOP_TOP_%s`,
 `S1_PLYR_%d`, `SHP_GOLD`, `FUN_80099b4c`) unless every hero is out. So
 G1's exit, coded `g2`, takes the heroes back to the tower, where G2's
-portal is open now that G1 is finished ("A level finished" below).
+portal is open now that G1 is finished ("A level finished" below). A
+destination is a level id — realm and index — and the index picks its
+realm WAD's level record, whose name is the folder loaded: the castle's,
+dream's and sky's records aren't in their folders' order, so the tower's
+`a2` portal leads to `levelA6`
+([level-population.md](level-population.md), "Exit codes").
 
 **Going out** (`FUN_8007692c` state 4, once no hero is still playing or
 dying: `FUN_80077b84`, then `FUN_80077ccc` each update). The first update
@@ -1117,15 +1122,33 @@ then each crystal counter (need not 0) that some player has opened for
 good (−1) has its gate triggers fired with `FUN_8005ff4c(id, 1)` — the
 sections' `0x65` + section (the lower tower's also `0x68` and 199, the
 elevator `L1ELEV02`), the counters' their number — and, with the
-thirteenth runestone, `0xFF` (`L1ELEV669`, which doesn't move: heights
-0/0). `FUN_8005ff4c` takes every trigger with that id (not ones with
-flags `0x8100`) and those chained after it: flags `|= 0x400`, on (`+0xC8`
-and `+0xCA` = 2), its target's state `0x2F`, and a mover snapped to its on
-height (`0x802571d0` = `0x802578d8`); a bridge-kind wall then fades out
+thirteenth runestone, `0xFF` (`L1ELEV669`, the H4 portal's platform, an
+animated object raised to the gate's floor). `FUN_8005ff4c` takes every
+trigger with that id (its id byte compared unsigned; not ones with flags
+`0x8100`, so not the lift's 104, which needs standing on) and those
+chained after it: flags `|= 0x400`, on (`+0xC8` and `+0xCA` = 2), its
+target's state `0x2F`, and a mover snapped to its on height (`0x802571d0`
+= `0x802578d8`) — or, for a target in the animated mode, its state and
+previous state `0x2F`, node flag `0x200000` (play on) and, snapped,
+`0x800000` with its animation's frame at its last (`FUN_80055cb8` finds
+the node's animation): the snake, eagle and lion walls behind the gates
+101–103 stand open as the tower loads. A bridge-kind wall then fades out
 over its first ticks. A counter at its need but not yet announced stays
-shut until touched. Here: `Quest::tower_gates`, `Mechanics::fire_open` —
+shut until touched. Here: `Quest::tower_gates`, `Mechanics::fire` —
 before, open gates were shut again on every return to the tower until
-touched.
+touched, and then the animated walls played open over their first
+seconds on every return.
+
+**The lower tower's lift and elevator** (the item constructor
+`FUN_800646e4`, in the tower only): a trigger with id 104 or 199 (the
+lift `L1LIFT01`, the elevator `L1ELEV02`) whose target exists turns it on
+as it's made once any player present has finished the battlefield's
+first level (`FUN_800a1530(record, 8)`, realm 8's levels-finished byte,
+bit 0; a record whose `+0xF0` is `r13-0x7d94` counts as having every
+level): state and previous state `0x2F`, node flags `|= 0xA00000`, an
+animated target's frame its last — the lift is down, the elevator heads
+up from its off height. Here: `mechanics.rs`'s set-up (the record rule
+left out).
 
 **Realms open** (`FUN_800a12cc`, by realm id): the tower always; E once
 realms 1–8 of the quest order are beaten (`FUN_800a1d98` mask `0x1FE`); F

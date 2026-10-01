@@ -30,7 +30,7 @@ leaves co-op out.
 | Bosses and critters | 9 | 72 % | grabs, effect-slot contact damage, missile lifetimes, the boss key, stumps, the health meter |
 | Items, pickups, doors, exits, hazards | 6 | 91 % | random item types, the shop, the secret realm's coins, the keys' turning traced |
 | Level mechanics (triggers, lifts, animated objects, secret walls, falls) | 8 | 84 % | bursting objects, E2's debris, subtype 1 rotators; the tour's re-run pending |
-| What each level places and hides | 5 | 82 % | 47 of 67 levels not yet audited; the stray objects likely the debug markers (now off) |
+| What each level places and hides | 5 | 90 % | every level audited statically (the last round: A5, A6, J, K, L, S, T, DEMO1); random item types take the first choice; the stray objects likely the debug markers (now off) |
 | Every level checked start to exit | 5 | 25 % | only A1's exit to A6 checked; triggers toured on A1–C1 and D1–D4 |
 | Quest, tower, saving | 5 | 88 % | the secret realm's coins, per-class records, memory card screens |
 | Front end, menus, HUD, hints | 7 | 75 % | shop, inventory, options, attract loop, the hints' plates |
@@ -73,9 +73,27 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
 
 - Static audit, level by level, of what the level build makes, skips and
   hides, and every trigger's link ([level-population.md](level-population.md),
-  [mechanics.md](mechanics.md); `level_audit` example): E1–E2, F1–F2,
-  G1–G5, H1–H4, I1–I5 (the helper, round 3), then A5, A6, J1–J6, K1–K5,
-  L1–L3, S1–S9, T1–T3, DEMO1 (done: A1–A4, B1–B6, C1–C5, D1–D5).
+  "Auditing the levels"; [mechanics.md](mechanics.md); `level_audit`
+  example): done for all 67 (the helper's fourth round: A5, A6, J1–J6,
+  K1–K5, L1–L3, S1–S9, T1–T4, DEMO1). That round's fixes: the tower's
+  portals go where the realm WADs' level records say (`a2` → `levelA6`,
+  `a6` → the boss `levelA5`, `j4`–`j6` → J6, J4, J5, `k1`–`k4` → K2, K3,
+  K4, K1) and a finished level is marked by that id; triggers sharing an
+  id keep it only on the first, and a camera point reaches only ids up to
+  127 (the tower's pedestal pad cut to the wizard's camera 240 each time
+  the hero stepped on it; C3's 426 cut too). J4's 335/366/422/429 and
+  L1's 81/83 are as the game has them. Saved heroes keep their bits:
+  each still names the portal finished, now the level the game puts
+  behind it.
+- The secret levels (S1–S9) have no exits: the secret realm's timer sends
+  the heroes back ([items.md](items.md), "Exits"), and it isn't in the
+  runtime, so they can't be left but by quitting.
+- The tower (also the fourth round): the gates it opens as it loads now
+  have their animated walls at their last frame (they played open over
+  their first seconds on every return), the lower lift and elevator start
+  on once H1 is finished (the item set-up's rule, [items.md](items.md),
+  "Quest items and the tower's gates"); the rule's record check
+  (`+0xF0` against `r13-0x7d94`: every level counted) isn't ported.
 - Pin down the stray objects the user saw on the early levels: likely
   the debug markers (`I`, now off in play); ask the user to confirm.
 - Walk each level from its start to its exit: levers, lifts, doors, keys,
