@@ -12,7 +12,7 @@
 //! the level's collision, and stops at the first thing it meets. Bombs then
 //! burst, hurting everything their growing blast reaches the less the
 //! further out it is. Monsters are hurt through [`Hit`] messages, players
-//! through [`DamagePlayer`].
+//! through [`HurtHero`] (voiced as the game's missiles are).
 //!
 //! [`HeroShot`] and [`MonsterShot`] are how `player.rs` and `monsters.rs`
 //! ask for a missile.
@@ -39,7 +39,7 @@ use crate::level_material::LevelMaterial;
 use crate::locomotion;
 use crate::monsters::{Monster, MonsterLevel, MonsterTick};
 use crate::player::{Player, PlayerChoice};
-use crate::player_state::{DamagePlayer, EnemyScale, PlayerState, SpendPower, power};
+use crate::player_state::{Cry, EnemyScale, HurtHero, PlayerState, SpendPower, power};
 use crate::population::LevelPopulation;
 use crate::world::{LevelEntity, LevelGround};
 
@@ -1300,7 +1300,7 @@ fn fly(
     targets: Query<(Entity, &GlobalTransform, &Targetable, Option<&Monster>)>,
     mut guard: ResMut<PlayerGuard>,
     mut hits: MessageWriter<Hit>,
-    mut damage: MessageWriter<DamagePlayer>,
+    mut damage: MessageWriter<HurtHero>,
     mut potions: MessageWriter<BlastAt>,
     (items, mut struck, mut rocks): (Option<Res<LevelItems>>, MessageWriter<StrikePotion>, MessageWriter<BlastItem>),
     (mut sounds, mut ricochet, mut blasts): (MessageWriter<PlaySoundAt>, Local<f64>, MessageWriter<CritterBlast>),
@@ -1352,8 +1352,11 @@ fn fly(
                 {
                     // Pushing along its flight.
                     let amount = pl.take_blow(p.damage, p.kind, p.velocity.normalize_or_zero());
+                    // Voiced as the game's missiles are: the hurt sound by
+                    // kind (stand-in: the game's missiles of flag 0x2000
+                    // are silent; which ones carry it isn't traced here).
                     if amount != 0.0 {
-                        damage.write(DamagePlayer { amount });
+                        damage.write(HurtHero { amount, kind: p.kind, cry: Cry::Hurt });
                     }
                     if p.damage > GUARD_ABOVE {
                         guard.0.insert(player, now + PLAYER_GUARD as f64);
@@ -1541,7 +1544,7 @@ fn burst(
     bodies: &[Body],
     guard: &mut PlayerGuard,
     hits: &mut MessageWriter<Hit>,
-    damage: &mut MessageWriter<DamagePlayer>,
+    damage: &mut MessageWriter<HurtHero>,
 ) {
     info!("bomb bursts at {at:?} (blast {:.1})", p.blast);
     // A critter once: its first sphere in reach, else its body.
@@ -1572,7 +1575,7 @@ fn burst(
                 let (kind, push) = crate::effects::blast_on_hero(blow, p.kind, at, feet);
                 let amount = pl.take_blow(blow, kind, push);
                 if amount != 0.0 {
-                    damage.write(DamagePlayer { amount });
+                    damage.write(HurtHero { amount, kind, cry: Cry::Hurt });
                 }
                 if blow > GUARD_ABOVE {
                     guard.0.insert(e, now + PLAYER_GUARD as f64);

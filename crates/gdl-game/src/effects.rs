@@ -35,7 +35,7 @@ use crate::model_mesh::TextureCache;
 use crate::monsters::{Monster, MonsterTick};
 use crate::particles;
 use crate::player::{Player, PlayerChoice};
-use crate::player_state::{DamagePlayer, PlayerState};
+use crate::player_state::{Cry, HurtHero, PlayerState};
 use crate::population::LevelPopulation;
 use crate::projectiles;
 use crate::world::{LevelEntity, LevelGround};
@@ -1484,7 +1484,7 @@ fn tick_blasts(
     mut players: Query<(Entity, &mut Player)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable, Option<&Monster>)>,
     mut hits: MessageWriter<Hit>,
-    (mut hurt, mut stages): (MessageWriter<DamagePlayer>, MessageWriter<NextStage>),
+    (mut hurt, mut stages): (MessageWriter<HurtHero>, MessageWriter<NextStage>),
     (items, mut struck, mut blasted): (
         Option<Res<crate::items::LevelItems>>,
         MessageWriter<StrikePotion>,
@@ -1657,7 +1657,7 @@ fn tick_blasts(
             if amount == 0.0 {
                 continue;
             }
-            hurt.write(DamagePlayer { amount });
+            hurt.write(HurtHero { amount, kind, cry: Cry::Hurt });
             info!("the blast hurts the hero for {amount:.1}");
         }
     }
