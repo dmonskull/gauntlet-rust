@@ -435,5 +435,12 @@ setup:
 ## Item models
 
 Items built from an atree draw each node with that node's render flags
-(blending, depth, camera facing), like characters; hidden nodes and
-`…GLOW` nodes (textured by the effects system at run time) are left out.
+(blending, depth, camera facing), like characters; hidden nodes are left
+out, and a chest's contents node (`NULL1`, [items.md](items.md),
+"Containers"). Glow nodes draw like any other: only a hero's `%sCFGLOW`
+is looked up by name and textured by the effects system at run time. The
+rewrite had left out every item node named `…GLOW` too, which hid the red
+gem's glow ring (`GEMREDCFXP_GLOW`, `GLOWRING_RED` with its four-frame
+flipbook) and the green potion's glow (`POT_GREXP_GLOW`): the other gems'
+and potions' glow nodes have names cut short (`CFXP_GLO`, `CFXP_G`…), so
+they were drawn.
