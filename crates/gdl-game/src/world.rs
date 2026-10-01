@@ -102,6 +102,9 @@ fn level_keys(
             w.write(ChangeLevel(tour.2));
         }
     }
+    if !crate::dev_keys() {
+        return;
+    }
     if keys.just_pressed(KeyCode::BracketRight) || keys.just_pressed(KeyCode::PageDown) {
         w.write(ChangeLevel(1));
     }

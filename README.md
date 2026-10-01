@@ -76,6 +76,12 @@ follows the level's own camera points and distances.
 | `U` / X, `P` / L, `O` / R, `G` / Z | magic, charge, strafe, combo move |
 | `-` / `=` | master volume down / up (5% steps; starts at 25%) |
 | `Esc` or `Enter` / Start | pause menu (and the front end: arrows move, Enter/`J` accept, Esc/`H` back) |
+
+Developer keys, only with `GDL_DEV_KEYS=1` (the original has none, and
+they sit among the controls, so a stray press would change the game):
+
+| key | |
+| --- | --- |
 | F1 | developer overlay |
 | `C` | free camera (WASD fly, Space/Ctrl up/down, Shift fast, right-drag look, wheel speed) |
 | `[` / `]` | previous / next level |

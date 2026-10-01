@@ -478,7 +478,7 @@ fn toggle(
     mut free_look: ResMut<FreeLook>,
     mut camera: Query<(&Transform, &mut FlyCamera)>,
 ) {
-    if keys.just_pressed(KeyCode::KeyC) {
+    if crate::dev_keys() && keys.just_pressed(KeyCode::KeyC) {
         free_look.0 = !free_look.0;
         if let Ok((transform, mut fly)) = camera.single_mut() {
             fly.sync(transform);

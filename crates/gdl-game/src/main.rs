@@ -66,6 +66,17 @@ use bootstrap::Args;
 use level::LoadedGame;
 
 /// With `GDL_FPS`, names every frame over 20 ms (hitches).
+/// Whether the developer keys work (`GDL_DEV_KEYS=1`): `I` cycles the
+/// population view, `K` the collision overlay, `C` the free camera, `F1`
+/// the debug readouts, `M` mutes, `N` plays the bank's next sound, `[`/`]`
+/// (Page Up/Down) change level. The original has none of these, and in
+/// play they sit among the keyboard controls (`I` between magic and
+/// strafe), so they're off unless asked for.
+pub(crate) fn dev_keys() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("GDL_DEV_KEYS").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
 fn log_slow_frames(time: Res<Time<Real>>, mut frame: Local<u64>) {
     *frame += 1;
     let dt = time.delta_secs() * 1000.0;

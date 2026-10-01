@@ -1,5 +1,5 @@
 //! Developer overlay: which game is loaded, current level, audio, controls.
-//! Hidden by default; F1 toggles it (`GDL_DEBUG_HUD=1` starts with it on).
+//! Hidden by default; F1 toggles it with `GDL_DEV_KEYS=1` (`GDL_DEBUG_HUD=1` starts with it on).
 //! Bevy's built-in font is ASCII-only, so keep all text here ASCII.
 
 use bevy::prelude::*;
@@ -21,7 +21,8 @@ impl Plugin for HudPlugin {
 struct HudText;
 
 fn toggle_hud(keys: Res<ButtonInput<KeyCode>>, mut hud: Query<&mut Visibility, With<HudText>>) {
-    if keys.just_pressed(KeyCode::F1)
+    if crate::dev_keys()
+        && keys.just_pressed(KeyCode::F1)
         && let Ok(mut v) = hud.single_mut()
     {
         *v = if *v == Visibility::Hidden { Visibility::Inherited } else { Visibility::Hidden };

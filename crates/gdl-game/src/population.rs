@@ -2,7 +2,7 @@
 //! pickups, doors, triggers, exits (`docs/level-population.md`) — as
 //! coloured markers and, where the item's model can be found, the model.
 //!
-//! `I` cycles models + markers / models / markers / hidden; `GDL_POPULATION`
+//! `I` (with `GDL_DEV_KEYS=1`) cycles models + markers / models / markers / hidden; `GDL_POPULATION`
 //! (`all`, `models`, `markers`, `off`; default `models`) picks the starting view.
 
 use std::collections::HashMap;
@@ -239,7 +239,7 @@ fn toggle_view(
     mut view: ResMut<PopulationView>,
     mut parts: Query<(&PopulationPart, &mut Visibility)>,
 ) {
-    if keys.just_pressed(KeyCode::KeyI) {
+    if crate::dev_keys() && keys.just_pressed(KeyCode::KeyI) {
         *view = view.next();
     }
     if view.is_changed() {
