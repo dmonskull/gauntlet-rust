@@ -18,6 +18,7 @@
 //! have no effects bank of their own, use the one of the class eight
 //! before them, as their thrown weapons do.
 
+use gdl_formats::detmath::Det;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -105,7 +106,7 @@ fn familiar_for(level: u32) -> Option<&'static str> {
 fn shot(feet: Vec3, facing: f32, mouth: Vec3, scale: f32, aim: Vec3, targeted: bool, weapon: u32, dwarf: bool, boss: bool) -> (Vec3, Vec3, f32) {
     let start = feet + Quat::from_rotation_y(facing) * (mouth * scale);
     let aim = if weapon & STRAIGHT != 0 {
-        Vec3::new(facing.sin(), 0.0, facing.cos())
+        Vec3::new(facing.dsin(), 0.0, facing.dcos())
     } else {
         projectiles::hero_aim(facing, aim, targeted, 0.0, dwarf, false)
     };

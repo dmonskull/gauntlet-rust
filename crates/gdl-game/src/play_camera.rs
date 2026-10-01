@@ -9,6 +9,7 @@
 //! the game's on-screen tests take every hero's. Cuts, the level-start
 //! shot and a boss level's camera stay everyone's.
 
+use gdl_formats::detmath::Det;
 use std::collections::HashMap;
 
 use bevy::prelude::*;
@@ -32,7 +33,7 @@ use crate::world::LevelGround;
 /// The game's field of view: 60° across a 4:3 picture, i.e. this much
 /// vertically. Kept vertical so wider screens see more to the sides.
 fn vertical_fov() -> f32 {
-    2.0 * (0.75 * 30f32.to_radians().tan()).atan()
+    2.0 * (0.75 * 30f32.to_radians().dtan()).datan()
 }
 
 pub struct PlayCameraPlugin;
@@ -326,7 +327,7 @@ fn starting_locator(population: &gdl_formats::Population, entry: i16) -> Option<
 /// `focus`'s distance.
 fn locator_view(l: &gdl_formats::population::Locator, focus: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     let (yaw, pitch) = (l.rotation[1], -l.rotation[0]);
-    let dir = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos());
+    let dir = Vec3::new(yaw.dsin() * pitch.dcos(), pitch.dsin(), yaw.dcos() * pitch.dcos());
     let eye = Vec3::from(l.position);
     let target = eye + dir * eye.distance(Vec3::from(focus)).max(1.0);
     (eye.to_array(), target.to_array())
@@ -544,7 +545,7 @@ pub(crate) fn tick(
             camera.shake = None;
         } else if s.delay <= 0.0 {
             let angle = SHAKE_TURN * s.fields;
-            let d = [s.amplitude * angle.sin(), 0.0, s.amplitude * angle.cos()];
+            let d = [s.amplitude * angle.dsin(), 0.0, s.amplitude * angle.dcos()];
             let none = [0.0; 3];
             camera.shake_offset = match s.what {
                 0 => (none, d),

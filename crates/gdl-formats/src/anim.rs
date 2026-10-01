@@ -15,6 +15,7 @@
 //!   keyframed on a per-track bitmap and optionally delta-compressed through
 //!   256-entry lookup tables.
 
+use crate::detmath::Det;
 use thiserror::Error;
 
 use crate::psys::ParticleRecord;
@@ -554,9 +555,9 @@ pub(crate) fn parse_clips(file: &[u8], at: usize) -> Result<Option<Clips>, AnimE
 /// vectors (`v' = v · M`). The same 16 numbers, read column-major, are the
 /// equivalent column-vector matrix.
 pub fn rotation_matrix(rotation: [f32; 3], flags: u16) -> [f32; 16] {
-    let (ca, sa) = (rotation[0].cos(), -rotation[0].sin());
-    let (cb, sb) = (rotation[1].cos(), -rotation[1].sin());
-    let (cc, sc) = (rotation[2].cos(), -rotation[2].sin());
+    let (ca, sa) = (rotation[0].dcos(), -rotation[0].dsin());
+    let (cb, sb) = (rotation[1].dcos(), -rotation[1].dsin());
+    let (cc, sc) = (rotation[2].dcos(), -rotation[2].dsin());
     let mut m = [0.0f32; 16];
     if flags & ALT_EULER == 0 {
         m[0] = cc * cb;

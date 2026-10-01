@@ -237,6 +237,7 @@ this machine over loopback (`GDL_NET_LOCAL=1`, the invite through
 tick. `GDL_ONLINE_LEVEL=levelA1` starts the game on a level.
 
 **Machines of different kinds.** Lockstep needs the same floating-point
-results everywhere. Builds of the same version on the same kind of machine
-match; a different OS or CPU can differ in the last bit of a sine or an
-arctangent, and the hash check then warns ("Out of sync").
+results everywhere. The game's sines, cosines, arctangents and powers come
+from `libm` (`gdl_formats::detmath::Det`: `x.dsin()` …) and Bevy's maths
+from its `libm` feature, so a Mac and a Windows PC compute them alike; the
+hash check would still warn ("Out of sync") if anything else differed.

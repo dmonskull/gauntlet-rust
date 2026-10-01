@@ -3,6 +3,7 @@
 //! tick; the numbers are the game's own (`docs/player-movement.md`). Which
 //! action plays is `actions.rs`.
 
+use gdl_formats::detmath::Det;
 use std::f32::consts::PI;
 
 /// The game simulates at 30 ticks per second.
@@ -105,7 +106,7 @@ impl Mover {
         let mut d = self.knockback.map(|v| v * dt);
         let pushed_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
         if pushed_sq >= KNOCKBACK_RESIST_SQ && magnitude > 0.0 {
-            let off = wrap(d[0].atan2(d[2]) - stick.heading);
+            let off = wrap(d[0].datan2(d[2]) - stick.heading);
             if !(-KNOCKBACK_RESIST_ANGLE..=KNOCKBACK_RESIST_ANGLE).contains(&off) {
                 magnitude = 0.0;
             }
@@ -113,8 +114,8 @@ impl Mover {
 
         let run = move_factor * dt * self.speed * magnitude;
         let limit = MAX_STEP * self.speed * dt;
-        d[0] = (d[0] + run * stick.heading.sin()).clamp(-limit, limit);
-        d[2] = (d[2] + run * stick.heading.cos()).clamp(-limit, limit);
+        d[0] = (d[0] + run * stick.heading.dsin()).clamp(-limit, limit);
+        d[2] = (d[2] + run * stick.heading.dcos()).clamp(-limit, limit);
         self.knockback = self.knockback.map(|v| v * KNOCKBACK_DECAY);
 
         if let Some(face) = face {

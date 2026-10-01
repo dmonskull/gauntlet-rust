@@ -16,6 +16,7 @@
 //! opens, till the hero walks into the open chest and takes it — and the
 //! chest goes with it (`docs/items.md`, "Containers").
 
+use gdl_formats::detmath::Det;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -221,13 +222,13 @@ impl Shape {
     fn touches(&self, p: [f32; 3], r: f32) -> bool {
         let reach = self.radius + r;
         let (dx, dy, dz) = (p[0] - self.centre[0], p[1] - self.centre[1], p[2] - self.centre[2]);
-        let dist = dx.hypot(dz);
+        let dist = dx.dhypot(dz);
         if dist > reach {
             return false;
         }
         match self.kind {
             1 => dy.abs() <= self.reach + r,
-            2 => dist.hypot(dy) <= reach,
+            2 => dist.dhypot(dy) <= reach,
             3 => dy.abs() <= self.reach + r && self.in_box(p, r),
             _ => false,
         }
@@ -262,13 +263,13 @@ pub fn contact(s: &Shape, pass_through: bool, from: [f32; 3], to: [f32; 3], r: f
     if s.kind != 2 && dy.abs() > s.reach + h {
         return None;
     }
-    let dist = dx.hypot(dz);
+    let dist = dx.dhypot(dz);
     if reach < dist {
         return None;
     }
     let inside = match s.kind {
         1 => true,
-        2 => dist.hypot(dy) <= reach,
+        2 => dist.dhypot(dy) <= reach,
         3 => s.in_box(to, r),
         _ => false,
     };
@@ -285,7 +286,7 @@ pub fn contact(s: &Shape, pass_through: bool, from: [f32; 3], to: [f32; 3], r: f
     let already = match s.kind {
         1 => true,
         3 => s.in_box(from, r),
-        _ => (from[0] - s.centre[0]).hypot(from[2] - s.centre[2]) <= reach,
+        _ => (from[0] - s.centre[0]).dhypot(from[2] - s.centre[2]) <= reach,
     };
     let mut step = [to[0] - from[0], to[2] - from[2]];
     let mut toward = [s.centre[0] - from[0], s.centre[2] - from[2]];
@@ -327,7 +328,7 @@ pub fn contact(s: &Shape, pass_through: bool, from: [f32; 3], to: [f32; 3], r: f
 }
 
 fn normalize(v: &mut [f32; 2]) {
-    let l = v[0].hypot(v[1]);
+    let l = v[0].dhypot(v[1]);
     if l > 0.0 {
         v[0] /= l;
         v[1] /= l;
@@ -2928,7 +2929,7 @@ mod tests {
         // Out of reach, then just in reach walking in.
         assert!(contact(&s, false, [-3.0, 0.0, 0.0], [-2.6, 0.0, 0.0], 1.5, 2.5).is_none());
         let c = contact(&s, false, [-2.6, 0.0, 0.1], [-2.4, 0.0, 0.1], 1.5, 2.5).unwrap();
-        assert!((c.clearance - (2.4f32.hypot(0.1) - 1.0)).abs() < 1e-5);
+        assert!((c.clearance - (2.4f32.dhypot(0.1) - 1.0)).abs() < 1e-5);
         // Walking straight at it slides (almost) nowhere; walking away is
         // no touch at all.
         assert!(c.out[0] < -2.5);

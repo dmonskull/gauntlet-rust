@@ -8,6 +8,7 @@
 //! ticks, from the level's distance — with several players, from as far as
 //! keeps every one in view, looking down at least the level's pitch limit.
 
+use gdl_formats::detmath::Det;
 use crate::locomotion::wrap;
 
 /// Samples averaged for the target and the distance.
@@ -168,7 +169,7 @@ impl CameraRig {
     /// the preferred distance as it nears it and 4 past it.
     fn fit(&self, target: [f32; 3], heroes: &[Framed]) -> f32 {
         let dir = self.direction();
-        let (sy, cy) = self.yaw.sin_cos();
+        let (sy, cy) = self.yaw.dsin_cos();
         let right = [cy, 0.0, -sy];
         // Up: right × direction, turned to point up.
         let mut up = [right[1] * dir[2] - right[2] * dir[1], right[2] * dir[0] - right[0] * dir[2], right[0] * dir[1] - right[1] * dir[0]];
@@ -177,7 +178,7 @@ impl CameraRig {
         }
         let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let side = |axis: [f32; 3], half: f32, sign: f32| -> [f32; 3] {
-            let (s, c) = half.sin_cos();
+            let (s, c) = half.dsin_cos();
             std::array::from_fn(|i| dir[i] * s - sign * axis[i] * c)
         };
         let planes = [side(right, HALF_ACROSS, 1.0), side(right, HALF_ACROSS, -1.0), side(up, HALF_UP, 1.0), side(up, HALF_UP, -1.0)];
@@ -207,8 +208,8 @@ impl CameraRig {
 
     /// Unit vector the camera looks along.
     pub fn direction(&self) -> [f32; 3] {
-        let (sy, cy) = self.yaw.sin_cos();
-        let (sp, cp) = self.pitch.sin_cos();
+        let (sy, cy) = self.yaw.dsin_cos();
+        let (sp, cp) = self.pitch.dsin_cos();
         [sy * cp, sp, cy * cp]
     }
 
@@ -338,7 +339,7 @@ mod tests {
         for x in [-30.0f32, 30.0] {
             let p = [x - eye[0], -eye[1], -eye[2]];
             let along = p[0] * d[0] + p[1] * d[1] + p[2] * d[2];
-            assert!(x.abs() / along < HALF_ACROSS.tan(), "{x}: {} at {}", x.abs() / along, rig.distance);
+            assert!(x.abs() / along < HALF_ACROSS.dtan(), "{x}: {} at {}", x.abs() / along, rig.distance);
         }
         assert!(rig.distance > 40.0, "{}", rig.distance);
         // Several players look down at least the limit; one, the point's

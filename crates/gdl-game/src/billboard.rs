@@ -2,6 +2,7 @@
 //! facing mode (`docs/rendering.md`): bushes and trees turn about Y, sprites
 //! and glows copy the camera's rotation.
 
+use gdl_formats::detmath::Det;
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use gdl_formats::world::render_flags;
@@ -42,11 +43,11 @@ impl Billboard {
     /// with rotation `camera`.
     pub fn rotation(self, at: Vec3, eye: Vec3, camera: Quat) -> Quat {
         let d = eye - at;
-        let yaw = Quat::from_rotation_y(d.x.atan2(d.z));
+        let yaw = Quat::from_rotation_y(d.x.datan2(d.z));
         match self {
             Self::Yaw => yaw,
             Self::YawPitch(limit) => {
-                let mut pitch = d.y.atan2(Vec2::new(d.x, d.z).length());
+                let mut pitch = d.y.datan2(Vec2::new(d.x, d.z).length());
                 if let Some(l) = limit {
                     pitch = pitch.clamp(-l, l);
                 }
@@ -93,6 +94,6 @@ mod tests {
         assert!((z - Vec3::X).length() < 1e-5, "{z}");
         let r = Billboard::YawPitch(Some(0.1)).rotation(Vec3::ZERO, Vec3::new(0.0, 10.0, 1.0), Quat::IDENTITY);
         let z = r * Vec3::Z;
-        assert!((z.y - 0.1f32.sin()).abs() < 1e-5, "{z}");
+        assert!((z.y - 0.1f32.dsin()).abs() < 1e-5, "{z}");
     }
 }

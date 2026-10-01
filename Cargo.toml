@@ -13,7 +13,8 @@ publish = false
 gdl-formats = { path = "crates/gdl-formats" }
 gdl-install = { path = "crates/gdl-install" }
 gdl-net = { path = "crates/gdl-net" }
-bevy = { version = "0.18.1" }
+bevy = { version = "0.18.1", features = ["libm"] }
+libm = "0.2"
 thiserror = "2"
 
 [profile.dev]

@@ -24,6 +24,7 @@
 //!   queries: [`LevelCollision::move_actor`] and
 //!   [`LevelCollision::move_player`].
 
+use crate::detmath::Det;
 use std::ops::Range;
 
 use crate::world::{WorldError, WorldFile};
@@ -477,7 +478,7 @@ impl NodePose {
     /// game turns an instance: its X axis toward its Z axis for a positive
     /// angle.
     pub fn turn_about(pivot: [f32; 3], angle: f32) -> Self {
-        let (s, c) = angle.sin_cos();
+        let (s, c) = angle.dsin_cos();
         // x' = c·x − s·z, z' = s·x + c·z.
         let rotation = [c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c];
         let r = Self { rotation, translation: [0.0; 3] };
@@ -1077,7 +1078,7 @@ impl LevelCollision {
         let centre = add(feet, [0.0, p.centre_height, 0.0]);
         // The game uses the stick's step length here; with no knockback in
         // the move that's its horizontal length.
-        let step = delta[0].hypot(delta[2]);
+        let step = delta[0].dhypot(delta[2]);
 
         // Walls.
         let raised = add(centre, [0.0, 1.0, 0.0]);
@@ -1173,7 +1174,7 @@ impl LevelCollision {
         };
 
         let at = add(centre, *d);
-        let horizontal = d[0].hypot(d[2]);
+        let horizontal = d[0].dhypot(d[2]);
         let Some(hit) = probe(at, true) else {
             if horizontal < 0.001 {
                 ground.node = None;
@@ -1213,7 +1214,7 @@ impl LevelCollision {
         // whether the move heads away from it.
         let mut off = sub(at, hit.point);
         let mut away = dot(*d, off);
-        let mut dist = off[0].hypot(off[2]);
+        let mut dist = off[0].dhypot(off[2]);
         if dist < 0.001 && !wall_hit {
             // Right below: look a radius further on too.
             let len = dot(*d, *d).sqrt();
@@ -1230,7 +1231,7 @@ impl LevelCollision {
                     if !solid || (e.point[1] - floor_y).abs() >= 4.0 {
                         off = sub(edge, e.point);
                         away = dot(*d, off);
-                        dist = off[0].hypot(off[2]);
+                        dist = off[0].dhypot(off[2]);
                     } else {
                         dist = 0.0;
                     }
@@ -1444,7 +1445,7 @@ mod tests {
         // Close to the true length everywhere.
         for i in 0..=1000 {
             let (x, y) = (1.0, i as f32 / 1000.0);
-            let err = (approx_hypot(x, y) - x.hypot(y)).abs() / x.hypot(y);
+            let err = (approx_hypot(x, y) - x.dhypot(y)).abs() / x.dhypot(y);
             assert!(err < 0.026, "{y}: {err}");
         }
     }
@@ -1882,7 +1883,7 @@ mod tests {
             assert!(!m.no_floor, "{feet:?} {m:?}");
             // Climbing slows the horizontal part by step / |(step, rise)|.
             if m.delta[1] > 0.05 {
-                let slowed = 0.5 * 0.5 / 0.5f32.hypot(m.delta[1]);
+                let slowed = 0.5 * 0.5 / 0.5f32.dhypot(m.delta[1]);
                 assert!((m.delta[0] - slowed).abs() < 1e-5, "{m:?}");
             }
             // Down no faster than 16 units/s.
@@ -1969,7 +1970,7 @@ mod tests {
             levels += 1;
             for k in 0..8 {
                 let a = k as f32 * std::f32::consts::FRAC_PI_4 + 0.1;
-                let step = [speed * a.sin(), 0.0, speed * a.cos()];
+                let step = [speed * a.dsin(), 0.0, speed * a.dcos()];
                 let mut feet = [start.position[0], y, start.position[2]];
                 let mut ground = PlayerGround::new(y);
                 for t in 0..45 {
@@ -1980,7 +1981,7 @@ mod tests {
                     moves += 1;
                     walls += m.wall.is_some() as usize;
                     held += m.no_floor as usize;
-                    travelled += m.delta[0].hypot(m.delta[2]);
+                    travelled += m.delta[0].dhypot(m.delta[2]);
                     // Never through a wall: the centre's path crosses none.
                     let lift = [0.0, p.centre_height + 1.0, 0.0];
                     let crossed = c.cast(add(feet, lift), add(next, lift), &Query { disable_mask: 1, ..Query::walls(0.0) });

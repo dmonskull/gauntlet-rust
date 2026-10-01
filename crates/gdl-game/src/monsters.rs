@@ -11,6 +11,7 @@
 //! The throwing AIs stand (or back off) and throw; each missile they release
 //! is a [`MonsterShot`] for `projectiles.rs` (`docs/projectiles.md`).
 
+use gdl_formats::detmath::Det;
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_6, PI};
 use std::sync::Arc;
@@ -1040,7 +1041,7 @@ pub struct Views(Vec<Frustum>);
 
 pub fn game_view(camera: Option<&PlayCamera>) -> Views {
     let Some(camera) = camera else { return Views(Vec::new()) };
-    let fov = 2.0 * (0.75 * 30f32.to_radians().tan()).atan();
+    let fov = 2.0 * (0.75 * 30f32.to_radians().dtan()).datan();
     let frustum = |(eye, target): ([f32; 3], [f32; 3])| {
         let (eye, target) = (Vec3::from(eye), Vec3::from(target));
         if eye.distance_squared(target) < 1e-6 {
@@ -1272,7 +1273,7 @@ fn tick_monsters(
             m.request = RUN;
             if moving(m) {
                 let s = FLEE_SPEED * m.stats.speed_per_tick;
-                velocity = [h.sin() * s, 0.0, h.cos() * s];
+                velocity = [h.dsin() * s, 0.0, h.dcos() * s];
             }
             Some(h)
         } else if let Some(from) = (m.enemy == DEATH_TYPE && !(m.aware && target.is_some()))
@@ -1294,7 +1295,7 @@ fn tick_monsters(
             m.request = WALK;
             if moving(m) {
                 let s = DEATH_RUN * m.stats.speed_per_tick;
-                velocity = [h.sin() * s, 0.0, h.cos() * s];
+                velocity = [h.dsin() * s, 0.0, h.dcos() * s];
             }
             Some(h)
         } else if m.ai == SUICIDE {
@@ -1309,7 +1310,7 @@ fn tick_monsters(
                 m.request = WALK;
                 if moving(m) {
                     let s = m.stats.speed_per_tick;
-                    velocity = [h.sin() * s, 0.0, h.cos() * s];
+                    velocity = [h.dsin() * s, 0.0, h.dcos() * s];
                 }
                 Some(h)
             } else {
@@ -1317,7 +1318,7 @@ fn tick_monsters(
                     m.request = RUN;
                     if moving(m) {
                         let s = SUICIDE_SPEED * m.stats.speed_per_tick;
-                        velocity = [heading.sin() * s, 0.0, heading.cos() * s];
+                        velocity = [heading.dsin() * s, 0.0, heading.dcos() * s];
                     }
                 }
                 Some(heading)
@@ -1330,7 +1331,7 @@ fn tick_monsters(
                 && moving(m)
             {
                 let s = RETREAT_SPEED * m.stats.speed_per_tick;
-                velocity = [h.sin() * s, 0.0, h.cos() * s];
+                velocity = [h.dsin() * s, 0.0, h.dcos() * s];
             }
             Some(face)
         } else {
@@ -1354,7 +1355,7 @@ fn tick_monsters(
                 m.request = WALK;
                 if moving(m) {
                     let s = m.stats.speed_per_tick;
-                    velocity = [h.sin() * s, 0.0, h.cos() * s];
+                    velocity = [h.dsin() * s, 0.0, h.dcos() * s];
                 }
             }
             turn_to
@@ -1475,7 +1476,7 @@ fn tick_monsters(
                 let from = Vec3::from(m.position) + Vec3::Y * centre;
                 let at = match target {
                     Some(t) => Vec3::from(t.feet) + Vec3::Y * projectiles::PLAYER_CENTRE,
-                    None => from + 20.0 * Vec3::new(m.facing.sin(), 0.0, m.facing.cos()),
+                    None => from + 20.0 * Vec3::new(m.facing.dsin(), 0.0, m.facing.dcos()),
                 };
                 let random = level.random(1000) as f32 / 1000.0;
                 shots.write(MonsterShot { monster: entity, enemy: m.enemy, ai: m.ai, from, at, facing: m.facing, random });
@@ -1500,7 +1501,7 @@ fn tick_monsters(
                 let from = Vec3::from(m.position) + Vec3::Y * centre;
                 let at = match target {
                     Some(t) => Vec3::from(t.feet) + Vec3::Y * projectiles::PLAYER_CENTRE,
-                    None => from + 20.0 * Vec3::new(m.facing.sin(), 0.0, m.facing.cos()),
+                    None => from + 20.0 * Vec3::new(m.facing.dsin(), 0.0, m.facing.dcos()),
                 };
                 let random = level.random(1000) as f32 / 1000.0;
                 shots.write(MonsterShot { monster: entity, enemy: m.enemy, ai: m.ai, from, at, facing: m.facing, random });
@@ -1778,7 +1779,7 @@ fn steer(
     };
     h = locomotion::wrap(h);
     let s = m.stats.speed_per_tick / FIELDS_PER_TICK;
-    let ahead = [m.position[0] + h.sin() * s, m.position[1], m.position[2] + h.cos() * s];
+    let ahead = [m.position[0] + h.dsin() * s, m.position[1], m.position[2] + h.dcos() * s];
     let turned = (locomotion::wrap(m.heading - m.last_heading)).abs() > 0.0349
         && (locomotion::wrap(h - m.last_heading)).abs() <= 0.0349;
     let blocked_ahead = turned || look_ahead_blocked(m, ahead, collision, bodies, me);
@@ -1840,7 +1841,7 @@ fn unaware(m: &mut Monster, collision: &LevelCollision, bodies: &[Body], me: Ent
             m.wander_turns = (m.wander_turns + 1) % 4;
         }
     }
-    let (sin, cos) = m.heading.sin_cos();
+    let (sin, cos) = m.heading.dsin_cos();
     let r = m.stats.radius;
     let eye = [m.position[0], m.position[1] + 0.1 + r, m.position[2]];
     let reach = r + UNAWARE_LOOK;
@@ -1872,7 +1873,7 @@ fn look_ahead_blocked(m: &Monster, ahead: [f32; 3], collision: &LevelCollision, 
 /// facing ends nearer the player than one 30° to the right, else −1.
 fn nearer_side(at: [f32; 3], facing: f32, player: [f32; 3]) -> i32 {
     let d = |a: f32| {
-        let (x, z) = (at[0] + a.sin() - player[0], at[2] + a.cos() - player[2]);
+        let (x, z) = (at[0] + a.dsin() - player[0], at[2] + a.dcos() - player[2]);
         x * x + z * z
     };
     if d(facing + FRAC_PI_6) < d(facing - FRAC_PI_6) { 1 } else { -1 }
@@ -2139,7 +2140,7 @@ pub fn bumps(from: [f32; 3], to: [f32; 3], other: [f32; 3], reach: f32, height: 
 
 /// Heading from `from` toward `to` (the game's angle: +Z is 0, +X is π/2).
 pub fn heading_to(from: [f32; 3], to: [f32; 3]) -> f32 {
-    (to[0] - from[0]).atan2(to[2] - from[2])
+    (to[0] - from[0]).datan2(to[2] - from[2])
 }
 
 fn turn_toward(facing: f32, goal: f32, rate: f32) -> f32 {

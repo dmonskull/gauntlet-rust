@@ -51,5 +51,5 @@ Start opens the online menu (Settings, Leave Game) — the game goes on
 underneath. Saving: your hero is yours — save it from a local game.
 
 Everyone must run **the same version** of the program and the same game
-(USA disc). Machines of different kinds (say a Mac and a Windows PC) can
-drift apart; the game shows "Out of sync" if they do.
+(USA disc); Windows, Mac and Linux players can play together. If the
+machines ever disagree, the game shows "Out of sync".

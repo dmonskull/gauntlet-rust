@@ -5,6 +5,7 @@
 //! `I` (with `GDL_DEV_KEYS=1`) cycles models + markers / models / markers / hidden; `GDL_POPULATION`
 //! (`all`, `models`, `markers`, `off`; default `models`) picks the starting view.
 
+use gdl_formats::detmath::Det;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -197,9 +198,9 @@ pub fn lookout_transform(l: &gdl_formats::population::Locator) -> Transform {
 /// row-major for row vectors, so read as columns it's the column-vector
 /// matrix. Its yaw turns +Z toward (sin, cos): row 2 is where +Z goes.
 pub fn locator_matrix(r: [f32; 3]) -> [f32; 9] {
-    let (cx, sx) = (r[0].cos(), -r[0].sin());
-    let (cy, sy) = (r[1].cos(), -r[1].sin());
-    let (cz, sz) = (r[2].cos(), -r[2].sin());
+    let (cx, sx) = (r[0].dcos(), -r[0].dsin());
+    let (cy, sy) = (r[1].dcos(), -r[1].dsin());
+    let (cz, sz) = (r[2].dcos(), -r[2].dsin());
     [
         cy * cz - (sy * sx) * sz,
         cx * sz,
@@ -221,15 +222,15 @@ pub fn locator_matrix(r: [f32; 3]) -> [f32; 9] {
 pub fn locator_euler(m: [f32; 9]) -> [f32; 3] {
     if (1.0 - m[7].abs()).abs() < 1e-4 {
         let x = if m[7] <= 0.0 { -std::f32::consts::FRAC_PI_2 } else { std::f32::consts::FRAC_PI_2 };
-        return [x, (-m[2]).atan2(m[0]), 0.0];
+        return [x, (-m[2]).datan2(m[0]), 0.0];
     }
-    let z = (-m[1]).atan2(m[4]);
-    let cz = z.cos();
+    let z = (-m[1]).datan2(m[4]);
+    let cz = z.dcos();
     if cz == 0.0 {
-        return if z <= 0.0 { [m[7].atan2(m[1]), (-m[5]).atan2(m[3]), z] } else { [m[7].atan2(-m[1]), m[5].atan2(-m[3]), z] };
+        return if z <= 0.0 { [m[7].datan2(m[1]), (-m[5]).datan2(m[3]), z] } else { [m[7].datan2(-m[1]), m[5].datan2(-m[3]), z] };
     }
     let cx = m[4] / cz;
-    [m[7].atan2(cx), (m[6] / cx).atan2(m[8] / cx), z]
+    [m[7].datan2(cx), (m[6] / cx).datan2(m[8] / cx), z]
 }
 
 fn game_rotation(euler: [f32; 3]) -> Quat {

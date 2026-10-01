@@ -9,6 +9,7 @@
 //! in the level (ENEMYINFO) appear once, when their spot comes on screen
 //! within 50 units of the player.
 
+use gdl_formats::detmath::Det;
 use crate::play_camera::PlayCamera;
 use bevy::prelude::*;
 use gdl_formats::enemy::LevelEnemies;
@@ -132,7 +133,7 @@ const SPAWN_FLOOR_RANGE: f32 = 6.0;
 /// it off the placement matrix.
 fn forward_heading(rotation: [f32; 3]) -> f32 {
     let m = rotation_matrix(rotation);
-    m[6].atan2(m[8])
+    m[6].datan2(m[8])
 }
 
 /// The game's radius for an item: half the larger of its first two extents.
@@ -336,7 +337,7 @@ fn find_spot(
     let stats = enemy::enemy_stats(made)?;
     let from = [g.position[0], g.position[1] + stats.center_height, g.position[2]];
     let out = g.reach + stats.radius;
-    let dir = [g.yaw.sin(), g.yaw.cos()];
+    let dir = [g.yaw.dsin(), g.yaw.dcos()];
     let skip: u32 = if front_only(made) { 0xFFCE } else { 0 };
     let first = level.random(8);
     let mut k = first;
@@ -578,8 +579,8 @@ mod tests {
         assert_eq!((d, a), ([-1.0, 0.0], -std::f32::consts::FRAC_PI_2));
         // The direction's heading plus the offset is the new heading.
         for k in 0..8 {
-            let (d, a) = spawn_direction(k, [0.3f32.sin(), 0.3f32.cos()]);
-            let h = d[0].atan2(d[1]);
+            let (d, a) = spawn_direction(k, [0.3f32.dsin(), 0.3f32.dcos()]);
+            let h = d[0].datan2(d[1]);
             assert!(crate::locomotion::wrap(h - (0.3 + a)).abs() < 1e-5, "{k}");
         }
     }

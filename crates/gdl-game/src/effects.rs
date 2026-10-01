@@ -13,6 +13,7 @@
 //! `actions.rs`. `GDL_POTIONS=<n>[,<kind>]` hands the hero potions at each
 //! level start.
 
+use gdl_formats::detmath::Det;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -1036,7 +1037,7 @@ fn use_potions(
             _ => {
                 // Thrown: up at 45° from 2 ahead and 4 up, faster the
                 // longer magic was held.
-                let fwd = Vec3::new(u.facing.sin(), 0.0, u.facing.cos());
+                let fwd = Vec3::new(u.facing.dsin(), 0.0, u.facing.dcos());
                 let speed = 1.5 * u.charge + 5.0;
                 let start = u.feet + fwd * 2.0 + Vec3::Y * 4.0;
                 let velocity = Vec3::new(fwd.x * 0.707, 0.707, fwd.z * 0.707) * speed;
@@ -1357,7 +1358,7 @@ fn spawn_breaths(
             then: &[],
             scale: Vec3::ONE,
             drop: 0.0,
-            heading: Some(Vec2::new(p.mover.facing.sin(), p.mover.facing.cos())),
+            heading: Some(Vec2::new(p.mover.facing.dsin(), p.mover.facing.dcos())),
         };
         // The blast alone (its look is the model on the head).
         commands.spawn((Transform::from_translation(centre), blast, BlastColour(colour_index(b.kind), true), LevelEntity));
@@ -1553,7 +1554,7 @@ fn tick_blasts(
         {
             b.centre = head.and_then(|h| bones.get(h).ok()).map_or(Vec3::from(p.mover.position), |g| g.translation());
             if cone {
-                b.heading = Some(Vec2::new(p.mover.facing.sin(), p.mover.facing.cos()));
+                b.heading = Some(Vec2::new(p.mover.facing.dsin(), p.mover.facing.dcos()));
             }
         }
         if let BlastShape::Follows(on, off) = b.shape

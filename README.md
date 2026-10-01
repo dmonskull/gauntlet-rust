@@ -174,6 +174,13 @@ Gauntlet: Dark Legacy and all related assets, trademarks and intellectual
 property belong to their respective owners. This project is unaffiliated
 with them.
 
+## How it was made
+
+Made with Anthropic's **Claude Opus 5.5 at max effort ("ultracode")** in
+Claude Code, working with **multiple subagents** side by side: reverse
+engineering the original `main.dol`, writing the engine, and testing every
+level, local co-op and online play.
+
 ## Legal
 
 A fan project, not affiliated with or endorsed by Midway, Warner Bros.

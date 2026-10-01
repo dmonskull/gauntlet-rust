@@ -6,6 +6,7 @@
 //! coins. They fly, bounce and slide to a stop, and can be picked up two
 //! seconds after they're thrown.
 
+use gdl_formats::detmath::Det;
 use bevy::prelude::*;
 use gdl_formats::population::rotation_matrix;
 
@@ -102,7 +103,7 @@ struct Toss {
 /// Turns `v` about the vertical by `angle` the game's way (x cos − z sin,
 /// z cos + x sin).
 fn turned(v: Vec3, angle: f32) -> Vec3 {
-    let (s, c) = angle.sin_cos();
+    let (s, c) = angle.dsin_cos();
     Vec3::new(v.x * c - v.z * s, v.y, v.z * c + v.x * s)
 }
 
@@ -273,7 +274,7 @@ mod tests {
         assert_eq!(names, SKORNE_PIECES);
         // A quarter of the spread apart, centred: −0.3, −0.1, 0.1, 0.3.
         let first = t[0].velocity;
-        let heading = first.x.atan2(first.z);
+        let heading = first.x.datan2(first.z);
         assert!((heading - 0.3).abs() < 1e-5, "{heading}");
         assert!(t.iter().all(|t| t.worth.is_none() && (t.velocity.y - 30.0).abs() < 1e-5));
     }
@@ -287,7 +288,7 @@ mod tests {
         assert!(t.iter().filter(|t| t.name == "COIN_GOLD").all(|t| t.worth == Some(5000)));
         // The bronze spread evenly across ±spread; they fly at the throw's
         // speed, the gold at 0.75 of it (plus the random part).
-        let bronze: Vec<f32> = t.iter().filter(|t| t.name == "COIN_BRONZE").map(|t| t.velocity.x.atan2(t.velocity.z)).collect();
+        let bronze: Vec<f32> = t.iter().filter(|t| t.name == "COIN_BRONZE").map(|t| t.velocity.x.datan2(t.velocity.z)).collect();
         assert_eq!(bronze.len(), 4);
         assert!((t[0].velocity.y - 30.0).abs() < 1e-5);
         let gold = t.iter().find(|t| t.name == "COIN_GOLD").unwrap();
