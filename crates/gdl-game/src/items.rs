@@ -23,11 +23,9 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use gdl_formats::anim::{Atree, Track, rotation_matrix as pose_matrix};
 use gdl_formats::texmod::TexModKind;
-use gdl_formats::population::{
-    ItemClass, ItemType, PlacementParams, REALM_LETTERS, level_for_code, rotation_matrix,
-};
+use gdl_formats::population::{ItemClass, ItemType, PlacementParams, REALM_LETTERS, rotation_matrix};
 use gdl_formats::collision::NodePose;
-use gdl_formats::{CollisionTriangle, LevelCollision, MoveParams};
+use gdl_formats::{CollisionTriangle, LevelCollision, LevelOrder, MoveParams};
 
 use crate::audio::{CALL_VOLUME, HERO_LINE_VOLUME, LoopSoundAt, PlaySoundAt, QueueHeroLine};
 use crate::combat::hit_kind;
@@ -693,6 +691,9 @@ pub struct LevelItems {
     /// monsters let out of containers waiting for `breakables.rs`.
     swaps: Vec<(usize, &'static str)>,
     let_out: Vec<(ItemType, [f32; 3])>,
+    /// Which folder each level id loads, for where exits go
+    /// ([`crate::exits::LevelIds`]).
+    order: LevelOrder,
 }
 
 impl LevelItems {
@@ -1177,6 +1178,7 @@ pub(crate) fn build_items(
     ground: Option<Res<LevelGround>>,
     nodes: Option<Res<LevelNodes>>,
     party: Res<Party>,
+    ids: Option<Res<crate::exits::LevelIds>>,
 ) {
     let pop = &population.population;
     // The items are dropped with the movers at their off heights (the
@@ -1344,14 +1346,16 @@ pub(crate) fn build_items(
     }
     // The secret realm's first level record is levelS1.
     let secret_first = population.level.eq_ignore_ascii_case(SECRET_FIRST_LEVEL);
-    let level = population.level.chars().last().and_then(|c| c.to_digit(10)).map_or(0, |d| d.saturating_sub(1) as usize);
+    // The level's index in its realm: its WAD record's (`exits.rs`).
+    let order = ids.map(|ids| ids.0.clone()).unwrap_or_default();
+    let level = order.id(&population.level).map_or(0, |(_, index)| index as usize);
     let gold_chest = pop.item_types.iter().rev().find(|t| t.class == ItemClass::Container && t.subtype == GOLD_CHEST).cloned();
     let key_ring = pop
         .item_types
         .iter()
         .find(|t| t.name == KEY_RING && t.class == ItemClass::Powerup && t.subtype == KEY)
         .cloned();
-    *items = LevelItems { items: out, realm, level, doors, scrolls, ambient, secret_first, gold_chest, key_ring, ..default() };
+    *items = LevelItems { items: out, realm, level, doors, scrolls, ambient, secret_first, gold_chest, key_ring, order, ..default() };
 }
 
 /// An exit's destination code (`g1`) as a realm id and level (0 the
@@ -2526,18 +2530,20 @@ fn open_step(item: &mut Item) {
 /// Where an exit takes the heroes (`docs/items.md`, "Exits"): the tower's
 /// portals to the level their code names; a secret exit to that level of
 /// the secret realm; every other exit back to the tower — but E1 and F1
-/// on to E2 and F2, and a secret-realm level on to the next.
-fn exit_goes_to(realm: usize, level: usize, secret: bool, code: Option<&str>) -> Option<String> {
-    let letter = |realm: usize| REALM_LETTERS.iter().find(|(_, id)| *id as usize == realm).map(|(l, _)| *l);
+/// on to E2 and F2, and a secret-realm level on to the next. A code names
+/// a level id, which `order` turns into the folder its realm's record
+/// names (`exits.rs`): the tower's `a2` portal goes to `levelA6`.
+fn exit_goes_to(realm: usize, level: usize, secret: bool, code: Option<&str>, order: &LevelOrder) -> Option<String> {
     if secret {
         let (_, level) = exit_destination(code?)?;
-        return Some(format!("level{}{}", letter(SECRET_REALM)?, level + 1));
+        return order.folder(SECRET_REALM as u32, level);
     }
     if realm == crate::quest::TOWER as usize {
-        return level_for_code(code?);
+        let (realm, level) = exit_destination(code?)?;
+        return order.folder(realm, level);
     }
     match (realm, level) {
-        (SECRET_REALM, _) | (REALM_E | REALM_F, 0) => Some(format!("level{}{}", letter(realm)?, level + 2)),
+        (SECRET_REALM, _) | (REALM_E | REALM_F, 0) => order.folder(realm as u32, level as u32 + 1),
         _ => Some(crate::frontend::TOWER.to_string()),
     }
 }
@@ -2571,7 +2577,7 @@ fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Ou
             PlacementParams::Exit { destination } => destination.as_deref(),
             _ => None,
         };
-        let dest = exit_goes_to(realm, level, secret, code);
+        let dest = exit_goes_to(realm, level, secret, code, &items.order);
         if secret {
             item.flags |= USED;
             go = dest.map(|to| (to, true));
@@ -2730,6 +2736,24 @@ mod tests {
             duration: 0,
             raw: [0; 0x50],
         }
+    }
+
+    /// Exits go to level ids, which the realms' records turn into folders.
+    #[test]
+    fn exits_go_to_the_folders_their_ids_load() {
+        let mut order = LevelOrder::default();
+        order.add_names(["A1", "A6", "A2", "A3", "A4", "A5"]);
+        order.add_names(["S1", "S2", "S3"]);
+        let tower = crate::quest::TOWER as usize;
+        // The tower's second castle portal; its sixth, the boss.
+        assert_eq!(exit_goes_to(tower, 0, false, Some("a2"), &order).as_deref(), Some("levelA6"));
+        assert_eq!(exit_goes_to(tower, 0, false, Some("a6"), &order).as_deref(), Some("levelA5"));
+        // A realm without records here: the folder the code names.
+        assert_eq!(exit_goes_to(tower, 0, false, Some("g1"), &order).as_deref(), Some("levelG1"));
+        // A secret exit; E1 on to E2; the castle's own exits to the tower.
+        assert_eq!(exit_goes_to(1, 1, true, Some("S3"), &order).as_deref(), Some("levelS3"));
+        assert_eq!(exit_goes_to(REALM_E, 0, false, None, &order).as_deref(), Some("levelE2"));
+        assert_eq!(exit_goes_to(1, 1, false, Some("A3"), &order).as_deref(), Some(crate::frontend::TOWER));
     }
 
     #[test]
