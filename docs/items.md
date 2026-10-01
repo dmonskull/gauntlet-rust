@@ -963,12 +963,15 @@ once 1–10 are (`0x7FE`); the others once their counter (`0x80124514`: A 3,
 B 2, C 6, D 5, G 1, I 7, J 8, K 4) is open or at its need. The quest order
 (`0x801244dc`): tower, G, B, A, K, D, C, I, J, E, F, H.
 
-**Exits** (`FUN_8005b5a4`, on each level's load): an exit's `+0xDC` is its
-destination (realm << 8 | level, 0 the first). For E and F it's shut unless
-the realm is open; for H unless the realm is open and, for its fourth level,
-all thirteen runestones are held (`0x1FFF`); everywhere else level n ≥ 1
-needs bit n − 1 in the players' levels-entered byte for that realm (so the
-first level is always open, behind its gate). A shut exit's model becomes
+**Exits** (`FUN_8005b5a4`, called only as the **tower** loads: its one
+caller, the tower's setup `FUN_800a2ba8`, runs when the realm id
+`r13-0x7220` is 0xD — a realm level's own exits are never switched off):
+an exit's `+0xDC` is its destination (realm << 8 | level, 0 the first).
+For E and F it's shut unless the realm is open; for H unless the realm
+is open and, for its fourth level, all thirteen runestones are held
+(`0x1FFF`); everywhere else level n ≥ 1 needs bit n − 1 in the players'
+levels-entered byte for that realm (so the first level is always open,
+behind its gate). A shut exit's model becomes
 `EXIT_OFF` (from the realm's `ITEMS/level<X>` bank), its flags `+0xC4` =
 `0x8000` (it goes nowhere), and the tower's `L1NSNC<letter><n>_ACTIVE`
 node — its glowing trail — is hidden (instance flag `0x2`). Loading a level
