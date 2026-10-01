@@ -6,6 +6,27 @@ has how close the rewrite is to the original (≈ 81 % for one player,
 
 ## State of `master`
 
+**2026-10-01 (later), playable release work:** the shop, inventory and
+after-level screen (tally with kills, level-up, shop, stats, inventory,
+final stats after H4; online on the ticks for everyone); points bought,
+kills, generators, gold found and play time kept in the hero's record
+(saved); monsters and critters ride moving floors (K2's battle boat); the
+bursting objects' blasts; the critters' grabs (checked on I5); hint 0xB at
+exits in co-op and the hints sent to the right players; the HUD panels
+under the shop screen. Merged the helper's audit round 4 (level ids
+through the realm records: the tower's a2 portal leads to levelA6;
+trigger ids and camera points; the tower's gates open as it loads).
+**Parked, unmerged:** the helper's secret realm timer and coins
+(`worktree-agent-a7499ea16152eadcd`, WIP 048cd59, unverified: check S1's
+coins with `GDL_HOPS` before merging — the S levels can't be finished
+without it). **Next:** the G–T tour's leads (G2, G3, G4, H3, J3, K3; the
+"NOT ARRIVED" animated lifts are likely tour.py treating animated targets
+with heights as movers), the boss health meter (`GMETER`, the 2D
+`<name>METER_BG/FG` meters), the monsters' crowd penalty
+(`FUN_80051660`: + the hero's `+0xA28` past a distance) and the AIs still on
+the chase stand-in, co-op combos.
+
+
 **2026-10-01, online co-op in the game** (`online.rs`, `docs/online.md` "In
 the game"): Title → Start → Local / Online; Host (invite to the clipboard) /
 Join (from the clipboard); the select screen is the lobby (New, or Load a

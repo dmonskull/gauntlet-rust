@@ -224,6 +224,7 @@ pub fn sale_price(price: i32) -> i32 {
 pub use crate::player_state::StatBonus;
 
 impl StatBonus {
+    #[allow(dead_code)] // the stats page reads the array
     pub fn get(&self, stat: Stat) -> f32 {
         match stat {
             Stat::Strength => self.strength,
@@ -595,10 +596,8 @@ fn last_reachable(items: &[ShopItem], state: &PlayerState) -> usize {
     items
         .iter()
         .enumerate()
-        .filter(|(_, item)| i64::from(state.gold) >= i64::from(item.price) || owns(item, state))
-        .map(|(i, _)| i)
-        .last()
-        .unwrap_or(0)
+        .rfind(|(_, item)| i64::from(state.gold) >= i64::from(item.price) || owns(item, state))
+        .map_or(0, |(i, _)| i)
 }
 
 /// The gold heap's height for `gold` against the gold the list opened
@@ -1107,7 +1106,6 @@ struct Slot {
     /// The class's place in the class order for its text (the summoner's
     /// is the wizard's), and in the original eight.
     text_class: usize,
-    base_class: usize,
     summoner: bool,
     stats: Option<PlayerStats>,
     level_before: u32,
@@ -1248,7 +1246,6 @@ impl ShopScreen {
             let mut s = Slot {
                 colour: COLOURS.iter().position(|c| variant.starts_with(c)).unwrap_or(0),
                 text_class,
-                base_class,
                 summoner,
                 stats: data.classes.get(&code).copied(),
                 level_before: start.map_or(state.level, |s| level_for(s.experience)),
@@ -1822,6 +1819,7 @@ fn draw_final(p: &mut Paint, slot: usize, s: &Slot) {
     let rest = fields - days * 5_184_000.0;
     let hours = (rest / 216_000.0).trunc();
     let minutes = ((rest - hours * 216_000.0) / 3600.0).trunc();
+    #[allow(clippy::type_complexity)]
     let rows: [(&[(&str, f32)], Vec<(String, f32)>); 4] = [
         (&[("Enemies Killed", 60.0)], vec![(totals.kills.to_string(), 78.0)]),
         (&[("Generators", 98.0), ("Destroyed", 116.0)], vec![(totals.generators.to_string(), 134.0)]),
