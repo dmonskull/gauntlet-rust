@@ -327,11 +327,17 @@ over a body it draws the lit silhouette in a pale green-white.
   later takes the same slot.
 - **Heroes** (`FUN_80085ca8`): a blow of more than 1 (`r2-0x5c70`) — the
   same one that picks a reaction — starts the same effect on `+0x7DC`,
-  stepped by `FUN_80077ccc`. The slot is shared with the heroes' other
+  stepped by `FUN_80077b84`. The slot is shared with the heroes' other
   texture effects (the chrome power-ups: `CHROMESILVER`/`CHROMEGOLD`, mode
   −3: here `fade.rs::BodyLook`, copies of the body's materials drawn in
   `level.wgsl`'s mode 3, coordinates from the normals —
-  [powers.md](powers.md), "`0x10000` invulnerability").
+  [powers.md](powers.md), "`0x10000` invulnerability"), and the death
+  light: `DEATHLIGHT` (`r13-0x6f0c`, mode −4) as a hero goes out through
+  an exit (step 0.4, [items.md](items.md), "Going out") and, step 0.5, on
+  every hero still standing as a boss level's last countdown reaches its
+  teleport (`FUN_80019044` step 10). Here `BodyLook` draws it with the
+  dying monsters' material (`LevelMaterial::dissolving`), the light
+  winning over the chrome and the flash.
 - **Critters** (`0x800382c0`, the damage routine, a blow the critter lives
   through without kind `0x1000000`): kinds `0x100320` set the critter's
   flash `+0xABC` = 2; other kinds, landing on a `NODE` sphere, set that

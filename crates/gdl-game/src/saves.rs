@@ -162,7 +162,7 @@ mod tests {
         state.level = 7;
         state.gold = 1234;
         state.quest.crystals[1] = 12;
-        state.quest.enter_level(7, 0);
+        state.quest.finish_level(7, 0);
         state.runestones = vec![0, 3];
         let saved = SavedCharacter::of("ANNA", "VAL", "BLU", &state);
         let mut file = SaveFile::default();

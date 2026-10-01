@@ -1,12 +1,13 @@
 //! The quest's progress (`docs/items.md` "Quest items and the tower's
 //! gates"): crystals by colour, gargoyle pieces, legendary items and the
-//! levels entered per realm, kept in the hero's character record, and the
+//! levels finished per realm, kept in the hero's character record, and the
 //! game's rules for which realms, tower gates and exits they open.
 //!
 //! The game keeps this per player and opens a gate when any player's
 //! progress does; there's one hero here.
 //!
-//! At run time: entering a level marks it; the tower's exit glows show
+//! At run time: leaving a level with the hero still in it marks it
+//! finished (`exits.rs`, as the level ends); the tower's exit glows show
 //! only for open exits (shut exits themselves are `items.rs`'), and the
 //! light over its window only once all eight shards are in; in the
 //! tower, counters that have reached what they need are announced ("You
@@ -27,7 +28,7 @@ impl Plugin for QuestPlugin {
         app.init_resource::<ShardLight>().add_systems(
             Update,
             (
-                enter_level.run_if(resource_exists_and_changed::<LevelPopulation>).before(crate::items::build_items),
+                seed_tests.run_if(resource_exists_and_changed::<LevelPopulation>).before(crate::items::build_items),
                 show_tower_pieces,
                 announce_unlocks,
             ),
@@ -45,16 +46,14 @@ pub fn level_of(name: &str) -> Option<(u32, u32)> {
     Some((realm, number.checked_sub(1)?))
 }
 
-/// Entering a level marks it in the hero's record: the exits to the next
-/// one open. Testing, once at the first level: `GDL_CRYSTALS="<counter>:<n>,…"`
+/// Testing, once at the first level: `GDL_CRYSTALS="<counter>:<n>,…"`
 /// sets crystal counts (−1: opened), `GDL_BEATEN=<bits>` the realms beaten
 /// (a bit per realm id) and `GDL_RUNES=<bits>` the runestones (a bit per
 /// stone); bits in decimal or `0x` hex. `GDL_EXPERIENCE=<n>` gives the hero
 /// that much experience, its rank last checked at the level it had.
-pub(crate) fn enter_level(population: Res<LevelPopulation>, state: Option<ResMut<PlayerState>>, mut seeded: Local<bool>) {
+pub(crate) fn seed_tests(state: Option<ResMut<PlayerState>>, mut seeded: Local<bool>) {
     let Some(mut state) = state else { return };
-    if !*seeded {
-        *seeded = true;
+    if !std::mem::replace(&mut *seeded, true) {
         for (c, n) in std::env::var("GDL_CRYSTALS").unwrap_or_default().split(',').filter_map(|p| p.split_once(':')) {
             if let (Ok(c), Ok(n)) = (c.trim().parse::<usize>(), n.trim().parse::<i16>())
                 && c < state.quest.crystals.len()
@@ -99,8 +98,6 @@ pub(crate) fn enter_level(population: Res<LevelPopulation>, state: Option<ResMut
             info!("GDL_EXPERIENCE: level {before} → {}", state.level);
         }
     }
-    let Some((realm, level)) = level_of(&population.level) else { return };
-    state.quest.enter_level(realm, level);
 }
 
 /// A piece of the tower drawn only when the quest calls for it: an exit's
@@ -258,9 +255,12 @@ pub struct Quest {
     pub gargoyle: [i16; 3],
     /// Legendary items found, a bit each.
     pub legendary: u16,
-    /// Per realm id, a bit for each level entered (the exit to level n + 1
-    /// needs level n's).
-    pub entered: [u8; 14],
+    /// Per realm id, a bit for each level finished — left with a hero
+    /// still in it, through an exit or at a boss level's end (the exit to
+    /// level n + 1 needs level n's). Saves from before this rule kept the
+    /// levels entered, as `entered`; those bits are dropped.
+    #[serde(default)]
+    pub finished: [u8; 14],
     /// The shards (bits of [`boss_marks`]) and runestones (a bit per
     /// stone) the wizard has announced (the record's `+0x2220`/`+0x2222`):
     /// the tower sets out only these as it loads.
@@ -354,20 +354,27 @@ impl Quest {
     /// Whether an exit to `level` (0 the first) of `realm` is open: E and F
     /// once open; H once open, its fourth level only with all thirteen
     /// runestones; everywhere else the first level always, and each next
-    /// one once the one before has been entered.
+    /// one once the one before has been finished.
     pub fn exit_open(&self, realm: u32, level: u32, beaten: u32, runestones: u32) -> bool {
-        let entered_before = || level == 0 || self.entered.get(realm as usize).is_some_and(|&b| b & (1 << (level - 1)) != 0);
+        let finished_before = || level == 0 || self.finished.get(realm as usize).is_some_and(|&b| b & (1 << (level - 1)) != 0);
         match realm {
             REALM_E | REALM_F => self.realm_open(realm, beaten, runestones),
             REALM_H if !self.realm_open(realm, beaten, runestones) => false,
             REALM_H if level == 3 => runestones & 0x1FFF == 0x1FFF,
-            _ => entered_before(),
+            _ => finished_before(),
         }
     }
 
-    /// Entering a level marks it in its realm's byte.
-    pub fn enter_level(&mut self, realm: u32, level: u32) {
-        if let Some(b) = self.entered.get_mut(realm as usize)
+    /// A level the heroes leave still in it — through an exit, or at a
+    /// boss level's end — is marked in its realm's byte. The game does it
+    /// in its main loop as the level ends, for each player playing or
+    /// leaving by the exit; not when the level loads, nor when every hero
+    /// is out (dead, or Quit Level), nor for the tower.
+    pub fn finish_level(&mut self, realm: u32, level: u32) {
+        if realm == TOWER {
+            return;
+        }
+        if let Some(b) = self.finished.get_mut(realm as usize)
             && level < 8
         {
             *b |= 1 << level;
@@ -433,13 +440,27 @@ mod tests {
     }
 
     #[test]
-    fn exits_follow_the_levels_entered() {
+    fn exits_follow_the_levels_finished() {
         let mut q = Quest::default();
         assert!(q.exit_open(7, 0, 0, 0));
         assert!(!q.exit_open(7, 1, 0, 0));
-        q.enter_level(7, 0);
+        q.finish_level(7, 0);
         assert!(q.exit_open(7, 1, 0, 0));
         assert!(!q.exit_open(7, 2, 0, 0));
+        // The tower is never finished.
+        q.finish_level(TOWER, 0);
+        assert_eq!(q.finished[TOWER as usize], 0);
+    }
+
+    #[test]
+    fn old_saves_lose_the_levels_entered() {
+        // Saved when entering a level marked it: G1 entered, never finished.
+        let old = "(crystals: (0, 0, 0, 0, 0, 0, 0, 0, 0), gargoyle: (0, 0, 0), legendary: 0, \
+                   entered: (0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1), rank_level: Some(3))";
+        let q: Quest = ron::from_str(old).unwrap();
+        assert_eq!(q.finished, [0; 14]);
+        assert_eq!(q.rank_level, Some(3));
+        assert!(!q.exit_open(7, 1, 0, 0));
     }
 
     #[test]

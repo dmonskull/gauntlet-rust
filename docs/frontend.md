@@ -314,7 +314,7 @@ platform's data folder (macOS `~/Library/Application Support/`, Windows
 `GauntletDarkLegacyRust/`); `GDL_SAVE_DIR` puts it elsewhere. A record
 holds the name, class and colour, level, experience, health, gold, keys,
 potions, runestones, realms beaten and the quest's progress (crystals,
-gargoyle items, legendary items, levels entered). Saving a name that's
+gargoyle items, legendary items, levels finished). Saving a name that's
 already there replaces it. Load lists the saved characters ("NAME Lv n",
 the first 10, `font32` × 0.5) in the player's column; choosing one
 makes a fresh hero of its class and colour with the record laid on it,

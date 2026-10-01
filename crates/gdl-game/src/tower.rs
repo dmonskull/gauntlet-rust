@@ -46,11 +46,11 @@ impl Plugin for TowerPlugin {
                 place_wizard.run_if(resource_exists_and_changed::<LevelPopulation>),
                 place_trophies
                     .run_if(resource_exists_and_changed::<LevelPopulation>)
-                    .after(quest::enter_level)
+                    .after(quest::seed_tests)
                     .after(follow_levels),
                 arm_speeches
                     .run_if(resource_exists_and_changed::<LevelPopulation>)
-                    .after(quest::enter_level)
+                    .after(quest::seed_tests)
                     .after(follow_levels),
                 speeches,
                 wind_on.before(Animate),
@@ -62,16 +62,19 @@ impl Plugin for TowerPlugin {
     }
 }
 
-/// The level before this one (`r13-0x724c`/`r13-0x7250`: the tower's
-/// speeches and scenes depend on where the heroes came back from).
+/// The last level the heroes finished (`r13-0x724c`/`r13-0x7250`): set as
+/// a level ends with a hero still in it (`exits.rs`), forgotten as any
+/// level but the tower starts. The tower's speeches and scenes depend on
+/// it — where the heroes came back from, and not after dying or quitting.
 #[derive(Resource, Default)]
 pub struct LevelTrail {
-    pub previous: Option<String>,
-    current: Option<String>,
+    pub finished: Option<String>,
 }
 
 fn follow_levels(population: Res<LevelPopulation>, mut trail: ResMut<LevelTrail>) {
-    trail.previous = trail.current.replace(population.level.clone());
+    if quest::level_of(&population.level).is_none_or(|(realm, _)| realm != TOWER_REALM) {
+        trail.finished = None;
+    }
 }
 
 /// The tower's realm.
@@ -160,7 +163,7 @@ fn place_trophies(
     population: Res<LevelPopulation>,
     nodes: Option<Res<LevelNodes>>,
     state: Option<ResMut<PlayerState>>,
-    (trail, mut scene, mut light): (Res<LevelTrail>, ResMut<tower_scenes::Scene>, ResMut<quest::ShardLight>),
+    (mut trail, mut scene, mut light): (ResMut<LevelTrail>, ResMut<tower_scenes::Scene>, ResMut<quest::ShardLight>),
     choice: Option<Res<crate::player::PlayerChoice>>,
     mut game: ResMut<LoadedGame>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -179,7 +182,12 @@ fn place_trophies(
     if let Some(level) = keep {
         state.quest.rank_level = Some(level);
     }
-    let announce = tower_scenes::announcement(marks, shards, held, runes, trail.previous.as_deref());
+    let announce = tower_scenes::announcement(marks, shards, held, runes, trail.finished.as_deref());
+    // The thirteenth's absence is said once: the game forgets the
+    // battlefield as it says it.
+    if matches!(announce, Some(tower_scenes::Announce::Rune13No)) {
+        trail.finished = None;
+    }
     state.quest.shards_announced |= marks;
     state.quest.runes_announced |= held;
     let mut wanted: Vec<(String, &str)> = (1..=8u8).filter(|n| shards & (1 << n) != 0).map(shard_piece).collect();
@@ -311,26 +319,26 @@ const GESTURE: usize = 6;
 /// On each level's arrival: in the tower, the speeches it owes. The game
 /// welcomes a hero on the session's first tower load when no hero in the
 /// game has any of its 16 records at player `+0xA90` above 0
-/// — here, when the hero hasn't entered a realm's level.
+/// — here, when the hero hasn't finished a realm's level.
 fn arm_speeches(
     population: Res<LevelPopulation>,
     state: Option<Res<PlayerState>>,
     trail: Res<LevelTrail>,
     mut speeches: ResMut<TowerSpeeches>,
 ) {
-    let previous = trail.previous.clone();
+    let finished = trail.finished.clone();
     if quest::level_of(&population.level).is_none_or(|(realm, _)| realm != TOWER_REALM) {
         return;
     }
     let first = speeches.tower_loads == 0;
     speeches.tower_loads += 1;
     let fresh = state.as_ref().is_some_and(|s| {
-        s.quest.entered.iter().enumerate().all(|(realm, &levels)| realm == TOWER_REALM as usize || levels == 0)
+        s.quest.finished.iter().enumerate().all(|(realm, &levels)| realm == TOWER_REALM as usize || levels == 0)
     });
     if first && fresh {
         speeches.pending.push(WELCOME);
     }
-    if previous.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(SKORNE_LAIR)) {
+    if finished.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(SKORNE_LAIR)) {
         speeches.pending.push(GARM);
     }
 }

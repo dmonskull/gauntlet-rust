@@ -583,17 +583,69 @@ chest; a monster let out comes out as a barrel's Death does
 case 9) steps the portal's actions while every living hero stands in it
 (and back when they leave), and at the last state sets `r13-0x7328` to
 14/15, which `FUN_8007809c` → `FUN_80086cc8` turns into the heroes' exit
-state; `FUN_80077ccc` lifts and spins the hero for 50 fields and the level
-changes to the code. Secret exits (subtype `0x32`, `SECRET_ICON`) go at
-once, to the secret realm. `FUN_8005b5a4` switches exits off (`EXIT_OFF`
-model, flag `0x8000`) until quest conditions are met — not in the
-runtime.
+state (`+0xE8` = 4). Secret exits (subtype `0x32`, `SECRET_ICON`) skip the
+portal's actions: the touch sets `r13-0x72dc` = (code & 0xFF) + 3 and
+`FUN_8008b92c` keeps the level they're in (`r13-0x6f74`, where the
+secret realm's timer sends the heroes back). `FUN_8005b5a4` switches
+exits off (`EXIT_OFF` model, flag `0x8000`) until quest conditions are
+met ("Realms open", "Exits" below).
+
+**Where an exit goes.** Only the tower's exits go where their code says.
+The hero's destination `+0x830` is set by `FUN_80077ccc` from the code
+(or, for a secret exit, realm `0xC` with the code's level), but the play
+mode reads it only as the heroes leave the tower (`FUN_80054d18`: the
+highest destination among the heroes in the game). Leaving any other
+level (`FUN_80054244`, mode `0x4010`) with a normal exit (`r13-0x72dc` =
+0) the next level is the tower (`r13-0x72b0`) — except from the secret
+realm (`0xC`), E1 and F1, which go on to the next level of their realm
+(current code + 1), and a level whose record `+0x44` names an ending
+movie (`0x2B`/`0x2C`, `FUN_80019c80`), which plays it and then goes to
+the tower. A secret exit goes to its secret level. The way back to the
+tower passes the shop (`FUN_8009a140(0)`, mode `0x4012`: `SHOP_TOP_%s`,
+`S1_PLYR_%d`, `SHP_GOLD`, `FUN_80099b4c`) unless every hero is out. So
+G1's exit, coded `g2`, takes the heroes back to the tower, where G2's
+portal is open now that G1 is finished ("A level finished" below).
+
+**Going out** (`FUN_8007692c` state 4, once no hero is still playing or
+dying: `FUN_80077b84`, then `FUN_80077ccc` each update). The first update
+sets the timer `+0x1F2` = 50 fields (0 through a secret exit), plays
+`S_TUNNEL` at the first hero out's feet and stops the sound items
+(`FUN_8009ca90`, `FUN_800a11c4`), keeps the floor under the hero
+(`+0x8B4` → `+0x8B8`, from the floor check `FUN_800878a0`) and starts
+the hero's timed texture effect with `DEATHLIGHT` (`r13-0x6f0c`, the
+`WEAPONS` flipbook `DTH_LIGHT00`–`09`): `FUN_80090a00(0.4, +0x7DC,
+DEATHLIGHT, 10, 1)` — a counter from −0.4, +0.4 an update, showing frame
+`counter`, once more from 0 at 10 (`FUN_80090a48`; drawn with override
+mode −4 by `FUN_80090aec`, as a dying monster's death texture). Every
+update the timer counts down; at 0 the hero is out (state 5) and its
+model hidden (`FUN_8002c450`); before that, while the floor is below
+1 + 2 × the half height (`+0x854`) + its height, the hero sinks 0.12 a
+field (`r2-0x5e58`; nothing sideways, `r2-0x5fac`) and spins 3π rad/s
+(`r2-0x5e50` × the frame time, `FUN_800be7e8`: a turn about Y). The
+classes' height (`PDAT +0x48`) is 5, so the hero sinks right through the
+floor as its 50 fields run out. The damage routine hurts only heroes in
+state 1, so a hero going out takes no blows. The tower's portals are
+exits too: going into a realm looks the same. Nothing marks an arrival:
+the heroes stand at the level's start (in the tower, beside the gates of
+the realm last played, `population.rs` `start_entry`).
+
+The portal's model (`EXIT_PORTAL`) shows its glow through the flipbook
+node `XCOANIM` (under `TOPNODE`, which turns in `ACTIVE2`): nothing in
+`IDLE` and `READY`; in `ACTIVE1` the purple column `EXIT_ACTIV12F02`… rises
+round the hero (15 frames, 0 to 12.7 high, 1.9 across), `ACTIVE2` holds
+`EXIT_ACTIVE13F2`, `ACTIVE3` runs `EXIT_ACTIV14F02`…. (The rewrite hung a
+flipbook node's frames only on nodes with an object in the first action,
+so the column never showed; `population.rs` `spawn_built` now hangs every
+one.)
 
 The runtime steps the portal through its actions while the hero stands in
-it and resets it when they leave, then waits 50 fields and sends
-`ChangeLevelTo("level<code>")` (`exits.rs`), which becomes the world's
-relative `ChangeLevel`. Stand-in: an exit without a code goes to the hub,
-`levelL1`. The hero's lift and spin aren't drawn.
+it and resets it when they leave; at the last action the hero goes out
+(`going_out.rs`, from `items.rs` as above, the light drawn through
+`fade.rs` `BodyLook` like a dying monster) and 50 fields later (a secret
+exit at once) `items.rs` sends `ChangeLevelTo` (`exits.rs`) for where the
+exit goes (`exit_goes_to`). Stand-ins: no shop on the way back, no ending
+movies, no secret-realm timer; the light's second round isn't seen (the
+hero is gone first, as in the game).
 
 Sounds ([audio-format.md](audio-format.md), "Positional sounds"): while
 a hero in play or going out has its exit count `+0x950` running (it
@@ -771,10 +823,10 @@ In the tower, once play is running after the arrival's opening shot
   (GESTRIGHT, `r13-0x6e68` = 6 with the restart flag `r13-0x6ea4`) and the
   camera cuts to the tower's camera point `0xC6` (`r13-0x7214`,
   `FUN_80066ab0`: hold 50 × 6 fields, no delay);
-- back from `levelF2` (the last level `r13-0x724c`/`r13-0x7250` = realm 6,
-  level 1) it shows `GARMMESSAGE`.
+- back from `levelF2` (the last level finished `r13-0x724c`/`r13-0x7250`
+  = realm 6, level 1 — "Exits" below) it shows `GARMMESSAGE`.
 
-Here (`tower.rs`): both, with "new" read as the hero having entered no
+Here (`tower.rs`): both, with "new" read as the hero having finished no
 realm's level (stand-in for the `+0xA90` records) and "play running" as
 the camera settled (no opening shot, glide or cut).
 
@@ -838,8 +890,9 @@ for each hero, the record's shards and stones `|=` the won words, the
 announced words (`+0x2220`/`+0x2222`) `|=` them too, and the first bit won
 but not announced before is the code `r13-0x6e8c`: shard n (1–8), then
 — overriding — stone i as 100 + i (0–12); with no new stone, 113
-(`Rune13No`) when the last level was `levelH3` (`r13-0x724c`/`-0x7250` =
-realm 8, level 2) and the thirteenth isn't announced, and 114 when all
+(`Rune13No`) when the last level finished was `levelH3`
+(`r13-0x724c`/`-0x7250` = realm 8, level 2; cleared as it's announced)
+and the thirteenth isn't announced, and 114 when all
 twelve were announced and E is beaten (bit 9) — which calls
 `FUN_800a39c4` at once. The timer `r13-0x6e90` is 3 s (`r2-0x5220`) for
 these, 2 s (`r2-0x5210`) for the follow-ups; `FUN_80032824` blocks the
@@ -988,7 +1041,7 @@ the session copies are the player's `+0x1EC8…`):
 | `+0xDDC`/`+0xDDE`, `+0xDE0`/`+0xDE2` | per level record `+0x90`/`+0x92`: seen once / again (not used here) |
 | `+0xDE8` i16 ×3 | gargoyle pieces (session `+0x2234`) |
 | `+0xDEE` i16 ×9 | crystals by counter (session `+0x223A` in the tower) |
-| player `+0x1CD0` + slot × `0xE` | per realm id, a byte of levels entered |
+| player `+0x1CD0` + slot × `0xE` | per realm id, a byte of levels finished |
 
 **Pickups** (`FUN_8005de3c`, class 1):
 
@@ -1085,14 +1138,38 @@ an exit's `+0xDC` is its destination (realm << 8 | level, 0 the first).
 For E and F it's shut unless the realm is open; for H unless the realm
 is open and, for its fourth level, all thirteen runestones are held
 (`0x1FFF`); everywhere else level n ≥ 1 needs bit n − 1 in the players'
-levels-entered byte for that realm (so the first level is always open,
+levels-finished byte for that realm (so the first level is always open,
 behind its gate). A shut exit's model becomes
 `EXIT_OFF` (from the realm's `ITEMS/level<X>` bank), its flags `+0xC4` =
 `0x8000` (it goes nowhere), and the tower's `L1NSNC<letter><n>_ACTIVE`
-node — its glowing trail — is hidden (instance flag `0x2`). Loading a level
-(`FUN_800a1560`) sets that level's bit for each player.
+node — its glowing trail — is hidden (instance flag `0x2`).
 
-**In this rewrite**: all of the above for one player; the messages show
+**A level finished.** The bit is set as a level *ends*, not as it loads.
+The play mode (`FUN_80054244`, mode `0x4010`) ends the level when the
+player update (`FUN_8007692c`) reports it over — the heroes gone through
+an exit, a boss level's countdown out, or no hero left — and the voices
+are quiet. Leaving the tower (current level = `r13-0x72b0`, `0xD00`) it
+only forgets the last level finished (`r13-0x724c`/`r13-0x7250` = −1).
+Leaving any other level, unless every hero in the game is out (state 0
+or `0xB` — dead, or Quit Level's `FUN_80078de8`), it calls
+`FUN_800a1560` with the level being left (`r13-0x7228`/`r13-0x722c`,
+which the level loader `FUN_8005638c` copies from the level it loads):
+that level becomes the last level finished, and for each player playing
+or leaving by the exit (state 1, 4 or 5) its bit is set in the realm's
+byte (and the level record's seen bits, `+0xDDC`/`+0xDE0`, first time or
+again). So entering a level opens nothing; finishing it opens the next.
+Starting any level but the tower (`FUN_80053d1c`, "Starting wave") also
+forgets the last level finished.
+
+Here (`exits.rs`): an exit and a boss level's end ask for the level change
+as *finishing*; Quit Level, the last hero out and a game's start don't.
+As the change goes ahead (after the voices) a finishing one, with the
+hero alive and the level not the tower, sets the bit and the last level
+finished (`tower.rs` `LevelTrail`, read by the GARM speech and the
+thirteenth stone's announcement). Saves made before this rule kept the
+levels *entered* (as `entered`); loading one drops those bits.
+
+**In this rewrite** (the gates and messages): all of the above for one player; the messages show
 in the game's message box (`docs/frontend.md`, "Message box"). Stand-ins
 and gaps: the pickup plates ("Pickup notices") wait for the pickups to
 send them; the level-record seen bits (`+0xDDC…`) aren't kept. The gem/gargoyle count shows above the panel

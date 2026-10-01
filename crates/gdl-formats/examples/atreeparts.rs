@@ -52,6 +52,13 @@ fn main() {
                     .collect();
                 println!("        {} flags {:#06x}: {}", node.name, track.flags, keys.join("; "));
             }
+            // Each flipbook node's run in it: first object, frames, the
+            // action frame it starts on.
+            for (n, node) in a.nodes.iter().enumerate() {
+                if let Some(e) = a.flipbook_entry(n, i) {
+                    println!("        {} flipbook: {:?} × {} from frame {}", node.name, e.first, e.frames, e.param);
+                }
+            }
         }
     }
 }

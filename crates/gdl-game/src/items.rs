@@ -1449,6 +1449,13 @@ fn pose_items(
             if let Some(s) = pose.shown.get_mut(k) {
                 *s = now;
             }
+            debug!(
+                "item {} flipbook {}: action {} frame {frame:?} ({} parts)",
+                item.placement,
+                rig.atree.nodes[*node].name,
+                pose.action,
+                frame.and_then(|f| list.get(f)).map_or(0, Vec::len)
+            );
             commands.entity(*holder).despawn_related::<Children>();
             for p in frame.and_then(|f| list.get(f)).into_iter().flatten() {
                 let e = commands.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), ChildOf(*holder))).id();
@@ -1726,7 +1733,7 @@ fn run(
         leaving.fields -= FIELDS_PER_TICK;
         if leaving.fields <= 0 {
             info!("exit to {}", leaving.to);
-            change.write(ChangeLevelTo(leaving.to.clone()));
+            change.write(ChangeLevelTo::finishing(leaving.to.clone()));
             items.leaving = None;
         }
         return;
@@ -1828,6 +1835,11 @@ fn run(
     }
 
     items.in_exit = exits(items, &on_exit, feet, out);
+    if let Some(leaving) = &items.leaving
+        && player.going_out.is_none()
+    {
+        player.going_out = Some(crate::going_out::GoingOut::new(feet[1], leaving.fields));
+    }
     if let Some(t) = on_transporter {
         start_transport(items, t, r, ground.map(|g| &*g.0), cameras, out);
     } else if items.transport_cooldown > 0 {
@@ -2414,12 +2426,34 @@ fn open_step(item: &mut Item) {
     }
 }
 
+/// Where an exit takes the heroes (`docs/items.md`, "Exits"): the tower's
+/// portals to the level their code names; a secret exit to that level of
+/// the secret realm; every other exit back to the tower — but E1 and F1
+/// on to E2 and F2, and a secret-realm level on to the next.
+fn exit_goes_to(realm: usize, level: usize, secret: bool, code: Option<&str>) -> Option<String> {
+    let letter = |realm: usize| REALM_LETTERS.iter().find(|(_, id)| *id as usize == realm).map(|(l, _)| *l);
+    if secret {
+        let (_, level) = exit_destination(code?)?;
+        return Some(format!("level{}{}", letter(SECRET_REALM)?, level + 1));
+    }
+    if realm == crate::quest::TOWER as usize {
+        return level_for_code(code?);
+    }
+    match (realm, level) {
+        (SECRET_REALM, _) | (REALM_E | REALM_F, 0) => Some(format!("level{}{}", letter(realm)?, level + 2)),
+        _ => Some(crate::frontend::TOWER.to_string()),
+    }
+}
+const REALM_E: usize = 5;
+const REALM_F: usize = 6;
+
 /// Exits the hero stands in this tick: the portal steps through its
 /// actions while the hero stays, and when the last one has played the hero
-/// leaves for the exit's level, `S_TUNNEL` panned at its feet. Secret
-/// exits go at once. Whether the hero stands in an open exit (not a secret
-/// one: those have no flame).
+/// goes out (`going_out.rs`) to where the exit takes it ([`exit_goes_to`]),
+/// `S_TUNNEL` panned at its feet. Secret exits go at once. Whether the hero
+/// stands in an open exit (not a secret one: those have no flame).
 fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Out) -> bool {
+    let (realm, level) = (items.realm, items.level);
     let mut go = None;
     let mut standing = false;
     for (i, item) in items.items.iter_mut().enumerate() {
@@ -2436,12 +2470,11 @@ fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Ou
             continue;
         }
         standing |= !secret;
-        let dest = match &item.params {
-            PlacementParams::Exit { destination: Some(code) } => level_for_code(code),
-            // Stand-in: an exit without a code (a realm's last level) goes
-            // back to the hub.
-            _ => Some("levelL1".to_string()),
+        let code = match &item.params {
+            PlacementParams::Exit { destination } => destination.as_deref(),
+            _ => None,
         };
+        let dest = exit_goes_to(realm, level, secret, code);
         if secret {
             item.flags |= USED;
             go = dest.map(|to| (to, true));
@@ -2460,9 +2493,10 @@ fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Ou
         }
     }
     if let Some((to, secret)) = go {
-        // The hero's exit takes 50 fields before the level changes; the
-        // first hero out goes with the tunnel's sound.
-        items.leaving = Some(Leaving { to, fields: 50, secret });
+        // Going out takes 50 fields before the level changes (a secret
+        // exit none); the first hero out goes with the tunnel's sound.
+        let fields = if secret { 0 } else { crate::going_out::FIELDS };
+        items.leaving = Some(Leaving { to, fields, secret });
         out.sounds.push(PlaySoundAt::panned(TUNNEL_SOUND, Vec3::from(feet), CALL_VOLUME));
     }
     standing

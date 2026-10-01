@@ -1065,7 +1065,7 @@ pub(crate) fn run(
         Screen::LoadingSelect => {
             // One frame shows "Loading..." before the load stalls a frame.
             if fe.t > 2.0 {
-                to_level.write(ChangeLevelTo(TOWER.to_string()));
+                to_level.write(ChangeLevelTo::to(TOWER));
                 start_select(&mut fe, false, has_saves);
                 fe.go(Screen::Select);
             }
@@ -1073,7 +1073,7 @@ pub(crate) fn run(
         Screen::Select => select(&mut fe, &p, &mut choice, state.as_deref(), &mut saves),
         Screen::LoadingGame => {
             if fe.t > 2.0 {
-                to_level.write(ChangeLevelTo(TOWER.to_string()));
+                to_level.write(ChangeLevelTo::to(TOWER));
                 fe.go(Screen::Playing);
             }
         }
@@ -1102,7 +1102,7 @@ pub(crate) fn run(
                         // The heroes leave the level; with nobody left in
                         // it the party goes back to the tower.
                         fe.menus.clear();
-                        to_level.write(ChangeLevelTo(TOWER.to_string()));
+                        to_level.write(ChangeLevelTo::to(TOWER));
                     }
                     Item::ManageCharacter => {
                         fe.menus.clear();
@@ -1554,7 +1554,7 @@ fn death(
     if fe.out {
         if !fe.leaving {
             fe.leaving = true;
-            to_level.write(ChangeLevelTo(TOWER.to_string()));
+            to_level.write(ChangeLevelTo::to(TOWER));
             info!("no hero left standing: back to the tower");
         }
         return;

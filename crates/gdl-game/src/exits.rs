@@ -6,16 +6,42 @@
 //! level's start waits for them too (`docs/frontend.md`, "The wait for the
 //! voices"). So a level change waits here while the queues are busy — an
 //! exit, a boss level's end, the last hero out.
+//!
+//! As the level ends with the hero still in it — through an exit, or at a
+//! boss level's end — the level is finished: marked in the hero's record
+//! (the next level's exits open, `quest.rs`) and kept as the last level
+//! finished (the tower's speeches, `tower.rs`). Quitting the level or every
+//! hero out finishes nothing (`docs/items.md`, "Exits").
 
 use bevy::prelude::*;
 
 use crate::audio::VoiceQueues;
 use crate::level::LoadedGame;
+use crate::player_state::PlayerState;
+use crate::quest;
+use crate::tower::LevelTrail;
 use crate::world::ChangeLevel;
 
 /// Loads the level with this folder name (`levelA6`), if the game has it.
 #[derive(Message, Clone, Debug)]
-pub struct ChangeLevelTo(pub String);
+pub struct ChangeLevelTo {
+    pub level: String,
+    /// The heroes leave still in the level, which finishes it.
+    pub finishing: bool,
+}
+
+impl ChangeLevelTo {
+    /// Going without finishing the level: a game starting, Quit Level, the
+    /// last hero out.
+    pub fn to(level: impl Into<String>) -> Self {
+        Self { level: level.into(), finishing: false }
+    }
+
+    /// The heroes leave through an exit, or at a boss level's end.
+    pub fn finishing(level: impl Into<String>) -> Self {
+        Self { level: level.into(), finishing: true }
+    }
+}
 
 pub struct ExitsPlugin;
 
@@ -27,26 +53,38 @@ impl Plugin for ExitsPlugin {
 
 fn change_level_to(
     mut requests: MessageReader<ChangeLevelTo>,
-    mut pending: Local<Option<String>>,
+    mut pending: Local<Option<ChangeLevelTo>>,
     voices: Res<VoiceQueues>,
     game: Res<LoadedGame>,
+    state: Option<ResMut<PlayerState>>,
+    mut trail: ResMut<LevelTrail>,
     mut change: MessageWriter<ChangeLevel>,
 ) {
     // Several at once: the last one wins.
-    if let Some(ChangeLevelTo(name)) = requests.read().last() {
+    if let Some(request) = requests.read().last() {
         if voices.busy() && pending.is_none() {
-            info!("{name} waits for the voices");
+            info!("{} waits for the voices", request.level);
         }
-        *pending = Some(name.clone());
+        *pending = Some(request.clone());
     }
     if voices.busy() {
         return;
     }
-    let Some(name) = pending.take() else { return };
-    match game.levels.iter().position(|l| l.name.eq_ignore_ascii_case(&name)) {
-        Some(to) => {
-            change.write(ChangeLevel(to as isize - game.current as isize));
-        }
-        None => warn!("no level named {name} to go to"),
+    let Some(request) = pending.take() else { return };
+    let Some(to) = game.levels.iter().position(|l| l.name.eq_ignore_ascii_case(&request.level)) else {
+        warn!("no level named {} to go to", request.level);
+        return;
+    };
+    let leaving = &game.levels[game.current].name;
+    if request.finishing
+        && let Some(mut state) = state
+        && state.alive
+        && let Some((realm, level)) = quest::level_of(leaving)
+        && realm != quest::TOWER
+    {
+        info!("{leaving} finished");
+        state.quest.finish_level(realm, level);
+        trail.finished = Some(leaving.clone());
     }
+    change.write(ChangeLevel(to as isize - game.current as isize));
 }
