@@ -478,8 +478,8 @@ pub fn just_pressed_input(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<Mouse
 
 /// A pad button just pressed that can be bound (not Start, which backs
 /// out).
-pub fn just_pressed_pad(pads: &Query<&Gamepad>) -> Option<GamepadButton> {
-    pads.iter().find_map(|p| PAD_NAMES.iter().find(|(b, _)| p.just_pressed(*b)).map(|&(b, _)| b))
+pub fn just_pressed_pad<'a>(pads: impl IntoIterator<Item = &'a Gamepad>) -> Option<GamepadButton> {
+    pads.into_iter().find_map(|p| PAD_NAMES.iter().find(|(b, _)| p.just_pressed(*b)).map(|&(b, _)| b))
 }
 
 #[cfg(test)]

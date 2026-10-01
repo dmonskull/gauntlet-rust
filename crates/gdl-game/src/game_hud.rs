@@ -176,9 +176,9 @@ const POTION_ICONS: [&str; 5] = ["POTION_ICON_RED", "POTION_ICON_RED", "POTION_I
 const RUNE_COLOURS: [&str; 4] = ["BLU", "RED", "YEL", "GRE"];
 const COLOURS: [&str; 4] = ["YEL", "BLU", "RED", "GRE"];
 /// A panel waiting for its player: `S4` in the slot's dim colour.
-const NOT_JOINED: [[u8; 3]; 4] = [[0x5A, 0x5A, 0x1E], [0x1E, 0x1E, 0x69], [0x64, 0x28, 0x28], [0x1E, 0x4B, 0x1E]];
+pub(crate) const NOT_JOINED: [[u8; 3]; 4] = [[0x5A, 0x5A, 0x1E], [0x1E, 0x1E, 0x69], [0x64, 0x28, 0x28], [0x1E, 0x4B, 0x1E]];
 /// A joined player's plain panel (out of the level): `S4` in its colour.
-const JOINED: [[u8; 3]; 4] = [[0x78, 0x78, 0x00], [0x1E, 0x1E, 0x78], [0x78, 0x00, 0x00], [0x00, 0x64, 0x00]];
+pub(crate) const JOINED: [[u8; 3]; 4] = [[0x78, 0x78, 0x00], [0x1E, 0x1E, 0x78], [0x78, 0x00, 0x00], [0x00, 0x64, 0x00]];
 /// Each panel's width (players 2–4 follow player 1's).
 const PANEL_WIDTH: f32 = 128.0;
 /// Fields the key row shows for.
