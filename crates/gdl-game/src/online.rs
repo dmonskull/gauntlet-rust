@@ -68,7 +68,7 @@ impl Plugin for OnlinePlugin {
             .add_systems(Update, fresh_game)
             .add_systems(RunFixedMainLoop, drive.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .add_systems(RunFixedMainLoop, run_net_tick.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
-            .add_systems(NetTick, (leave_gone, checksum.after(leave_gone)))
+            .add_systems(NetTick, (leave_gone, net_shop.after(leave_gone), checksum.after(net_shop)))
             .add_systems(Last, settle);
     }
 }
@@ -494,9 +494,14 @@ fn poll(mut commands: Commands, opening: Option<Res<Opening>>, online: Option<Re
     }
 }
 
-/// This machine's player's controls (`player.rs`), sent every frame.
+/// This machine's player's controls (`player.rs`), sent every frame, and a
+/// command from its menus (`SlotInput::OPEN_SHOP` …) held on them for a
+/// few frames so a tick takes it.
 #[derive(Resource, Default, Clone, Copy)]
-pub struct LocalControls(pub SlotInput);
+pub struct LocalControls(pub SlotInput, pub Option<(u32, u8)>);
+
+/// Frames a menu command rides with the controls.
+pub const COMMAND_FRAMES: u8 = 12;
 
 /// Online, before the fixed loop: sends this machine's controls, takes the
 /// next tick's bundle when it's due and the game is settled, and moves the
@@ -509,7 +514,7 @@ pub(crate) fn drive(
     (mut virt, mut fixed): (ResMut<Time<Virtual>>, ResMut<Time<Fixed>>),
     mut inputs: ResMut<Inputs>,
     local: Res<LocalControls>,
-    boxes: Res<crate::message_box::MessageBox>,
+    (boxes, shop): (Res<crate::message_box::MessageBox>, Res<crate::shop::ShopScreen>),
 ) {
     lock.ticked = false;
     lock.stepped = false;
@@ -540,9 +545,9 @@ pub(crate) fn drive(
                 lock.ticked = true;
                 lock.owed -= step;
                 lock.waited = 0.0;
-                // The message box freezes play (`message_box.rs`): the
-                // tick is the box's alone.
-                if !boxes.is_open() {
+                // The message box and the shop screens freeze play: the
+                // tick is theirs alone.
+                if !boxes.is_open() && !shop.is_open() {
                     lock.stepped = true;
                     run = 1;
                 }
@@ -608,6 +613,68 @@ fn leave_gone(
                 commands.entity(e).despawn();
             }
         }
+    }
+}
+
+/// Online the shop screens run on the network's ticks with each player's
+/// controls from the bundle: up and down (the D-pad or the stick), A
+/// buys, X sells, B goes to EXIT. A player's Tower Menu command opens the
+/// Shop or Inventory for everyone; when the screen ends the points bought
+/// go back on the heroes and play goes on in the tower.
+#[allow(clippy::too_many_arguments)]
+fn net_shop(
+    lock: Res<Lockstep>,
+    inputs: Res<Inputs>,
+    mut shop: ResMut<crate::shop::ShopScreen>,
+    data: Option<Res<crate::shop::ShopData>>,
+    mut party: ResMut<Party>,
+    population: Option<Res<LevelPopulation>>,
+    mut sticks: Local<[(bool, bool); MAX_PLAYERS]>,
+) {
+    use crate::combat::button;
+    use crate::shop::{ShopKind, ShopOpen, ShopOutcome, ShopPress};
+    let pressed = |slot: usize, bits: u32| inputs.slots[slot].held & bits & !lock.last_held[slot] != 0;
+    let mut presses = [ShopPress::default(); MAX_PLAYERS];
+    for (slot, press) in presses.iter_mut().enumerate() {
+        let y = inputs.slots[slot].stick.y;
+        let (was_up, was_down) = sticks[slot];
+        let (up, down) = (y > 0.5, y < -0.5);
+        sticks[slot] = (up, down);
+        press.up = pressed(slot, button::DPAD_UP) || (up && !was_up);
+        press.down = pressed(slot, button::DPAD_DOWN) || (down && !was_down);
+        press.accept = pressed(slot, button::QUICK);
+        press.sell = pressed(slot, button::MAGIC);
+        press.back = pressed(slot, SlotInput::BACK);
+    }
+    if !shop.is_open() {
+        // A Tower Menu's command, in the tower.
+        let in_tower = population.as_ref().and_then(|p| crate::quest::level_of(&p.level)).is_some_and(|(realm, _)| realm == crate::quest::TOWER);
+        let kind = if (0..MAX_PLAYERS).any(|s| pressed(s, SlotInput::OPEN_SHOP)) {
+            Some(ShopKind::Shop)
+        } else if (0..MAX_PLAYERS).any(|s| pressed(s, SlotInput::OPEN_INVENTORY)) {
+            Some(ShopKind::Inventory)
+        } else {
+            None
+        };
+        if let (Some(kind), true, Some(data)) = (kind, in_tower, data.as_deref()) {
+            let mut open = ShopOpen::new(kind);
+            for (slot, state) in party.states() {
+                open.bonus[slot] = state.bought;
+            }
+            info!("online: the {kind:?} screen opens at tick {}", lock.tick);
+            shop.open(data, &party, open);
+        }
+        return;
+    }
+    let outcome = crate::shop::tick(&mut shop, 2.0, &presses, &mut party);
+    if outcome != ShopOutcome::Continue {
+        for slot in 0..MAX_PLAYERS {
+            if let (Some(bought), Some(state)) = (shop.bonus(slot), party.state_mut(slot)) {
+                state.bought = bought;
+            }
+        }
+        shop.close();
+        info!("online: the shop screen closes at tick {}", lock.tick);
     }
 }
 
@@ -693,10 +760,13 @@ fn fresh_game(
     mut stop: ResMut<crate::player_state::TimeStop>,
     mut scale: ResMut<crate::player_state::EnemyScale>,
     mut inputs: ResMut<Inputs>,
+    mut shop: ResMut<crate::shop::ShopScreen>,
 ) {
     if new_game.read().count() == 0 {
         return;
     }
+    // Its own random numbers start alike too.
+    *shop = default();
     voices.clear();
     boxes.clear();
     *snapshot = default();

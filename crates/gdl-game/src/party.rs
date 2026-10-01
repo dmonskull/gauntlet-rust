@@ -189,9 +189,13 @@ impl SlotInput {
     pub const ROBOTRON: u32 = 0x0400_0000;
     /// The B button, held (online, the message box's).
     pub const BACK: u32 = 0x0800_0000;
+    /// Online, a player's Tower Menu opens the Shop or the Inventory for
+    /// everyone: the command rides with their controls for a moment.
+    pub const OPEN_SHOP: u32 = 0x40;
+    pub const OPEN_INVENTORY: u32 = 0x80;
     /// The settings' bits.
     pub const SETTINGS: u32 = Self::AUTO_AIM | Self::AUTO_ATTACK | Self::ROBOTRON;
-    const EXTRAS: u32 = Self::SETTINGS | Self::BACK;
+    const EXTRAS: u32 = Self::SETTINGS | Self::BACK | Self::OPEN_SHOP | Self::OPEN_INVENTORY;
 
     /// The game's buttons held, without the extras.
     pub fn buttons(&self) -> u32 {

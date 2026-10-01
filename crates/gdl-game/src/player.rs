@@ -1119,6 +1119,11 @@ pub(crate) fn sample_online(
         input = SlotInput::default().with_settings(options.player(0));
     }
     controls.apply_script(&mut input, u64::from(lock.tick) + 1);
+    // A menu's command rides along for a few frames.
+    if let Some((bits, frames)) = local.1 {
+        input.held |= bits;
+        local.1 = (frames > 1).then_some((bits, frames - 1));
+    }
     local.0 = input;
 }
 

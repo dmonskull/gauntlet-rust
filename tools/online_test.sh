@@ -4,7 +4,8 @@
 # picks a new hero, and they play for a while on scripted sticks. Every 30
 # ticks both log a hash of their game state (`GDL_SYNC_LOG`); the hashes
 # must match tick for tick.
-# Usage: [GDL_ONLINE_LEVEL=levelA1] [SHOT_AT=<frame>] tools/online_test.sh [seconds]
+# Usage: [GDL_ONLINE_LEVEL=levelA1] [SHOT_AT=<frame>] [HOST_MENU=<GDL_MENU>]
+#        [CLIENT_MENU=<GDL_MENU>] tools/online_test.sh [seconds]
 ROOT=${0:A:h:h}
 GAME=${GDL_GAME:-$HOME/Desktop/GauntletDarkLegacy}
 BIN=${GDL_BIN:-$ROOT/target/debug/gdl-game}
@@ -14,11 +15,11 @@ mkdir -p $OUT
 rm -f $OUT/invite.txt $OUT/host.log $OUT/client.log
 export GDL_NET_LOCAL=1 GDL_INVITE_FILE=$OUT/invite.txt GDL_SYNC_LOG=1 GDL_SKIP_BOXES=1 RUST_LOG=${RUST_LOG:-info}
 $ROOT/tools/waitrun.sh zsh -c "
-  GDL_ONLINE=host GDL_ONLINE_PLAYERS=2 GDL_ONLINE_HERO=WAR GDL_STICK=0.3,1 GDL_BUTTONS=attack@200-900 \
+  GDL_MENU='${HOST_MENU:-}' GDL_ONLINE=host GDL_ONLINE_PLAYERS=2 GDL_ONLINE_HERO=WAR GDL_STICK=0.3,1 GDL_BUTTONS=attack@200-900 \
     GDL_SCREENSHOT=$OUT/host.png GDL_SHOT_AT=${SHOT_AT:-999999} \
     timeout $SECS $BIN $GAME > $OUT/host.log 2>&1 &
   for i in {1..60}; do [[ -s $OUT/invite.txt ]] && break; sleep 0.5; done
-  GDL_ONLINE=join GDL_ONLINE_HERO=VAL GDL_STICK=-0.3,1 GDL_BUTTONS=attack@300-1200 \
+  GDL_MENU='${CLIENT_MENU:-}' GDL_ONLINE=join GDL_ONLINE_HERO=VAL GDL_STICK=-0.3,1 GDL_BUTTONS=attack@300-1200 \
     GDL_SCREENSHOT=$OUT/client.png GDL_SHOT_AT=${SHOT_AT:-999999} \
     timeout $SECS $BIN $GAME > $OUT/client.log 2>&1 &
   wait

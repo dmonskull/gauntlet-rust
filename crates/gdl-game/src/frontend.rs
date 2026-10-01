@@ -40,7 +40,7 @@ use crate::online::{ColumnShow, Hero, Lobby, Lockstep, Message, NewGame, Online,
 use crate::play_camera::PlayCamera;
 use crate::shop::{ShopData, ShopKind, ShopOpen, ShopOutcome, ShopPress, ShopScreen};
 use crate::options::GameOptions;
-use crate::party::{MAX_PLAYERS, Party};
+use crate::party::{MAX_PLAYERS, Party, SlotInput};
 use crate::player::{Player, PlayerChoice};
 use crate::party::Devices;
 use crate::player_state::{PartyChange, PlayerState};
@@ -653,8 +653,14 @@ static TITLE_MENU: MenuDef = title_menu(&[e("Start", Item::Start), e("Options", 
 /// Start's choice (not the game's): play on this machine, or online.
 static PLAY_MENU: MenuDef = title_menu(&[e("Local Game", Item::Local), e("Online Game", Item::Online)]);
 static ONLINE_MENU: MenuDef = title_menu(&[e("Host Game", Item::Host), e("Join Game", Item::Join)]);
-/// Online play's Start menu: play goes on underneath.
+/// Online play's Start menu: play goes on underneath. In the tower the Shop
+/// and Inventory open for everyone.
 static ONLINE_GAME_MENU: MenuDef = game_menu("Online Game", true, &[e("Settings", Item::Settings), e("Leave Game", Item::LeaveGame)]);
+static ONLINE_TOWER_MENU: MenuDef = game_menu(
+    "Online Game",
+    true,
+    &[e("Settings", Item::Settings), e("Shop", Item::Shop), e("Inventory", Item::Inventory), e("Leave Game", Item::LeaveGame)],
+);
 static LEAVE_GAME: MenuDef = confirm("Leave Game?", &[e("No", Item::No), e("Yes", Item::ConfirmLeave)]);
 static OPTIONS_MENU: MenuDef = game_menu(
     "Options",
@@ -1275,7 +1281,7 @@ pub(crate) fn run(
         MessageWriter<NewGame>,
     ),
     (keys, mut camera): (Res<ButtonInput<KeyCode>>, Option<ResMut<PlayCamera>>),
-    mut shop: (ResMut<ShopScreen>, Option<Res<ShopData>>),
+    (mut shop, mut local): ((ResMut<ShopScreen>, Option<Res<ShopData>>), ResMut<crate::online::LocalControls>),
 ) {
     let has_saves = !saves.file.characters.is_empty();
     let fields = real.delta_secs() * 60.0;
@@ -1433,7 +1439,7 @@ pub(crate) fn run(
                         // Online: this machine's player's settings are
                         // player 1's here, and play goes on.
                         fe.menu_slot = 0;
-                        fe.menus.push(Menu::new(&ONLINE_GAME_MENU));
+                        fe.menus.push(Menu::new(if in_tower { &ONLINE_TOWER_MENU } else { &ONLINE_GAME_MENU }));
                     } else {
                     match party.members().find(|(_, m)| device.among(&m.devices)) {
                         Some((slot, _)) => {
@@ -1475,6 +1481,13 @@ pub(crate) fn run(
                         start_select(&mut fe, SelectFor::Manage, has_saves, &party, &mut changes);
                         fe.go(Screen::Select);
                     }
+                    // Online the command goes to everyone with this player's
+                    // controls; the screen opens on a tick (`online.rs`).
+                    Item::Shop | Item::Inventory if lock.on => {
+                        let bits = if item == Item::Shop { SlotInput::OPEN_SHOP } else { SlotInput::OPEN_INVENTORY };
+                        local.1 = Some((bits, crate::online::COMMAND_FRAMES));
+                        fe.menus.clear();
+                    }
                     Item::Shop | Item::Inventory => {
                         let kind = if item == Item::Shop { ShopKind::Shop } else { ShopKind::Inventory };
                         fe.menus.clear();
@@ -1486,6 +1499,13 @@ pub(crate) fn run(
                     }
                     other => open_submenu(&mut fe.menus, other),
                 }
+            }
+        }
+        // Online the screen runs on the network's ticks (`online.rs`).
+        Screen::Shop if lock.on => {
+            if !shop.0.is_open() {
+                fe.shop_kind = None;
+                fe.go(Screen::Playing);
             }
         }
         Screen::Shop => {
@@ -1522,9 +1542,15 @@ pub(crate) fn run(
     }
 
     if lock.on {
+        // A shop screen opened on a tick covers play here too.
+        if fe.screen == Screen::Playing && shop.0.is_open() {
+            fe.menus.clear();
+            fe.go(Screen::Shop);
+        }
         // Online the network's ticks drive the game (`online.rs`): the
-        // front end only holds it while it isn't in play.
-        lock.held = fe.screen != Screen::Playing;
+        // front end only holds it while it isn't in play (a shop screen
+        // runs on the ticks).
+        lock.held = !matches!(fe.screen, Screen::Playing | Screen::Shop);
         if fe.screen == Screen::Playing {
             let over = online.as_ref().and_then(|o| match &o.phase {
                 crate::online::Phase::Over(why) => Some(why.clone()),
@@ -2403,8 +2429,7 @@ fn level_started(
     // online yet.
     if name == TOWER.to_ascii_lowercase() {
         if let Some(level) = trail.finished.clone().filter(|l| fe.after_level_for.as_ref() != Some(l))
-            && fe.screen == Screen::Playing
-            && !lock.on
+            && (fe.screen == Screen::Playing || lock.on)
         {
             let mut open = ShopOpen::new(ShopKind::AfterLevel);
             open.level = Some(level.clone());
