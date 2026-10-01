@@ -103,7 +103,8 @@ use crate::mechanics::Mechanics;
 use crate::monsters::{MonsterLevel, MonsterTick, game_view, on_screen};
 use crate::play_camera::PlayCamera;
 use crate::player::Player;
-use crate::player_state::{Cry, EnemyScale, HurtHero, PlayerState, TimeStop};
+use crate::party::Party;
+use crate::player_state::{Cry, EnemyScale, HurtHero, TimeStop};
 use crate::population::{ContentModels, LevelPopulation};
 use crate::projectiles::{CritterMissile, CritterStop, cylinder_hit, load_atree, spawn_critter_missile};
 use crate::world::{LevelEntity, LevelGround};
@@ -188,7 +189,7 @@ fn pose_parts(critters: Query<(&Critter, &Animator)>, mut bones: Query<&mut Tran
 fn run_victory(
     mut commands: Commands,
     level: Option<ResMut<CritterLevel>>,
-    mut state: Option<ResMut<PlayerState>>,
+    mut party: ResMut<Party>,
     mut players: Query<&mut Player>,
     mut animators: Query<&mut Animator>,
     mut sounds: MessageWriter<PlaySoundAt>,
@@ -205,7 +206,7 @@ fn run_victory(
         commands.entity(e).insert(LevelEntity);
         e
     };
-    let runes = state.as_ref().map_or(0, |s| s.runestone_bits());
+    let runes = party.states().fold(0, |bits, (_, s)| bits | s.runestone_bits());
     // The first skorne asks for the twelve runestones of the realms.
     let all_twelve = runes & ALL_RUNESTONES == ALL_RUNESTONES;
 
@@ -228,7 +229,8 @@ fn run_victory(
     }
     match v.step {
         0 => {
-            if let Some(s) = state.as_deref_mut() {
+            // Every player's record (the boss's death marks them all).
+            for (_, s) in party.states_mut() {
                 s.realms_beaten |= 1 << level.realm_id;
             }
             info!("realm {} beaten", level.realm_id);
@@ -250,11 +252,11 @@ fn run_victory(
             let at = if matches!(level.boss_type, SKORNE | SKORNE2) {
                 WIZARD_SKORNE_SPOT
             } else {
-                let heroes: Vec<[f32; 3]> = if state.as_ref().is_none_or(|s| s.alive) {
-                    players.iter().map(|p| p.mover.position).collect()
-                } else {
-                    Vec::new()
-                };
+                let heroes: Vec<[f32; 3]> = players
+                    .iter()
+                    .filter(|p| party.state(p.slot).is_some_and(|s| s.alive))
+                    .map(|p| p.mover.position)
+                    .collect();
                 let mut at = wizard_spot(level.boss_spot, &heroes);
                 at[1] += WIZARD_RISE;
                 at
@@ -296,8 +298,8 @@ fn run_victory(
             }
             if v.step == 10 && v.countdown <= TELEPORT_LEFT {
                 debug!("the heroes teleport out");
-                if state.as_ref().is_some_and(|s| s.alive) {
-                    for mut p in &mut players {
+                for mut p in &mut players {
+                    if party.state(p.slot).is_some_and(|s| s.alive) {
                         p.light = Some(crate::going_out::DeathLight::new(crate::going_out::TELEPORT_LIGHT_STEP));
                     }
                 }
@@ -1209,7 +1211,7 @@ fn setup_level(
     monsters: Res<MonsterLevel>,
     population: Option<Res<LevelPopulation>>,
     ground: Option<Res<LevelGround>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -1489,7 +1491,7 @@ fn setup_level(
         // The intro runs when a hero brings the realm's legendary item
         // (`GDL_LEGENDARY=1`, a testing aid, pretends one does); the second
         // skorne and garm have none.
-        let carried = state.as_ref().is_some_and(|s| s.quest.legendary & (1 << realm_id) != 0);
+        let carried = party.any(|s| s.quest.legendary & (1 << realm_id) != 0);
         let pretend = std::env::var("GDL_LEGENDARY").is_ok_and(|v| v == "1");
         if (0..=LAST_INTRO_BOSS).contains(&monsters.boss) && (carried || pretend) {
             level.intro = intro::START;
@@ -1806,7 +1808,7 @@ fn tick_critters(
     ground: Option<Res<LevelGround>>,
     mechanics: Option<ResMut<Mechanics>>,
     population: Option<Res<LevelPopulation>>,
-    mut state: Option<ResMut<PlayerState>>,
+    mut party: ResMut<Party>,
     mut players: Query<(Entity, &mut Player)>,
     mut critters: Query<(Entity, &mut Critter, &mut Animator), Without<StatueModel>>,
     mut statues: Query<&mut Animator, With<StatueModel>>,
@@ -1833,33 +1835,26 @@ fn tick_critters(
     if matches!(level.intro, intro::WAIT | intro::ROAR) && !level.legendary_used {
         level.legendary_used = true;
         let bit = 1u16 << level.realm_id;
-        if state.as_deref().is_some_and(|s| s.quest.legendary & bit != 0)
-            && let Some(s) = state.as_deref_mut()
-        {
+        if let Some((slot, s)) = party.states_mut().find(|(_, s)| s.quest.legendary & bit != 0) {
             s.quest.legendary &= !bit;
-            info!("the hero's legendary item is used up");
+            info!("player {}'s legendary item is used up", slot + 1);
         }
     }
-    let alive = state.as_ref().is_none_or(|s| s.alive);
-    let (radius, half) = state.as_ref().map_or((1.5, 2.5), |s| (s.radius, s.half_height));
-    let heroes: Vec<Hero> = if alive {
-        players
-            .iter()
-            .map(|(e, p)| {
-                let c = p.actions.action.category().0;
-                Hero {
-                    entity: e,
-                    feet: p.mover.position,
-                    radius,
-                    half,
-                    attacking: (1..=12).contains(&c),
-                    hidden: p.special_bits & crate::player_state::power::INVISIBLE != 0,
-                }
+    let heroes: Vec<Hero> = players
+        .iter()
+        .filter_map(|(e, p)| {
+            let s = party.state(p.slot).filter(|s| s.alive)?;
+            let c = p.actions.action.category().0;
+            Some(Hero {
+                entity: e,
+                feet: p.mover.position,
+                radius: s.radius,
+                half: s.half_height,
+                attacking: (1..=12).contains(&c),
+                hidden: p.special_bits & crate::player_state::power::INVISIBLE != 0,
             })
-            .collect()
-    } else {
-        Vec::new()
-    };
+        })
+        .collect();
 
     let view = game_view(camera.as_deref());
     wake_statues(level, mechanics, population.as_deref(), &heroes, view.as_ref(), &mut statues, &mut commands);
@@ -2129,7 +2124,7 @@ fn tick_critters(
         let amount = p.take_blow(amount, kind_bits, Vec3::from(push));
         // Voiced as the game's critter blows are: the hurt sound by kind.
         if amount != 0.0 {
-            hurt.write(HurtHero { amount, kind: kind_bits, cry: Cry::Hurt });
+            hurt.write(HurtHero { slot: p.slot, amount, kind: kind_bits, cry: Cry::Hurt });
         }
         info!("a critter hits the hero for {amount:.1} (kind {kind_bits:#x})");
     }

@@ -37,8 +37,9 @@ use crate::font::{Draw2d, FontTexture, GameFonts, TextStyle, UiTextures};
 use crate::level::LoadedGame;
 use crate::message_box::MessageBox;
 use crate::options::GameOptions;
+use crate::party::{MAX_PLAYERS, Party};
 use crate::player::{Player, PlayerChoice};
-use crate::player_state::PlayerState;
+use crate::player_state::{PlayerState, SetMember};
 use crate::population::LevelPopulation;
 use crate::saves::{SavedCharacter, Saves};
 
@@ -846,16 +847,16 @@ pub struct Frontend {
     script: Vec<(String, u64)>,
     /// The hero's name, from the select screen.
     pub hero_name: String,
-    /// Seconds the hero has lain dead.
-    dead_for: f32,
-    /// The hero is out of the level (its death over, outside the tower):
-    /// it waits for the level to end and comes back with the snapshot
-    /// when the next level starts.
-    out: bool,
-    /// The out hero's level end has been asked for.
+    /// By slot: seconds each hero has lain dead.
+    dead_for: [f32; MAX_PLAYERS],
+    /// By slot: the hero is out of the level (its death over, outside the
+    /// tower): it waits for the level to end and comes back with its
+    /// snapshot when the next level starts.
+    out: [bool; MAX_PLAYERS],
+    /// With every hero out, the level end has been asked for.
     leaving: bool,
-    /// A new hero was made: its record is the snapshot from now on.
-    fresh_hero: bool,
+    /// By slot: a new hero was made: its record is the snapshot from now on.
+    fresh_hero: [bool; MAX_PLAYERS],
     /// PC Settings waits for a key or button for an action (on the keys or
     /// the pad page), and what came.
     capture: Option<(Page, Action)>,
@@ -886,10 +887,10 @@ impl Frontend {
             frame: 0,
             script: menu_script(),
             hero_name: String::new(),
-            dead_for: 0.0,
-            out: false,
+            dead_for: [0.0; MAX_PLAYERS],
+            out: [false; MAX_PLAYERS],
             leaving: false,
-            fresh_hero: false,
+            fresh_hero: [false; MAX_PLAYERS],
             capture: None,
             captured: None,
             style_pick: 0,
@@ -920,10 +921,10 @@ impl Frontend {
         !self.menus.is_empty()
     }
 
-    /// Whether the hero is out of the level (the game's player state
-    /// `0xB`): dead outside the tower, waiting for the level to end.
-    pub fn hero_out(&self) -> bool {
-        self.out
+    /// Whether a hero is out of the level (the game's player state `0xB`):
+    /// dead outside the tower, waiting for the level to end.
+    pub fn hero_out(&self, slot: usize) -> bool {
+        self.out.get(slot).copied().unwrap_or(false)
     }
 
     /// B (back) was pressed this frame.
@@ -960,11 +961,11 @@ fn show_backdrop(frontend: Res<Frontend>, mut backdrop: Query<&mut Visibility, W
     }
 }
 
-/// The hero's record as it stood when the current level began (the
+/// Each hero's record as it stood when the current level began (the
 /// game's per-player save of the character when a level outside the tower
-/// starts); a dead hero comes back with it.
+/// starts), by slot; a dead hero comes back with it.
 #[derive(Resource, Default)]
-pub struct Snapshot(Option<PlayerState>);
+pub struct Snapshot([Option<PlayerState>; MAX_PLAYERS]);
 
 /// `TEXT/ENGLISH.ROM`, for the strings the front end draws.
 #[derive(Resource)]
@@ -1010,10 +1011,9 @@ pub(crate) fn run(
     real: Res<Time<Real>>,
     mut virt: ResMut<Time<Virtual>>,
     game: Res<LoadedGame>,
-    mut choice: ResMut<PlayerChoice>,
+    (party, mut members): (Res<Party>, MessageWriter<SetMember>),
     mut to_level: MessageWriter<ChangeLevelTo>,
     mut options: ResMut<GameOptions>,
-    state: Option<Res<PlayerState>>,
     mut saves: ResMut<Saves>,
     boxes: Res<MessageBox>,
 ) {
@@ -1070,7 +1070,7 @@ pub(crate) fn run(
                 fe.go(Screen::Select);
             }
         }
-        Screen::Select => select(&mut fe, &p, &mut choice, state.as_deref(), &mut saves),
+        Screen::Select => select(&mut fe, &p, &party, &mut members, &mut saves),
         Screen::LoadingGame => {
             if fe.t > 2.0 {
                 to_level.write(ChangeLevelTo::to(TOWER));
@@ -1275,16 +1275,14 @@ fn start_select(fe: &mut Frontend, manage: bool, has_saves: bool) {
     s.menu.column = COLUMN[0];
 }
 
-fn select(
-    fe: &mut Frontend,
-    p: &Pressed,
-    choice: &mut ResMut<PlayerChoice>,
-    state: Option<&PlayerState>,
-    saves: &mut Saves,
-) {
+fn select(fe: &mut Frontend, p: &Pressed, party: &Party, members: &mut MessageWriter<SetMember>, saves: &mut Saves) {
     let has_saves = !saves.file.characters.is_empty();
+    let slot = 0;
+    let choice = party.choice(slot).cloned();
     // The hero as it would be saved now.
-    let record = state.map(|st| SavedCharacter::of(&fe.hero_name, &choice.class, &choice.variant, st));
+    let record = party
+        .get(slot)
+        .map(|m| SavedCharacter::of(&fe.hero_name, &m.choice.class, &m.choice.variant, &m.state));
     let s = &mut fe.select;
     match s.step {
         Step::NewOrLoad => match s.menu.update(p) {
@@ -1365,15 +1363,18 @@ fn select(
                 if let Some(c) = saves.file.characters.get(i).cloned() {
                     s.class = CLASSES.iter().position(|k| *k == c.class).unwrap_or(s.class);
                     s.colour = COLOURS.iter().position(|k| *k == c.variant).unwrap_or(s.colour);
-                    choice.class = c.class.clone();
-                    choice.variant = c.variant.clone();
                     // Even the same class and colour: a new record, the
-                    // saved one laid on it (`player_state::new_hero`).
-                    choice.set_changed();
+                    // saved one laid on it (`player_state::new_member`).
                     fe.hero_name = c.name.clone();
-                    fe.fresh_hero = true;
+                    fe.fresh_hero[slot] = true;
                     info!("loaded {} the {} ({}), level {}", c.name, c.class, c.variant, c.level);
-                    saves.pending = Some(c);
+                    members.write(SetMember {
+                        slot,
+                        choice: PlayerChoice { class: c.class.clone(), variant: c.variant.clone() },
+                        name: c.name.clone(),
+                        saved: Some(c),
+                        fresh: true,
+                    });
                     fe.go(Screen::LoadingGame);
                 }
             }
@@ -1460,18 +1461,16 @@ fn select(
                 s.colour = (s.colour + 3) % 4;
             }
             if p.accept && s.class < OPEN_CLASSES {
-                let class = CLASSES[s.class].to_string();
-                let variant = COLOURS[s.colour].to_string();
-                if class != choice.class || variant != choice.variant {
-                    choice.class = class;
-                    choice.variant = variant;
-                    fe.fresh_hero = true;
-                } else if !s.from_character_menu {
-                    // A new game with the same hero: still a fresh record.
-                    choice.set_changed();
-                    fe.fresh_hero = true;
+                let picked = PlayerChoice { class: CLASSES[s.class].to_string(), variant: COLOURS[s.colour].to_string() };
+                // Another class or colour, or a new game even with the same
+                // hero: a fresh record.
+                let fresh = choice.as_ref() != Some(&picked) || !s.from_character_menu;
+                if fresh {
+                    fe.fresh_hero[slot] = true;
                 }
                 fe.hero_name = s.name.clone();
+                info!("hero {} the {} ({})", fe.hero_name, picked.class, picked.variant);
+                members.write(SetMember { slot, choice: picked, name: s.name.clone(), saved: None, fresh });
                 if s.from_character_menu {
                     s.step = Step::Character;
                     s.menu = character_menu(has_saves).selecting(Item::Done);
@@ -1480,7 +1479,6 @@ fn select(
                     // A new hero, ready: the game starts in the tower.
                     fe.go(Screen::LoadingGame);
                 }
-                info!("hero {} the {} ({})", fe.hero_name, choice.class, choice.variant);
             } else if p.back {
                 if s.from_character_menu {
                     s.step = Step::Character;
@@ -1503,55 +1501,58 @@ fn select(
 const DYING_SECONDS: f32 = 4.0;
 
 /// When a level starts: outside the tower and the secret realm the game
-/// saves the hero's record — except in `levelE2` and `levelF2` — and a
-/// hero that died in the last level comes back with the saved record.
+/// saves each hero's record — except in `levelE2` and `levelF2` — and a
+/// hero that died in the last level comes back with its saved record.
 fn level_started(
     population: Res<LevelPopulation>,
     mut fe: ResMut<Frontend>,
     mut snapshot: ResMut<Snapshot>,
-    mut state: ResMut<PlayerState>,
+    mut party: ResMut<Party>,
 ) {
     let name = population.level.to_ascii_lowercase();
-    if fe.fresh_hero {
-        fe.fresh_hero = false;
-        snapshot.0 = None;
-    }
-    if fe.out {
-        fe.out = false;
-        fe.leaving = false;
-        if let Some(saved) = &snapshot.0 {
-            *state = saved.clone();
-        }
-        state.alive = true;
-        state.health = state.health.max(1.0);
-        info!("the hero is back in {}", population.level);
-    }
     let realm = name.strip_prefix("level").and_then(|r| r.chars().next());
     let saves = !matches!(realm, Some('l' | 's')) && name != "levele2" && name != "levelf2";
-    if saves || snapshot.0.is_none() {
-        snapshot.0 = Some(state.clone());
+    fe.leaving = false;
+    for (slot, state) in party.states_mut() {
+        if std::mem::take(&mut fe.fresh_hero[slot]) {
+            snapshot.0[slot] = None;
+        }
+        if std::mem::take(&mut fe.out[slot]) {
+            if let Some(saved) = &snapshot.0[slot] {
+                *state = saved.clone();
+            }
+            state.alive = true;
+            state.health = state.health.max(1.0);
+            info!("player {} is back in {}", slot + 1, population.level);
+        }
+        if saves || snapshot.0[slot].is_none() {
+            snapshot.0[slot] = Some(state.clone());
+        }
     }
 }
 
 /// A dead hero plays DEATH; then in the tower it stands up again with its
-/// saved record, and anywhere else it is out of the level. With no hero
-/// left standing the level ends from the next frame — once the voice
+/// saved record, and anywhere else it is out of the level (hidden). With no
+/// hero left standing the level ends from the next frame — once the voice
 /// queues are empty, as every level change waits (`exits.rs`) — and the
-/// party returns to the tower, where it is revived.
+/// party returns to the tower, where they are revived.
+#[allow(clippy::too_many_arguments)]
 fn death(
     time: Res<Time>,
     game: Res<LoadedGame>,
     mut fe: ResMut<Frontend>,
     snapshot: Res<Snapshot>,
-    mut state: ResMut<PlayerState>,
-    mut players: Query<&mut Animator, With<Player>>,
+    mut party: ResMut<Party>,
+    mut players: Query<(Entity, &Player, &mut Animator)>,
+    mut commands: Commands,
     mut to_level: MessageWriter<ChangeLevelTo>,
 ) {
-    if state.alive || fe.screen != Screen::Playing {
-        fe.dead_for = 0.0;
+    if fe.screen != Screen::Playing {
+        fe.dead_for = [0.0; MAX_PLAYERS];
         return;
     }
-    if fe.out {
+    let in_play: Vec<usize> = party.members().map(|(slot, _)| slot).collect();
+    if !in_play.is_empty() && in_play.iter().all(|&slot| fe.out[slot]) {
         if !fe.leaving {
             fe.leaving = true;
             to_level.write(ChangeLevelTo::to(TOWER));
@@ -1559,27 +1560,36 @@ fn death(
         }
         return;
     }
-    let Ok(mut animator) = players.single_mut() else { return };
-    if fe.dead_for == 0.0 {
-        animator.play_named("DEATH");
-    }
-    fe.dead_for += time.delta_secs();
-    let done = animator.action_name() == "DEATH" && animator.finished();
-    if !(done && fe.dead_for > 0.5) && fe.dead_for < DYING_SECONDS {
-        return;
-    }
-    fe.dead_for = 0.0;
-    if game.current_name().to_ascii_lowercase().starts_with("levell") {
-        if let Some(saved) = &snapshot.0 {
-            *state = saved.clone();
+    let in_tower = game.current_name().to_ascii_lowercase().starts_with("levell");
+    for (entity, player, mut animator) in &mut players {
+        let slot = player.slot;
+        let Some(state) = party.state_mut(slot) else { continue };
+        if state.alive || fe.out[slot] {
+            fe.dead_for[slot] = 0.0;
+            continue;
         }
-        state.alive = true;
-        state.health = state.health.max(1.0);
-        animator.play_named("READY");
-        info!("the hero stands up again in the tower");
-    } else {
-        fe.out = true;
-        info!("the hero is out of the level");
+        if fe.dead_for[slot] == 0.0 {
+            animator.play_named("DEATH");
+        }
+        fe.dead_for[slot] += time.delta_secs();
+        let done = animator.action_name() == "DEATH" && animator.finished();
+        if !(done && fe.dead_for[slot] > 0.5) && fe.dead_for[slot] < DYING_SECONDS {
+            continue;
+        }
+        fe.dead_for[slot] = 0.0;
+        if in_tower {
+            if let Some(saved) = &snapshot.0[slot] {
+                *state = saved.clone();
+            }
+            state.alive = true;
+            state.health = state.health.max(1.0);
+            animator.play_named("READY");
+            info!("player {} stands up again in the tower", slot + 1);
+        } else {
+            fe.out[slot] = true;
+            commands.entity(entity).insert(Visibility::Hidden);
+            info!("player {} is out of the level", slot + 1);
+        }
     }
 }
 

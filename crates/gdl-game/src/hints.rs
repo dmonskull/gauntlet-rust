@@ -28,7 +28,7 @@ use crate::level::LoadedGame;
 use crate::message_box::{DrawBox, MessageBox};
 use crate::play_camera::PlayCamera;
 use crate::player::PlayerChoice;
-use crate::player_state::PlayerState;
+use crate::party::Party;
 
 /// A hint stays up this many fields a line, and this many more.
 const FIELDS_A_LINE: f32 = 60.0;
@@ -453,9 +453,10 @@ fn show_hints(
     population: Option<Res<crate::population::LevelPopulation>>,
     mut requests: MessageReader<ShowHint>,
     mut voice: MessageWriter<QueueVoice>,
-    choice: Option<Res<PlayerChoice>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
 ) {
+    // Stand-in until each player has a box of their own: the first player's.
+    let (choice, state) = (party.choice(0), party.state(0));
     // A level's load clears the box and the cool-down.
     if population.is_some_and(|p| p.is_changed()) {
         hints.up = None;
@@ -485,15 +486,15 @@ fn show_hints(
         if hints.up.is_some() || (once && hints.seen(hint)) || (hint.waits() && hints.cooldown > 0.0) {
             continue;
         }
-        let pojo = state.as_ref().is_some_and(|s| s.bits.special & POJO != 0);
+        let pojo = state.is_some_and(|s| s.bits.special & POJO != 0);
         // The game fills a hint's `%d` with the hero's level.
-        let level = state.as_ref().map_or(1, |s| s.level).to_string();
+        let level = state.map_or(1, |s| s.level).to_string();
         let Some(up) = hints.rom.as_ref().and_then(|rom| {
             let g = rom.group(&group)?;
             let lines = g
                 .strings
                 .iter()
-                .map(|l| fill_hero(l, rom, hint, choice.as_deref(), pojo).replace("%d", &level))
+                .map(|l| fill_hero(l, rom, hint, choice, pojo).replace("%d", &level))
                 .collect::<Vec<_>>();
             let font = rom.fonts.get(g.font as usize).map_or(0, |f| gdl_formats::font::slot_for_rom_font(f));
             let fields = lines.len() as f32 * FIELDS_A_LINE + FIELDS_MORE;

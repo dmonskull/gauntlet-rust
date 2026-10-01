@@ -44,6 +44,7 @@ use crate::locomotion::{self, Mover, Stick, wrap};
 use crate::play_camera::PlayCamera;
 use crate::player_state::{PlayerState, SpendPower, power};
 use crate::options::GameOptions;
+use crate::party::{Inputs, MAX_PLAYERS, Party, SlotInput};
 use crate::population::LevelPopulation;
 use crate::effects::{BreathAt, ChopAt, EffectAt, EffectOn, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
 use crate::flash::{self, Flash, FlashColours};
@@ -69,15 +70,21 @@ const DRIFT: f32 = 0.5;
 
 pub struct PlayerPlugin;
 
-/// Which hero to play, from the command line.
-#[derive(Resource, Clone)]
+/// Which hero a player plays: the class's three-letter code and colour.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerChoice {
     pub class: String,
     pub variant: String,
 }
 
-/// The loaded hero, spawned again on every level.
-#[derive(Resource)]
+/// Each slot's loaded hero, spawned again on every level: the choice it
+/// was loaded for, and the hero.
+#[derive(Resource, Default)]
+struct HeroModels {
+    slots: [Option<(PlayerChoice, Hero)>; MAX_PLAYERS],
+}
+
+/// A loaded hero: its model and the class's stats.
 struct Hero {
     /// The class's stats, for re-deriving them when the level rises.
     stats: Option<PlayerStats>,
@@ -91,6 +98,10 @@ struct Hero {
 
 #[derive(Component)]
 pub struct Player {
+    /// Its player's slot (`party.rs`): its record, controls and panel.
+    pub slot: usize,
+    /// The buttons it held last tick (for presses).
+    held: u32,
     /// The magic controls: the double tap, the lock after a use, the
     /// throw's wind-up.
     pub magic: MagicState,
@@ -193,41 +204,39 @@ fn derived_stats(stats: Option<&PlayerStats>, level: u32) -> (f32, f32, f32) {
     (strength, armor, speed)
 }
 
-/// Re-derives the hero's stats when its level changes.
+/// Re-derives each hero's stats when its level changes.
 fn level_stats(
-    hero: Option<Res<Hero>>,
-    state: Option<Res<PlayerState>>,
-    mut applied: Local<u32>,
+    models: Res<HeroModels>,
+    party: Res<Party>,
+    mut applied: Local<[u32; MAX_PLAYERS]>,
     mut players: Query<&mut Player>,
 ) {
-    let (Some(hero), Some(state)) = (hero, state) else { return };
-    let fresh = players.iter_mut().any(|p| p.is_added());
-    if state.level == *applied && !fresh {
-        return;
+    let fresh: Vec<usize> = players.iter_mut().filter(|p| p.is_added()).map(|p| p.slot).collect();
+    for (slot, state) in party.states() {
+        let Some((_, hero)) = models.slots.get(slot).and_then(Option::as_ref) else { continue };
+        if state.level == applied[slot] && !fresh.contains(&slot) {
+            continue;
+        }
+        applied[slot] = state.level;
+        let (strength, armor, speed) = derived_stats(hero.stats.as_ref(), state.level);
+        for mut p in players.iter_mut().filter(|p| p.slot == slot) {
+            p.strength = strength;
+            p.armor = armor;
+            p.base_speed = speed;
+            p.mover.speed = speed;
+        }
+        info!("player {} level {}: strength {strength:.1}, armour {armor:.2}, speed {speed:.2}", slot + 1, state.level);
     }
-    *applied = state.level;
-    let (strength, armor, speed) = derived_stats(hero.stats.as_ref(), state.level);
-    for mut p in &mut players {
-        p.strength = strength;
-        p.armor = armor;
-        p.base_speed = speed;
-        p.mover.speed = speed;
-    }
-    info!("level {}: strength {strength:.1}, armour {armor:.2}, speed {speed:.2}", state.level);
 }
 
 /// What the hero's powerups add up to this tick (`PowerBits`), put to
 /// use: its weapon bits on its blows and missiles, its armour bits
 /// against blows, speed powers on its speed (the game clamps the sum to its range), a turbo power's fill.
-fn apply_powers(
-    state: Option<Res<PlayerState>>,
-    level: Option<Res<crate::monsters::MonsterLevel>>,
-    mut players: Query<&mut Player>,
-) {
-    let Some(state) = state else { return };
-    let b = state.bits;
+fn apply_powers(party: Res<Party>, level: Option<Res<crate::monsters::MonsterLevel>>, mut players: Query<&mut Player>) {
     let boss_level = level.is_some_and(|l| l.boss >= 0);
     for mut p in &mut players {
+        let Some(state) = party.state(p.slot) else { continue };
+        let b = state.bits;
         p.weapon = b.weapon;
         p.armour_bits = b.armour;
         p.special_bits = b.special;
@@ -290,27 +299,27 @@ fn blink_shows(t: f32) -> bool {
 ///   frame, drawn as a dying monster's death texture; it takes the slot.
 #[allow(clippy::type_complexity)]
 fn show_body_looks(
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     (colours, deaths): (Res<FlashColours>, Option<Res<crate::deaths::DeathTextures>>),
     mut players: Query<(&mut Player, &Animator)>,
     mut drawn: Query<&mut MeshMaterial3d<LevelMaterial>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
     (mut tags, mut commands): (Query<&mut MeshTag>, Commands),
 ) {
-    let Some(state) = state else { return };
-    let chrome_time = longest_power(&state, power::ARMOUR, crate::damage::resists::INVULNERABLE);
-    let armed = chrome_time.is_some_and(blink_shows);
-    let gold = state.bits.armour & crate::damage::resists::GOLD != 0;
-    let fade = match longest_power(&state, power::SPECIAL, power::INVISIBLE) {
-        Some(t) if blink_shows(t) => {
-            let transparency = INVISIBLE + (INVISIBLE_WAVER * (std::f32::consts::TAU * t).sin()).trunc();
-            transparency / 255.0
-        }
-        _ => 0.0,
-    };
     let light_frames = deaths.and_then(|d| d.frames(crate::deaths::LIGHT));
     for (mut p, animator) in &mut players {
         let p = &mut *p;
+        let Some(state) = party.state(p.slot) else { continue };
+        let chrome_time = longest_power(state, power::ARMOUR, crate::damage::resists::INVULNERABLE);
+        let armed = chrome_time.is_some_and(blink_shows);
+        let gold = state.bits.armour & crate::damage::resists::GOLD != 0;
+        let fade = match longest_power(state, power::SPECIAL, power::INVISIBLE) {
+            Some(t) if blink_shows(t) => {
+                let transparency = INVISIBLE + (INVISIBLE_WAVER * (std::f32::consts::TAU * t).sin()).trunc();
+                transparency / 255.0
+            }
+            _ => 0.0,
+        };
         if armed {
             p.chrome.start();
         }
@@ -635,23 +644,22 @@ type HeroWriters<'w> = (
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlayerTick;
 
-/// The hero's pad as the player's tick read it: the buttons pressed since
-/// a reader last took them (with `std::mem::take`) — none while the pads
-/// aren't read (cuts, the message box).
+/// Each hero's pad as the player's tick read it, by slot: the buttons
+/// pressed since a reader last took them (with `std::mem::take`) — none
+/// while the pads aren't read (cuts, the message box).
 #[derive(Resource, Default, Clone, Copy, Debug)]
 pub struct HeroPad {
-    pub pressed: u32,
+    pub pressed: [u32; MAX_PLAYERS],
 }
 
 /// Spawning the hero on a new level; things placed relative to it go after.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlayerSpawn;
 
-/// Controls between ticks: last tick's buttons (for presses), scripted
-/// buttons, and ticks since the hero appeared.
+/// Scripted buttons (`GDL_BUTTONS`, for the first player), and ticks since
+/// the heroes appeared.
 #[derive(Resource, Default)]
 struct Controls {
-    held: u32,
     script: Vec<(u32, Option<(u64, u64)>)>,
     ticks: u64,
 }
@@ -661,10 +669,12 @@ impl Plugin for PlayerPlugin {
         app.insert_resource(Time::<Fixed>::from_hz(locomotion::TICK_HZ))
             .insert_resource(Controls { script: button_script(), ..default() })
             .init_resource::<HeroPad>()
-            // Loaded again whenever the choice changes (the front end's
-            // character select); the next level spawn uses it.
-            .add_systems(Update, load_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
-            .add_systems(FixedUpdate, (hop.before(PlayerTick), tick.in_set(PlayerTick)))
+            .init_resource::<HeroModels>()
+            .init_resource::<Inputs>()
+            // Loaded again whenever a player's choice changes (the front
+            // end's character select); the next level spawn uses it.
+            .add_systems(Update, load_heroes.run_if(resource_changed::<Party>).before(PlayerSpawn))
+            .add_systems(FixedUpdate, ((gather_inputs, hop).before(PlayerTick), tick.in_set(PlayerTick)))
             .add_systems(FixedUpdate, (apply_powers, show_body_looks).after(crate::player_state::PowersTick))
             .add_systems(Update, level_stats)
             .add_systems(
@@ -675,13 +685,24 @@ impl Plugin for PlayerPlugin {
     }
 }
 
-fn load_hero(mut commands: Commands, mut game: ResMut<LoadedGame>, choice: Res<PlayerChoice>) {
-    let install = &mut game.install;
+/// Loads each player's hero when its choice changes (none for an empty
+/// slot).
+fn load_heroes(mut models: ResMut<HeroModels>, mut game: ResMut<LoadedGame>, party: Res<Party>) {
+    for slot in 0..MAX_PLAYERS {
+        let wanted = party.choice(slot);
+        if wanted == models.slots[slot].as_ref().map(|(c, _)| c) {
+            continue;
+        }
+        models.slots[slot] = wanted.and_then(|c| Some((c.clone(), load_hero(&mut game.install, c)?)));
+    }
+}
+
+fn load_hero(install: &mut gdl_install::GameInstall, choice: &PlayerChoice) -> Option<Hero> {
     let data = match character::load_player(install, &choice.class, &choice.variant) {
         Ok(data) => data,
         Err(why) => {
             error!("can't load player {}/{}: {why}", choice.class, choice.variant);
-            return;
+            return None;
         }
     };
     let stats = install
@@ -700,13 +721,62 @@ fn load_hero(mut commands: Commands, mut game: ResMut<LoadedGame>, choice: Res<P
         data.name
     );
     let class = character::class_index(&data.class);
-    commands.insert_resource(Hero { stats, data, speed, strength, armor, radius, class });
+    Some(Hero { stats, data, speed, strength, armor, radius, class })
+}
+
+/// Each player's place in the game's start square, by slot, in steps of
+/// half a unit more than the first hero's radius (turned by the start
+/// camera's yaw); and the sixteen spots round the first hero tried when
+/// that one has no floor.
+const FORMATION: [(f32, f32); MAX_PLAYERS] = [(0.0, 0.0), (0.0, 2.0), (-2.0, 2.0), (-2.0, 0.0)];
+const AROUND: [(f32, f32); 16] = [
+    (-2.0, -2.0),
+    (-2.0, 0.0),
+    (-2.0, 2.0),
+    (0.0, -2.0),
+    (0.0, 2.0),
+    (2.0, -2.0),
+    (2.0, 0.0),
+    (2.0, 2.0),
+    (-2.0, -1.0),
+    (-2.0, 1.0),
+    (-1.0, -2.0),
+    (-1.0, 2.0),
+    (1.0, -2.0),
+    (1.0, 2.0),
+    (2.0, -1.0),
+    (2.0, 1.0),
+];
+/// A spot's floor must be within this of the first hero's.
+const START_FLOOR_REACH: f32 = 3.0;
+
+/// Where a hero after the first starts: its place in the square beside the
+/// first, else one of the sixteen spots round it, else on it.
+fn start_spot(
+    collision: &gdl_formats::LevelCollision,
+    first: [f32; 3],
+    radius: f32,
+    first_slot: usize,
+    slot: usize,
+    yaw: f32,
+) -> [f32; 3] {
+    let step = 0.5 + radius;
+    let floor_at = |x: f32, z: f32| {
+        let y = collision.player_floor_height([x, first[1], z], PlayerCollision::default().radius)?;
+        ((y - first[1]).abs() <= START_FLOOR_REACH).then_some([x, y, z])
+    };
+    let (mine, theirs) = (FORMATION[slot.min(MAX_PLAYERS - 1)], FORMATION[first_slot.min(MAX_PLAYERS - 1)]);
+    let (dx, dz) = (step * (mine.0 - theirs.0), step * (mine.1 - theirs.1));
+    let (sin, cos) = yaw.sin_cos();
+    floor_at(first[0] + dx * cos + dz * sin, first[2] - dx * sin + dz * cos)
+        .or_else(|| AROUND.iter().find_map(|&(x, z)| floor_at(first[0] + step * x, first[2] + step * z)))
+        .unwrap_or(first)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_player(
     mut commands: Commands,
-    hero: Option<Res<Hero>>,
+    (party, models): (Res<Party>, Res<HeroModels>),
     population: Res<LevelPopulation>,
     ground: Option<Res<LevelGround>>,
     mut controls: ResMut<Controls>,
@@ -715,7 +785,7 @@ fn spawn_player(
     mut images: ResMut<Assets<Image>>,
     mut warp_used: Local<bool>,
 ) {
-    let (Some(hero), Some(ground)) = (hero, ground) else { return };
+    let Some(ground) = ground else { return };
     let collision = &ground.0;
     let (mut feet, facing) = match population.player_start() {
         Some(s) => (s.position, s.yaw),
@@ -748,10 +818,42 @@ fn spawn_player(
         // Stand on the floor under the start.
         feet[1] = y;
     }
+    // The start square turns with the entry's starting camera (its yaw as
+    // the camera table keeps it, the locator's + π).
+    let entry = population.entry;
+    let yaw = population
+        .population
+        .locators
+        .iter()
+        .find(|l| l.kind == gdl_formats::population::LocatorKind::Transmitter(1) && l.index == entry)
+        .map_or(0.0, |l| l.rotation[1] + std::f32::consts::PI);
+    let mut first: Option<([f32; 3], f32, usize)> = None;
+    for (slot, _) in party.members() {
+        let Some((_, hero)) = models.slots.get(slot).and_then(Option::as_ref) else { continue };
+        let at = match first {
+            None => feet,
+            Some((at, radius, first_slot)) => start_spot(collision, at, radius, first_slot, slot, yaw),
+        };
+        first.get_or_insert((at, hero.radius, slot));
+        spawn_hero(&mut commands, hero, slot, at, facing, (&mut meshes, &mut materials, &mut images));
+        info!("player {} starts at {at:?} facing {:.0} deg", slot + 1, facing.to_degrees());
+    }
+    controls.ticks = 0;
+}
+
+fn spawn_hero(
+    commands: &mut Commands,
+    hero: &Hero,
+    slot: usize,
+    feet: [f32; 3],
+    facing: f32,
+    (meshes, materials, images): (&mut Assets<Mesh>, &mut Assets<LevelMaterial>, &mut Assets<Image>),
+) {
     let transform = Transform::from_translation(Vec3::from(feet)).with_rotation(Quat::from_rotation_y(facing));
-    let (root, _, _) =
-        character::spawn_character(&hero.data, transform, &mut commands, &mut meshes, &mut materials, &mut images);
+    let (root, _, _) = character::spawn_character(&hero.data, transform, commands, meshes, materials, images);
     let player = Player {
+        slot,
+        held: 0,
         mover: Mover::new(feet, facing, hero.speed),
         ground: PlayerGround::new(feet[1]),
         start: (feet, facing),
@@ -792,8 +894,6 @@ fn spawn_player(
         light: None,
     };
     commands.entity(root).insert((player, LevelEntity));
-    controls.ticks = 0;
-    info!("player starts at {feet:?} facing {:.0} deg", facing.to_degrees());
 }
 
 /// `GDL_HOPS` (testing: a tour of a level's triggers): the points, the ticks
@@ -840,17 +940,6 @@ fn hop(
     info!("hop {i} to {:?}", [at[0], y, at[2]]);
 }
 
-/// The stick, in the camera's frame: +Y away from the camera, +X right.
-fn read_stick(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, options: &GameOptions) -> Vec2 {
-    if let Some(v) = std::env::var("GDL_STICK").ok().and_then(|s| {
-        let (x, y) = s.split_once(',')?;
-        Some(Vec2::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
-    }) {
-        return v;
-    }
-    crate::controls::stick(keys, pads, options)
-}
-
 /// The logical buttons a named control (for `GDL_BUTTONS`) holds.
 fn named_button(name: &str) -> Option<u32> {
     Some(match name {
@@ -895,22 +984,65 @@ fn button_script() -> Vec<(u32, Option<(u64, u64)>)> {
         .collect()
 }
 
-/// The logical buttons held now: the keyboard, mouse and pads as bound
-/// (`controls.rs`), and the script.
-fn read_buttons(
-    keys: &ButtonInput<KeyCode>,
-    mouse: &ButtonInput<MouseButton>,
-    pads: &Query<&Gamepad>,
-    controls: &Controls,
-    options: &GameOptions,
-) -> u32 {
-    let mut held = crate::controls::held(keys, mouse, pads, options);
-    for &(bits, range) in &controls.script {
-        if range.is_none_or(|(a, b)| (a..=b).contains(&controls.ticks)) {
-            held |= bits;
+/// Each local player's controls this tick ([`Inputs`]): the keyboard and
+/// mouse if they're the player's, and the player's pad — whichever is
+/// moved, so a player can switch between them as they please. Alone, the
+/// player has the keyboard and every pad nobody else holds. The first
+/// player also gets the test scripts (`GDL_STICK`, `GDL_BUTTONS`).
+/// Players online are filled from the network instead.
+fn gather_inputs(
+    (keys, mouse, options): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>, Res<GameOptions>),
+    pads: Query<(Entity, &Gamepad)>,
+    party: Res<Party>,
+    mut controls: ResMut<Controls>,
+    mut inputs: ResMut<Inputs>,
+) {
+    controls.ticks += 1;
+    let locals: Vec<usize> = party.members().filter(|(_, m)| !m.devices.remote).map(|(i, _)| i).collect();
+    let solo = locals.len() == 1;
+    let script_stick = std::env::var("GDL_STICK").ok().and_then(|s| {
+        let (x, y) = s.split_once(',')?;
+        Some(Vec2::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
+    });
+    for slot in 0..MAX_PLAYERS {
+        let Some(member) = party.get(slot) else {
+            inputs.slots[slot] = SlotInput::default();
+            continue;
+        };
+        if member.devices.remote {
+            continue;
         }
+        let mut input = SlotInput::default();
+        if member.devices.keyboard || solo {
+            input.held |= crate::controls::held_keys(&keys, &mouse, &options);
+            input.stick = crate::controls::stick_keys(&keys, &options);
+        }
+        for (pad_entity, pad) in &pads {
+            let mine = member.devices.pad == Some(pad_entity) || (solo && party.slot_of_pad(pad_entity).is_none());
+            if !mine {
+                continue;
+            }
+            input.held |= crate::controls::held_pad(pad, options.scheme, &options);
+            let (left, right) = crate::controls::pad_sticks(pad);
+            if left.length() > 0.0 {
+                input.stick = left;
+            }
+            if right.length() > 0.0 {
+                input.c_stick = right;
+            }
+        }
+        if locals.first() == Some(&slot) {
+            if let Some(v) = script_stick {
+                input.stick = v;
+            }
+            for &(bits, range) in &controls.script {
+                if range.is_none_or(|(a, b)| (a..=b).contains(&controls.ticks)) {
+                    input.held |= bits;
+                }
+            }
+        }
+        inputs.slots[slot] = input;
     }
-    held
 }
 
 /// The clip an action plays: its own, or for the low power finisher the
@@ -929,19 +1061,17 @@ fn clip_for(animator: &Animator, action: Action) -> usize {
 #[allow(clippy::too_many_arguments)]
 fn tick(
     time: Res<Time>,
-    (keys, mouse, options): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>, Res<GameOptions>),
-    pads: Query<&Gamepad>,
+    (inputs, options): (Res<Inputs>, Res<GameOptions>),
     (free_look, boxes, scene): (Res<FreeLook>, Res<crate::message_box::MessageBox>, Res<crate::tower_scenes::Scene>),
     play_camera: Option<Res<PlayCamera>>,
     ground: Option<Res<LevelGround>>,
-    mut controls: ResMut<Controls>,
     mut players: Query<(Entity, &mut Player, &mut Animator)>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
     (mut shots, mut potions, mut effects, mut effects_breath, mut spent, mut chops, mut sounds, mut loops, mut riding): HeroWriters,
     mut hints: MessageWriter<ShowHint>,
     (colours, mut tags, mut commands, mut hero_pad): (Res<FlashColours>, Query<&mut MeshTag>, Commands, ResMut<HeroPad>),
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     monster_level: Option<Res<crate::monsters::MonsterLevel>>,
     boss: (Option<Res<crate::critters::CritterLevel>>, Query<&GlobalTransform>, Query<&DeathMonster>),
 ) {
@@ -955,26 +1085,14 @@ fn tick(
         .and_then(|c| c.boss)
         .and_then(|b| bodies.get(b).ok())
         .map(|t| t.translation());
-    // A dead hero lies still until it's revived.
-    if state.as_ref().is_some_and(|s| !s.alive) {
-        return;
-    }
     let dt = time.delta_secs();
     // Blows during a camera cut do nothing (the game's damage routine
     // refuses them).
     let cut = play_camera.as_ref().is_some_and(|c| c.in_cut());
-    controls.ticks += 1;
     // The pads aren't read during a camera cut (the game blocks them from
     // its start to its end), while the message box has them, or while the
     // tower's wizard announces something.
     let deaf = free_look.0 || cut || boxes.holds_input() || scene.holds_input();
-    let raw = if deaf { Vec2::ZERO } else { read_stick(&keys, &pads, &options) };
-    let held = if deaf { 0 } else { read_buttons(&keys, &mouse, &pads, &controls, &options) };
-    let buttons = Buttons::from_held(held, controls.held);
-    controls.held = held;
-    // For what else reads the pad (the power menu): presses wait until
-    // they're taken.
-    hero_pad.pressed |= buttons.pressed;
     // Stick up moves the way the camera faces (the boss camera's on a boss
     // level); the game's heading is
     // the camera's yaw + the stick's angle, so right is +X facing +Z (on
@@ -982,17 +1100,31 @@ fn tick(
     let yaw = play_camera.as_deref().map_or(0.0, PlayCamera::yaw);
     let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
     let right = Vec3::new(forward.z, 0.0, -forward.x);
-    let dir = right * raw.x + forward * raw.y;
-    let stick = Stick { heading: dir.x.atan2(dir.z), magnitude: raw.length().min(1.0) };
-    // The Robotron style's right stick (the GameCube's C-stick).
-    let c_raw = if deaf || options.scheme != crate::controls::ROBOTRON { Vec2::ZERO } else { crate::controls::c_stick(&pads) };
-    let c_dir = right * c_raw.x + forward * c_raw.y;
-    let c_stick = Stick { heading: c_dir.x.atan2(c_dir.z), magnitude: c_raw.length().min(1.0) };
     let body = PlayerCollision::default();
     let candidates = || targets.iter().map(|(e, t, target)| (e, t.translation(), target));
 
     for (entity, mut player, mut animator) in &mut players {
         let p = &mut *player;
+        // A dead hero lies still until it's revived.
+        let Some(state) = party.state(p.slot) else { continue };
+        if !state.alive {
+            continue;
+        }
+        let input = if deaf { SlotInput::default() } else { inputs.slots.get(p.slot).copied().unwrap_or_default() };
+        let (raw, held) = (input.stick, input.held);
+        let buttons = Buttons::from_held(held, p.held);
+        p.held = held;
+        // For what else reads the pad (the power menu): presses wait until
+        // they're taken.
+        if let Some(pressed) = hero_pad.pressed.get_mut(p.slot) {
+            *pressed |= buttons.pressed;
+        }
+        let dir = right * raw.x + forward * raw.y;
+        let stick = Stick { heading: dir.x.atan2(dir.z), magnitude: raw.length().min(1.0) };
+        // The Robotron style's right stick (the GameCube's C-stick).
+        let c_raw = if options.scheme != crate::controls::ROBOTRON { Vec2::ZERO } else { input.c_stick };
+        let c_dir = right * c_raw.x + forward * c_raw.y;
+        let c_stick = Stick { heading: c_dir.x.atan2(c_dir.z), magnitude: c_raw.length().min(1.0) };
         p.previous = (p.mover.position, p.mover.facing);
         if p.light.as_mut().is_some_and(|l| !l.step()) {
             p.light = None;
@@ -1024,7 +1156,7 @@ fn tick(
         let unmagic = |b: u32| if magic.is_none() { b & !MAGIC_BUTTONS } else { b };
         let magic_buttons = Buttons { held: unmagic(buttons.held), pressed: unmagic(buttons.pressed) };
         let mut intent = combat::classify(magic_buttons, stick.magnitude, wrap(stick.heading - facing), p.turbo);
-        let has_potions = state.as_ref().is_some_and(|s| !s.potions.is_empty());
+        let has_potions = !state.potions.is_empty();
         if intent == Intent::Magic && !has_potions {
             // No potion: the hint, and the hero moves as the stick says.
             hints.write(ShowHint(Hint::CollectMagicFirst));
@@ -1342,13 +1474,13 @@ fn tick(
                 }
                 let breath = BreathAt { hero: entity, head, fx, kind, damage, radius: BREATH_RADIUS, sound, pojo };
                 effects_breath.write(breath);
-                spent.write(SpendPower { subtype: power::SPECIAL, bits: BREATHS });
+                spent.write(SpendPower { slot: p.slot, subtype: power::SPECIAL, bits: BREATHS });
             }
             // The hammer comes down as its recovery starts, and a use is
             // spent.
             if strike.0 & Strike::CHOP != 0 {
                 chops.write(ChopAt { hero: entity });
-                spent.write(SpendPower { subtype: power::WEAPON, bits: HAMMER });
+                spent.write(SpendPower { slot: p.slot, subtype: power::WEAPON, bits: HAMMER });
             }
             if strike.0 & (Strike::MAGIC | Strike::THROW_POTION) != 0 && !cut {
                 let mode = if strike.0 & Strike::THROW_POTION != 0 {

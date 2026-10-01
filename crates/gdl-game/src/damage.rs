@@ -43,6 +43,7 @@ use crate::generators::Generator;
 use crate::hints::{Hint, ShowHint};
 use crate::monsters::{self, DeathDrain, Monster, MonsterHit, MonsterLevel};
 use crate::player::Player;
+use crate::party::Party;
 use crate::player_state::{Cry, EnemyScale, HealPlayer, HurtHero, PlayerState};
 use crate::player::PlayerTick;
 use crate::population::{GeneratorLooks, PlacementIndex};
@@ -59,7 +60,7 @@ impl Plugin for DamagePlugin {
 pub(crate) fn apply_hits(
     mut commands: Commands,
     mut hits: MessageReader<Hit>,
-    mut state: Option<ResMut<PlayerState>>,
+    mut party: ResMut<Party>,
     level: Option<Res<MonsterLevel>>,
     mut monsters: Query<&mut Monster>,
     mut generators: Query<&mut Generator>,
@@ -76,6 +77,8 @@ pub(crate) fn apply_hits(
         // Only a hero's blows earn experience (a monster's bomb or blast
         // earns nobody any).
         let by_hero = heroes.contains(hit.attacker);
+        // The record of the hero who landed it: its experience.
+        let mut state = heroes.get(hit.attacker).ok().map(|p| p.slot).and_then(|slot| party.state_mut(slot));
         match hit.target_kind {
             TargetKind::Monster => {
                 let Ok(mut m) = monsters.get_mut(hit.target) else { continue };
@@ -420,14 +423,14 @@ fn blow_on_death(
 fn death_drains(
     mut drains: MessageReader<DeathDrain>,
     mut players: Query<&mut Player>,
-    mut state: Option<ResMut<PlayerState>>,
+    mut party: ResMut<Party>,
     mut damage: MessageWriter<HurtHero>,
     mut hints: MessageWriter<ShowHint>,
 ) {
     for d in drains.read() {
         let Ok(mut p) = players.get_mut(d.hero) else { continue };
         if d.experience {
-            if let Some(state) = state.as_mut() {
+            if let Some(state) = party.state_mut(p.slot) {
                 let step = state.drain_step();
                 if state.lose_experience(step) > 0 {
                     info!("Death drains the hero down to level {}", state.level);
@@ -437,7 +440,7 @@ fn death_drains(
         } else {
             let amount = p.take_blow(-d.amount, hit_kind::DRAIN, Vec3::ZERO);
             if amount != 0.0 {
-                damage.write(HurtHero { amount, kind: hit_kind::DRAIN, cry: Cry::Hurt });
+                damage.write(HurtHero { slot: p.slot, amount, kind: hit_kind::DRAIN, cry: Cry::Hurt });
             }
             hints.write(ShowHint(Hint::DeathDrainsHealth));
         }
@@ -506,7 +509,7 @@ fn hurt_hero(
                     ranged: false,
                 });
                 if vampire {
-                    heal.write(HealPlayer { amount: blow });
+                    heal.write(HealPlayer { slot: p.slot, amount: blow });
                 }
                 debug!("the hero's hand turns a blow of {blow:.1} back on the monster");
                 (blow, flags) = (0.0, hit_kind::SMALL_MONSTER);
@@ -518,7 +521,7 @@ fn hurt_hero(
         }
         let amount = p.take_blow(blow, flags, push);
         if amount != 0.0 {
-            damage.write(HurtHero { amount, kind: flags, cry });
+            damage.write(HurtHero { slot: p.slot, amount, kind: flags, cry });
         }
     }
 }

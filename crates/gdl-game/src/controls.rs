@@ -281,34 +281,32 @@ impl Bindings {
     }
 }
 
-/// The logical buttons held on the keyboard, the mouse and the pads.
-pub fn held(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>, pads: &Query<&Gamepad>, options: &GameOptions) -> u32 {
+/// The logical buttons the keyboard and mouse hold, as bound.
+pub fn held_keys(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>, options: &GameOptions) -> u32 {
     let b = &options.bindings;
-    let mut held = 0;
-    for action in Action::ALL {
-        let bits = action.bits();
-        if bits == 0 {
-            continue;
-        }
-        let down = b.keys(action).iter().any(|i| match *i {
-            Input::Key(k) => keys.pressed(k),
-            Input::Mouse(m) => mouse.pressed(m),
-        }) || pads.iter().any(|p| b.pad(action, options.scheme).iter().any(|&btn| p.pressed(btn)));
-        if down {
-            held |= bits;
-        }
-    }
-    held
+    Action::ALL
+        .into_iter()
+        .filter(|a| {
+            b.keys(*a).iter().any(|i| match *i {
+                Input::Key(k) => keys.pressed(k),
+                Input::Mouse(m) => mouse.pressed(m),
+            })
+        })
+        .fold(0, |held, a| held | a.bits())
 }
 
-/// The left stick, or the movement keys (running; Walk halves it).
-pub fn stick(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, options: &GameOptions) -> Vec2 {
-    for pad in pads {
-        let v = pad.left_stick();
-        if v.length() > 0.0 {
-            return v.clamp_length_max(1.0);
-        }
-    }
+/// The logical buttons a pad holds, by the style `scheme` and the pad
+/// bindings.
+pub fn held_pad(pad: &Gamepad, scheme: usize, options: &GameOptions) -> u32 {
+    let b = &options.bindings;
+    Action::ALL
+        .into_iter()
+        .filter(|a| a.bits() != 0 && b.pad(*a, scheme).iter().any(|&btn| pad.pressed(btn)))
+        .fold(0, |held, a| held | a.bits())
+}
+
+/// The movement keys as a stick (running; Walk halves it).
+pub fn stick_keys(keys: &ButtonInput<KeyCode>, options: &GameOptions) -> Vec2 {
     let b = &options.bindings;
     let down = |a: Action| {
         b.keys(a).iter().any(|i| match *i {
@@ -321,10 +319,10 @@ pub fn stick(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, options: &Game
     if down(Action::Walk) { v * 0.5 } else { v }
 }
 
-/// The right stick (the GameCube's C-stick, which the Robotron style
-/// attacks with).
-pub fn c_stick(pads: &Query<&Gamepad>) -> Vec2 {
-    pads.iter().map(|p| p.right_stick()).find(|v| v.length() > 0.0).map_or(Vec2::ZERO, |v| v.clamp_length_max(1.0))
+/// A pad's left and right sticks (the right one the GameCube's C-stick,
+/// which the Robotron style attacks with), at most 1 long.
+pub fn pad_sticks(pad: &Gamepad) -> (Vec2, Vec2) {
+    (pad.left_stick().clamp_length_max(1.0), pad.right_stick().clamp_length_max(1.0))
 }
 
 /// Keys the settings name and save (`KeyJ` ↔ "J").

@@ -33,7 +33,8 @@ use crate::model_mesh::{self, TextureCache};
 use crate::monsters;
 use crate::play_camera::PlayCamera;
 use crate::player::Player;
-use crate::player_state::{PlayerState, Power, PowerBits, PowersTick, power};
+use crate::party::Party;
+use crate::player_state::{Power, PowerBits, PowersTick, power};
 use crate::population::{ContentModels, LevelPopulation, XRAY_KEYS, XRAY_MONSTER, XRAY_SPRITE};
 use crate::projectiles::HeroShot;
 use crate::world::LevelEntity;
@@ -373,7 +374,7 @@ fn show(visibility: &mut Query<&mut Visibility>, entity: Entity, shown: bool) {
 fn wear_looks(
     mut commands: Commands,
     time: Res<Time>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<LookModels>,
     (mut shots, mut hits): (MessageReader<HeroShot>, MessageReader<Hit>),
@@ -384,11 +385,11 @@ fn wear_looks(
 ) {
     let threw: Vec<Entity> = shots.read().map(|s| s.hero).collect();
     let pecked: Vec<Entity> = hits.read().filter(|h| !h.ranged).map(|h| h.attacker).collect();
-    let Some(state) = state else { return };
-    let bits = state.bits;
-    let class = character::class_index(&state.class);
-    let (left_node, right_node) = (left_wrist(class), wrists(class).1);
     for (hero, player, mut animator, worn) in &mut heroes {
+        let Some(state) = party.state(player.slot) else { continue };
+        let bits = state.bits;
+        let class = character::class_index(&state.class);
+        let (left_node, right_node) = (left_wrist(class), wrists(class).1);
         // Levitation lifts the hero's model off its feet.
         let lift = if bits.special & LEVITATE != 0 { LEVITATE_LIFT } else { 0.0 };
         if animator.lift != lift {
@@ -560,7 +561,7 @@ fn forget_xray(mut xray: ResMut<Xray>) {
 fn xray(
     mut commands: Commands,
     mut xray: ResMut<Xray>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     items: Res<LevelItems>,
     models: Option<Res<ContentModels>>,
     camera: Option<Res<PlayCamera>>,
@@ -569,8 +570,10 @@ fn xray(
     mut fades: Query<&mut Fade>,
     mut sounds: MessageWriter<PlaySoundAt>,
 ) {
-    let on = state.is_some_and(|s| s.bits.special & XRAY != 0);
-    let hero = players.iter().next().map(|p| Vec3::from(p.mover.position));
+    // The first hero with the power on sees.
+    let seer = players.iter().find(|p| party.state(p.slot).is_some_and(|s| s.bits.special & XRAY != 0));
+    let on = seer.is_some();
+    let hero = seer.map(|p| Vec3::from(p.mover.position));
     // The nearest container it could see into.
     let mut found: Option<Seen> = None;
     if let (true, Some(hero)) = (on, hero) {

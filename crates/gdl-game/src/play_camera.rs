@@ -18,7 +18,8 @@ use crate::camera_rig::{CameraPoint, CameraRig};
 use crate::level::LoadedGame;
 use crate::level_material::SceneLight;
 use crate::player::{Player, PlayerTick};
-use crate::player_state::{DEFAULT_HEAD, PlayerState};
+use crate::party::Party;
+use crate::player_state::DEFAULT_HEAD;
 use crate::population::LevelPopulation;
 use crate::world::LevelGround;
 
@@ -298,7 +299,7 @@ fn start(
     population: Res<LevelPopulation>,
     ground: Option<Res<LevelGround>>,
     cameras: Option<Res<LevelCameras>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     mut scene_light: ResMut<SceneLight>,
 ) {
     let Some(ground) = ground else { return };
@@ -321,7 +322,8 @@ fn start(
     let [lo, hi] = ground.0.bounds;
     let bounds = record.target_bounds(lo, hi);
     let feet = population.player_start().map_or([0.0; 3], |s| s.position);
-    let rig = CameraRig::new(points, bounds, record.near, top_point(feet, state.as_deref()), feet);
+    let head = party.states().next().map_or(DEFAULT_HEAD, |(_, s)| s.head_height);
+    let rig = CameraRig::new(points, bounds, record.near, top_point(feet, head), feet);
     // A boss level with a boss camera opens with it instead of the
     // starting shot.
     let has_boss = population.population.locators.iter().any(|l| l.kind == LocatorKind::Boss);
@@ -346,16 +348,31 @@ fn start(
 
 /// A hero's top point, which the camera looks at: the class's head height
 /// above the feet (player `+0x54`, from `PDAT +0x50`; `docs/camera.md`).
-fn top_point(feet: [f32; 3], state: Option<&PlayerState>) -> [f32; 3] {
-    let head = state.map_or(DEFAULT_HEAD, |s| s.head_height);
+fn top_point(feet: [f32; 3], head: f32) -> [f32; 3] {
     [feet[0], feet[1] + head, feet[2]]
+}
+
+/// The centre of the box round some points (the game's `FUN_8006f8f0`):
+/// what the camera follows with several players.
+fn box_centre(points: impl Iterator<Item = [f32; 3]>) -> Option<[f32; 3]> {
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    let mut any = false;
+    for p in points {
+        any = true;
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    any.then(|| std::array::from_fn(|k| (lo[k] + hi[k]) / 2.0))
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tick(
     camera: Option<ResMut<PlayCamera>>,
     players: Query<&Player>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     mut cuts: MessageReader<StartCut>,
@@ -364,17 +381,27 @@ pub(crate) fn tick(
     mechanics: Option<Res<Mechanics>>,
     (watch, fixed): (Res<BossWatch>, Res<Time<Fixed>>),
 ) {
-    let (Some(mut camera), Ok(player)) = (camera, players.single()) else { return };
+    let Some(mut camera) = camera else { return };
+    // The heroes it follows: those in play, else (all dead) every one.
+    let heroes: Vec<Hero> = {
+        let of = |p: &Player| {
+            let s = party.state(p.slot);
+            let feet = p.mover.position;
+            Hero { feet, top: top_point(feet, s.map_or(DEFAULT_HEAD, |s| s.head_height)), half_height: s.map_or(2.5, |s| s.half_height) }
+        };
+        let living: Vec<Hero> = players.iter().filter(|p| party.state(p.slot).is_some_and(|s| s.alive)).map(of).collect();
+        if living.is_empty() { players.iter().map(of).collect() } else { living }
+    };
+    let (Some(top), Some(feet)) = (box_centre(heroes.iter().map(|h| h.top)), box_centre(heroes.iter().map(|h| h.feet))) else {
+        return;
+    };
     let camera = &mut *camera;
     camera.previous = camera.view();
-    let feet = player.mover.position;
-    let top = top_point(feet, state.as_deref());
     // On a boss level the boss camera runs once the boss is made; the
     // play camera otherwise.
     let PlayCamera { rig, boss, boss_active, start_point, .. } = camera;
     match (boss.as_mut(), watch.spot) {
         (Some(boss), Some(spot)) => {
-            let heroes = [Hero { feet, top, half_height: state.as_ref().map_or(2.5, |s| s.half_height) }];
             let scene = boss_camera::Scene {
                 heroes: &heroes,
                 boss: watch.boss,
@@ -427,7 +454,7 @@ pub(crate) fn tick(
     }
     for cut in cuts.read() {
         let Some(l) = population.as_ref().and_then(|p| p.population.locators.get(cut.locator)) else { continue };
-        let (eye, target) = locator_view(l, player.mover.position);
+        let (eye, target) = locator_view(l, feet);
         let fields = cut.hold.unwrap_or(if l.param == 0 { CUT_FIELDS } else { CUT_FIELDS_PER_STEP * f32::from(l.param) });
         camera.cut = Some(Cut { delay: cut.delay, eye, target, fields_left: fields, extra: cut.extra, node: cut.node });
     }

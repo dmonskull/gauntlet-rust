@@ -34,7 +34,8 @@ use crate::locomotion;
 use crate::model_mesh::TextureCache;
 use crate::monsters::{Monster, MonsterTick};
 use crate::particles;
-use crate::player::{Player, PlayerChoice};
+use crate::party::{MAX_PLAYERS, Party};
+use crate::player::Player;
 use crate::player_state::{Cry, HurtHero, PlayerState};
 use crate::population::LevelPopulation;
 use crate::projectiles;
@@ -920,29 +921,33 @@ fn tick_one_shots(mut commands: Commands, time: Res<Time>, mut shots: Query<(Ent
 #[derive(Resource, Default)]
 struct PotionCycle(u32);
 
-/// The hero's magic stat, per level.
+/// Each player's magic stat (its class's start and maximum), by slot.
 #[derive(Resource)]
 struct HeroMagic {
-    stat: [f32; 2],
+    stat: [[f32; 2]; MAX_PLAYERS],
 }
 
-fn setup_level(
-    mut commands: Commands,
-    mut game: ResMut<LoadedGame>,
-    choice: Option<Res<PlayerChoice>>,
-    state: Option<ResMut<PlayerState>>,
-    mut granted: Local<bool>,
-) {
-    let Some(choice) = choice else { return };
-    let stats = game
-        .install
-        .read(&format!("PDATA/{}.WAD", choice.class))
-        .ok()
-        .and_then(|b| PlayerStats::parse(&b).ok().flatten());
-    let magic = stats.map_or([400.0, 400.0], |s| [s.magic.start, s.magic.max]);
-    commands.insert_resource(HeroMagic { stat: magic });
-    // GDL_POTIONS=<n>[,<kind>]: potions to test with, once.
-    if let (Some(mut state), false) = (state, *granted)
+impl HeroMagic {
+    /// A slot's magic stat at a hero level.
+    fn at(&self, slot: usize, level: u32) -> f32 {
+        let [start, max] = self.stat.get(slot).copied().unwrap_or([400.0, 400.0]);
+        locomotion::stat_at_level(start, max, level, 0.0)
+    }
+}
+
+fn setup_level(mut commands: Commands, mut game: ResMut<LoadedGame>, mut party: ResMut<Party>, mut granted: Local<bool>) {
+    let mut stat = [[400.0, 400.0]; MAX_PLAYERS];
+    for (slot, member) in party.members() {
+        let stats = game
+            .install
+            .read(&format!("PDATA/{}.WAD", member.choice.class))
+            .ok()
+            .and_then(|b| PlayerStats::parse(&b).ok().flatten());
+        stat[slot] = stats.map_or([400.0, 400.0], |s| [s.magic.start, s.magic.max]);
+    }
+    commands.insert_resource(HeroMagic { stat });
+    // GDL_POTIONS=<n>[,<kind>]: potions to test with, once (player 1).
+    if let (Some(state), false) = (party.state_mut(0), *granted)
         && let Ok(spec) = std::env::var("GDL_POTIONS")
     {
         let mut parts = spec.split(',').map(str::trim);
@@ -961,7 +966,7 @@ fn setup_level(
 fn use_potions(
     mut commands: Commands,
     mut uses: MessageReader<UsePotion>,
-    mut state: Option<ResMut<PlayerState>>,
+    (mut party, heroes): (ResMut<Party>, Query<&Player>),
     magic: Option<Res<HeroMagic>>,
     mut cycle: ResMut<PotionCycle>,
     mut game: ResMut<LoadedGame>,
@@ -974,6 +979,8 @@ fn use_potions(
     mut images: ResMut<Assets<Image>>,
 ) {
     for u in uses.read() {
+        let slot = heroes.get(u.hero).map_or(0, |p| p.slot);
+        let mut state = party.state_mut(slot);
         let level = state.as_ref().map_or(1, |s| s.level.max(1));
         // The last potion picked up; none (only by cheating) cycles colours.
         let mut kind = state.as_mut().and_then(|s| s.potions.pop()).map_or(0, |k| k.max(0) as u32);
@@ -981,7 +988,7 @@ fn use_potions(
             kind |= cycle.0 % 4 + 1;
             cycle.0 += 1;
         }
-        let stat = magic.as_ref().map_or(400.0, |m| locomotion::stat_at_level(m.stat[0], m.stat[1], level, 0.0));
+        let stat = magic.as_ref().map_or(400.0, |m| m.at(slot, level));
         let e = potion_effect(kind, u.mode, 0, powered_magic(stat, state.as_deref()), level);
         let c = colour_index(kind);
         info!(
@@ -1059,7 +1066,7 @@ fn set_off_potions(
     mut commands: Commands,
     mut strikes: MessageReader<StrikePotion>,
     items: Option<ResMut<crate::items::LevelItems>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     magic: Option<Res<HeroMagic>>,
     mut cycle: ResMut<PotionCycle>,
     mut blasts: MessageWriter<BlastAt>,
@@ -1087,9 +1094,11 @@ fn set_off_potions(
         blasts.write(BlastAt { owner: Entity::PLACEHOLDER, at, kind: kind | 0x200, damage: NOBODYS_DAMAGE, radius: NOBODYS_RADIUS });
         if let Some(hero) = s.by {
             let kind = colour();
-            let level = state.as_ref().map_or(1, |s| s.level.max(1));
-            let stat = magic.as_ref().map_or(400.0, |m| locomotion::stat_at_level(m.stat[0], m.stat[1], level, 0.0));
-            let e = potion_effect(kind, 0, 0, STRUCK_POWER * powered_magic(stat, state.as_deref()), level);
+            let slot = players.get(hero).map_or(0, |p| p.slot);
+            let state = party.state(slot);
+            let level = state.map_or(1, |s| s.level.max(1));
+            let stat = magic.as_ref().map_or(400.0, |m| m.at(slot, level));
+            let e = potion_effect(kind, 0, 0, STRUCK_POWER * powered_magic(stat, state), level);
             // The striker's own magic: its sound at the striker's feet.
             let feet = players.get(hero).map_or(at, |p| Vec3::from(p.mover.position));
             sounds.write(PlaySoundAt::panned(POTION_SOUND[colour_index(kind)], feet, CALL_VOLUME));
@@ -1667,8 +1676,8 @@ fn tick_blasts(
             if amount == 0.0 {
                 continue;
             }
-            hurt.write(HurtHero { amount, kind, cry: Cry::Hurt });
-            info!("the blast hurts the hero for {amount:.1}");
+            hurt.write(HurtHero { slot: p.slot, amount, kind, cry: Cry::Hurt });
+            info!("the blast hurts player {} for {amount:.1}", p.slot + 1);
         }
     }
 }

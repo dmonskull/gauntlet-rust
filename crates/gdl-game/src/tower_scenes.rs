@@ -24,6 +24,7 @@ use crate::mechanics::{LevelNodes, Mechanics};
 use crate::message_box::{Captions, ShowCaption, TextFile};
 use crate::play_camera::{PlayCamera, StartCut};
 use crate::player::{Player, PlayerTick};
+use crate::party::Party;
 use crate::player_state::PlayerState;
 use crate::population::{self, LevelPopulation};
 use crate::quest::{self, ShardLight};
@@ -419,7 +420,7 @@ fn run_scene(
     mut voices: MessageWriter<QueueVoice>,
     (population, nodes): (Option<Res<LevelPopulation>>, Option<Res<LevelNodes>>),
     (players, playing, heroes): (Query<&Player>, Query<&EffectName>, Query<Entity, With<Player>>),
-    (state, choice): (Option<ResMut<PlayerState>>, Option<Res<crate::player::PlayerChoice>>),
+    mut party: ResMut<Party>,
     (mut light, mut meshes): (ResMut<ShardLight>, ResMut<Assets<Mesh>>),
     mechanics: Option<ResMut<Mechanics>>,
 ) {
@@ -427,7 +428,7 @@ fn run_scene(
     if scene.wizard_model.is_none() {
         return;
     }
-    let (Some(mut camera), Some(population), Some(nodes), Some(mut state)) = (camera, population, nodes, state) else {
+    let (Some(mut camera), Some(population), Some(nodes)) = (camera, population, nodes) else {
         return;
     };
     // Nothing starts under the arrival's opening shot.
@@ -437,14 +438,19 @@ fn run_scene(
     let scene = &mut *scene;
     // A hero who reaches a new ten of levels in the tower hears of it.
     if !scene.active() && scene.follow == 0 {
-        let (keep, rank) = check_rank(&state, choice.as_deref());
-        if let Some(level) = keep {
-            state.quest.rank_level = Some(level);
-        }
-        if let Some(rank) = rank {
-            info!("the wizard will announce {rank:?}");
-            scene.rank = Some(rank);
-            scene.wait = RANK_WAIT;
+        // Each player's check; the first new rank is announced.
+        for (_, member) in party.members_mut() {
+            let (keep, rank) = check_rank(&member.state, Some(&member.choice));
+            if let Some(level) = keep {
+                member.state.quest.rank_level = Some(level);
+            }
+            if let Some(rank) = rank
+                && scene.rank.is_none()
+            {
+                info!("the wizard will announce {rank:?}");
+                scene.rank = Some(rank);
+                scene.wait = RANK_WAIT;
+            }
         }
         if !scene.active() {
             return;
@@ -554,7 +560,8 @@ fn run_scene(
             }
         }
         let Some(what) = what else { return };
-        place(scene, what, &state, &population, &nodes, &mut camera, &mut captions, &mut light, &mut commands, &mut cuts, &mut sounds, &mut meshes);
+        let progress = party.states().fold((0, 0), |(beaten, runes), (_, s)| (beaten | s.realms_beaten, runes | s.runestone_bits()));
+        place(scene, what, progress, &population, &nodes, &mut camera, &mut captions, &mut light, &mut commands, &mut cuts, &mut sounds, &mut meshes);
         // The place's cut starts on the camera's tick: the steps after it
         // wait for the next.
         return;
@@ -749,7 +756,7 @@ const COLOURS: [&str; 4] = ["YEL", "BLU", "RED", "GRE"];
 fn place(
     scene: &mut Scene,
     what: Announce,
-    state: &PlayerState,
+    (beaten, runes): (u32, u32),
     population: &LevelPopulation,
     nodes: &LevelNodes,
     camera: &mut PlayCamera,
@@ -761,8 +768,8 @@ fn place(
     meshes: &mut Assets<Mesh>,
 ) {
     leave(scene, camera, captions, commands);
-    let marks = quest::boss_marks(state.realms_beaten);
-    let runes = state.runestone_bits();
+    // The party's: every player's realms beaten and stones held.
+    let marks = quest::boss_marks(beaten);
     // The piece's effect in full: its model, and its particles sprayed
     // there (a shard's; the stones have none).
     let mut set_out = |place: &str| {

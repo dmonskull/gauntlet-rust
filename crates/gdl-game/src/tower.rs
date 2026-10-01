@@ -28,7 +28,7 @@ use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::mechanics::LevelNodes;
 use crate::model_mesh::TextureCache;
-use crate::player_state::PlayerState;
+use crate::party::Party;
 use crate::population::{self, LevelPopulation};
 use crate::projectiles;
 use crate::quest;
@@ -162,9 +162,8 @@ fn place_trophies(
     mut commands: Commands,
     population: Res<LevelPopulation>,
     nodes: Option<Res<LevelNodes>>,
-    state: Option<ResMut<PlayerState>>,
+    mut party: ResMut<Party>,
     (mut trail, mut scene, mut light): (ResMut<LevelTrail>, ResMut<tower_scenes::Scene>, ResMut<quest::ShardLight>),
-    choice: Option<Res<crate::player::PlayerChoice>>,
     mut game: ResMut<LoadedGame>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
@@ -174,13 +173,23 @@ fn place_trophies(
     if quest::level_of(&population.level).is_none_or(|(realm, _)| realm != TOWER_REALM) {
         return;
     }
-    let (Some(nodes), Some(mut state)) = (nodes, state) else { return };
-    let (shards, runes) = (state.quest.shards_announced, state.quest.runes_announced);
+    let Some(nodes) = nodes else { return };
+    if party.is_empty() {
+        return;
+    }
+    // The tower shows what the party has: each player's shards and stones
+    // put together (the game's tower load runs over every hero).
+    let union = |f: fn(&crate::player_state::PlayerState) -> u32| party.states().fold(0, |bits, (_, s)| bits | f(s));
+    let (shards, runes) = (union(|s| s.quest.shards_announced), union(|s| s.quest.runes_announced));
     light.0 = shards & quest::ALL_SHARDS == quest::ALL_SHARDS;
-    let (marks, held) = (quest::boss_marks(state.realms_beaten), state.runestone_bits());
-    let (keep, rank) = tower_scenes::check_rank(&state, choice.as_deref());
-    if let Some(level) = keep {
-        state.quest.rank_level = Some(level);
+    let (marks, held) = (quest::boss_marks(union(|s| s.realms_beaten)), union(|s| s.runestone_bits()));
+    let mut rank = None;
+    for (_, member) in party.members_mut() {
+        let (keep, new_rank) = tower_scenes::check_rank(&member.state, Some(&member.choice));
+        if let Some(level) = keep {
+            member.state.quest.rank_level = Some(level);
+        }
+        rank = rank.or(new_rank);
     }
     let announce = tower_scenes::announcement(marks, shards, held, runes, trail.finished.as_deref());
     // The thirteenth's absence is said once: the game forgets the
@@ -188,8 +197,10 @@ fn place_trophies(
     if matches!(announce, Some(tower_scenes::Announce::Rune13No)) {
         trail.finished = None;
     }
-    state.quest.shards_announced |= marks;
-    state.quest.runes_announced |= held;
+    for (_, state) in party.states_mut() {
+        state.quest.shards_announced |= marks;
+        state.quest.runes_announced |= held;
+    }
     let mut wanted: Vec<(String, &str)> = (1..=8u8).filter(|n| shards & (1 << n) != 0).map(shard_piece).collect();
     wanted.extend((0..13u8).filter(|n| runes & (1 << n) != 0).map(rune_piece));
     let piece = match announce {
@@ -322,7 +333,7 @@ const GESTURE: usize = 6;
 /// — here, when the hero hasn't finished a realm's level.
 fn arm_speeches(
     population: Res<LevelPopulation>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     trail: Res<LevelTrail>,
     mut speeches: ResMut<TowerSpeeches>,
 ) {
@@ -332,9 +343,10 @@ fn arm_speeches(
     }
     let first = speeches.tower_loads == 0;
     speeches.tower_loads += 1;
-    let fresh = state.as_ref().is_some_and(|s| {
-        s.quest.finished.iter().enumerate().all(|(realm, &levels)| realm == TOWER_REALM as usize || levels == 0)
-    });
+    let fresh = !party.is_empty()
+        && party.states().all(|(_, s)| {
+            s.quest.finished.iter().enumerate().all(|(realm, &levels)| realm == TOWER_REALM as usize || levels == 0)
+        });
     if first && fresh {
         speeches.pending.push(WELCOME);
     }

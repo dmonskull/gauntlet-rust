@@ -23,7 +23,7 @@ use crate::frontend::Frontend;
 use crate::items::ItemTick;
 use crate::message_box::DrawBox;
 use crate::play_camera::PlayCamera;
-use crate::player_state::PlayerState;
+use crate::party::{MAX_PLAYERS, Party};
 use crate::population::LevelPopulation;
 use crate::quest;
 
@@ -45,6 +45,8 @@ impl Plugin for PickupNoticesPlugin {
 /// counter or gargoyle piece; 0 for potions and powers.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PickupNotice {
+    /// Over whose panel.
+    pub slot: usize,
     pub subtype: i32,
     pub value: i32,
 }
@@ -92,6 +94,8 @@ const HOLD_FIELDS: f32 = 90.0;
 const MOST_PLATES: usize = 24;
 /// Player 1's panel.
 const PANEL_X: f32 = 0.0;
+/// Players 2–4's panels follow player 1's this far apart.
+const PANEL_WIDTH: f32 = 128.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Phase {
@@ -145,7 +149,7 @@ impl Plate {
 
 /// The plates showing, oldest first.
 #[derive(Resource, Default)]
-struct Plates(Vec<Plate>);
+struct Plates([Vec<Plate>; MAX_PLAYERS]);
 
 /// Takes the pickups' notices and moves and draws their plates over the
 /// panel (under the message box). They're cleared as a level starts and
@@ -159,32 +163,35 @@ fn show_plates(
     mut notices: MessageReader<PickupNotice>,
     frontend: Option<Res<Frontend>>,
     camera: Option<Res<PlayCamera>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     population: Option<Res<LevelPopulation>>,
-    mut was_alive: Local<bool>,
+    mut was_alive: Local<[bool; MAX_PLAYERS]>,
     time: Res<Time<Virtual>>,
     mut tex: Option<ResMut<UiTextures>>,
     mut images: ResMut<Assets<Image>>,
     mut draw: ResMut<Draw2d>,
 ) {
-    let plates = &mut plates.0;
-    let out = frontend.as_deref().is_some_and(Frontend::hero_out);
-    let alive = state.as_ref().is_some_and(|s| s.alive);
-    let up_again = alive && !*was_alive;
-    *was_alive = alive;
-    if out || up_again || population.as_ref().is_some_and(|p| p.is_changed()) {
-        plates.clear();
+    let level_start = population.as_ref().is_some_and(|p| p.is_changed());
+    let out = |slot: usize| frontend.as_deref().is_some_and(|f| f.hero_out(slot));
+    for (slot, plates) in plates.0.iter_mut().enumerate() {
+        let alive = party.state(slot).is_some_and(|s| s.alive);
+        let up_again = alive && !was_alive[slot];
+        was_alive[slot] = alive;
+        if out(slot) || up_again || level_start {
+            plates.clear();
+        }
     }
     let secret = population
         .as_ref()
         .and_then(|p| quest::level_of(&p.level))
         .is_some_and(|(realm, _)| realm == SECRET_REALM);
     for n in notices.read() {
+        let Some(plates) = plates.0.get_mut(n.slot) else { continue };
         if plates.len() < MOST_PLATES
-            && !out
+            && !out(n.slot)
             && let Some(picture) = picture(n.subtype, n.value, secret)
         {
-            info!("pickup notice {picture} (subtype {}, {})", n.subtype, n.value);
+            info!("pickup notice {picture} for player {} (subtype {}, {})", n.slot + 1, n.subtype, n.value);
             plates.push(Plate::new(picture));
         }
     }
@@ -193,19 +200,24 @@ fn show_plates(
     }
     if !camera.as_deref().is_some_and(PlayCamera::opening) {
         let fields = time.delta_secs() * 60.0;
-        plates.retain_mut(|p| p.step(fields));
-    }
-    let Some(tex) = tex.as_deref_mut() else { return };
-    // Every strip lies behind every picture (the game's sort keys, 63980
-    // and 63979, in front of the panel's 64000).
-    if let Some(strip) = tex.get(STRIP, &mut images) {
-        for p in plates.iter() {
-            draw.image(&strip, PANEL_X, p.y, PLATE_WIDTH, STRIP_HEIGHT, Color::WHITE);
+        for plates in &mut plates.0 {
+            plates.retain_mut(|p| p.step(fields));
         }
     }
-    for p in plates.iter() {
-        if let Some(pic) = tex.get(p.picture, &mut images) {
-            draw.image(&pic, PANEL_X, p.y + STRIP_HEIGHT, PLATE_WIDTH, pic.size.y, Color::WHITE);
+    let Some(tex) = tex.as_deref_mut() else { return };
+    for (slot, plates) in plates.0.iter().enumerate() {
+        let x = PANEL_X + PANEL_WIDTH * slot as f32;
+        // Every strip lies behind every picture (the game's sort keys,
+        // 63980 and 63979, in front of the panel's 64000).
+        if let Some(strip) = tex.get(STRIP, &mut images) {
+            for p in plates {
+                draw.image(&strip, x, p.y, PLATE_WIDTH, STRIP_HEIGHT, Color::WHITE);
+            }
+        }
+        for p in plates {
+            if let Some(pic) = tex.get(p.picture, &mut images) {
+                draw.image(&pic, x, p.y + STRIP_HEIGHT, PLATE_WIDTH, pic.size.y, Color::WHITE);
+            }
         }
     }
 }
@@ -228,31 +240,36 @@ const ALL_STONES: u32 = 0x1FFF;
 const SETTLE_TICKS: u32 = 30;
 
 /// A new runestone in play has the announcer count them, whatever the
-/// wait (and not once a boss level's end has begun).
+/// wait (and not once a boss level's end has begun) — each player's.
 fn count_runestones(
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     population: Option<Res<LevelPopulation>>,
-    mut seen: Local<Option<(u32, u32)>>,
+    mut seen: Local<[Option<(u32, u32)>; MAX_PLAYERS]>,
     mut voices: MessageWriter<QueueVoice>,
 ) {
-    let Some(state) = state else { return };
-    let bits = state.runestone_bits() & ALL_STONES;
-    let fresh = state.is_added() || population.as_ref().is_some_and(|p| p.is_changed());
-    let (before, ticks) = match *seen {
-        Some((b, t)) if !fresh => (b, t + 1),
-        _ => {
-            *seen = Some((bits, 0));
-            return;
+    let level_start = population.as_ref().is_some_and(|p| p.is_changed());
+    for slot in 0..MAX_PLAYERS {
+        let Some(state) = party.state(slot) else {
+            seen[slot] = None;
+            continue;
+        };
+        let bits = state.runestone_bits() & ALL_STONES;
+        let (before, ticks) = match seen[slot] {
+            Some((b, t)) if !level_start => (b, t + 1),
+            _ => {
+                seen[slot] = Some((bits, 0));
+                continue;
+            }
+        };
+        seen[slot] = Some((bits, ticks));
+        if ticks < SETTLE_TICKS || bits & !before == 0 {
+            continue;
         }
-    };
-    *seen = Some((bits, ticks));
-    if ticks < SETTLE_TICKS || bits & !before == 0 {
-        return;
-    }
-    let lines = count_lines(bits.count_ones());
-    info!("runestone {:#x} found: {} held, the announcer says {lines:?}", bits & !before, bits.count_ones());
-    if !lines.is_empty() {
-        voices.write(QueueVoice { queue: VoiceQueue::Announcer, lines, most_wait: None, gated: true });
+        let lines = count_lines(bits.count_ones());
+        info!("player {}: runestone {:#x} found, {} held, the announcer says {lines:?}", slot + 1, bits & !before, bits.count_ones());
+        if !lines.is_empty() {
+            voices.write(QueueVoice { queue: VoiceQueue::Announcer, lines, most_wait: None, gated: true });
+        }
     }
 }
 

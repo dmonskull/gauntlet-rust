@@ -17,7 +17,8 @@ use crate::character;
 use crate::effects::EffectOn;
 use crate::hints::{Hint, ShowHint};
 use crate::player::{Player, PlayerChoice};
-use crate::player_state::{PlayerState, PowersTick};
+use crate::party::{MAX_PLAYERS, Party};
+use crate::player_state::PowersTick;
 use crate::population::LevelPopulation;
 use crate::tower_scenes::{LEVELUP_FLASHES, Rank};
 
@@ -63,53 +64,56 @@ fn change(before: u32, now: u32) -> Option<Change> {
     }
 }
 
+/// Each hero's watch: the hero, its level, and ticks watched.
+type Watch = Option<(Entity, u32, u32)>;
+
 #[allow(clippy::too_many_arguments)]
 fn watch_level(
-    state: Option<Res<PlayerState>>,
-    choice: Option<Res<PlayerChoice>>,
+    party: Res<Party>,
     population: Option<Res<LevelPopulation>>,
-    heroes: Query<Entity, With<Player>>,
-    mut seen: Local<Option<(Entity, u32, u32)>>,
+    heroes: Query<(Entity, &Player)>,
+    mut seen: Local<[Watch; MAX_PLAYERS]>,
     mut hints: MessageWriter<ShowHint>,
     mut flashes: MessageWriter<EffectOn>,
     mut voices: MessageWriter<QueueVoice>,
 ) {
-    let (Some(state), Some(choice)) = (state, choice) else { return };
-    let Some(hero) = heroes.iter().next() else {
-        *seen = None;
-        return;
-    };
-    let fresh = state.is_added() || choice.is_changed() || population.as_ref().is_some_and(|p| p.is_changed());
-    let (before, ticks) = match *seen {
-        Some((e, level, ticks)) if e == hero && !fresh => (level, ticks + 1),
-        _ => {
-            debug!("watching {hero:?} from level {}", state.level);
-            *seen = Some((hero, state.level, 0));
-            return;
+    let level_start = population.as_ref().is_some_and(|p| p.is_changed());
+    for slot in 0..MAX_PLAYERS {
+        let (Some(member), Some((hero, _))) = (party.get(slot), heroes.iter().find(|(_, p)| p.slot == slot)) else {
+            seen[slot] = None;
+            continue;
+        };
+        let (state, choice) = (&member.state, &member.choice);
+        let (before, ticks) = match seen[slot] {
+            Some((e, level, ticks)) if e == hero && !level_start => (level, ticks + 1),
+            _ => {
+                debug!("watching player {} from level {}", slot + 1, state.level);
+                seen[slot] = Some((hero, state.level, 0));
+                continue;
+            }
+        };
+        // A new record (a character loaded or made) is taken as it is.
+        let before = if ticks < SETTLE_TICKS { state.level } else { before };
+        seen[slot] = Some((hero, state.level, ticks));
+        let colour = colour_of(choice);
+        match change(before, state.level) {
+            Some(Change::Rose) => {
+                info!("player {} level {before} → {}: the level-up flash", slot + 1, state.level);
+                hints.write(ShowHint(Hint::LevelUp));
+                flashes.write(EffectOn { name: LEVELUP_FLASHES[colour], bank: None, on: hero, scale: 1.0 });
+            }
+            Some(Change::Fell) => {
+                info!("player {} level {before} → {}: lost", slot + 1, state.level);
+                let name = if state.bits.special & POJO != 0 {
+                    POJO_NAME.to_string()
+                } else {
+                    let class = character::class_index(&choice.class).unwrap_or(0);
+                    Rank { level: state.level, class, colour }.name_line()
+                };
+                voices.write(QueueVoice::announcer(name, LOST_MOST_WAIT).then(LOST_LEVEL));
+            }
+            None => {}
         }
-    };
-    *seen = Some((hero, state.level, ticks));
-    if ticks < SETTLE_TICKS {
-        return;
-    }
-    let colour = colour_of(&choice);
-    match change(before, state.level) {
-        Some(Change::Rose) => {
-            info!("level {before} → {}: the level-up flash", state.level);
-            hints.write(ShowHint(Hint::LevelUp));
-            flashes.write(EffectOn { name: LEVELUP_FLASHES[colour], bank: None, on: hero, scale: 1.0 });
-        }
-        Some(Change::Fell) => {
-            info!("level {before} → {}: lost", state.level);
-            let name = if state.bits.special & POJO != 0 {
-                POJO_NAME.to_string()
-            } else {
-                let class = character::class_index(&choice.class).unwrap_or(0);
-                Rank { level: state.level, class, colour }.name_line()
-            };
-            voices.write(QueueVoice::announcer(name, LOST_MOST_WAIT).then(LOST_LEVEL));
-        }
-        None => {}
     }
 }
 

@@ -46,6 +46,7 @@ mod model_mesh;
 mod options;
 mod monsters;
 mod particles;
+mod party;
 mod pickup_notices;
 mod play_camera;
 mod player;
@@ -168,7 +169,7 @@ fn main() {
         // hero; a new game starts in the tower hub.
         let skip_menus = args.level.is_some() || args.character.is_some();
         let first_level = args.level.as_deref().or((!skip_menus).then_some(frontend::TOWER));
-        let game = match LoadedGame::load(install, first_level) {
+        let mut game = match LoadedGame::load(install, first_level) {
             Ok(game) => game,
             Err(message) => {
                 eprintln!("{message}");
@@ -179,12 +180,19 @@ fn main() {
         for (name, why) in &game.failures {
             eprintln!("warning: level {name} failed to load: {why}");
         }
-        let choice = player::PlayerChoice {
-            class: args.character.as_deref().unwrap_or("WAR").to_ascii_uppercase(),
-            variant: args.variant.as_deref().unwrap_or("BLU").to_ascii_uppercase(),
-        };
+        // A hero picked on the command line plays at once as player 1 (the
+        // front end's select screen fills the party otherwise).
+        let mut party = party::Party::default();
+        if skip_menus {
+            let choice = player::PlayerChoice {
+                class: args.character.as_deref().unwrap_or("WAR").to_ascii_uppercase(),
+                variant: args.variant.as_deref().unwrap_or("BLU").to_ascii_uppercase(),
+            };
+            let devices = party::Devices { keyboard: true, ..default() };
+            party.join(0, player_state::new_member(&mut game.install, choice, "LARRY", None, devices));
+        }
         app.insert_resource(game)
-            .insert_resource(choice)
+            .insert_resource(party)
             .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
             .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin, deaths::DeathsPlugin, flash::FlashPlugin, fade::FadePlugin, quest::QuestPlugin, scene_light::SceneLightPlugin, saves::SavesPlugin))
             .add_plugins((

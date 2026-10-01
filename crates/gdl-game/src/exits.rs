@@ -17,7 +17,7 @@ use bevy::prelude::*;
 
 use crate::audio::VoiceQueues;
 use crate::level::LoadedGame;
-use crate::player_state::PlayerState;
+use crate::party::Party;
 use crate::quest;
 use crate::tower::LevelTrail;
 use crate::world::ChangeLevel;
@@ -56,7 +56,7 @@ fn change_level_to(
     mut pending: Local<Option<ChangeLevelTo>>,
     voices: Res<VoiceQueues>,
     game: Res<LoadedGame>,
-    state: Option<ResMut<PlayerState>>,
+    mut party: ResMut<Party>,
     mut trail: ResMut<LevelTrail>,
     mut change: MessageWriter<ChangeLevel>,
 ) {
@@ -76,14 +76,16 @@ fn change_level_to(
         return;
     };
     let leaving = &game.levels[game.current].name;
+    // Each player still in play gets the level marked.
     if request.finishing
-        && let Some(mut state) = state
-        && state.alive
+        && party.any(|s| s.alive)
         && let Some((realm, level)) = quest::level_of(leaving)
         && realm != quest::TOWER
     {
         info!("{leaving} finished");
-        state.quest.finish_level(realm, level);
+        for (_, state) in party.states_mut().filter(|(_, s)| s.alive) {
+            state.quest.finish_level(realm, level);
+        }
         trail.finished = Some(leaving.clone());
     }
     change.write(ChangeLevel(to as isize - game.current as isize));
