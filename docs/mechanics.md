@@ -653,8 +653,10 @@ damaging walls read the run-time flags (`Mechanics::node_flags`). Their
 scale is drawn (about the node) but their collision doesn't scale (not
 confirmed either way). A bursting one (type `0x50000`) hides for the tick
 its lap ends and shows the realm's explosion (`EffectAt`) and the ice
-realm's sound where it burst; the explosion's blast (50 damage out to 5
-or 6) is `effects.rs`'s and isn't there yet.
+realm's sound where it burst; the explosion carries its blast
+(`effects::WorldBurst`): 50 damage out to 6 (kind `0x800`) in the ice and
+sky realms, out to 5 (`0x21`) elsewhere, no one's, hurting heroes, monsters
+and items (flags `0x2B`) for as long as the explosion plays.
 
 Stand-ins and gaps: triggers run on or off screen; subtype 1 rotators;
 only the hero (not monsters) holds a mover by standing on it. Hazards and

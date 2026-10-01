@@ -221,6 +221,19 @@ pub struct PlayerState {
     pub bits: PowerBits,
     /// Fields until the next low-health warning.
     warning_timer: i32,
+    /// Stat points bought in the shop.
+    pub bought: StatBonus,
+}
+
+/// Stat points bought in the shop (`shop.rs`), on top of the class's stats
+/// at the hero's level; kept with the hero (the game keeps them per class
+/// in the character record).
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StatBonus {
+    pub strength: f32,
+    pub armour: f32,
+    pub magic: f32,
+    pub speed: f32,
 }
 
 /// What a hero's powerups add up to (the game's stats routine, every
@@ -315,7 +328,7 @@ impl PlayerState {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.health.to_bits(), self.level, self.experience, self.gold, self.keys, &self.potions, &self.runestones).hash(&mut h);
         (self.realms_beaten, self.alive, self.warning_timer).hash(&mut h);
-        format!("{:?} {:?} {:?}", self.powers, self.quest, self.bits).hash(&mut h);
+        format!("{:?} {:?} {:?} {:?}", self.powers, self.quest, self.bits, self.bought).hash(&mut h);
         h.finish()
     }
 
@@ -342,6 +355,7 @@ impl PlayerState {
             head_height: stats.map_or(DEFAULT_HEAD, |s| s.body.head_height),
             powerup_time: stats.map_or(1.0, |s| s.powerup_time),
             warning_timer: 0,
+            bought: StatBonus::default(),
         }
     }
 

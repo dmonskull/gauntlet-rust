@@ -42,7 +42,7 @@ use gdl_formats::population::{LocatorKind, PlacementParams, Population};
 use gdl_formats::WorldNode;
 
 use crate::audio::{LoopSoundAt, PlaySoundAt};
-use crate::effects::EffectAt;
+use crate::effects::WorldBurst;
 use crate::items::{self, LevelItems};
 use crate::level_material::LevelMaterial;
 use crate::monsters::MonsterLevel;
@@ -543,6 +543,16 @@ fn burst_effect(realm: usize) -> (&'static str, Option<&'static str>, f32) {
     }
 }
 
+/// A burst's blast: its kind and radius by realm id — 0x800 out to 6 in
+/// the ice and sky realms, 0x21 out to 5 elsewhere — at 50 damage.
+fn burst_blast(realm: usize) -> (u32, f32) {
+    match realm {
+        9 | 11 => (0x800, 6.0),
+        _ => (0x21, 5.0),
+    }
+}
+const BURST_DAMAGE: f32 = 50.0;
+
 /// A mover on a node in the animated mode (kind flags `flags`, state
 /// `st`): no heights — on plays its node's animation on to the last frame,
 /// off back to the first, and it has arrived at that end; a returning one
@@ -859,7 +869,7 @@ fn tick(
     level: Option<Res<MonsterLevel>>,
     mut messages: MessageWriter<ShowMessage>,
     (camera, time_stop): (Option<Res<PlayCamera>>, Option<Res<TimeStop>>),
-    mut effects: MessageWriter<EffectAt>,
+    mut bursts: MessageWriter<WorldBurst>,
 ) {
     let (Some(mut mech), Some(nodes), Some(mut items), Some(mut ground)) = (mechanics, nodes, items, ground) else {
         return;
@@ -1081,13 +1091,14 @@ fn tick(
     if !cut_holds {
         let stopped = time_stop.as_ref().is_some_and(|t| t.0);
         let (name, bank, scale) = burst_effect(items.realm());
+        let (kind, radius) = burst_blast(items.realm());
         for a in &mut mech.animations {
             let play = mech.play.entry(a.node).or_default();
             if let Some(at) = play_animation(a, play, stopped, nodes.origin[a.node]) {
-                // A burst: the realm's explosion where it is (its blast is
-                // `effects.rs`'s, not here yet), the ice realm's sound.
+                // A burst: the realm's explosion where it is, with its
+                // blast, and the ice realm's sound.
                 debug!("animated node {} bursts at {at:?}", a.node);
-                effects.write(EffectAt { name, bank, at: Vec3::from(at), facing: 0.0, scale });
+                bursts.write(WorldBurst { name, bank, at: Vec3::from(at), scale, kind, damage: BURST_DAMAGE, radius });
                 if items.realm() == 9 {
                     sounds.write(PlaySoundAt::faded(BURST_SOUND, Vec3::from(at), BURST_VOLUME));
                 }

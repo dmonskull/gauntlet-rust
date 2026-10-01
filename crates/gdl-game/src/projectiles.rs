@@ -868,7 +868,8 @@ fn setup_level(
     guard.0.clear();
     let mut missiles = HeroMissiles::default();
     for (slot, member) in party.members() {
-        missiles.0[slot] = hero_missile(&member.choice, member.state.level, &mut game, (&mut meshes, &mut materials, &mut images));
+        missiles.0[slot] =
+            hero_missile(&member.choice, member.state.level, &member.state.bought, &mut game, (&mut meshes, &mut materials, &mut images));
     }
     commands.insert_resource(missiles);
 }
@@ -877,6 +878,7 @@ fn setup_level(
 fn hero_missile(
     choice: &PlayerChoice,
     level: u32,
+    bought: &crate::player_state::StatBonus,
     game: &mut LoadedGame,
     (meshes, materials, images): (&mut Assets<Mesh>, &mut Assets<LevelMaterial>, &mut Assets<Image>),
 ) -> Option<HeroMissile> {
@@ -889,8 +891,8 @@ fn hero_missile(
         .and_then(|b| PlayerStats::parse(&b).ok().flatten());
     let magic = matches!(missile_class(class), 2 | 6);
     let stat = stats.map_or(400.0, |s| {
-        let st = if magic { s.magic } else { s.strength };
-        locomotion::stat_at_level(st.start, st.max, level, 0.0)
+        let (st, b) = if magic { (s.magic, bought.magic) } else { (s.strength, bought.strength) };
+        locomotion::stat_at_level(st.start, st.max, level, b)
     });
     let (damage, speed) = hero_missile_power(stat);
 

@@ -63,6 +63,7 @@ mod quest;
 mod rumble;
 mod saves;
 mod scene_light;
+mod shop;
 mod projectiles;
 mod status_hud;
 mod viewer;
@@ -223,6 +224,7 @@ fn main() {
                 tower_scenes::TowerScenesPlugin,
                 message_box::MessageBoxPlugin,
                 pickup_notices::PickupNoticesPlugin,
+                shop::ShopPlugin,
             ));
     }
     app.run();
