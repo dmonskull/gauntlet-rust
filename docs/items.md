@@ -243,8 +243,12 @@ update.
 ### Touching items
 
 The player update (`FUN_80080d3c`) asks `FUN_80086e44(radius, half
-height, player, from, to, …)` for the items the move reaches; for each,
-`FUN_8005f0e0` is the touch test and `FUN_8005d71c` the touch handler.
+height, player, from, to, …)` for the items the move reaches — `from` is
+the hero's collision centre `+0x64`, 2.5 above its feet, and `to` that plus
+the move — and for each, `FUN_8005f0e0` is the touch test and
+`FUN_8005d71c` the touch handler. So an item's centre is in reach from 3
+below the hero's feet to 8 above them with the usual reach of 3 (the
+rewrite had tested from the feet, `items::contact`).
 
 **Touch test** (`FUN_8005f0e0`), with the hero's radius `r` and half
 height `h` (`PDAT`: 1.5 and 2.5), the type's shape `+0x08` (u16) and
