@@ -11,12 +11,15 @@
 
 ## Start
 
-Run the program. The first time, a file picker asks for your game; pick the
-disc image or folder. It's remembered — next time the game starts straight
-away (`gdl-game --forget` asks again).
+Unzip the download and run the program: double-click it, or in a terminal
+in its folder type `./gdl-game` (`gdl-game.exe` on Windows; the `./` is
+needed on macOS and Linux). The first time, a file picker asks for your
+game; pick the disc image or folder. It's remembered — next time the game
+starts straight away (`./gdl-game --forget` asks again).
 
-On macOS, if it says the app can't be checked: right-click → Open once, or
-run `xattr -d com.apple.quarantine gdl-game` in its folder.
+On macOS the first run may say Apple can't check the app (it isn't signed):
+in the program's folder run `xattr -d com.apple.quarantine gdl-game` once,
+or allow it under System Settings → Privacy & Security.
 
 ## Controls
 
