@@ -2413,7 +2413,7 @@ const DYING_SECONDS: f32 = 4.0;
 /// When a level starts: outside the tower and the secret realm the game
 /// saves each hero's record — except in `levelE2` and `levelF2` — and a
 /// hero that died in the last level comes back with its saved record.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn level_started(
     population: Res<LevelPopulation>,
     mut fe: ResMut<Frontend>,
