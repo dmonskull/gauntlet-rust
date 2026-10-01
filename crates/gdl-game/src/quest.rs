@@ -30,9 +30,11 @@ impl Plugin for QuestPlugin {
             (
                 seed_tests.run_if(resource_exists_and_changed::<LevelPopulation>).before(crate::items::build_items),
                 show_tower_pieces,
-                announce_unlocks,
+                announce_unlocks.run_if(crate::online::lockstep_off),
             ),
-        );
+        )
+        // Online the tower's openings are announced on the network's ticks.
+        .add_systems(FixedUpdate, announce_unlocks.run_if(crate::online::lockstep_on).after(crate::player::PlayerTick));
     }
 }
 

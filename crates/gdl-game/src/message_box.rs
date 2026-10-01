@@ -37,8 +37,15 @@ impl Plugin for MessageBoxPlugin {
             .add_systems(Startup, load_text)
             .add_systems(
                 Update,
-                (run_box.after(frontend::read_input).before(frontend::run), run_captions),
+                (
+                    run_box.run_if(crate::online::lockstep_off).after(frontend::read_input).before(frontend::run),
+                    run_captions,
+                ),
             )
+            // Online the box runs on the network's ticks: every machine
+            // opens, turns and closes it alike, and any player's B puts a
+            // page away (`online.rs`).
+            .add_systems(crate::online::NetTick, net_box.before(crate::audio::NetVoices))
             .add_systems(PostUpdate, (draw_box, draw_captions).in_set(DrawBox).before(Flush2d));
     }
 }
@@ -151,6 +158,13 @@ struct Open {
 }
 
 impl MessageBox {
+    /// Nothing up or waiting (a new game online).
+    pub fn clear(&mut self) {
+        self.queue.clear();
+        self.open = None;
+        self.quiet = 0;
+    }
+
     /// Whether the box is up (play is frozen).
     pub fn is_open(&self) -> bool {
         self.open.is_some()
@@ -228,10 +242,34 @@ fn run_box(
     mut requests: MessageReader<ShowMessage>,
     mut voices: MessageWriter<QueueVoice>,
     mut stops: MessageWriter<StopSound>,
-    mut skip: Local<Option<bool>>,
 ) {
-    let skip = *skip.get_or_insert_with(|| std::env::var("GDL_SKIP_BOXES").is_ok_and(|v| !v.is_empty() && v != "0"));
     let fields = real.delta_secs() * 60.0;
+    step_box(&mut boxes, fields, fe.back_pressed(), &mut requests, &mut voices, &mut stops);
+}
+
+/// The box online, on a network tick: two fields, and B from any player.
+fn net_box(
+    lock: Res<crate::online::Lockstep>,
+    inputs: Res<crate::party::Inputs>,
+    mut boxes: ResMut<MessageBox>,
+    mut requests: MessageReader<ShowMessage>,
+    mut voices: MessageWriter<QueueVoice>,
+    mut stops: MessageWriter<StopSound>,
+) {
+    let back = lock.pressed(&inputs, crate::party::SlotInput::BACK);
+    step_box(&mut boxes, 2.0, back, &mut requests, &mut voices, &mut stops);
+}
+
+/// The box's step: `fields` gone by, `back` B pressed.
+fn step_box(
+    boxes: &mut MessageBox,
+    fields: f32,
+    back: bool,
+    requests: &mut MessageReader<ShowMessage>,
+    voices: &mut MessageWriter<QueueVoice>,
+    stops: &mut MessageWriter<StopSound>,
+) {
+    let skip = std::env::var("GDL_SKIP_BOXES").is_ok_and(|v| !v.is_empty() && v != "0");
     boxes.t += fields;
     boxes.queue.extend(requests.read().cloned());
     if boxes.open.is_none() {
@@ -239,7 +277,7 @@ fn run_box(
     }
     if let Some(open) = boxes.open.as_mut() {
         open.fields += fields;
-        if open.fields >= PAGE_GUARD && (fe.back_pressed() || skip) {
+        if open.fields >= PAGE_GUARD && (back || skip) {
             if let Some(line) = open.voice {
                 stops.write(StopSound(line.into()));
             }

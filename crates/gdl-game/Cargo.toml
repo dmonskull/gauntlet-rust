@@ -7,7 +7,10 @@ publish.workspace = true
 [dependencies]
 gdl-formats.workspace = true
 gdl-install.workspace = true
+gdl-net.workspace = true
 bevy.workspace = true
 rfd = "0.17.2"
 ron = "0.12"
+# The online invite code goes through the clipboard (text only).
+arboard = { version = "3", default-features = false }
 serde = { version = "1", features = ["derive"] }

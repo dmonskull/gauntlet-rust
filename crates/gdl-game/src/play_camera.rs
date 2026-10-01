@@ -2,6 +2,12 @@
 //! built from the level's camera points and its `WDATA` camera record when
 //! the level loads, ticked at 30 Hz after the player, and interpolated
 //! between ticks. `C` toggles the free-fly camera instead.
+//!
+//! Online each hero has a camera of its own as well, following it alone
+//! as a player's camera does: each machine draws its own hero's (another
+//! hero's while its own is out), each hero's stick turns by its own, and
+//! the game's on-screen tests take every hero's. Cuts, the level-start
+//! shot and a boss level's camera stay everyone's.
 
 use std::collections::HashMap;
 
@@ -18,7 +24,7 @@ use crate::camera_rig::{CameraPoint, CameraRig};
 use crate::level::LoadedGame;
 use crate::level_material::SceneLight;
 use crate::player::{Player, PlayerTick};
-use crate::party::Party;
+use crate::party::{MAX_PLAYERS, Party};
 use crate::player_state::DEFAULT_HEAD;
 use crate::population::LevelPopulation;
 use crate::world::LevelGround;
@@ -78,6 +84,21 @@ pub struct PlayCamera {
     start_point: Option<CameraPoint>,
     /// The level-start shot is still on (not a glide back from a cut).
     opening: bool,
+    /// Online: each hero's own camera, by slot.
+    own: [Option<OwnCamera>; MAX_PLAYERS],
+    /// Online: the heroes standing (whose cameras the on-screen tests take).
+    standing: [bool; MAX_PLAYERS],
+    /// Online: whose camera this machine's screen shows (its own hero's, a
+    /// teammate's while its own is out). The screen's, not the game's.
+    pub watching: Option<usize>,
+}
+
+/// A hero's own camera (online): a rig following it alone, and its eye and
+/// target before the latest tick.
+#[derive(Clone)]
+struct OwnCamera {
+    rig: CameraRig,
+    previous: ([f32; 3], [f32; 3]),
 }
 
 /// Shakes the camera (`docs/camera.md` "Shakes"): `what` 0 moves the
@@ -158,6 +179,63 @@ const INTRO_DONE: f32 = 0.3;
 const FIELDS_PER_TICK: f32 = 2.0;
 
 impl PlayCamera {
+    /// Whether the one camera has everyone's view: a cut, the level-start
+    /// shot or the glide back, a boss level's camera.
+    fn shared(&self) -> bool {
+        self.cut.is_some_and(|c| c.delay <= 0.0) || self.intro.is_some() || self.boss_active
+    }
+
+    fn own_of(&self, slot: usize) -> Option<&OwnCamera> {
+        self.own.get(slot).and_then(Option::as_ref)
+    }
+
+    fn shaken(&self, (eye, target): ([f32; 3], [f32; 3])) -> ([f32; 3], [f32; 3]) {
+        let (de, dt) = self.shake_offset;
+        (std::array::from_fn(|i| eye[i] + de[i]), std::array::from_fn(|i| target[i] + dt[i]))
+    }
+
+    /// The way a hero's stick turns: online its own camera's while that
+    /// has the view, the game's camera's otherwise.
+    pub fn yaw_of(&self, slot: usize) -> f32 {
+        match self.own_of(slot) {
+            Some(o) if !self.shared() => o.rig.yaw,
+            _ => self.yaw(),
+        }
+    }
+
+    /// What this machine's screen shows, and before the latest tick: online
+    /// the watched hero's own camera while that has the view.
+    pub fn screen_view(&self) -> ([f32; 3], [f32; 3]) {
+        match self.watching.and_then(|s| self.own_of(s)) {
+            Some(o) if !self.shared() => self.shaken((o.rig.eye(), o.rig.target)),
+            _ => self.view(),
+        }
+    }
+
+    fn screen_previous(&self) -> ([f32; 3], [f32; 3]) {
+        match self.watching.and_then(|s| self.own_of(s)) {
+            Some(o) if !self.shared() => o.previous,
+            _ => self.previous,
+        }
+    }
+
+    /// The way the screen's camera faces (the positional sounds' ear).
+    pub fn screen_yaw(&self) -> f32 {
+        self.watching.map_or_else(|| self.yaw(), |s| self.yaw_of(s))
+    }
+
+    /// The eyes and targets the game's on-screen tests look through: the
+    /// play camera's; online each standing hero's own (every hero's with
+    /// none standing) while they have the view.
+    pub fn game_views(&self) -> Vec<([f32; 3], [f32; 3])> {
+        let own: Vec<(usize, &OwnCamera)> = self.own.iter().enumerate().filter_map(|(s, o)| Some((s, o.as_ref()?))).collect();
+        if own.is_empty() || self.shared() {
+            return vec![(self.rig.eye(), self.rig.target)];
+        }
+        let any_standing = own.iter().any(|(s, _)| self.standing[*s]);
+        own.iter().filter(|(s, _)| self.standing[*s] || !any_standing).map(|(_, o)| (o.rig.eye(), o.rig.target)).collect()
+    }
+
     /// Eye and target to draw from this tick (the positional sounds' ear
     /// is its target, `audio.rs`).
     pub fn view(&self) -> ([f32; 3], [f32; 3]) {
@@ -301,6 +379,7 @@ fn start(
     cameras: Option<Res<LevelCameras>>,
     party: Res<Party>,
     mut scene_light: ResMut<SceneLight>,
+    (lock, old): (Res<crate::online::Lockstep>, Option<Res<PlayCamera>>),
 ) {
     let Some(ground) = ground else { return };
     let records = cameras.and_then(|c| c.0.get(&population.level.to_ascii_lowercase()).cloned());
@@ -332,6 +411,10 @@ fn start(
         .map(|l| CameraPoint { position: l.position, yaw: l.rotation[1], pitch: l.rotation[0], param: l.param });
     let intro = if boss.is_some() { None } else { intro_shot(&population.population, population.entry, feet) };
     let previous = intro.map_or((rig.eye(), rig.target), |i| (i.eye, i.target));
+    // Online each hero's own camera starts as the game's does.
+    let own = std::array::from_fn(|slot| {
+        (lock.on && party.get(slot).is_some()).then(|| OwnCamera { rig: rig.clone(), previous: (rig.eye(), rig.target) })
+    });
     commands.insert_resource(PlayCamera {
         rig,
         previous,
@@ -343,6 +426,9 @@ fn start(
         boss,
         boss_active: false,
         start_point,
+        own,
+        standing: [true; MAX_PLAYERS],
+        watching: old.and_then(|c| c.watching),
     });
 }
 
@@ -380,6 +466,7 @@ pub(crate) fn tick(
     population: Option<Res<LevelPopulation>>,
     mechanics: Option<Res<Mechanics>>,
     (watch, fixed): (Res<BossWatch>, Res<Time<Fixed>>),
+    (lock, inputs): (Res<crate::online::Lockstep>, Res<crate::party::Inputs>),
 ) {
     let Some(mut camera) = camera else { return };
     // The heroes it follows: those in play, else (all dead) every one.
@@ -429,6 +516,19 @@ pub(crate) fn tick(
             let framed: Vec<crate::camera_rig::Framed> = heroes.iter().map(|h| (h.top, h.feet)).collect();
             rig.tick(top, feet, &framed);
             *boss_active = false;
+        }
+    }
+    // Online: each hero's own camera follows it alone.
+    for p in &players {
+        let Some(own) = camera.own.get(p.slot).and_then(Option::as_ref).map(|o| (o.rig.eye(), o.rig.target)) else { continue };
+        let previous = camera.shaken(own);
+        let s = party.state(p.slot);
+        camera.standing[p.slot] = s.is_some_and(|s| s.alive);
+        let feet = p.mover.position;
+        let top = top_point(feet, s.map_or(DEFAULT_HEAD, |s| s.head_height));
+        if let Some(o) = camera.own[p.slot].as_mut() {
+            o.previous = previous;
+            o.rig.tick(top, feet, &[(top, feet)]);
         }
     }
     for s in shakes.read() {
@@ -482,7 +582,12 @@ pub(crate) fn tick(
     let Some(intro) = camera.intro.as_mut() else { return };
     if intro.fields_left >= 2.0 {
         intro.fields_left -= FIELDS_PER_TICK;
-        let pressed = keys.get_just_pressed().next().is_some() || pads.iter().any(|p| p.get_just_pressed().next().is_some());
+        // Online any player's press, as every machine sees it.
+        let pressed = if lock.on {
+            lock.pressed(&inputs, !crate::party::SlotInput::SETTINGS)
+        } else {
+            keys.get_just_pressed().next().is_some() || pads.iter().any(|p| p.get_just_pressed().next().is_some())
+        };
         if intro.fields_left < INTRO_SKIPPABLE && pressed {
             intro.fields_left = 1.0;
         }
@@ -533,9 +638,10 @@ fn place(
         return;
     }
     let t = fixed.overstep_fraction();
-    let (now_eye, now_target) = play.view();
-    let eye = Vec3::from(play.previous.0).lerp(Vec3::from(now_eye), t);
-    let target = Vec3::from(play.previous.1).lerp(Vec3::from(now_target), t);
+    let (now_eye, now_target) = play.screen_view();
+    let (was_eye, was_target) = play.screen_previous();
+    let eye = Vec3::from(was_eye).lerp(Vec3::from(now_eye), t);
+    let target = Vec3::from(was_target).lerp(Vec3::from(now_target), t);
     *transform = Transform::from_translation(eye).looking_at(target, Vec3::Y);
 }
 

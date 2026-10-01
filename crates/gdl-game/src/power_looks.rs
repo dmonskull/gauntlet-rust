@@ -595,7 +595,7 @@ fn xray(
     }
     let view = monsters::game_view(camera.as_deref());
     let target = found
-        .filter(|f| monsters::on_screen(view.as_ref(), f.centre, f.radius))
+        .filter(|f| monsters::on_screen(&view, f.centre, f.radius))
         .map(|f| (f.placement, f.centre, f.model, f.shown.to_string()));
 
     let xray = &mut *xray;

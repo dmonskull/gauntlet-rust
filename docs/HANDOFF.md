@@ -6,6 +6,19 @@ has how close the rewrite is to the original (≈ 81 % for one player,
 
 ## State of `master`
 
+**2026-10-01, online co-op in the game** (`online.rs`, `docs/online.md` "In
+the game"): Title → Start → Local / Online; Host (invite to the clipboard) /
+Join (from the clipboard); the select screen is the lobby (New, or Load a
+hero saved on that machine); lockstep over `gdl-net` with one tick a frame,
+level changes settled first, per-hero cameras and spectating, a state hash
+every second. `tools/online_test.sh` (two games over loopback) stays in sync
+in the tower and in levelA1. Not online yet: joining after the start, Manage
+Character, the shops. The helper's shop decoding is parked unmerged on
+`worktree-agent-aba24fd14c15b99a9` (WIP commit 5411df7; `shop.rs` still
+names retail addresses). Packaging: `PLAYING.md`, `tools/package.sh`,
+`.github/workflows/build.yml` (Windows / macOS / Linux zips).
+
+
 Builds clean (`cargo clippy --all-targets` has no warnings) and `cargo test`
 passes. The all-levels smoke test passed all 67 real levels; `levelC2_acorn`
 and `levelT4` are empty folders and are expected to fail.

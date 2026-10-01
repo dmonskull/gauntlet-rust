@@ -46,6 +46,7 @@ mod message_box;
 mod model_mesh;
 mod options;
 mod monsters;
+mod online;
 mod particles;
 mod party;
 mod pickup_notices;
@@ -213,7 +214,7 @@ fn main() {
                 power_menu::PowerMenuPlugin,
                 rumble::RumblePlugin,
             ))
-            .add_plugins((party::PartyPlugin, fake_pad::FakePadPlugin))
+            .add_plugins((party::PartyPlugin, fake_pad::FakePadPlugin, online::OnlinePlugin))
             .add_plugins((
                 font::Screen2dPlugin,
                 frontend::FrontendPlugin { skip: skip_menus },

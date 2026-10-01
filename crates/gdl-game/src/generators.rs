@@ -396,15 +396,18 @@ pub fn tick_generators(
     monsters: Query<(Entity, &Monster)>,
     mut generators: Query<(Entity, &mut Generator)>,
     stop: Res<crate::player_state::TimeStop>,
-    mut special_round: Local<u32>,
+    (mut special_round, mut new_game): (Local<u32>, MessageReader<crate::online::NewGame>),
 ) {
+    if new_game.read().count() > 0 {
+        *special_round = 0;
+    }
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     // Time stopped, they make nothing.
     if stop.0 {
         return;
     }
     let view = game_view(camera.as_deref());
-    let frustum = view.as_ref();
+    let frustum = &view;
     let feet: Vec<[f32; 3]> = players.iter().map(|p| p.mover.position).collect();
     let mut bodies: Vec<Body> = monsters
         .iter()
@@ -513,7 +516,7 @@ pub fn tick_placed(
 ) {
     let (Some(mut level), Some(mut placed)) = (level, placed) else { return };
     let view = game_view(camera.as_deref());
-    let frustum = view.as_ref();
+    let frustum = &view;
     let feet: Vec<[f32; 3]> = players.iter().map(|p| p.mover.position).collect();
     let mut live = monsters.iter().count();
     // Monsters recycled this tick (their despawn hasn't applied yet).

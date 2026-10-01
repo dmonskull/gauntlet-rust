@@ -694,6 +694,21 @@ pub struct LevelItems {
     let_out: Vec<(ItemType, [f32; 3])>,
 }
 
+impl LevelItems {
+    /// What the machines compare online (`online.rs`): every item's state,
+    /// timers and where it is.
+    pub fn sync_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.items.len(), self.released, self.in_exit, self.leaving.is_some()).hash(&mut h);
+        for i in &self.items {
+            (i.placement, i.state, i.action, i.frame.to_bits(), i.timer, i.amount, i.delay, i.stage, i.hit_points).hash(&mut h);
+            (i.leaving, i.gone, i.held, i.shape.centre.map(f32::to_bits)).hash(&mut h);
+        }
+        h.finish()
+    }
+}
+
 /// What the level's other item code (`mechanics.rs`, `hazards.rs`,
 /// `breakables.rs`) sees of one item.
 pub struct ItemView<'a> {
@@ -1647,8 +1662,11 @@ fn tick(
     mut effects: MessageWriter<EffectAt>,
     mut hurt: MessageWriter<HurtHero>,
     mut notices: MessageWriter<PickupNotice>,
-    (stop, camera): (Res<TimeStop>, Option<Res<crate::play_camera::PlayCamera>>),
+    (stop, camera, lock): (Res<TimeStop>, Option<Res<crate::play_camera::PlayCamera>>, Res<crate::online::Lockstep>),
 ) {
+    let views = lock.on.then(|| crate::monsters::game_view(camera.as_deref()));
+    let drawn = cameras.iter().find(|(c, _)| c.is_active).map(|(c, t)| (c.clone(), *t));
+    let cameras = Seen { camera: drawn, views };
     let dt = time.delta_secs();
     let items = &mut *items;
     let now = time.elapsed_secs();
@@ -1807,7 +1825,7 @@ fn run_hero(
     state: &mut PlayerState,
     ground: Option<&LevelGround>,
     player: &mut Player,
-    cameras: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: &Seen,
     out: &mut Out,
 ) -> Option<Vec<usize>> {
     let slot = player.slot.min(MAX_PLAYERS - 1);
@@ -1929,10 +1947,20 @@ fn touchable(item: &Item) -> bool {
     }
 }
 
+/// What the items' on-screen test looks through: the drawn camera; online
+/// the game's views, the same on every machine (`monsters::game_view`).
+struct Seen {
+    camera: Option<(Camera, GlobalTransform)>,
+    views: Option<crate::monsters::Views>,
+}
+
 /// Is `centre` inside the play camera's view? The game only lets items
 /// that are on screen (or flagged always-active) be touched.
-fn on_screen(cameras: &Query<(&Camera, &GlobalTransform), With<Camera3d>>, centre: [f32; 3]) -> bool {
-    let Some((camera, at)) = cameras.iter().find(|(c, _)| c.is_active) else { return true };
+fn on_screen(seen: &Seen, centre: [f32; 3]) -> bool {
+    if let Some(views) = &seen.views {
+        return crate::monsters::on_screen(views, centre, 1.0);
+    }
+    let Some((camera, at)) = &seen.camera else { return true };
     camera
         .world_to_ndc(at, Vec3::from(centre))
         .is_some_and(|n| n.x.abs() <= 1.1 && n.y.abs() <= 1.1 && n.z > 0.0 && n.z <= 1.0)
@@ -2368,7 +2396,7 @@ fn fall_items(
     items: &mut LevelItems,
     dt: f32,
     ground: Option<&LevelGround>,
-    cameras: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: &Seen,
     commands: &mut Commands,
 ) {
     let kill = ground.map_or(f32::MIN, |g| g.0.kill_height());
@@ -2644,7 +2672,7 @@ fn start_transport(
     t: usize,
     radius: f32,
     ground: Option<&LevelCollision>,
-    cameras: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: &Seen,
     out: &mut Out,
 ) {
     if items.heroes[slot].transport_cooldown > 0 {

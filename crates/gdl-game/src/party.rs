@@ -179,6 +179,53 @@ pub struct SlotInput {
     pub held: u32,
 }
 
+impl SlotInput {
+    /// A player's own settings ride with their buttons, in bits the
+    /// game's leave free, so every machine plays each hero by its player's
+    /// settings (online, the remote player's own).
+    pub const AUTO_AIM: u32 = 0x0100_0000;
+    pub const AUTO_ATTACK: u32 = 0x0200_0000;
+    /// The Robotron control style (its right stick turns the hero).
+    pub const ROBOTRON: u32 = 0x0400_0000;
+    /// The B button, held (online, the message box's).
+    pub const BACK: u32 = 0x0800_0000;
+    /// The settings' bits.
+    pub const SETTINGS: u32 = Self::AUTO_AIM | Self::AUTO_ATTACK | Self::ROBOTRON;
+    const EXTRAS: u32 = Self::SETTINGS | Self::BACK;
+
+    /// The game's buttons held, without the extras.
+    pub fn buttons(&self) -> u32 {
+        self.held & !Self::EXTRAS
+    }
+
+    pub fn auto_aim(&self) -> bool {
+        self.held & Self::AUTO_AIM != 0
+    }
+
+    pub fn auto_attack(&self) -> bool {
+        self.held & Self::AUTO_ATTACK != 0
+    }
+
+    pub fn robotron(&self) -> bool {
+        self.held & Self::ROBOTRON != 0
+    }
+
+    /// These controls with a player's settings riding along.
+    pub fn with_settings(mut self, o: crate::options::PlayerOptions) -> Self {
+        self.held &= !(Self::AUTO_AIM | Self::AUTO_ATTACK | Self::ROBOTRON);
+        if o.auto_aim {
+            self.held |= Self::AUTO_AIM;
+        }
+        if o.auto_attack {
+            self.held |= Self::AUTO_ATTACK;
+        }
+        if o.scheme == crate::controls::ROBOTRON {
+            self.held |= Self::ROBOTRON;
+        }
+        self
+    }
+}
+
 /// Every slot's controls for this tick.
 #[derive(Resource, Clone, Copy, Debug, Default)]
 pub struct Inputs {

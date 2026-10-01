@@ -284,6 +284,14 @@ impl MonsterLevel {
     pub fn model(&self, enemy: i32, tier: i32) -> Option<Arc<MonsterModel>> {
         self.models.get(&(enemy, tier)).cloned().flatten()
     }
+
+    /// What the machines compare online (`online.rs`).
+    pub fn sync_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.tick, self.rng, self.created, self.death_sucking).hash(&mut h);
+        h.finish()
+    }
 }
 
 /// What stopped a monster's last move.
@@ -1024,24 +1032,30 @@ fn monster_model(
     (MonsterModel { model, actions, loops }, anims)
 }
 
-/// What the game's play camera sees: its view from eye to target with the
+/// What the game's cameras see (`PlayCamera::game_views`: the play
+/// camera's; online each hero's own): each view from eye to target with the
 /// game's 60° × 45° (4:3) field of view — whatever the window's shape or
 /// the free camera. Before the play camera exists nothing is on screen.
-pub fn game_view(camera: Option<&PlayCamera>) -> Option<Frustum> {
-    let rig = &camera?.rig;
-    let (eye, target) = (Vec3::from(rig.eye()), Vec3::from(rig.target));
-    if eye.distance_squared(target) < 1e-6 {
-        return None;
-    }
+pub struct Views(Vec<Frustum>);
+
+pub fn game_view(camera: Option<&PlayCamera>) -> Views {
+    let Some(camera) = camera else { return Views(Vec::new()) };
     let fov = 2.0 * (0.75 * 30f32.to_radians().tan()).atan();
-    let clip = Mat4::perspective_rh(fov, 4.0 / 3.0, 0.5, 2000.0) * Mat4::look_at_rh(eye, target, Vec3::Y);
-    Some(Frustum::from_clip_from_world(&clip))
+    let frustum = |(eye, target): ([f32; 3], [f32; 3])| {
+        let (eye, target) = (Vec3::from(eye), Vec3::from(target));
+        if eye.distance_squared(target) < 1e-6 {
+            return None;
+        }
+        let clip = Mat4::perspective_rh(fov, 4.0 / 3.0, 0.5, 2000.0) * Mat4::look_at_rh(eye, target, Vec3::Y);
+        Some(Frustum::from_clip_from_world(&clip))
+    };
+    Views(camera.game_views().into_iter().filter_map(frustum).collect())
 }
 
 /// The on-screen test the game makes against its camera: a sphere around a
-/// point.
-pub fn on_screen(view: Option<&Frustum>, at: [f32; 3], radius: f32) -> bool {
-    view.is_some_and(|f| f.intersects_sphere(&Sphere { center: Vec3::from(at).into(), radius }, true))
+/// point (in any of the views).
+pub fn on_screen(view: &Views, at: [f32; 3], radius: f32) -> bool {
+    view.0.iter().any(|f| f.intersects_sphere(&Sphere { center: Vec3::from(at).into(), radius }, true))
 }
 
 /// A player as the monsters see it.
@@ -1099,7 +1113,7 @@ fn tick_monsters(
     let collision = &ground.0;
     let dt = time.delta_secs();
     let view = game_view(camera.as_deref());
-    let frustum = view.as_ref();
+    let frustum = &view;
     let targets: Vec<Target> = players
         .iter()
         .map(|(e, p)| Target {

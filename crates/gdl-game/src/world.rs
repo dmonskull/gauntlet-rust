@@ -27,7 +27,7 @@ impl Plugin for WorldPlugin {
             .add_systems(Startup, |mut w: MessageWriter<ChangeLevel>| {
                 w.write(ChangeLevel(0));
             })
-            .add_systems(Update, (level_keys, change_level).chain())
+            .add_systems(Update, (level_keys, change_level.after(crate::exits::change_level_to)).chain())
             .add_systems(Update, prewarm);
     }
 }
@@ -130,12 +130,17 @@ fn change_level(
     // The realm last played outside the tower (where the heroes come back).
     mut last_realm: Local<Option<u32>>,
     mut flash_colours: ResMut<FlashColours>,
-    tunings: Option<Res<crate::monsters::LevelTunings>>,
-    party: Option<Res<crate::party::Party>>,
+    (tunings, party): (Option<Res<crate::monsters::LevelTunings>>, Option<Res<crate::party::Party>>),
+    (mut lock, mut new_game): (ResMut<crate::online::Lockstep>, MessageReader<crate::online::NewGame>),
 ) {
+    // A new game (online) comes back to the tower as a fresh one does.
+    if new_game.read().count() > 0 {
+        *last_realm = None;
+    }
     let Some(step) = requests.read().map(|r| r.0).reduce(|a, b| a + b) else {
         return;
     };
+    lock.level_work = true;
     // The level's placements for this many players.
     let players = party.map_or(1, |p| p.len().clamp(1, 4)) as u8;
     let count = game.levels.len() as isize;
