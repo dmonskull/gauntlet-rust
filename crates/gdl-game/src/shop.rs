@@ -745,6 +745,7 @@ impl List {
                     changed = true;
                     if self.cursor != 0 {
                         cx.sounds.push(ShopSound::Plain(GOLD_SOUND));
+                        info!("shop: bought {:?} for {}; {} gold left", items[self.cursor].text, items[self.cursor].price, state.gold);
                     }
                 }
             }
