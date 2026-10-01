@@ -109,8 +109,13 @@ fn status_line(s: &PlayerState) -> String {
     if !s.runestones.is_empty() || crystals > 0 || s.quest.legendary != 0 {
         out += &format!("   RUNES {}   CRYSTALS {crystals}   LEGENDARY {:#x}", s.runestones.len(), s.quest.legendary);
     }
-    for p in &s.powers {
-        out += &format!("\n{} {:#x}", power_name(p.subtype), p.value);
+    for p in s.powers.iter().filter(|p| p.live()) {
+        let state = match p.state {
+            crate::player_state::SlotState::On => "on",
+            crate::player_state::SlotState::Off => "off",
+            _ => "held",
+        };
+        out += &format!("\n{} {:#x} {state}", power_name(p.subtype), p.value);
         if p.amount > 0.0 {
             out += &format!(" x{:.0}", p.amount);
         }

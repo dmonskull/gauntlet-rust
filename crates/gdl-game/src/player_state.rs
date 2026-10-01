@@ -105,8 +105,8 @@ pub struct SpendPower {
 }
 
 /// A timed or counted powerup the hero carries — one slot of the record's
-/// eleven.
-#[derive(Clone, Debug, PartialEq)]
+/// eleven (empty while its time is 0).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Power {
     /// The item subtype that granted it (5 weapon, 6 armour, 7 speed,
     /// 8 magic, 9 special).
@@ -117,6 +117,33 @@ pub struct Power {
     pub amount: f32,
     /// Seconds left; negative for powers that don't run out by time.
     pub time: f32,
+    pub state: SlotState,
+}
+
+/// What a power slot is doing (the game's byte `+0x1E0 + slot`,
+/// `docs/powers.md` "Held powers"): a power picked up is held until the
+/// hero turns it on in the power menu (`power_menu.rs`), and one turned
+/// off keeps its time for later. Only a slot that's on runs down and
+/// works.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SlotState {
+    #[default]
+    Empty,
+    Held,
+    On,
+    Off,
+}
+
+impl Power {
+    /// The slot holds a power.
+    pub fn live(&self) -> bool {
+        self.time != 0.0
+    }
+
+    /// The slot's power is on: it runs down and works.
+    pub fn active(&self) -> bool {
+        self.live() && self.state == SlotState::On
+    }
 }
 
 /// What healing did.
@@ -139,7 +166,7 @@ pub struct PlayerState {
     pub keys: u32,
     /// Each potion's kind (the item type's value), in pickup order.
     pub potions: Vec<i32>,
-    pub powers: Vec<Power>,
+    pub powers: [Power; POWER_SLOTS],
     /// Runestones held, by the stone's number (its item type's amount).
     pub runestones: Vec<i32>,
     /// Crystals, gargoyle pieces, legendary items and the levels entered
@@ -263,7 +290,7 @@ impl PlayerState {
             gold: 0,
             keys: 0,
             potions: Vec::new(),
-            powers: Vec::new(),
+            powers: [Power::default(); POWER_SLOTS],
             bits: PowerBits::default(),
             runestones: Vec::new(),
             quest: Quest::default(),
@@ -406,9 +433,12 @@ impl PlayerState {
     /// Grants a powerup: the same power again adds its amount and half its
     /// time (or takes a negative time outright); a new one takes a free
     /// slot, or the one closest to running out.
-    pub fn grant_power(&mut self, subtype: i32, value: u32, amount: f32, duration: f32) {
+    /// Returns the slot it went to. A new power is held (off) until the
+    /// hero turns it on; one already carried keeps its state.
+    pub fn grant_power(&mut self, subtype: i32, value: u32, amount: f32, duration: f32) -> Option<usize> {
         let time = duration * self.powerup_time;
-        if let Some(p) = self.powers.iter_mut().find(|p| p.subtype == subtype && p.value == value) {
+        if let Some(i) = self.powers.iter().position(|p| p.live() && p.subtype == subtype && p.value == value) {
+            let p = &mut self.powers[i];
             if amount > 0.0 {
                 p.amount += amount;
             }
@@ -417,32 +447,44 @@ impl PlayerState {
             } else if time < 0.0 {
                 p.time = time;
             }
-            return;
+            return Some(i);
         }
-        let power = Power { subtype, value, amount, time };
-        if self.powers.len() < POWER_SLOTS {
-            self.powers.push(power);
-        } else if let Some(p) = self
-            .powers
-            .iter_mut()
-            .filter(|p| p.time >= 0.0)
-            .min_by(|a, b| a.time.total_cmp(&b.time))
-        {
-            *p = power;
-        }
+        // A free slot, else the one nearest to running out.
+        let slot = self.powers.iter().position(|p| !p.live()).or_else(|| {
+            (0..POWER_SLOTS)
+                .filter(|&i| self.powers[i].time >= 0.0)
+                .min_by(|&a, &b| self.powers[a].time.total_cmp(&self.powers[b].time))
+        })?;
+        self.powers[slot] = Power { subtype, value, amount, time, state: SlotState::Held };
+        Some(slot)
+    }
+
+    /// Turns slot `i`'s power on, or off if it's on (the power menu's Up):
+    /// a held or switched-off power comes on; one on is put away with the
+    /// time it has left.
+    pub fn toggle_power(&mut self, i: usize) {
+        let Some(p) = self.powers.get_mut(i).filter(|p| p.live()) else { return };
+        p.state = if p.state == SlotState::On { SlotState::Off } else { SlotState::On };
+    }
+
+    /// The powers that are on.
+    pub fn active_powers(&self) -> impl Iterator<Item = &Power> {
+        self.powers.iter().filter(|p| p.active())
     }
 
     /// Spends one use of a counted power (`docs/powers.md`, "Timing"): the
     /// first slot of `subtype` with any of `bits` loses 1 from its amount
     /// and ends at 0; a negative amount never runs out.
     pub fn spend_power(&mut self, subtype: i32, bits: u32) {
-        let Some(p) = self.powers.iter_mut().find(|p| p.subtype == subtype && p.value & bits != 0) else { return };
+        let Some(p) = self.powers.iter_mut().find(|p| p.active() && p.subtype == subtype && p.value & bits != 0) else {
+            return;
+        };
         if p.amount < 0.0 {
             return;
         }
         p.amount -= 1.0;
         if p.amount <= 0.0 {
-            p.time = 0.0;
+            *p = Power::default();
         }
     }
 
@@ -454,7 +496,7 @@ impl PlayerState {
         let mut b = PowerBits::default();
         let mut element_time = -1.0f32;
         for p in &mut self.powers {
-            if p.time == 0.0 {
+            if !p.active() {
                 continue;
             }
             if p.time > 0.0 {
@@ -488,7 +530,11 @@ impl PlayerState {
                 _ => {}
             }
         }
-        self.powers.retain(|p| p.time != 0.0);
+        for p in &mut self.powers {
+            if !p.live() {
+                *p = Power::default();
+            }
+        }
         self.bits = b;
         b
     }
@@ -823,7 +869,13 @@ fn test_powers(mut state: ResMut<PlayerState>, mut done: Local<bool>) {
         };
         let amount = f.get(2).and_then(|s| num(s)).unwrap_or(0.0);
         let seconds = f.get(3).and_then(|s| num(s)).unwrap_or(60.0);
-        state.grant_power(subtype as i32, value, amount, seconds);
+        // Turned on at once (a power picked up is held until the hero turns
+        // it on).
+        if let Some(i) = state.grant_power(subtype as i32, value, amount, seconds)
+            && state.powers[i].state != SlotState::On
+        {
+            state.toggle_power(i);
+        }
         info!("GDL_POWERS: subtype {subtype} value {value:#x} amount {amount} for {seconds} s");
     }
 }
@@ -1110,6 +1162,7 @@ mod tests {
         s.grant_power(power::WEAPON, 0x80000, 0.0, 45.0);
         s.grant_power(power::SPEED, 0, 4.0, 40.0);
         s.grant_power(power::SPECIAL, power::TURBO, 0.0, 1.0);
+        all_on(&mut s);
         // The longest-lasting element wins; other weapon bits add.
         let b = s.tick_powers(0.5);
         assert_eq!(b.weapon, 0x80002);
@@ -1123,15 +1176,51 @@ mod tests {
         assert_eq!(before, s.powers.iter().map(|p| p.time).collect::<Vec<_>>());
     }
 
+    /// Turns every power carried on, as the power menu would one by one.
+    fn all_on(s: &mut PlayerState) {
+        for i in 0..POWER_SLOTS {
+            if s.powers[i].live() && s.powers[i].state != SlotState::On {
+                s.toggle_power(i);
+            }
+        }
+    }
+
+    #[test]
+    fn powers_are_held_until_turned_on_and_put_away_with_their_time() {
+        let mut s = PlayerState::default();
+        let i = s.grant_power(power::SPECIAL, power::LEVITATE, 0.0, 30.0).unwrap();
+        // Held: no effect, no time spent.
+        assert_eq!(s.powers[i].state, SlotState::Held);
+        assert_eq!(s.tick_powers(5.0).special & power::LEVITATE, 0);
+        assert_eq!(s.powers[i].time, 30.0);
+        // On: it works and runs down.
+        s.toggle_power(i);
+        assert_eq!(s.tick_powers(5.0).special & power::LEVITATE, power::LEVITATE);
+        assert_eq!(s.powers[i].time, 25.0);
+        // Off: saved for later with what's left.
+        s.toggle_power(i);
+        assert_eq!(s.powers[i].state, SlotState::Off);
+        assert_eq!(s.tick_powers(10.0).special & power::LEVITATE, 0);
+        assert_eq!(s.powers[i].time, 25.0);
+        // Another of the same tops it up and keeps it off.
+        s.grant_power(power::SPECIAL, power::LEVITATE, 0.0, 30.0);
+        assert_eq!((s.powers[i].time, s.powers[i].state), (40.0, SlotState::Off));
+        // On again until it runs out, when the slot empties.
+        s.toggle_power(i);
+        s.tick_powers(41.0);
+        assert!(!s.powers[i].live() && s.powers[i].state == SlotState::Empty);
+    }
+
     #[test]
     fn counted_powers_are_spent_one_use_at_a_time() {
         let mut s = PlayerState::default();
         s.grant_power(power::SPECIAL, 0x10, 2.0, -1.0);
+        all_on(&mut s);
         s.spend_power(power::SPECIAL, 0x70);
         assert_eq!(s.tick_powers(0.1).special & 0x10, 0x10, "one use left");
         s.spend_power(power::SPECIAL, 0x70);
         assert_eq!(s.tick_powers(0.1).special & 0x10, 0, "used up");
-        assert!(s.powers.is_empty());
+        assert!(s.powers.iter().all(|p| !p.live()));
     }
 
     #[test]
@@ -1154,11 +1243,12 @@ mod tests {
         s.grant_power(5, 0x10_0000, 5.0, -1.0);
         s.grant_power(5, 0x10_0000, 5.0, -1.0);
         assert_eq!(s.powers[1].amount, 10.0);
+        all_on(&mut s);
         s.tick_powers(200.0);
-        assert_eq!(s.powers.len(), 1, "timed power ran out, counted one stays");
+        assert_eq!(s.powers.iter().filter(|p| p.live()).count(), 1, "timed power ran out, counted one stays");
         for v in 0..20 {
             s.grant_power(9, 1 << v, 0.0, v as f32 + 1.0);
         }
-        assert_eq!(s.powers.len(), POWER_SLOTS);
+        assert_eq!(s.powers.iter().filter(|p| p.live()).count(), POWER_SLOTS);
     }
 }

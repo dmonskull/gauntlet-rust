@@ -10,7 +10,7 @@
 //!
 //! | game | pad | keyboard |
 //! | --- | --- | --- |
-//! | move | left stick | WASD / arrows (Shift walks) |
+//! | move | left stick | WASD (Shift walks) |
 //! | attack (A) | south | J |
 //! | power attack (Y) | north | L |
 //! | turbo / defend (B) | west | H |
@@ -18,10 +18,11 @@
 //! | charge (L) | left trigger | P |
 //! | strafe (R) | right trigger | O |
 //! | combo move (Z) | right bumper | G |
+//! | the power menu | D-pad | arrows |
 //!
 //! `GDL_WARP="x,y,z"` starts the hero there; `GDL_STICK="x,y"` holds the stick; `GDL_BUTTONS="attack@10-12,power"`
 //! holds buttons (`attack`, `power`, `turbo`, `magic`, `charge`, `strafe`,
-//! `combo`), each for the whole run or for a range of ticks since the hero
+//! `combo`, `up`, `down`, `left`, `right`), each for the whole run or for a range of ticks since the hero
 //! appeared; `GDL_HOPS="x,y,z;x,y,z"` moves the hero onto each point in
 //! turn, every `GDL_HOP_TICKS` ticks (default 120), on the first level.
 
@@ -262,8 +263,7 @@ const INVISIBLE_WAVER: f32 = 16.0;
 /// `bits`: its seconds left, negative for one that doesn't run out.
 fn longest_power(state: &PlayerState, subtype: i32, bits: u32) -> Option<f32> {
     state
-        .powers
-        .iter()
+        .active_powers()
         .filter(|p| p.subtype == subtype && p.value & bits != 0)
         .map(|p| p.time)
         .reduce(|a, b| if a < 0.0 || b < 0.0 { -1.0 } else { a.max(b) })
@@ -624,6 +624,14 @@ type HeroWriters<'w> = (
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlayerTick;
 
+/// The hero's pad as the player's tick read it: the buttons pressed since
+/// a reader last took them (with `std::mem::take`) — none while the pads
+/// aren't read (cuts, the message box).
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct HeroPad {
+    pub pressed: u32,
+}
+
 /// Spawning the hero on a new level; things placed relative to it go after.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlayerSpawn;
@@ -641,6 +649,7 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Time::<Fixed>::from_hz(locomotion::TICK_HZ))
             .insert_resource(Controls { script: button_script(), ..default() })
+            .init_resource::<HeroPad>()
             // Loaded again whenever the choice changes (the front end's
             // character select); the next level spawn uses it.
             .add_systems(Update, load_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
@@ -835,11 +844,8 @@ fn read_stick(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Vec2 {
     let axis = |pos: [KeyCode; 2], neg: [KeyCode; 2]| {
         (pos.iter().any(|k| keys.pressed(*k)) as i32 - neg.iter().any(|k| keys.pressed(*k)) as i32) as f32
     };
-    let v = Vec2::new(
-        axis([KeyCode::KeyD, KeyCode::ArrowRight], [KeyCode::KeyA, KeyCode::ArrowLeft]),
-        axis([KeyCode::KeyW, KeyCode::ArrowUp], [KeyCode::KeyS, KeyCode::ArrowDown]),
-    )
-    .normalize_or_zero();
+    // The arrows are the D-pad (`read_buttons`).
+    let v = Vec2::new(axis([KeyCode::KeyD; 2], [KeyCode::KeyA; 2]), axis([KeyCode::KeyW; 2], [KeyCode::KeyS; 2])).normalize_or_zero();
     // Keyboard runs; Shift walks.
     if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) { v * 0.5 } else { v }
 }
@@ -857,6 +863,10 @@ fn named_button(name: &str) -> Option<u32> {
         "charge" | "l" => button::CHARGE,
         "strafe" | "r" => button::STRAFE,
         "combo" | "z" => button::COMBO_MOVE,
+        "up" => button::DPAD_UP,
+        "down" => button::DPAD_DOWN,
+        "left" => button::DPAD_LEFT,
+        "right" => button::DPAD_RIGHT,
         _ => return None,
     })
 }
@@ -887,7 +897,7 @@ fn button_script() -> Vec<(u32, Option<(u64, u64)>)> {
 /// The logical buttons held now, from the keyboard, pads and script. The
 /// game's default scheme puts turbo and defend on the same button.
 fn read_buttons(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, controls: &Controls) -> u32 {
-    const KEYS: [(KeyCode, u32); 7] = [
+    const KEYS: [(KeyCode, u32); 11] = [
         (KeyCode::KeyJ, button::QUICK),
         (KeyCode::KeyL, button::POWER),
         (KeyCode::KeyH, button::TURBO | button::DEFEND),
@@ -895,9 +905,13 @@ fn read_buttons(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, controls: &
         (KeyCode::KeyP, button::CHARGE),
         (KeyCode::KeyO, button::STRAFE),
         (KeyCode::KeyG, button::COMBO_MOVE),
+        (KeyCode::ArrowUp, button::DPAD_UP),
+        (KeyCode::ArrowDown, button::DPAD_DOWN),
+        (KeyCode::ArrowLeft, button::DPAD_LEFT),
+        (KeyCode::ArrowRight, button::DPAD_RIGHT),
     ];
     // By position on the pad: A south, B west, X east, Y north.
-    const PAD: [(GamepadButton, u32); 8] = [
+    const PAD: [(GamepadButton, u32); 12] = [
         (GamepadButton::South, button::QUICK),
         (GamepadButton::North, button::POWER),
         (GamepadButton::West, button::TURBO | button::DEFEND),
@@ -906,6 +920,10 @@ fn read_buttons(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, controls: &
         (GamepadButton::LeftTrigger, button::CHARGE),
         (GamepadButton::RightTrigger2, button::STRAFE),
         (GamepadButton::RightTrigger, button::COMBO_MOVE),
+        (GamepadButton::DPadUp, button::DPAD_UP),
+        (GamepadButton::DPadDown, button::DPAD_DOWN),
+        (GamepadButton::DPadLeft, button::DPAD_LEFT),
+        (GamepadButton::DPadRight, button::DPAD_RIGHT),
     ];
     let mut held = 0;
     for (key, bits) in KEYS {
@@ -955,7 +973,7 @@ fn tick(
     mut hits: MessageWriter<Hit>,
     (mut shots, mut potions, mut effects, mut effects_breath, mut spent, mut chops, mut sounds, mut loops, mut riding): HeroWriters,
     mut hints: MessageWriter<ShowHint>,
-    (colours, mut tags, mut commands): (Res<FlashColours>, Query<&mut MeshTag>, Commands),
+    (colours, mut tags, mut commands, mut hero_pad): (Res<FlashColours>, Query<&mut MeshTag>, Commands, ResMut<HeroPad>),
     state: Option<Res<PlayerState>>,
     monster_level: Option<Res<crate::monsters::MonsterLevel>>,
     boss: (Option<Res<crate::critters::CritterLevel>>, Query<&GlobalTransform>, Query<&DeathMonster>),
@@ -987,6 +1005,9 @@ fn tick(
     let held = if deaf { 0 } else { read_buttons(&keys, &pads, &controls) };
     let buttons = Buttons::from_held(held, controls.held);
     controls.held = held;
+    // For what else reads the pad (the power menu): presses wait until
+    // they're taken.
+    hero_pad.pressed |= buttons.pressed;
     // Stick up moves the way the camera faces (the boss camera's on a boss
     // level); the game's heading is
     // the camera's yaw + the stick's angle, so right is +X facing +Z (on

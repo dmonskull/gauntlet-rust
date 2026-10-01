@@ -48,6 +48,7 @@ mod play_camera;
 mod player;
 mod player_state;
 mod power_looks;
+mod power_menu;
 mod texanim;
 mod tower;
 mod tower_scenes;
@@ -198,6 +199,7 @@ fn main() {
                 levelup::LevelUpPlugin,
                 footsteps::FootstepsPlugin,
                 loot::LootPlugin,
+                power_menu::PowerMenuPlugin,
             ))
             .add_plugins((
                 font::Screen2dPlugin,

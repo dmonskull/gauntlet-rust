@@ -234,6 +234,7 @@ fn pojo_action(hero: Action, pecked: bool) -> (usize, bool) {
 fn body_fade(powers: &[Power]) -> f32 {
     let longest = powers
         .iter()
+        .filter(|p| p.active())
         .filter(|p| {
             (p.subtype == power::SPECIAL && p.value & FADING_SPECIAL != 0)
                 || (p.subtype == power::ARMOUR && p.value & FIRE_WALL != 0)
@@ -736,7 +737,7 @@ mod tests {
 
     #[test]
     fn fades_in_the_last_second() {
-        let p = |subtype, value, time| Power { subtype, value, amount: 0.0, time };
+        let p = |subtype, value, time| Power { subtype, value, amount: 0.0, time, state: crate::player_state::SlotState::On };
         assert_eq!(body_fade(&[p(power::SPECIAL, 0x1, 0.25)]), 0.75);
         assert_eq!(body_fade(&[p(power::SPECIAL, 0x1, 0.25), p(power::SPECIAL, 0x10, -1.0)]), 0.0);
         assert_eq!(body_fade(&[p(power::ARMOUR, FIRE_WALL, 5.0)]), 0.0);
