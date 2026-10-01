@@ -1,6 +1,8 @@
 # Handoff: where the rewrite stands and how to continue
 
-Last updated 2026-09-30. Read this first when resuming.
+Last updated 2026-10-01. Read this first when resuming; [STATUS.md](STATUS.md)
+has how close the rewrite is to the original (≈ 81 % for one player,
+≈ 76 % done overall) and everything left to do, in order.
 
 ## State of `master`
 
@@ -185,14 +187,37 @@ Test aids:
   GDL_SHOT_AT=36 GDL_SHOTS=60 GDL_SHOT_EVERY=2` (a fire kill: add
   `GDL_POWERS=5:1`). Screenshots slow the frames: a two-tick flash can
   fall between two of them.
-- Gate every game run on `pgrep -x gdl-game` (one instance at a time; the
-  helper runs games too) and give it `GDL_MUTE=1`.
+- `GDL_HOPS="x,y,z;x,y,z"` moves the hero onto each point in turn every
+  `GDL_HOP_TICKS` ticks (default 120), on the first level;
+  `GDL_SKIP_BOXES=1` puts message boxes away as soon as B could;
+  `GDL_IMMORTAL=1` keeps the hero at its last hit point. `tools/tour.sh`
+  uses all three.
+- Run every game through `tools/waitrun.sh` (one instance at a time, muted:
+  `GDL_MUTE=1`).
 
 Handy test spots are listed in [mechanics.md](mechanics.md) and
 [camera.md](camera.md) (levelA1 elevator switch, levelA4 lift, barrels,
 the levelA2 Death barrel).
 
 ## Latest check
+
+2026-10-01, on `ef1f596` (the level audit's first round merged: the
+world's animated objects — A2's drawbridges, the plank, the diving board,
+B2's snakes, B3's rock groups —, secret walls blocking until broken,
+falling obstacles, key rings, every trigger's target held at its off
+height): build, clippy and tests pass. In game, A2's first drawbridge
+starts raised and swings down when the hero stands on lever 379; A1's
+exit leads to A6 again (exits are shut only in the tower, `9d385c9`).
+
+The trigger tour (`tools/tour.sh`) on the merged build, A1–C1: every
+one-player trigger switches on and its node arrives except **A1 402/403
+(A1ELEV1/ELEV2: a regression from the merge — they fired on `6cffb3a`)**,
+A4 267/268, B1 96, B5 275/278/280, C1 432/433 (STATUS.md "Now"). The
+tour before the merge also flagged C2 43, C3 415, C4 556/575/669, D2
+307/406, D3 46/48/51/324/363 and D4 338/342/355; C2–T3 haven't been
+toured on the merged build, and the smoke test hasn't run since the merge.
+
+Earlier:
 
 The all-levels smoke test on `70b2f0a` (Death and the halo, the familiars
 and the phoenix, the Pojo's throws, Skorne's gauntlets and the super
@@ -273,8 +298,10 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
 ## Work in progress
 
-- **Helper** (worktree branch `worktree-agent-aba24fd14c15b99a9`): its
-  work so far is merged — this session the level-up flash (additive, at
+- **Helper** (worktree branch `worktree-agent-aba24fd14c15b99a9`): the
+  level audit's second round, B1 onward (static: what each level makes,
+  skips and hides, every trigger link, the tour's failures above); its
+  first round is merged (`ef1f596`). Before that, the level-up flash (additive, at
   the effect table's depth bias −512) and the game's level-up
   (`levelup.rs`: hint `0x22` and the flash on a rise, the lost level's
   sentence on a fall), before that the familiars and the phoenix's
@@ -369,7 +396,8 @@ Run one helper agent at a time; each job ends in a report, then the agent
 waits.
 
 **Level fidelity (user request, 2026-09-30; top priority after the job in
-hand).** The user found levels with things placed that shouldn't be
+hand).** Progress and the full list: [STATUS.md](STATUS.md) "What's
+left" sections 1–2. The user found levels with things placed that shouldn't be
 there, and levels that can't be finished because objects don't move when
 a lever is used, "etc". Every level must match the original and every
 item/object mechanic work. Split, side by side:
@@ -460,11 +488,25 @@ item/object mechanic work. Split, side by side:
   `awk '/^\/\/\/\/ FUNCTION/{p=($3=="<addr>")} p'`.
 - DOL constant reader: `scratchpad/mydol.py` (`f32`, `f64`, `u32`, `cstr`,
   with `R2 = 0x8034D100`).
-- Session scratchpad scripts (`smoke.sh`, `triggers.py`, `lifts.py`,
-  `gems.py`, `world.py`) live in the session's temp scratchpad and may be
-  gone. `smoke.sh` just runs every level folder with
-  `GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400` under a
-  120 s timeout and greps for panics.
+- Test scripts in `tools/` (output in `$GDL_TEST_OUT`, default
+  `$TMPDIR/gdl-tests`, never in the repository; the game folder is
+  `$GDL_GAME`):
+  - `smoke.sh [first-level]`: every level folder with `GDL_BUTTONS=attack
+    GDL_STICK="0.4,1" GDL_SHOT_AT=400` under a 120 s timeout; stops at a
+    panic or a missing screenshot.
+  - `tour.sh <levels…>`: per level, one run that stands the hero on each
+    one-player trigger in turn (`GDL_HOPS`, 3 s apart, attacking at each;
+    `GDL_SKIP_BOXES` puts message boxes away, `GDL_IMMORTAL` keeps the
+    hero alive) and prints which switched on and whether the node each
+    one moves arrived (`tour.py`). Animated targets read "no mover":
+    check those on screen.
+  - `nomodel.sh`: the placements the port builds no model for.
+  - `waitrun.sh <command…>`: runs one game at a time (a lock, then waits
+    for any `gdl-game`), muted. Run spot checks through it too.
+- `level_audit` example (`cargo run -p gdl-formats --example level_audit
+  -- <game>/Gauntlet <level> --triggers --anim --falls`): what a level's
+  build changes, each trigger's link with a warp point, each animated
+  object's first and last pose.
 - Disk: `target/` grows large. Split debug info leaves every build's
   object files for our crates in `target/debug/deps` (37 GB after a day
   of edits, which filled the disk on 2026-09-30). Free it with

@@ -1,6 +1,7 @@
 # Implementation notes
 
-**Resuming work? Start with [HANDOFF.md](HANDOFF.md).**
+**Resuming work? Start with [HANDOFF.md](HANDOFF.md).** How close the
+rewrite is to the original, and everything left: [STATUS.md](STATUS.md).
 
 One file per system, written only once it's confirmed against the actual
 `main.dol` — not assumed from other Gauntlet ports or similarly-shaped games.
@@ -106,22 +107,6 @@ names), which is how most systems here were found.
 
 ## Not reverse engineered yet
 
-- The critter runtime beyond the placed golem: bosses, gargoyles, the
-  general, projectile and effect blows, the boss intro and camera
-  ([critters.md](critters.md)); most monster AIs beyond chase/wander;
-  hand/effect glows, blending between actions.
-- Gameplay: missile effects and powerups (pierce, bounce, spreads),
-  magic (potions: the blast, shield and thrown potion run on the effect
-  slots, [items.md](items.md) / [projectiles.md](projectiles.md)), the
-  effects and particle systems ([rendering.md](rendering.md)), the in-game
-  HUD (per-player panels, `FUN_8007bca4` / `FUN_80075cac`), the tower's
-  quest gates and progression ([items.md](items.md)), co-op.
-- `WDATA/*.WAD` per-realm resources (loaded by `FUN_8005a094`, parsed by
-  `FUN_80058074`: cameras, enemies, maps, 14 named realm types). The chunk
-  directory, level names, camera, audio and enemy records and the monster
-  tuning are parsed so far.
-- The rest of `WORLDS.PS2` (header words 4 and 6).
-- Audio behaviour beyond playback: music track switching, ducking,
-  positional sound.
-- Monster/actor type data (collision radius, step height) that the actor
-  movers read (players' is decoded), and actor-vs-actor collision.
+Kept current in [STATUS.md](STATUS.md) "What's left" (this list was
+outgrown: the critters, the bosses, the HUD, the effects, the quest and
+the audio's positional sounds have since been decoded and ported).
