@@ -22,7 +22,8 @@
 //! `GDL_WARP="x,y,z"` starts the hero there; `GDL_STICK="x,y"` holds the stick; `GDL_BUTTONS="attack@10-12,power"`
 //! holds buttons (`attack`, `power`, `turbo`, `magic`, `charge`, `strafe`,
 //! `combo`), each for the whole run or for a range of ticks since the hero
-//! appeared.
+//! appeared; `GDL_HOPS="x,y,z;x,y,z"` moves the hero onto each point in
+//! turn, every `GDL_HOP_TICKS` ticks (default 120), on the first level.
 
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
@@ -638,7 +639,7 @@ impl Plugin for PlayerPlugin {
             // Loaded again whenever the choice changes (the front end's
             // character select); the next level spawn uses it.
             .add_systems(Update, load_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
-            .add_systems(FixedUpdate, tick.in_set(PlayerTick))
+            .add_systems(FixedUpdate, (hop.before(PlayerTick), tick.in_set(PlayerTick)))
             .add_systems(FixedUpdate, (apply_powers, show_body_looks).after(crate::player_state::PowersTick))
             .add_systems(Update, level_stats)
             .add_systems(
@@ -765,6 +766,50 @@ fn spawn_player(
     commands.entity(root).insert((player, LevelEntity));
     controls.ticks = 0;
     info!("player starts at {feet:?} facing {:.0} deg", facing.to_degrees());
+}
+
+/// `GDL_HOPS` (testing: a tour of a level's triggers): the points, the ticks
+/// between hops, the first level's name and the next hop.
+type Hops = (Vec<[f32; 3]>, u64, String, usize);
+
+/// Moves the hero onto the next `GDL_HOPS` point every `GDL_HOP_TICKS`
+/// ticks since it appeared, on the first level only, standing on the floor
+/// the player's own check finds under it.
+fn hop(
+    mut hops: Local<Option<Hops>>,
+    controls: Res<Controls>,
+    population: Option<Res<LevelPopulation>>,
+    ground: Option<Res<LevelGround>>,
+    mut players: Query<&mut Player>,
+) {
+    let (Some(population), Some(ground)) = (population, ground) else { return };
+    let (points, every, level, next) = hops.get_or_insert_with(|| {
+        let env = |name| std::env::var(name).unwrap_or_default();
+        let points = env("GDL_HOPS")
+            .split(';')
+            .filter_map(|p| {
+                let v: Vec<f32> = p.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                (v.len() == 3).then(|| [v[0], v[1], v[2]])
+            })
+            .collect();
+        let every = env("GDL_HOP_TICKS").parse().ok().filter(|&n| n > 0).unwrap_or(120);
+        (points, every, population.level.clone(), 0)
+    });
+    if population.level != *level || controls.ticks < *every * (*next as u64 + 1) {
+        return;
+    }
+    let Some(&at) = points.get(*next) else { return };
+    let i = *next;
+    *next += 1;
+    let Some(y) = ground.0.player_floor_height(at, PlayerCollision::default().radius) else {
+        warn!("GDL_HOPS: no floor a player stands on under hop {i} {at:?}");
+        return;
+    };
+    for mut p in &mut players {
+        let facing = p.mover.facing;
+        p.teleport([at[0], y, at[2]], facing);
+    }
+    info!("hop {i} to {:?}", [at[0], y, at[2]]);
 }
 
 /// The stick, in the camera's frame: +Y away from the camera, +X right.
