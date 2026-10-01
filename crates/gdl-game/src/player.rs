@@ -1207,7 +1207,7 @@ pub(crate) fn sample_online(
         return;
     };
     let mut input = read_devices(member.devices, true, 0, (&keys, &mouse, &options), &pads, &party);
-    if fe.is_some_and(|f| f.menu_open()) {
+    if fe.is_some_and(|f| f.menu_open() || f.in_online_manage()) {
         input = SlotInput::default().with_settings(options.player(0));
     }
     // What closed a menu doesn't reach the hero (B would throw magic).

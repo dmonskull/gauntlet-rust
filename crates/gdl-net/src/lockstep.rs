@@ -88,6 +88,9 @@ pub(crate) struct Core {
     me: Option<PeerId>,
     roster: BTreeMap<PeerId, PeerInfo>,
     started: bool,
+    /// Lockstep's run: a restart begins the next, and packets of another
+    /// run are dropped.
+    epoch: u8,
     delay: u8,
     /// The session is over (left, failed or disconnected).
     over: bool,
@@ -108,6 +111,9 @@ pub(crate) struct Core {
     next_ping: u32,
     // Host only.
     slot_owner: [Option<PeerId>; MAX_SLOTS],
+    /// Slots of machines that joined while the game was under way: theirs
+    /// from the next restart.
+    reserved: [Option<PeerId>; MAX_SLOTS],
     pending: BTreeMap<Tick, Bundle>,
     checks: BTreeMap<Tick, BTreeMap<PeerId, u64>>,
     desynced: BTreeSet<Tick>,
@@ -128,6 +134,7 @@ impl Core {
             me: None,
             roster: BTreeMap::new(),
             started: false,
+            epoch: 0,
             delay,
             over: false,
             events: Vec::new(),
@@ -142,6 +149,7 @@ impl Core {
             pings: HashMap::new(),
             next_ping: 0,
             slot_owner: [None; MAX_SLOTS],
+            reserved: [None; MAX_SLOTS],
             pending: BTreeMap::new(),
             checks: BTreeMap::new(),
             desynced: BTreeSet::new(),
@@ -162,7 +170,7 @@ impl Core {
         }
         c.me = Some(HOST);
         c.roster.insert(HOST, PeerInfo { peer: HOST, name: c.cfg.name.clone(), slots: slots.clone() });
-        c.events.push(NetEvent::Connected { you: HOST, slots });
+        c.events.push(NetEvent::Connected { you: HOST, slots, late: false });
         c
     }
 
@@ -183,6 +191,10 @@ impl Core {
 
     pub(crate) fn started(&self) -> bool {
         self.started
+    }
+
+    pub(crate) fn epoch(&self) -> u8 {
+        self.epoch
     }
 
     pub(crate) fn delay(&self) -> u8 {
@@ -266,7 +278,8 @@ impl Core {
             self.compare(tick);
         } else {
             self.my_checks.insert(tick, value);
-            self.send(HOST_LINK, Msg::Checksum { tick, value });
+            let epoch = self.epoch;
+            self.send(HOST_LINK, Msg::Checksum { epoch, tick, value });
         }
     }
 
@@ -299,6 +312,52 @@ impl Core {
         self.events.push(NetEvent::Started { delay });
         self.commit(Tick::from(delay));
         true
+    }
+
+    /// The host starts lockstep again at tick 0 (a new epoch): every machine
+    /// forgets the run under way, and those that joined meanwhile play from
+    /// here. The game sends what it needs to start alike (its control
+    /// messages arrive before this).
+    pub(crate) fn restart(&mut self) -> bool {
+        if !self.host || self.over {
+            return false;
+        }
+        for s in 0..MAX_SLOTS {
+            if let Some(p) = self.reserved[s].take() {
+                self.slot_owner[s] = Some(p);
+            }
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        self.reset_run();
+        self.started = true;
+        let (delay, epoch) = (self.delay, self.epoch);
+        for link in self.welcomed_links() {
+            self.send(link, Msg::Restart { delay, epoch });
+        }
+        self.events.push(NetEvent::Restarted { delay });
+        self.commit(Tick::from(delay));
+        true
+    }
+
+    /// Forgets the run under way: ticks, inputs, bundles, checksums.
+    fn reset_run(&mut self) {
+        self.committed_to = 0;
+        self.consumed = 0;
+        self.bundles.clear();
+        self.final_to = 0;
+        self.my_checks.clear();
+        self.pending.clear();
+        self.checks.clear();
+        self.desynced.clear();
+        self.outbox.clear();
+        self.input_ack = 0;
+        self.host_waiting = 0;
+        self.host_final = 0;
+        for l in self.links.values_mut() {
+            l.bundle_ack = 0;
+            l.sent_upto = 0;
+            l.dirty = true;
+        }
     }
 
     /// Raises the input delay (the host only; it never comes down).
@@ -478,8 +537,10 @@ impl Core {
         let peer = self.links.get(&link).and_then(|l| l.peer);
         match (msg, peer) {
             (Msg::Hello { protocol, game, name, players }, None) => self.hello(link, protocol, game, name, players),
-            (Msg::Inputs { ack, base, slots, inputs }, Some(p)) => self.inputs(link, p, ack, base, slots, &inputs),
-            (Msg::Checksum { tick, value }, Some(p)) => {
+            (Msg::Inputs { epoch, ack, base, slots, inputs }, Some(p)) if epoch == self.epoch => {
+                self.inputs(link, p, ack, base, slots, &inputs)
+            }
+            (Msg::Checksum { epoch, tick, value }, Some(p)) if epoch == self.epoch => {
                 self.checks.entry(tick).or_default().insert(p, value);
                 self.compare(tick);
             }
@@ -504,10 +565,11 @@ impl Core {
         if game != self.cfg.game {
             return refuse(self, format!("the host runs game build {:?}, you run {game:?}: both need the same version", self.cfg.game));
         }
-        if self.started {
-            return refuse(self, "the game has already started".into());
-        }
-        let free: Vec<u8> = (0..MAX_SLOTS as u8).filter(|&s| self.slot_owner[usize::from(s)].is_none()).collect();
+        // Joining a game under way: its slots wait for the next restart.
+        let late = self.started;
+        let free: Vec<u8> = (0..MAX_SLOTS as u8)
+            .filter(|&s| self.slot_owner[usize::from(s)].is_none() && self.reserved[usize::from(s)].is_none())
+            .collect();
         if usize::from(players) > free.len() {
             return refuse(self, format!("the game is full ({} free player slots, you bring {players})", free.len()));
         }
@@ -516,7 +578,11 @@ impl Core {
         };
         let slots: Vec<u8> = free[..usize::from(players)].to_vec();
         for &s in &slots {
-            self.slot_owner[usize::from(s)] = Some(peer);
+            if late {
+                self.reserved[usize::from(s)] = Some(peer);
+            } else {
+                self.slot_owner[usize::from(s)] = Some(peer);
+            }
         }
         let info = PeerInfo { peer, name: name.chars().take(32).collect(), slots };
         for other in self.welcomed_links() {
@@ -527,7 +593,7 @@ impl Core {
             l.peer = Some(peer);
         }
         let roster = self.roster();
-        self.send(link, Msg::Welcome { you: peer, delay: self.delay, roster });
+        self.send(link, Msg::Welcome { you: peer, delay: self.delay, late, roster });
         self.events.push(NetEvent::PeerJoined { peer, name: info.name, slots: info.slots });
     }
 
@@ -616,7 +682,7 @@ impl Core {
         if self.roster.remove(&peer).is_none() {
             return;
         }
-        for owner in self.slot_owner.iter_mut() {
+        for owner in self.slot_owner.iter_mut().chain(self.reserved.iter_mut()) {
             if *owner == Some(peer) {
                 *owner = None;
             }
@@ -631,7 +697,7 @@ impl Core {
 
     fn client_message(&mut self, msg: Msg) {
         match msg {
-            Msg::Welcome { you, delay, roster } => {
+            Msg::Welcome { you, delay, late, roster } => {
                 if self.me.is_some() {
                     return;
                 }
@@ -644,7 +710,7 @@ impl Core {
                     self.roster.insert(p.peer, p);
                 }
                 let slots = self.my_slots();
-                self.events.push(NetEvent::Connected { you, slots });
+                self.events.push(NetEvent::Connected { you, slots, late });
             }
             Msg::Reject { reason } => {
                 self.over = true;
@@ -667,6 +733,16 @@ impl Core {
                     self.commit(Tick::from(self.delay));
                 }
             }
+            Msg::Restart { delay, epoch } => {
+                if self.me.is_some() {
+                    self.epoch = epoch;
+                    self.delay = delay.max(1);
+                    self.reset_run();
+                    self.started = true;
+                    self.events.push(NetEvent::Restarted { delay: self.delay });
+                    self.commit(Tick::from(self.delay));
+                }
+            }
             Msg::Delay { delay } => {
                 if delay > self.delay {
                     self.delay = delay;
@@ -679,7 +755,7 @@ impl Core {
                 self.links.remove(&HOST_LINK);
                 self.lost_host("the host left the game");
             }
-            Msg::Bundles { ack, base, waiting, bundles } => {
+            Msg::Bundles { epoch, ack, base, waiting, bundles } if epoch == self.epoch => {
                 self.input_ack = self.input_ack.max(ack);
                 self.outbox = self.outbox.split_off(&self.input_ack);
                 self.host_waiting = waiting;
@@ -786,7 +862,7 @@ impl Core {
                 let room = (budget - HEADER_BYTES) / BUNDLE_BYTES;
                 let bundles: Vec<Bundle> = self.bundles.range(base..self.final_to).take(room).map(|(_, b)| *b).collect();
                 let waiting = self.waiting_mask();
-                let msg = Msg::Bundles { ack: self.input_ack_of(peer), base, waiting, bundles };
+                let msg = Msg::Bundles { epoch: self.epoch, ack: self.input_ack_of(peer), base, waiting, bundles };
                 let l = self.links.get_mut(&link).expect("link");
                 l.dirty = false;
                 l.sent_upto = self.final_to;
@@ -809,7 +885,7 @@ impl Core {
                     }
                     inputs.extend_from_slice(v);
                 }
-                let msg = Msg::Inputs { ack: self.final_to, base, slots: slots as u8, inputs };
+                let msg = Msg::Inputs { epoch: self.epoch, ack: self.final_to, base, slots: slots as u8, inputs };
                 let l = self.links.get_mut(&link).expect("link");
                 l.dirty = false;
                 l.last_sent = now;
@@ -1014,6 +1090,17 @@ mod tests {
             assert!(self.machines[0].core.start());
         }
 
+        /// A machine joins now (a link from the host to it, and back).
+        fn add_client(&mut self, players: u8, weather: Weather) -> usize {
+            let k = self.machines.len();
+            let core = Core::new_client(cfg(&format!("c{k}"), players), self.now);
+            self.machines.push(Machine::new(core, self.now));
+            self.weather.push(weather);
+            self.machines[0].core.on_link_up(k as LinkId, self.now);
+            self.machines[k].core.on_link_up(HOST_LINK, self.now);
+            k
+        }
+
         /// Every machine ran the same bundles as far as both got, and at
         /// least `ticks` of them.
         fn agree(&self, ticks: usize) {
@@ -1034,7 +1121,13 @@ mod tests {
         /// The game's fixed update: sample, then simulate the next tick if
         /// its inputs are in.
         fn frame(&mut self, now: Instant) {
-            self.events.extend(self.core.take_events());
+            let new = self.core.take_events();
+            // A restart: the game starts again at tick 0.
+            if new.iter().any(|e| matches!(e, NetEvent::Restarted { .. })) {
+                self.tick = 0;
+                self.ran.clear();
+            }
+            self.events.extend(new);
             if now < self.next_frame {
                 return;
             }
@@ -1052,6 +1145,28 @@ mod tests {
                 self.tick += 1;
             }
         }
+    }
+
+    #[test]
+    fn a_late_joiner_plays_from_the_hosts_restart() {
+        let mut w = World::new(&[(1, CALM)], 1);
+        w.run(200);
+        w.start();
+        w.run(1000);
+        let k = w.add_client(1, Weather { latency_ms: 30, jitter_ms: 10, loss: 0.2 });
+        w.run(500);
+        // In, but not playing: no ticks run there, and the others go on.
+        assert!(w.machines[k].events.iter().any(|e| matches!(e, NetEvent::Connected { late: true, .. })));
+        assert!(w.machines[k].ran.is_empty());
+        let before = w.machines[1].ran.len();
+        w.run(300);
+        assert!(w.machines[1].ran.len() > before);
+        // The restart: everyone from tick 0 alike, the late joiner playing.
+        assert!(w.machines[0].core.restart());
+        w.run(3000);
+        w.agree(60);
+        assert!(w.machines[k].ran.iter().skip(5).all(|b| b[2].is_some()), "the late joiner's slot plays");
+        assert!(w.machines.iter().all(|m| m.events.iter().any(|e| matches!(e, NetEvent::Restarted { .. }))));
     }
 
     #[test]

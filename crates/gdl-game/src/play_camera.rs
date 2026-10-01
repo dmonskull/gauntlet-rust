@@ -386,7 +386,7 @@ fn start(
     cameras: Option<Res<LevelCameras>>,
     party: Res<Party>,
     mut scene_light: ResMut<SceneLight>,
-    (lock, old): (Res<crate::online::Lockstep>, Option<Res<PlayCamera>>),
+    old: Option<Res<PlayCamera>>,
 ) {
     let Some(ground) = ground else { return };
     let records = cameras.and_then(|c| c.0.get(&population.level.to_ascii_lowercase()).cloned());

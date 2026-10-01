@@ -662,7 +662,18 @@ pub fn new_member(
 }
 
 /// Makes the select screen's changes to the party.
-fn set_members(mut changes: MessageReader<PartyChange>, mut game: ResMut<crate::level::LoadedGame>, mut party: ResMut<Party>) {
+fn set_members(
+    mut changes: MessageReader<PartyChange>,
+    mut game: ResMut<crate::level::LoadedGame>,
+    mut party: ResMut<Party>,
+    fe: Option<Res<crate::frontend::Frontend>>,
+) {
+    // Online, a player's character menu changes nothing here: the hero
+    // goes to the host, whose resync brings it to everyone alike.
+    if fe.is_some_and(|f| f.in_online_manage()) {
+        changes.read().for_each(drop);
+        return;
+    }
     for change in changes.read() {
         match change {
             PartyChange::Set { slot, choice, name, saved, fresh, devices } => {

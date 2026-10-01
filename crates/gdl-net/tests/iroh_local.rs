@@ -56,7 +56,7 @@ fn play(sessions: &[&NetSession], ticks: usize) -> Vec<Vec<Bundle>> {
 #[test]
 fn a_friend_joins_with_the_invite_and_both_play_the_same_ticks() {
     let (host, invite) = NetSession::host(local("Host")).expect("host");
-    assert!(invite.starts_with("GDL1-"), "{invite}");
+    assert!(invite.starts_with(&format!("GDL{}-", gdl_net::PROTOCOL)), "{invite}");
     let client = NetSession::join(&invite, local("Guest")).expect("join");
     let (mut host_events, mut client_events) = (Vec::new(), Vec::new());
     let joined = wait_until(15, || {
@@ -65,7 +65,7 @@ fn a_friend_joins_with_the_invite_and_both_play_the_same_ticks() {
         client_events.iter().any(|e| matches!(e, NetEvent::Connected { .. }))
     });
     assert!(joined, "client events {client_events:?}");
-    assert!(client_events.contains(&NetEvent::Connected { you: 1, slots: vec![1] }), "{client_events:?}");
+    assert!(client_events.contains(&NetEvent::Connected { you: 1, slots: vec![1], late: false }), "{client_events:?}");
     assert!(host_events.iter().any(|e| matches!(e, NetEvent::PeerJoined { peer: 1, name, .. } if name == "Guest")), "{host_events:?}");
     assert_eq!(client.roster().len(), 2);
 
@@ -134,9 +134,10 @@ fn mismatched_builds_and_versions_are_refused() {
     }));
     assert!(events.iter().any(|e| matches!(e, NetEvent::Failed(r) if r.contains("build"))), "{events:?}");
     // An invite from another protocol version says so before dialling.
-    let wrong = invite.replacen("GDL1-", "GDL2-", 1);
+    let next = gdl_net::PROTOCOL + 1;
+    let wrong = invite.replacen(&format!("GDL{}-", gdl_net::PROTOCOL), &format!("GDL{next}-"), 1);
     let err = NetSession::join(&wrong, local("Guest")).err().expect("refused");
-    assert!(err.to_string().contains("protocol 2"), "{err}");
+    assert!(err.to_string().contains(&format!("protocol {next}")), "{err}");
     drop(host);
 }
 

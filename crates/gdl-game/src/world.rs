@@ -158,6 +158,9 @@ fn change_level(
     // the new nodes arrive, so the fixed tick waits for the new level's
     // (built when its population is in).
     commands.remove_resource::<mechanics::Mechanics>();
+    // The level's monster state goes with it, so the next level's (even the
+    // same level loaded again) is a new one and the critters set up afresh.
+    commands.remove_resource::<crate::monsters::MonsterLevel>();
 
     let mut stats = CurrentLevelStats { name: game.current_name().to_string(), ..default() };
     match game.load_current() {

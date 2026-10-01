@@ -29,12 +29,12 @@ key, with hole punching and n0's public relay servers as fallback (the
 ## Inviting and joining
 
 1. The host calls `NetSession::host(cfg)` and gets an **invite code**:
-   `GDL1-` + base32 of the host's endpoint address — its endpoint id, its
+   `GDL2-` (the protocol) + base32 of the host's endpoint address — its endpoint id, its
    home relay URL and its direct addresses — plus a CRC-16. About 150
    characters with a relay and two addresses. Lowercase, spaces and line
    breaks are accepted when pasted; a damaged code says so rather than
    dialling; a code from another protocol version says *"this invite is for
-   network protocol 2; this build speaks protocol 1"*.
+   network protocol 3; this build speaks protocol 2"*.
    `host()` waits up to 8 s for a relay (so the code can carry one); offline
    it gives a code with direct addresses only, fine on a LAN.
    `session.invite()` is kept current (a relay found later, a network
@@ -44,12 +44,14 @@ key, with hole punching and n0's public relay servers as fallback (the
    sides need `Relays::Public`; the host is findable a moment after it
    comes online.
 3. The friend calls `NetSession::join(code, cfg)`: it returns at once, and
-   `NetEvent::Connected { you, slots }` or `NetEvent::Failed(reason)`
-   follows (unreachable, the game full or started, another build).
+   `NetEvent::Connected { you, slots, late }` or `NetEvent::Failed(reason)`
+   follows (unreachable, the game full, another build).
 4. The lobby is the game's: `PeerJoined` / `PeerLeft` events, `roster()`,
    and control messages for anything else (ready flags, character picks,
    which level).
-5. The host calls `start()`. No one joins after that.
+5. The host calls `start()`. A machine joining after that is welcomed
+   `late`: its slots are kept for it, out of the game, until the host's
+   next `restart()` (below).
 
 ## Lockstep
 
@@ -90,6 +92,13 @@ Ticks run at 30 Hz; every machine simulates tick `T` with the same
 - **Checksums**: every `checksum_interval` (30) ticks each machine reports
   a hash of its state; clients send theirs to the host, which compares and
   sends `Desync { tick }` to everyone (itself included) on a mismatch.
+- **Restarting**: the host's `restart()` starts lockstep again from tick 0
+  for everyone (`Restart { delay, epoch }`, then `NetEvent::Restarted`):
+  late joiners' kept slots join the bundles, every machine forgets the run's
+  inputs, bundles and checksums, and the run's number (`epoch`) rides on
+  every input, bundle and checksum packet, so a straggler from the run
+  before is dropped. The game sends its own message first saying where
+  everyone starts from (in the game below).
 
 ## Messages
 
@@ -98,18 +107,19 @@ Reliable (the stream), in order:
 | message | way | meaning |
 | --- | --- | --- |
 | `Hello { protocol, game, name, players }` | C → H | first frame: who and how many pads |
-| `Welcome { you, delay, roster }` | H → C | its peer id, the delay, everyone in the game |
-| `Reject { reason }` | H → C | full, started, other protocol or build; then closed |
+| `Welcome { you, delay, late, roster }` | H → C | its peer id, the delay, whether the game is under way, everyone in the game |
+| `Reject { reason }` | H → C | full, other protocol or build; then closed |
 | `Joined(peer)`, `Left { peer, from }` | H → C | the roster changed |
 | `Start { delay }` | H → C | lockstep begins at tick 0 |
+| `Restart { delay, epoch }` | H → C | lockstep begins again at tick 0, run `epoch` |
 | `Delay { delay }` | H → C | the delay went up |
 | `Control { peer, bytes }` | both | game message; to the host `peer` is the target (`0xFF` all, `0` host, else a peer), from the host it's the sender |
-| `Checksum { tick, value }` | C → H | state hash |
+| `Checksum { epoch, tick, value }` | C → H | state hash |
 | `Desync { tick }` | H → C | checksums differed |
 | `Leave` | both | leaving for good |
 
-Unreliable (datagrams): `Inputs`, `Bundles` (above), `Ping { id }`,
-`Pong { id }`.
+Unreliable (datagrams): `Inputs`, `Bundles` (above, each with its run's
+`epoch`), `Ping { id }`, `Pong { id }`.
 
 Encoding: little-endian, a tag byte per message; an input is 8 bytes
 (stick x, y, c-stick x, y as `i8`, buttons `u32`); a bundle is a slot mask
@@ -150,8 +160,10 @@ fn net_tick(net: Res<Net>, mut sim: ResMut<SimTick>, pads: Res<LocalPads>, /* ga
 
 ## Limits
 
-- 4 player slots; at most 7 clients (peer ids 1–7). No joining after
-  `start()`, and no reconnecting: a dropped machine's slots stay empty.
+- 4 player slots; at most 7 clients (peer ids 1–7). Joining after
+  `start()` waits for the host's `restart()`; a dropped machine's slots stay
+  empty until someone joins into them (a player who dropped out can join
+  again that way).
 - The host is the hub: its uplink carries every client's bundles (about
   30 packets/s each, ~40–1000 bytes), and when it leaves the game ends.
 - Lockstep packets are capped at 1000 bytes (29 bundles of four players,
@@ -226,22 +238,50 @@ every standing hero's view, and each machine draws its own hero's
 (`watching`) — a teammate's while its own is down or out, L / R picking
 another. Cuts, the level-start shot and boss cameras stay everyone's.
 
-**In play.** Start opens *Online Game*: Settings, Leave Game; play goes on
+**In play.** Start opens *Online Game*: Settings, Camera, Leave Game, and
+in the tower Shop, Inventory and Manage Character too; play goes on
 underneath. Dead heroes are out until the level ends, as the original's (their
 gold from the level goes with the restored record). The screen says who the
-game waits for after half a second, notices who left, and warns when the
-machines' hashes differ.
+game waits for after half a second and notices who left.
 
-**Not online yet**: joining after the start, Manage Character, the shops.
+**Shops.** A player's Shop or Inventory opens the screen for everyone: the
+command rides with their controls for a few frames (`SlotInput::OPEN_SHOP`,
+`OPEN_INVENTORY`) and the screen opens on the tick that takes it; the shop
+screens (the after-level screen too) then run on the ticks with each
+player's controls from the bundle (up/down, A buys, X sells, B to EXIT).
+
+**Starting again** (`Message::Resync`, then the network's `restart()`).
+The host sends every machine the party — each player's record as the
+host's game has it, as a saved character — and where to start; every
+machine builds that party, starts the game afresh (`NewGame`) and loads
+the level, and lockstep runs again from tick 0. Ticks wait meanwhile (from
+the resync until the front end has acted on it and the restart is in). It
+starts again:
+
+- **when someone joins the game under way**: their select screen shows only
+  their own column ("The game is under way: you join at the tower"); with
+  their hero ready they wait until the party is back in the tower, and
+  everyone starts again there with them;
+- **when a player changes hero** (Manage Character in the tower: Change,
+  Load, Save, Done — their own column while the others play on): everyone
+  starts again in the tower with the new hero; Quit leaves the game;
+- **when the machines go out of sync**: every machine says so ("Out of
+  sync: the level starts again") and everyone starts the level under way
+  again from the host's records.
 
 **Testing.** `tools/online_test.sh [seconds]` runs a host and a client on
 this machine over loopback (`GDL_NET_LOCAL=1`, the invite through
 `GDL_INVITE_FILE`), heroes picked by `GDL_ONLINE_HERO`, started by
 `GDL_ONLINE_PLAYERS=2`, scripted sticks; it compares their hashes tick by
-tick. `GDL_ONLINE_LEVEL=levelA1` starts the game on a level.
+tick. `GDL_ONLINE_LEVEL=levelA1` starts the game on a level; `HOST_PLAYERS=1`
+starts the host alone, so the client joins the game under way;
+`CLIENT_MENU` scripts the client's menus (Manage Character);
+`CLIENT_DESYNC_AT=<tick>` puts the client's game out of sync then
+(`GDL_DESYNC_AT`), and the run after the restart must agree.
 
 **Machines of different kinds.** Lockstep needs the same floating-point
 results everywhere. The game's sines, cosines, arctangents and powers come
 from `libm` (`gdl_formats::detmath::Det`: `x.dsin()` …) and Bevy's maths
-from its `libm` feature, so a Mac and a Windows PC compute them alike; the
-hash check would still warn ("Out of sync") if anything else differed.
+from its `libm` feature, so a Mac and a Windows PC compute them alike; if
+anything else differed, the hash check would catch it and the level would
+start again.

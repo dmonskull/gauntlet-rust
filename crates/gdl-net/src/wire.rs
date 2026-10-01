@@ -12,9 +12,10 @@ pub(crate) enum Msg {
     /// Client → host, first thing on the stream: who it is and how many
     /// players it brings.
     Hello { protocol: u16, game: String, name: String, players: u8 },
-    /// Host → client: its peer id, the input delay, and everyone in the
-    /// game (itself included).
-    Welcome { you: PeerId, delay: u8, roster: Vec<PeerInfo> },
+    /// Host → client: its peer id, the input delay, whether the game is
+    /// under way (`late`: its slots join at the next restart), and everyone
+    /// in the game (itself included).
+    Welcome { you: PeerId, delay: u8, late: bool, roster: Vec<PeerInfo> },
     /// Host → client: refused (full, started, wrong build); the host
     /// closes the connection after it.
     Reject { reason: String },
@@ -25,14 +26,18 @@ pub(crate) enum Msg {
     Left { peer: PeerId, from: Option<Tick> },
     /// Host → clients: lockstep starts at tick 0.
     Start { delay: u8 },
+    /// Host → clients: lockstep starts again at tick 0 as `epoch`, every
+    /// machine in the roster playing (late joiners too); what was under way
+    /// is forgotten.
+    Restart { delay: u8, epoch: u8 },
     /// Host → clients: schedule local inputs this many ticks ahead from
     /// now on (only ever raised).
     Delay { delay: u8 },
     /// A game message. Client → host: `peer` is the target code
     /// ([`crate::Target`]); host → client: `peer` is the sender.
     Control { peer: u8, bytes: Vec<u8> },
-    /// Client → host: its state checksum at `tick`.
-    Checksum { tick: Tick, value: u64 },
+    /// Client → host: its state checksum at `tick` of `epoch`.
+    Checksum { epoch: u8, tick: Tick, value: u64 },
     /// Host → clients: the checksums for `tick` disagree.
     Desync { tick: Tick },
     /// Either way: leaving for good.
@@ -42,12 +47,12 @@ pub(crate) enum Msg {
     /// Client → host: its slots' inputs for ticks `base..` (each tick
     /// `slots` inputs, in slot order), repeated until acknowledged; `ack`
     /// is the first tick whose bundle it still lacks.
-    Inputs { ack: Tick, base: Tick, slots: u8, inputs: Vec<PlayerInput> },
+    Inputs { epoch: u8, ack: Tick, base: Tick, slots: u8, inputs: Vec<PlayerInput> },
     /// Host → client: the bundles for ticks `base..`, repeated until
     /// acknowledged; `ack` is the first tick the host still lacks this
     /// client's inputs for; `waiting` the peers (bit per peer id < 8) the
     /// host lacks inputs from for its next bundle.
-    Bundles { ack: Tick, base: Tick, waiting: u8, bundles: Vec<Bundle> },
+    Bundles { epoch: u8, ack: Tick, base: Tick, waiting: u8, bundles: Vec<Bundle> },
     /// Round-trip probes (and keep-alives).
     Ping { id: u32 },
     Pong { id: u32 },
@@ -69,10 +74,11 @@ impl Msg {
                 w.str(name);
                 w.u8(*players);
             }
-            Msg::Welcome { you, delay, roster } => {
+            Msg::Welcome { you, delay, late, roster } => {
                 w.u8(2);
                 w.u8(*you);
                 w.u8(*delay);
+                w.u8(u8::from(*late));
                 w.u8(roster.len() as u8);
                 for p in roster {
                     w.peer(p);
@@ -101,6 +107,11 @@ impl Msg {
                 w.u8(6);
                 w.u8(*delay);
             }
+            Msg::Restart { delay, epoch } => {
+                w.u8(12);
+                w.u8(*delay);
+                w.u8(*epoch);
+            }
             Msg::Delay { delay } => {
                 w.u8(7);
                 w.u8(*delay);
@@ -111,8 +122,9 @@ impl Msg {
                 w.u32(bytes.len() as u32);
                 w.0.extend_from_slice(bytes);
             }
-            Msg::Checksum { tick, value } => {
+            Msg::Checksum { epoch, tick, value } => {
                 w.u8(9);
+                w.u8(*epoch);
                 w.u32(*tick);
                 w.u64(*value);
             }
@@ -121,8 +133,9 @@ impl Msg {
                 w.u32(*tick);
             }
             Msg::Leave => w.u8(11),
-            Msg::Inputs { ack, base, slots, inputs } => {
+            Msg::Inputs { epoch, ack, base, slots, inputs } => {
                 w.u8(20);
+                w.u8(*epoch);
                 w.u32(*ack);
                 w.u32(*base);
                 w.u8(*slots);
@@ -131,8 +144,9 @@ impl Msg {
                     w.input(i);
                 }
             }
-            Msg::Bundles { ack, base, waiting, bundles } => {
+            Msg::Bundles { epoch, ack, base, waiting, bundles } => {
                 w.u8(21);
+                w.u8(*epoch);
                 w.u32(*ack);
                 w.u32(*base);
                 w.u8(*waiting);
@@ -162,9 +176,9 @@ impl Msg {
         let msg = match r.u8()? {
             1 => Msg::Hello { protocol: r.u16()?, game: r.str()?, name: r.str()?, players: r.u8()? },
             2 => {
-                let (you, delay, n) = (r.u8()?, r.u8()?, r.u8()?);
+                let (you, delay, late, n) = (r.u8()?, r.u8()?, r.u8()? != 0, r.u8()?);
                 let roster = (0..n).map(|_| r.peer()).collect::<Option<Vec<_>>>()?;
-                Msg::Welcome { you, delay, roster }
+                Msg::Welcome { you, delay, late, roster }
             }
             3 => Msg::Reject { reason: r.str()? },
             4 => Msg::Joined(r.peer()?),
@@ -177,25 +191,26 @@ impl Msg {
                 Msg::Left { peer, from }
             }
             6 => Msg::Start { delay: r.u8()? },
+            12 => Msg::Restart { delay: r.u8()?, epoch: r.u8()? },
             7 => Msg::Delay { delay: r.u8()? },
             8 => {
                 let peer = r.u8()?;
                 let n = r.u32()? as usize;
                 Msg::Control { peer, bytes: r.bytes(n)?.to_vec() }
             }
-            9 => Msg::Checksum { tick: r.u32()?, value: r.u64()? },
+            9 => Msg::Checksum { epoch: r.u8()?, tick: r.u32()?, value: r.u64()? },
             10 => Msg::Desync { tick: r.u32()? },
             11 => Msg::Leave,
             20 => {
-                let (ack, base, slots, count) = (r.u32()?, r.u32()?, r.u8()?, r.u8()?);
+                let (epoch, ack, base, slots, count) = (r.u8()?, r.u32()?, r.u32()?, r.u8()?, r.u8()?);
                 if usize::from(slots) > MAX_SLOTS {
                     return None;
                 }
                 let inputs = (0..usize::from(slots) * usize::from(count)).map(|_| r.input()).collect::<Option<Vec<_>>>()?;
-                Msg::Inputs { ack, base, slots, inputs }
+                Msg::Inputs { epoch, ack, base, slots, inputs }
             }
             21 => {
-                let (ack, base, waiting, count) = (r.u32()?, r.u32()?, r.u8()?, r.u8()?);
+                let (epoch, ack, base, waiting, count) = (r.u8()?, r.u32()?, r.u32()?, r.u8()?, r.u8()?);
                 let mut bundles = Vec::with_capacity(usize::from(count));
                 for _ in 0..count {
                     let mask = r.u8()?;
@@ -207,7 +222,7 @@ impl Msg {
                     }
                     bundles.push(b);
                 }
-                Msg::Bundles { ack, base, waiting, bundles }
+                Msg::Bundles { epoch, ack, base, waiting, bundles }
             }
             22 => Msg::Ping { id: r.u32()? },
             23 => Msg::Pong { id: r.u32()? },
@@ -223,7 +238,7 @@ pub(crate) const BUNDLE_BYTES: usize = 1 + MAX_SLOTS * INPUT_BYTES;
 /// Bytes one input takes.
 pub(crate) const INPUT_BYTES: usize = 8;
 /// Bytes of an `Inputs` or `Bundles` header.
-pub(crate) const HEADER_BYTES: usize = 11;
+pub(crate) const HEADER_BYTES: usize = 12;
 
 struct Writer(Vec<u8>);
 
@@ -317,19 +332,20 @@ mod tests {
         ];
         let msgs = vec![
             Msg::Hello { protocol: 1, game: "build 7".into(), name: "Ann".into(), players: 2 },
-            Msg::Welcome { you: 1, delay: 3, roster: roster.clone() },
+            Msg::Welcome { you: 1, delay: 3, late: true, roster: roster.clone() },
             Msg::Reject { reason: "full".into() },
             Msg::Joined(roster[1].clone()),
             Msg::Left { peer: 2, from: Some(400) },
             Msg::Left { peer: 2, from: None },
             Msg::Start { delay: 4 },
+            Msg::Restart { delay: 4, epoch: 3 },
             Msg::Delay { delay: 6 },
             Msg::Control { peer: 0xFF, bytes: vec![1, 2, 3] },
-            Msg::Checksum { tick: 90, value: u64::MAX - 5 },
+            Msg::Checksum { epoch: 2, tick: 90, value: u64::MAX - 5 },
             Msg::Desync { tick: 90 },
             Msg::Leave,
-            Msg::Inputs { ack: 10, base: 12, slots: 2, inputs: vec![input(1), input(2), input(3), input(4)] },
-            Msg::Bundles { ack: 15, base: 9, waiting: 0b100, bundles: vec![[Some(input(5)), None, Some(input(6)), None], [None; 4]] },
+            Msg::Inputs { epoch: 1, ack: 10, base: 12, slots: 2, inputs: vec![input(1), input(2), input(3), input(4)] },
+            Msg::Bundles { epoch: 1, ack: 15, base: 9, waiting: 0b100, bundles: vec![[Some(input(5)), None, Some(input(6)), None], [None; 4]] },
             Msg::Ping { id: 77 },
             Msg::Pong { id: 77 },
         ];
@@ -348,9 +364,9 @@ mod tests {
     #[test]
     fn header_and_bundle_sizes_match_the_encoding() {
         let full = [Some(input(1)); MAX_SLOTS];
-        let m = Msg::Bundles { ack: 0, base: 0, waiting: 0, bundles: vec![full; 3] };
+        let m = Msg::Bundles { epoch: 0, ack: 0, base: 0, waiting: 0, bundles: vec![full; 3] };
         assert_eq!(m.encode().len(), HEADER_BYTES + 3 * BUNDLE_BYTES);
-        let m = Msg::Inputs { ack: 0, base: 0, slots: 2, inputs: vec![input(0); 6] };
+        let m = Msg::Inputs { epoch: 0, ack: 0, base: 0, slots: 2, inputs: vec![input(0); 6] };
         assert_eq!(m.encode().len(), HEADER_BYTES + 6 * INPUT_BYTES);
     }
 }
