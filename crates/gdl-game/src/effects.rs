@@ -237,6 +237,15 @@ pub struct CritterBlast {
     pub heroes: bool,
     pub monsters: bool,
     pub items: bool,
+    /// Steady, not growing (a held attack, `DAMG` kind 2: the slot's flags
+    /// `0x30`): its whole radius at full damage for its life, each target
+    /// spared a second (at most what's left), as the heroes' shield.
+    pub steady: bool,
+    /// A cone (the blow's `DAMG +0x18` above −1): only what's within that
+    /// cosine of the slot's facing across the floor (× 0.85 within 0.3 of
+    /// its reach) is hit. The facing: the slot's rotation — in its
+    /// anchor's space when it follows one, else in the world.
+    pub cone: Option<(f32, Quat)>,
 }
 
 /// A critter's effect that its own folder doesn't hold, from the effect
@@ -371,8 +380,12 @@ enum BlastShape {
     /// ring from the hero's feet.
     Rides { hero: Entity, head: Option<Entity>, cone: bool },
     /// Grows like a blast from a point in an entity's space as it moves:
-    /// a critter's effect on its root or a node.
-    Follows(Entity, Vec3),
+    /// a critter's effect on its root or a node (facing as the entity does,
+    /// turned by the rotation).
+    Follows(Entity, Vec3, Quat),
+    /// Steady like the shield, where it went off or at a point in an
+    /// entity's space as it moves: a critter's held attack.
+    Holds(Option<(Entity, Vec3, Quat)>),
 }
 
 /// A hero breathes (ATTBREATHE starts, `player.rs`): the effect `fx` on its
@@ -420,7 +433,7 @@ const CHOP_SHAKE: crate::play_camera::Shake =
 
 /// A breath's cone: targets whose direction from it is within this cosine
 /// of its heading (30°) — this much wider (× the cosine) within 0.3 of its
-/// reach.
+/// reach. (A critter's area has its own cosine, the same rule.)
 const BREATH_CONE: f32 = 0.866;
 const BREATH_CONE_NEAR: f32 = 0.85;
 const BREATH_NEAR: f32 = 0.3;
@@ -454,9 +467,9 @@ struct Blast {
     /// by the stages after it).
     scale: Vec3,
     drop: f32,
-    /// A breath's heading (unit, across the floor): targets outside its
-    /// cone aren't hit.
-    heading: Option<Vec2>,
+    /// A breath's or a critter's area's heading (unit, across the floor)
+    /// and its cone's cosine: targets outside the cone aren't hit.
+    heading: Option<(Vec2, f32)>,
 }
 
 /// What a blast does to heroes.
@@ -1406,7 +1419,7 @@ fn spawn_breaths(
             then: &[],
             scale: Vec3::ONE,
             drop: 0.0,
-            heading: Some(Vec2::new(p.mover.facing.dsin(), p.mover.facing.dcos())),
+            heading: Some((Vec2::new(p.mover.facing.dsin(), p.mover.facing.dcos()), BREATH_CONE)),
         };
         // The blast alone (its look is the model on the head).
         commands.spawn((Transform::from_translation(centre), blast, BlastColour(colour_index(b.kind), true), LevelEntity));
@@ -1459,16 +1472,26 @@ fn spawn_chops(
     }
 }
 
-/// Whether a breath's cone takes in a target at `to` whose surface is
-/// `reach` from it at the most: within 30° of its heading across the floor,
-/// wider close up. Other blasts take in everything.
+/// Whether a cone (a breath's, 30°, or a critter's area's) takes in a
+/// target at `to` whose surface is `reach` from it at the most: within its
+/// cosine of its heading across the floor, wider close up. Other blasts
+/// take in everything.
 fn in_cone(b: &Blast, to: Vec3, reach: f32) -> bool {
-    let Some(heading) = b.heading else { return true };
-    let d = Vec2::new(to.x - b.centre.x, to.z - b.centre.z);
+    let Some((heading, cone)) = b.heading else { return true };
+    // The game's test: the way to it as a unit vector in space, its part
+    // across the floor against the heading's.
+    let d = to - b.centre;
     let distance = d.length();
-    let dir = if distance > 1e-4 { d / distance } else { heading };
-    let limit = if distance < BREATH_NEAR * reach { BREATH_CONE * BREATH_CONE_NEAR } else { BREATH_CONE };
-    dir.dot(heading) >= limit
+    let n = if distance > 1e-4 { d / distance } else { Vec3::new(heading.x, 0.0, heading.y) };
+    let limit = if distance < BREATH_NEAR * reach { cone * BREATH_CONE_NEAR } else { cone };
+    n.x * heading.x + n.z * heading.y >= limit
+}
+
+/// A slot's heading for its cone: its rotation's +Z (a unit vector in
+/// space), across the floor.
+fn flat_heading(r: Quat) -> Vec2 {
+    let f = r * Vec3::Z;
+    Vec2::new(f.x, f.z)
 }
 
 /// The effect's model; without one, a stand-in: a translucent sphere in
@@ -1503,9 +1526,16 @@ fn sweep_items(mut commands: Commands, mut requests: MessageReader<SweepItems>) 
 fn critter_blasts(mut commands: Commands, mut requests: MessageReader<CritterBlast>) {
     for c in requests.read() {
         info!("a critter's blast at {:?}: {:.0} out to {:.0} over {:.2} s", c.at, c.damage, c.radius, c.life);
+        // A cone faces its slot's way: in its anchor's space (the first
+        // tick turns it with the anchor), else in the world.
+        let turn = c.cone.map_or(Quat::IDENTITY, |(_, r)| r);
         let blast = Blast {
             owner: c.owner,
-            shape: c.follow.map_or(BlastShape::Grow, |(on, off)| BlastShape::Follows(on, off)),
+            shape: match (c.steady, c.follow) {
+                (true, follow) => BlastShape::Holds(follow.map(|(on, off)| (on, off, turn))),
+                (false, Some((on, off))) => BlastShape::Follows(on, off, turn),
+                (false, None) => BlastShape::Grow,
+            },
             centre: c.at,
             kind: c.kind,
             damage: c.damage,
@@ -1520,7 +1550,7 @@ fn critter_blasts(mut commands: Commands, mut requests: MessageReader<CritterBla
             then: &[],
             scale: Vec3::ONE,
             drop: 0.0,
-            heading: None,
+            heading: c.cone.map(|(cos, r)| (flat_heading(r), cos)),
         };
         commands.spawn((Transform::from_translation(c.at), Visibility::Hidden, blast, BlastColour(0, true), LevelEntity));
     }
@@ -1602,23 +1632,27 @@ fn tick_blasts(
         {
             b.centre = head.and_then(|h| bones.get(h).ok()).map_or(Vec3::from(p.mover.position), |g| g.translation());
             if cone {
-                b.heading = Some(Vec2::new(p.mover.facing.dsin(), p.mover.facing.dcos()));
+                b.heading = Some((Vec2::new(p.mover.facing.dsin(), p.mover.facing.dcos()), BREATH_CONE));
             }
         }
-        if let BlastShape::Follows(on, off) = b.shape
+        if let BlastShape::Follows(on, off, turn) | BlastShape::Holds(Some((on, off, turn))) = b.shape
             && let Ok(g) = anchors.get(on)
         {
             b.centre = g.affine().transform_point3(off);
+            // A cone faces where its anchor does, turned as it was set down.
+            if let Some((_, cone)) = b.heading {
+                b.heading = Some((flat_heading(g.rotation() * turn), cone));
+            }
         }
         // Grow (and a breath): reach and share by the time left; the
-        // shield: steady, full damage, each target spared a second (at
-        // most what's left).
+        // shield and a critter's held attack: steady, full damage, each
+        // target spared a second (at most what's left).
         let (reach, share, spare) = match b.shape {
             BlastShape::Grow | BlastShape::Rides { .. } | BlastShape::Follows(..) => match blast_front(left, b.life, b.radius) {
                 Some((r, s)) => (r, s, (left + 1.0 / 15.0).max(0.2)),
                 None => continue,
             },
-            BlastShape::Aura(_) => (b.radius, 1.0, left.clamp(0.2, 1.0)),
+            BlastShape::Aura(_) | BlastShape::Holds(_) => (b.radius, 1.0, left.clamp(0.2, 1.0)),
         };
         let damage = b.damage * share;
         let mut hit = |target: Entity, target_kind: TargetKind, b: &mut Blast| {
@@ -1766,7 +1800,7 @@ fn follow_blasts(
             BlastShape::Grow | BlastShape::Rides { .. } | BlastShape::Follows(..) => {
                 blast_front(b.life - b.age, b.life, b.radius).map_or(0.0, |(r, _)| r)
             }
-            BlastShape::Aura(_) => b.radius,
+            BlastShape::Aura(_) | BlastShape::Holds(_) => b.radius,
         };
         // The sphere is in the blast's (scaled) space.
         let local = Vec3::splat(reach) / transform.scale.max(Vec3::splat(1e-3));

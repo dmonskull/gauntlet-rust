@@ -24,12 +24,17 @@ pub enum Billboard {
     YawPitch(Option<f32>),
     /// Take the camera's own rotation.
     Sprite,
+    /// Turn about Y so +Z points back along the camera's view (parallel to
+    /// the screen, wherever on it): mode `0x2000000`, a critter's 3D
+    /// health meter.
+    ScreenYaw,
 }
 
 impl Billboard {
     pub fn from_flags(flags: u32) -> Option<Self> {
         match flags & render_flags::FACING_MASK {
             0x100_0000 => Some(Self::Yaw),
+            0x200_0000 => Some(Self::ScreenYaw),
             0x300_0000 => Some(Self::YawPitch(None)),
             0x400_0000 => Some(Self::Sprite),
             0x500_0000 => Some(Self::YawPitch(Some(15f32.to_radians()))),
@@ -54,6 +59,11 @@ impl Billboard {
                 yaw * Quat::from_rotation_x(-pitch)
             }
             Self::Sprite => camera,
+            Self::ScreenYaw => {
+                // The camera looks along its −Z.
+                let back = camera * Vec3::Z;
+                Quat::from_rotation_y(back.x.datan2(back.z))
+            }
         }
     }
 }
@@ -95,5 +105,17 @@ mod tests {
         let r = Billboard::YawPitch(Some(0.1)).rotation(Vec3::ZERO, Vec3::new(0.0, 10.0, 1.0), Quat::IDENTITY);
         let z = r * Vec3::Z;
         assert!((z.y - 0.1f32.dsin()).abs() < 1e-5, "{z}");
+    }
+
+    /// Mode 0x2000000 faces back along the view, wherever the object is.
+    #[test]
+    fn screen_yaw_faces_back_along_the_view() {
+        assert_eq!(Billboard::from_flags(0x2000000), Some(Billboard::ScreenYaw));
+        // A camera looking along +Z (its −Z turned half round), tilted down.
+        let camera = Quat::from_rotation_y(std::f32::consts::PI) * Quat::from_rotation_x(-0.5);
+        for at in [Vec3::ZERO, Vec3::new(30.0, 2.0, 5.0)] {
+            let z = Billboard::ScreenYaw.rotation(at, Vec3::new(0.0, 10.0, -40.0), camera) * Vec3::Z;
+            assert!((z - Vec3::NEG_Z).length() < 1e-5, "{z}");
+        }
     }
 }
