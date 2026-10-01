@@ -4,7 +4,7 @@
 //! nothing is drawn (dev tool).
 //!
 //! ```text
-//! cargo run -p gdl-formats --example level_audit -- <game>/Gauntlet [level] [--triggers] [--anim] [--falls] [--walls] [--reach]
+//! cargo run -p gdl-formats --example level_audit -- <game>/Gauntlet [level] [--triggers] [--anim] [--falls] [--walls] [--reach] [--ridden]
 //! ```
 //!
 //! With `--triggers`, every trigger the party has is listed too: where it
@@ -23,7 +23,13 @@
 //! hero's collision centre (2.5 up) within the type's reach and the
 //! hero's 2.5 — and whether a floor in its touch reaches it at the
 //! level's start, at rest or with every mover on (`REACH`; `NOREACH` when
-//! none does).
+//! none does). With `--ridden`, every mover or animated object a ridden
+//! pad drives (a pad counted only while the hero stands on its target or a
+//! child of it, or one riding it): its kind flags — without `8` the game
+//! holds it still while the hero stands on the node itself, `RIDEHOLD` —
+//! and any other trigger on the same node touched from where the pad is
+//! ridden, `RIDECLASH` (an off switch there turns it off again in the
+//! same update: it stays put).
 //!
 //! Per level it lists:
 //! - `MOVER`: world nodes the game moves (or hides) because a trigger for
@@ -199,8 +205,9 @@ fn main() {
     let falls = args.iter().any(|a| a == "--falls");
     let wall_list = args.iter().any(|a| a == "--walls");
     let reach_check = args.iter().any(|a| a == "--reach");
+    let ridden_check = args.iter().any(|a| a == "--ridden");
     let mut plain = args.iter().filter(|a| !a.starts_with("--"));
-    let root = plain.next().expect("usage: level_audit <game>/Gauntlet [level] [--triggers] [--anim] [--falls] [--walls] [--reach]").clone();
+    let root = plain.next().expect("usage: level_audit <game>/Gauntlet [level] [--triggers] [--anim] [--falls] [--walls] [--reach] [--ridden]").clone();
     let only = plain.next().map(|s| s.to_ascii_lowercase());
     let root = Path::new(&root);
     let mut levels: Vec<_> = std::fs::read_dir(root.join("LEVELS")).expect("LEVELS").flatten().map(|e| e.path()).collect();
@@ -406,7 +413,7 @@ fn main() {
         // can touch with the movers at heights reached so far lets its
         // target reach the height it sends it to (its chain's too), until
         // nothing more is reached.
-        if reach_check && let Some(c0) = &collision {
+        if (reach_check || ridden_check) && let Some(c0) = &collision {
             struct Mv {
                 off: f32,
                 on: f32,
@@ -503,6 +510,15 @@ fn main() {
             };
             let first_frames = animated_at(false);
             let last_frames = animated_at(true);
+            // What the items drop onto: the movers at their off heights and
+            // the animated objects at their first frames (the level load
+            // poses them just before the item set-up).
+            let mut dropping = start.clone();
+            for n in 0..world_nodes {
+                if in_mode(n) {
+                    dropping.set_pose(n, first_frames.pose(n));
+                }
+            }
             let animated_set: HashSet<usize> = (0..world_nodes).filter(|&n| in_mode(n)).collect();
             // Every floor down a line through the level at rest, and the
             // animated objects' at their first and last frames.
@@ -541,6 +557,10 @@ fn main() {
                 /// Counts only stood on this node or a child of it (flag
                 /// 0x100, or 0x400 dropped onto its target).
                 stand: Option<usize>,
+                /// Its flags, and how far across from its spot the hero's
+                /// feet touch it.
+                flags: u16,
+                across: f32,
             }
             let chained: HashSet<u8> = triggers.iter().filter(|t| t.5 && t.4 != 0).map(|t| t.4).collect();
             let mut touches: Vec<Touch> = Vec::new();
@@ -564,7 +584,7 @@ fn main() {
                 let mut ride = None;
                 let mut dropped_on = None;
                 if !ty.keeps_height() {
-                    match start.floor_probe(at, 4.0, -10.0, 1.0, 0) {
+                    match dropping.floor_probe(at, 4.0, -10.0, 1.0, 0) {
                         Some(h) => {
                             at[1] = h.point[1] + 0.1;
                             dropped_on = Some(h.node);
@@ -604,6 +624,8 @@ fn main() {
                     touched,
                     hit: subtype == 0x1F,
                     stand,
+                    flags,
+                    across,
                 });
             }
             // Heights each mover has reached (false off, true on).
@@ -703,7 +725,7 @@ fn main() {
                 }
             }
             for (k, t) in touches.iter().enumerate() {
-                if !t.touched {
+                if !t.touched || !reach_check {
                     continue;
                 }
                 let what = t.target.map_or("nothing".to_string(), |n| format!("node {n} {}", world.nodes[n].name));
@@ -726,6 +748,138 @@ fn main() {
                         ),
                         &mut lines,
                     );
+                }
+            }
+
+            // Ridden pads: where the hero stands to touch each, with the
+            // movers at their off heights and the animated objects at their
+            // first frames (as the level starts them).
+            if ridden_check {
+                let ride = &dropping;
+                let triangles: Vec<(usize, [[f32; 3]; 3])> = ride.world_triangles().map(|(n, _, v)| (n, v)).collect();
+                let touches_at = |t: &Touch, feet: [f32; 3]| {
+                    (feet[0] - t.at[0]).hypot(feet[2] - t.at[2]) <= t.across && (feet[1] + 2.5 - t.centre).abs() <= t.reach
+                };
+                for t in touches.iter().filter(|t| t.touched) {
+                    let Some(node) = t.target else { continue };
+                    let ridden = t.stand.is_some() || t.ride.is_some_and(|r| under(&parent, r, node));
+                    if !ridden {
+                        continue;
+                    }
+                    // The floors that count: the target's own and its
+                    // children's (where the drop put a riding pad, that
+                    // floor's node too).
+                    let counts = |n: usize| n == node || parent[n] == Some(node) || t.ride == Some(n);
+                    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                    for (n, v) in triangles.iter().filter(|(n, _)| counts(*n)) {
+                        let _ = n;
+                        for c in v {
+                            lo = [lo[0].min(c[0]), lo[1].min(c[2])];
+                            hi = [hi[0].max(c[0]), hi[1].max(c[2])];
+                        }
+                    }
+                    if lo[0] > hi[0] {
+                        continue;
+                    }
+                    let q = gdl_formats::collision::Query { disable_mask: 1, prefer_crossing: false, ..gdl_formats::collision::Query::floors(0.5) };
+                    let [blo, bhi] = ride.bounds;
+                    // Every unit across the floors: the top floor there, if it
+                    // counts, is a spot the hero rides.
+                    let mut spots: Vec<([f32; 3], usize)> = Vec::new();
+                    let mut x = lo[0].floor();
+                    while x <= hi[0] {
+                        let mut z = lo[1].floor();
+                        while z <= hi[1] {
+                            if let Some(h) = ride.cast([x, bhi[1] + 1.0, z], [x, blo[1] - 1.0, z], &q)
+                                && counts(h.node)
+                            {
+                                spots.push((h.point, h.node));
+                            }
+                            z += 1.0;
+                        }
+                        x += 1.0;
+                    }
+                    if spots.is_empty() {
+                        continue;
+                    }
+                    let on_pad: Vec<&([f32; 3], usize)> = spots.iter().filter(|(p, _)| touches_at(t, *p)).collect();
+                    let first = &registered[&node][0];
+                    let kind = first.flags as u8;
+                    let animated = in_mode(node) && animation_of(node).is_some_and(|a| a.track.is_some());
+                    let floors: BTreeSet<String> = spots.iter().map(|(_, n)| format!("{} ({n})", world.nodes[*n].name)).collect();
+                    lines.push(format!(
+                        "  RIDE  pad {} ({}) drives node {node} {} ({}, kind flags {kind:#04x}: {}); ridden on {}; touched from {} of {} spots",
+                        t.placement,
+                        if t.stand.is_some() { "stood on" } else { "riding it" },
+                        world.nodes[node].name,
+                        if kind & 0x10 != 0 {
+                            "a bridge"
+                        } else if animated {
+                            "animated"
+                        } else {
+                            "a mover"
+                        },
+                        if kind & 0x10 != 0 {
+                            "shown or hidden, not moved"
+                        } else if kind & 8 != 0 {
+                            "carries the hero"
+                        } else {
+                            "holds still while stood on itself"
+                        },
+                        floors.into_iter().collect::<Vec<_>>().join(", "),
+                        on_pad.len(),
+                        spots.len()
+                    ));
+                    // Without kind flag 8 the game holds it while a hero
+                    // stands on the node itself (not a child).
+                    let own = on_pad.iter().filter(|(_, n)| *n == node).count();
+                    if kind & 8 == 0 && kind & 0x10 == 0 && own > 0 {
+                        note(
+                            "RIDEHOLD",
+                            format!(
+                                "pad {} drives node {node} {} (kind flags {kind:#04x}, first registered by placement {}) and {own} of the spots it's touched from are on the node's own floor: there the game holds it still",
+                                t.placement,
+                                world.nodes[node].name,
+                                first.placement
+                            ),
+                            &mut lines,
+                        );
+                    }
+                    // Other triggers on the same node touched from the same
+                    // spots: an off switch turns a lift the pad just turned
+                    // on off again in the same update (the triggers update
+                    // in item order before the movers).
+                    for o in touches.iter().filter(|o| o.touched && o.placement != t.placement && o.target == Some(node)) {
+                        let both: Vec<&&([f32; 3], usize)> = on_pad.iter().filter(|(p, _)| touches_at(o, *p)).collect();
+                        let Some(((at, _), _)) = both.first().map(|s| (**s, ())) else { continue };
+                        let role = match o.flags {
+                            f if f & 1 != 0 => "off switch",
+                            f if f & 2 != 0 => "switch",
+                            f if f & 4 != 0 => "lift pad",
+                            _ => "pad",
+                        };
+                        let effect = if o.flags & 1 != 0 && t.flags & 4 != 0 && o.placement > t.placement {
+                            ": the pad turns it on and the off switch, later in item order, turns it off in the same update — it stays put while the hero stands there"
+                        } else {
+                            ""
+                        };
+                        note(
+                            "RIDECLASH",
+                            format!(
+                                "pad {} and {role} {} (across {:.1}) both on node {node} {} are touched from {} of the {} spots, e.g. ({:.1}, {:.2}, {:.1}){effect}",
+                                t.placement,
+                                o.placement,
+                                o.across - 1.5,
+                                world.nodes[node].name,
+                                both.len(),
+                                on_pad.len(),
+                                at[0],
+                                at[1],
+                                at[2]
+                            ),
+                            &mut lines,
+                        );
+                    }
                 }
             }
         }
