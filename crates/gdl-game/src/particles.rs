@@ -177,6 +177,19 @@ impl Params {
 
     /// These values for an effect drawn at `scale`: sizes, speeds and
     /// the start box scale with it.
+    /// An effect's emitter for an effect lasting `life` seconds: it gives
+    /// off particles no longer than the effect lasts, and is gone once
+    /// those have died. (Records without their own times would otherwise
+    /// run the library's 999 s: `POWERUPS`' gem sparkles kept going.)
+    /// Stand-in: the emitters belong to the effect's model, which the
+    /// effect's slot frees at its end; whether the game's last particles
+    /// finish or vanish with it isn't traced — here they finish.
+    pub fn within(mut self, life: f32) -> Self {
+        self.times[0] = self.times[0].min(life);
+        self.times[1] = self.times[1].min(life + self.life[0] + self.life[1].max(0.0));
+        self
+    }
+
     pub fn scaled(mut self, scale: f32) -> Self {
         self.sizes = self.sizes.map(|s| s * scale);
         self.speed *= scale;
@@ -382,6 +395,7 @@ fn simulate(
             Some(age) => {
                 *age += dt;
                 if *age >= e.params.times[1] || (*age >= e.params.times[0] && e.particles.is_empty()) {
+                    debug!("burst at {} gone after {:.2} s", e.origin, *age);
                     commands.entity(entity).try_despawn();
                     continue;
                 }
@@ -453,6 +467,25 @@ mod tests {
         assert!((keyed([0.0, 1.0, 1.0, 0.0], 1.0 / 3.0) - 1.0).abs() < 1e-5);
         assert!((keyed([0.0, 1.0, 1.0, 0.0], 0.5) - 1.0).abs() < 1e-5);
         assert_eq!(keyed([0.0, 1.0, 1.0, 0.0], 1.0), 0.0);
+    }
+
+    #[test]
+    fn an_effects_emitter_ends_with_it() {
+        // A record without its own times (the gem sparkles): the library's
+        // 999 s, cut to the effect's life, then gone once the last
+        // particles (life 0.35 + up to 0.75 more) have died.
+        let mut r = vec![0u8; gdl_formats::psys::RECORD_LEN];
+        r[16..20].copy_from_slice(&fields::LIFE.to_le_bytes());
+        r[40..44].copy_from_slice(&0.35f32.to_le_bytes());
+        r[44..48].copy_from_slice(&0.75f32.to_le_bytes());
+        let p = Params::of(&ParticleRecord::parse(&r).unwrap());
+        assert_eq!(p.times, [999.0, 999.0]);
+        let t = p.within(1.5).times;
+        assert!((t[0] - 1.5).abs() < 1e-6 && (t[1] - 2.6).abs() < 1e-5, "{t:?}");
+        // Its own shorter times stand.
+        let mut q = Params::of(&ParticleRecord::parse(&r).unwrap());
+        q.times = [0.1, 0.5];
+        assert_eq!(q.within(1.5).times, [0.1, 0.5]);
     }
 
     #[test]
