@@ -468,6 +468,16 @@ it and resets it when they leave, then waits 50 fields and sends
 relative `ChangeLevel`. Stand-in: an exit without a code goes to the hub,
 `levelL1`. The hero's lift and spin aren't drawn.
 
+Sounds ([audio-format.md](audio-format.md), "Positional sounds"): while
+a hero in play or going out has its exit count `+0x950` running (it
+stands in an exit that isn't secret, `FUN_80086cc8`), `S_EXITFLAME` loops
+at the first such hero's top point (`FUN_8007692c` → `FUN_8009ce48`,
+0xE0), re-panned as it moves; the first hero out plays `S_TUNNEL` at its
+feet (`FUN_80077ccc` → `FUN_8009ca90`, 0x7F) and from then every sound
+item is stopped. Here the flame burns while the hero stands in an open
+exit that isn't secret and as it goes out through one (stand-in: from the
+first tick it stands there).
+
 ### Transporters
 
 `FUN_80064600` links each transporter to the one whose id is its
@@ -484,7 +494,19 @@ transporter.
 The runtime does the same, with "on screen" tested against the play
 camera's view (a stand-in for the game's sphere test). It sets the
 player mover's position directly; the player's render interpolation may
-show one tick's slide at the jump (player.rs owns that).
+show one tick's slide at the jump (player.rs owns that). The transport
+sound is faded and panned at the partner (its `+0x34`; here where the
+hero lands, under its centre).
+
+### Sound items
+
+Class 13 places a sound about the level: the placement's name is the
+sound (`S_sfirea`, upper-cased for the catalog), `+0x30` its reach,
+`+0x34` 0 for these (above 0, nameless, they pick the music instead),
+`+0x38` flags. Each plays while a hero is near, louder the nearer, and is
+re-volumed and re-panned every update — [audio-format.md](audio-format.md),
+"The sound items". Here: `items.rs` (`ambient_sounds`), on the levels'
+loops through `audio::LoopSoundAt`.
 
 ### Hints
 
