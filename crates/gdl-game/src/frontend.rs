@@ -308,6 +308,9 @@ enum Item {
     /// to change, the defaults back.
     PcSettings,
     Page(Page),
+    /// The players and their devices; one player's Controls.
+    Players,
+    PlayerControls(usize),
     Toggle(Setting),
     Bind(Action),
     ResetBindings,
@@ -341,11 +344,12 @@ enum Setting {
 }
 
 impl Setting {
-    fn get(self, o: &GameOptions) -> bool {
+    /// Its value (the player's, for the controls the game keeps per pad).
+    fn get(self, o: &GameOptions, slot: usize) -> bool {
         match self {
-            Self::Rumble => o.rumble,
-            Self::AutoAim => o.auto_aim,
-            Self::AutoAttack => o.auto_attack,
+            Self::Rumble => o.player(slot).rumble,
+            Self::AutoAim => o.player(slot).auto_aim,
+            Self::AutoAttack => o.player(slot).auto_attack,
             Self::Compass => o.compass,
             Self::Fullscreen => o.fullscreen,
             Self::Vsync => o.vsync,
@@ -355,11 +359,12 @@ impl Setting {
             Self::Collision => o.collision,
         }
     }
-    fn set(self, o: &mut GameOptions, v: bool) {
+    fn set(self, o: &mut GameOptions, slot: usize, v: bool) {
+        let slot = slot.min(MAX_PLAYERS - 1);
         match self {
-            Self::Rumble => o.rumble = v,
-            Self::AutoAim => o.auto_aim = v,
-            Self::AutoAttack => o.auto_attack = v,
+            Self::Rumble => o.players[slot].rumble = v,
+            Self::AutoAim => o.players[slot].auto_aim = v,
+            Self::AutoAttack => o.players[slot].auto_attack = v,
             Self::Compass => o.compass = v,
             Self::Fullscreen => o.fullscreen = v,
             Self::Vsync => o.vsync = v,
@@ -420,7 +425,7 @@ const VALUE: &str = "\t";
 const VALUE_COLUMN: f32 = 220.0;
 
 /// The lines a menu of run-time lines shows now.
-fn dynamic_lines(kind: Dynamic, o: &GameOptions, style_pick: usize, capture: Option<Action>) -> Vec<(String, Item)> {
+fn dynamic_lines(kind: Dynamic, o: &GameOptions, slot: usize, style_pick: usize, capture: Option<Action>) -> Vec<(String, Item)> {
     let on_off = |v: bool| if v { "On" } else { "Off" };
     match kind {
         Dynamic::Style => vec![(controls::SCHEME_NAMES[style_pick].to_string(), Item::StyleLine)],
@@ -429,7 +434,7 @@ fn dynamic_lines(kind: Dynamic, o: &GameOptions, style_pick: usize, capture: Opt
             .1
             .iter()
             .map(|&(label, v)| {
-                let mark = if setting.get(o) == v { CURRENT } else { "" };
+                let mark = if setting.get(o, slot) == v { CURRENT } else { "" };
                 (format!("{label}{mark}"), Item::Choose(setting, v))
             })
             .collect(),
@@ -450,12 +455,13 @@ fn dynamic_lines(kind: Dynamic, o: &GameOptions, style_pick: usize, capture: Opt
             lines
         }
         Dynamic::Page(Page::Pad) => {
-            let mut lines = vec![(format!("Style{VALUE}{}", controls::SCHEME_NAMES[o.scheme]), Item::Style)];
+            let scheme = o.player(slot).scheme;
+            let mut lines = vec![(format!("Style{VALUE}{}", controls::SCHEME_NAMES[scheme]), Item::Style)];
             lines.extend(Action::ON_PAD.iter().map(|&a| {
                 let value = if capture == Some(a) {
                     "Press a button".to_string()
                 } else {
-                    let names: Vec<&str> = o.bindings.pad(a, o.scheme).iter().map(|&b| controls::pad_name(b)).collect();
+                    let names: Vec<&str> = o.bindings.pad(a, scheme).iter().map(|&b| controls::pad_name(b)).collect();
                     if names.is_empty() { "-".to_string() } else { names.join(", ") }
                 };
                 (format!("{}{VALUE}{value}", a.label()), Item::Bind(a))
@@ -468,7 +474,7 @@ fn dynamic_lines(kind: Dynamic, o: &GameOptions, style_pick: usize, capture: Opt
                 Page::Video => &[Setting::Fullscreen, Setting::Vsync],
                 _ => &[Setting::DevKeys, Setting::DebugOverlay, Setting::FrameRate, Setting::Collision],
             };
-            settings.iter().map(|&s| (format!("{}{VALUE}{}", s.label(), on_off(s.get(o))), Item::Toggle(s))).collect()
+            settings.iter().map(|&s| (format!("{}{VALUE}{}", s.label(), on_off(s.get(o, slot))), Item::Toggle(s))).collect()
         }
     }
 }
@@ -692,6 +698,7 @@ static PC_MENU: MenuDef = game_menu(
     "PC Settings",
     true,
     &[
+        e("Players", Item::Players),
         e("Keyboard & Mouse", Item::Page(Page::Keys)),
         e("Controller", Item::Page(Page::Pad)),
         e("Video", Item::Page(Page::Video)),
@@ -717,6 +724,7 @@ const fn page_menu(title: &'static str) -> MenuDef {
 /// The pages' plain lines, light over their backing.
 const PAGE_INK: [u8; 3] = [236, 222, 196];
 static KEYS_PAGE: MenuDef = page_menu("Keyboard & Mouse");
+static PLAYERS_PAGE: MenuDef = MenuDef { x: 64.0, y: -1.0, item_scale: 0.6, ..page_menu("Players") };
 static PAD_PAGE: MenuDef = page_menu("Controller");
 static VIDEO_PAGE: MenuDef = MenuDef { x: 128.0, y: -1.0, item_scale: 1.0, ..page_menu("Video") };
 static DEBUG_PAGE: MenuDef = MenuDef { x: 96.0, y: -1.0, item_scale: 0.8, ..page_menu("Debug") };
@@ -798,8 +806,8 @@ impl Menu {
         Self { def, lines: None, selected: 0, t: 0.0, disabled: Vec::new(), column: 0.0, kind: None }
     }
     /// A menu of run-time lines showing `kind`.
-    fn dynamic(def: &'static MenuDef, kind: Dynamic, o: &GameOptions, style_pick: usize) -> Self {
-        Self { kind: Some(kind), ..Self::with_lines(def, dynamic_lines(kind, o, style_pick, None)) }
+    fn dynamic(def: &'static MenuDef, kind: Dynamic, o: &GameOptions, slot: usize, style_pick: usize) -> Self {
+        Self { kind: Some(kind), ..Self::with_lines(def, dynamic_lines(kind, o, slot, style_pick, None)) }
     }
     /// A menu of run-time lines in the style of `def`.
     fn with_lines(def: &'static MenuDef, lines: Vec<(String, Item)>) -> Self {
@@ -974,6 +982,11 @@ pub struct Frontend {
     /// The device that last pressed Start or A: the title's player 1, the
     /// pause menu's player.
     last_device: Device,
+    /// The player the open menus are for (the Controls menu sets theirs).
+    menu_slot: usize,
+    /// Players who asked to join away from the tower, by the slot they'll
+    /// take: they join as the party comes back to it.
+    waiting: [Option<Devices>; MAX_PLAYERS],
     frame: u64,
     script: Vec<(String, u64)>,
     /// By slot: seconds each hero has lain dead.
@@ -1004,6 +1017,8 @@ impl Frontend {
             input: Pressed::default(),
             pressed_by: Vec::new(),
             last_device: Device::Keyboard,
+            menu_slot: 0,
+            waiting: [None; MAX_PLAYERS],
             frame: 0,
             script: menu_script(),
             dead_for: [0.0; MAX_PLAYERS],
@@ -1044,6 +1059,11 @@ impl Frontend {
     /// dead outside the tower, waiting for the level to end.
     pub fn hero_out(&self, slot: usize) -> bool {
         self.out.get(slot).copied().unwrap_or(false)
+    }
+
+    /// Whether a new player waits for the tower to join in this slot.
+    pub fn waiting(&self, slot: usize) -> bool {
+        self.waiting.get(slot).is_some_and(Option::is_some)
     }
 
     /// B (back) was pressed this frame.
@@ -1164,7 +1184,7 @@ pub(crate) fn run(
     real: Res<Time<Real>>,
     mut virt: ResMut<Time<Virtual>>,
     game: Res<LoadedGame>,
-    (party, mut changes): (Res<Party>, MessageWriter<PartyChange>),
+    (party, mut changes, pads): (Res<Party>, MessageWriter<PartyChange>, Query<Entity, With<Gamepad>>),
     mut to_level: MessageWriter<ChangeLevelTo>,
     mut options: ResMut<GameOptions>,
     mut saves: ResMut<Saves>,
@@ -1193,7 +1213,8 @@ pub(crate) fn run(
         v.set(&mut options, now + step);
     }
     // What the settings act on isn't the menus' to act on again.
-    if settings(&mut fe, &p, &mut options) {
+    let players = player_lines(&party, &pads);
+    if settings(&mut fe, &p, &mut options, &players) {
         p.accept = false;
     }
 
@@ -1239,8 +1260,16 @@ pub(crate) fn run(
         Screen::Playing if boxes.is_open() => {}
         Screen::Playing => {
             if fe.menus.is_empty() {
-                if p.start {
-                    fe.menus.push(Menu::new(if in_tower { &TOWER_MENU } else { &GAME_MENU }));
+                // Start: a player's own device pauses their game; one nobody
+                // holds asks to join.
+                if let Some((device, _)) = fe.pressed_by.iter().find(|(_, p)| p.start).copied() {
+                    match party.members().find(|(_, m)| device.among(&m.devices)) {
+                        Some((slot, _)) => {
+                            fe.menu_slot = slot;
+                            fe.menus.push(Menu::new(if in_tower { &TOWER_MENU } else { &GAME_MENU }));
+                        }
+                        None => join(&mut fe, device, in_tower, has_saves, &party, &mut changes),
+                    }
                 }
             } else if let Some(item) = fe.menus.last_mut().and_then(|m| m.update(&p)) {
                 match item {
@@ -1306,7 +1335,9 @@ fn open_submenu(menus: &mut Vec<Menu>, item: Item) {
 /// for a binding, left / right on the style and the pages' switches, and
 /// the choices that change options (which then remake the menus' lines).
 /// Whether it took this frame's accept.
-fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions) -> bool {
+fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions, players: &[(String, bool)]) -> bool {
+    // The player whose controls the menus set (the game's per-pad ones).
+    let slot = fe.menu_slot;
     let mut changed = false;
     let mut took = false;
     if let (Some((_, action)), Some(got)) = (fe.capture, fe.captured.take()) {
@@ -1328,7 +1359,7 @@ fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions) -> bool {
         }
         // Left / right flip a page's switch too.
         Some((Some(Dynamic::Page(_)), Item::Toggle(s))) if p.left || p.right => {
-            s.set(options, !s.get(options));
+            s.set(options, slot, !s.get(options, slot));
             changed = true;
         }
         _ => {}
@@ -1338,14 +1369,28 @@ fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions) -> bool {
         && m.enabled(m.selected)
     {
         match m.item(m.selected) {
+            // Each player with their devices; one in the game opens their
+            // own Controls.
+            Item::Players => {
+                let lines = players.iter().enumerate().map(|(i, (label, _))| (label.clone(), Item::PlayerControls(i))).collect();
+                let mut menu = Menu::with_lines(&PLAYERS_PAGE, lines);
+                menu.disabled = players.iter().enumerate().filter(|(_, (_, in_game))| !in_game).map(|(i, _)| Item::PlayerControls(i)).collect();
+                fe.menus.push(menu);
+                took = true;
+            }
+            Item::PlayerControls(i) => {
+                fe.menu_slot = i;
+                fe.menus.push(Menu::new(&CONTROLS_MENU));
+                took = true;
+            }
             Item::Style => {
-                fe.style_pick = options.scheme.min(controls::MENU_SCHEMES - 1);
-                let menu = Menu::dynamic(&STYLE_MENU, Dynamic::Style, options, fe.style_pick);
+                fe.style_pick = options.player(slot).scheme.min(controls::MENU_SCHEMES - 1);
+                let menu = Menu::dynamic(&STYLE_MENU, Dynamic::Style, options, slot, fe.style_pick);
                 fe.menus.push(menu);
                 took = true;
             }
             Item::StyleLine => {
-                options.scheme = fe.style_pick;
+                options.players[slot.min(MAX_PLAYERS - 1)].scheme = fe.style_pick;
                 fe.menus.pop();
                 changed = true;
                 took = true;
@@ -1357,14 +1402,14 @@ fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions) -> bool {
                     Item::AutoAttack => (&AUTO_ATTACK_MENU, Setting::AutoAttack),
                     _ => (&COMPASS_MENU, Setting::Compass),
                 };
-                let current = setting.get(options);
-                let mut menu = Menu::dynamic(def, Dynamic::Choice(setting), options, fe.style_pick);
+                let current = setting.get(options, slot);
+                let mut menu = Menu::dynamic(def, Dynamic::Choice(setting), options, slot, fe.style_pick);
                 menu.selected = setting.choices().1.iter().position(|&(_, v)| v == current).unwrap_or(0);
                 fe.menus.push(menu);
                 took = true;
             }
             Item::Choose(setting, v) => {
-                setting.set(options, v);
+                setting.set(options, slot, v);
                 fe.menus.pop();
                 changed = true;
                 took = true;
@@ -1376,12 +1421,12 @@ fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions) -> bool {
                     Page::Video => &VIDEO_PAGE,
                     Page::Debug => &DEBUG_PAGE,
                 };
-                let menu = Menu::dynamic(def, Dynamic::Page(page), options, fe.style_pick);
+                let menu = Menu::dynamic(def, Dynamic::Page(page), options, slot, fe.style_pick);
                 fe.menus.push(menu);
                 took = true;
             }
             Item::Toggle(s) => {
-                s.set(options, !s.get(options));
+                s.set(options, slot, !s.get(options, slot));
                 changed = true;
                 took = true;
             }
@@ -1408,7 +1453,7 @@ fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions) -> bool {
         let (pick, capture) = (fe.style_pick, fe.capture.map(|(_, a)| a));
         for m in &mut fe.menus {
             if let Some(kind) = m.kind {
-                m.lines = Some(dynamic_lines(kind, options, pick, capture));
+                m.lines = Some(dynamic_lines(kind, options, slot, pick, capture));
             }
         }
     }
@@ -1440,9 +1485,19 @@ fn start_select(fe: &mut Frontend, how: SelectFor, has_saves: bool, party: &Part
         }
         SelectFor::Manage => {
             let asker = fe.last_device;
+            let joining = fe.waiting.iter().any(Option::is_some);
             for (slot, m) in party.members() {
-                let ready = !asker.among(&m.devices) && !(party.len() == 1);
+                // Whoever asked picks; with only new players joining, the
+                // players already in wait ready.
+                let ready = joining || (!asker.among(&m.devices) && party.len() > 1);
                 fe.columns[slot] = Some(Column::member(m.devices, &m.choice, &m.name, has_saves, ready));
+            }
+            for slot in 0..MAX_PLAYERS {
+                if let Some(devices) = fe.waiting[slot].take()
+                    && fe.columns[slot].is_none()
+                {
+                    fe.columns[slot] = Some(Column::new(devices, has_saves));
+                }
             }
         }
     }
@@ -1450,6 +1505,54 @@ fn start_select(fe: &mut Frontend, how: SelectFor, has_saves: bool, party: &Part
         if let Some(c) = c {
             c.select.menu.column = COLUMN[slot];
         }
+    }
+}
+
+/// The Players page's lines: each player and what they play with, and
+/// whether they're in the game (only those open their Controls); a pad
+/// nobody holds offers the next free place.
+fn player_lines(party: &Party, pads: &Query<Entity, With<Gamepad>>) -> Vec<(String, bool)> {
+    let pad_no = |e: Entity| pads.iter().position(|p| p == e).map_or(0, |i| i + 1);
+    let free = crate::party::free_pads(party, pads.iter());
+    let mut offered = false;
+    (0..MAX_PLAYERS)
+        .map(|slot| match party.get(slot) {
+            Some(m) => {
+                let mut with = Vec::new();
+                if m.devices.keyboard {
+                    with.push("Keyboard".to_string());
+                }
+                if let Some(e) = m.devices.pad {
+                    with.push(format!("Pad {}", pad_no(e)));
+                }
+                if m.devices.remote {
+                    with.push("Online".to_string());
+                }
+                (format!("Player {}{VALUE}{} ({})", slot + 1, m.name.replace('_', " "), with.join(" + ")), true)
+            }
+            None if free > 0 && !offered => {
+                offered = true;
+                (format!("Player {}{VALUE}Press Start", slot + 1), false)
+            }
+            None => (format!("Player {}{VALUE}Not in", slot + 1), false),
+        })
+        .collect()
+}
+
+/// A device nobody plays with asked to join during play: in the tower the
+/// select screen opens with a column for it (the players in wait ready);
+/// elsewhere it takes the first free panel, which says "IN TOWER", and
+/// joins as the party comes back to the tower — as the game's players do.
+fn join(fe: &mut Frontend, device: Device, in_tower: bool, has_saves: bool, party: &Party, changes: &mut MessageWriter<PartyChange>) {
+    if fe.waiting.iter().flatten().any(|d| device.among(d)) {
+        return;
+    }
+    let Some(slot) = (0..MAX_PLAYERS).find(|&s| party.get(s).is_none() && fe.waiting[s].is_none()) else { return };
+    info!("player {} joins ({device:?}){}", slot + 1, if in_tower { "" } else { ": waiting for the tower" });
+    fe.waiting[slot] = Some(device.only());
+    if in_tower {
+        start_select(fe, SelectFor::Manage, has_saves, party, changes);
+        fe.go(Screen::Select);
     }
 }
 
@@ -1779,8 +1882,16 @@ fn level_started(
     mut fe: ResMut<Frontend>,
     mut snapshot: ResMut<Snapshot>,
     mut party: ResMut<Party>,
+    saves: Res<Saves>,
+    mut changes: MessageWriter<PartyChange>,
 ) {
     let name = population.level.to_ascii_lowercase();
+    // Back in the tower, players who asked to join pick their heroes.
+    if name == TOWER.to_ascii_lowercase() && fe.screen == Screen::Playing && fe.waiting.iter().any(Option::is_some) {
+        let has_saves = !saves.file.characters.is_empty();
+        start_select(&mut fe, SelectFor::Manage, has_saves, &party, &mut changes);
+        fe.go(Screen::Select);
+    }
     let realm = name.strip_prefix("level").and_then(|r| r.chars().next());
     let saves = !matches!(realm, Some('l' | 's')) && name != "levele2" && name != "levelf2";
     fe.leaving = false;

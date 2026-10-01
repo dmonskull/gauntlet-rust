@@ -9,6 +9,7 @@
 //! drives at most one slot: the keyboard and mouse player 1, each pad
 //! whoever it joined as.
 
+use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::prelude::*;
 
 use crate::player::PlayerChoice;
@@ -133,6 +134,40 @@ impl Party {
     pub fn all_out(&self) -> bool {
         self.states().all(|(_, s)| !s.alive)
     }
+}
+
+pub struct PartyPlugin;
+
+impl Plugin for PartyPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, attach_pads);
+    }
+}
+
+/// Alone, a player plays with every device: a pad nobody holds becomes
+/// theirs the first time it's played with (any button but Start, or a
+/// stick), so its Start then pauses their game. A pad never played with
+/// asks to join with Start (`frontend.rs`).
+fn attach_pads(mut party: ResMut<Party>, pads: Query<(Entity, &Gamepad)>) {
+    let locals: Vec<usize> = party.members().filter(|(_, m)| !m.devices.remote).map(|(slot, _)| slot).collect();
+    let [slot] = locals[..] else { return };
+    for (pad, gamepad) in &pads {
+        if party.slot_of_pad(pad).is_some() {
+            continue;
+        }
+        let played = gamepad.get_pressed().any(|&b| b != GamepadButton::Start)
+            || gamepad.left_stick().length() > 0.5
+            || gamepad.right_stick().length() > 0.5;
+        if played && let Some(m) = party.get_mut(slot) {
+            m.devices.pad = Some(pad);
+            info!("player {} takes up pad {pad:?}", slot + 1);
+        }
+    }
+}
+
+/// Pads connected that nobody plays with.
+pub fn free_pads(party: &Party, pads: impl Iterator<Item = Entity>) -> usize {
+    pads.filter(|&e| party.slot_of_pad(e).is_none()).count()
 }
 
 /// One player's controls for a tick: the stick in the camera's frame (+Y

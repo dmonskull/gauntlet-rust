@@ -21,6 +21,7 @@ mod deaths;
 mod effects;
 mod exits;
 mod fade;
+mod fake_pad;
 mod familiars;
 mod flash;
 mod font;
@@ -212,6 +213,7 @@ fn main() {
                 power_menu::PowerMenuPlugin,
                 rumble::RumblePlugin,
             ))
+            .add_plugins((party::PartyPlugin, fake_pad::FakePadPlugin))
             .add_plugins((
                 font::Screen2dPlugin,
                 frontend::FrontendPlugin { skip: skip_menus },
