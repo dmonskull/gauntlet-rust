@@ -42,7 +42,7 @@ pub struct GameHudPlugin;
 
 impl Plugin for GameHudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (draw, draw_hourglass));
+        app.add_systems(Update, (draw, draw_hourglass).after(crate::shop::ShopDraw));
     }
 }
 
@@ -294,10 +294,11 @@ fn draw(
     }
 
     let (Some(fonts), Some(tex)) = (fonts, tex.as_deref_mut()) else { return };
-    // Not on the front end's screens, and not under a menu (text draws
-    // over every image, so the numbers would show through its panel; the
-    // key row's count waits meanwhile, as the game's does under a menu).
-    if frontend.as_deref().is_some_and(|f| !f.playing() || f.menu_open()) {
+    // Not on the front end's screens but the shop's (the game draws the
+    // panels under it), and not under a menu (text draws over every image,
+    // so the numbers would show through its panel; the key row's count
+    // waits meanwhile, as the game's does under a menu).
+    if frontend.as_deref().is_some_and(|f| !(f.playing() || f.in_shop()) || f.menu_open()) {
         return;
     }
     // With a pad connected that nobody plays with, the next free panel says

@@ -1117,6 +1117,11 @@ impl Frontend {
         self.full_screen() || self.screen == Screen::Select
     }
 
+    /// Whether the shop screen is up (`shop.rs`).
+    pub fn in_shop(&self) -> bool {
+        self.screen == Screen::Shop
+    }
+
     /// Whether a level is being played (menus may be open over it).
     pub fn playing(&self) -> bool {
         self.screen == Screen::Playing
