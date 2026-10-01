@@ -76,6 +76,10 @@ pub(crate) fn seed_tests(mut party: ResMut<Party>, mut seeded: Local<bool>) {
             state.realms_beaten = beaten;
             info!("GDL_BEATEN: {beaten:#x}");
         }
+        if let Some(gold) = bits("GDL_GOLD") {
+            state.gold = gold;
+            info!("GDL_GOLD: {gold}");
+        }
         if let Some(runes) = bits("GDL_RUNES") {
             state.runestones = (0..32).filter(|n| runes & (1 << n) != 0).collect();
             info!("GDL_RUNES: {:?}", state.runestones);
