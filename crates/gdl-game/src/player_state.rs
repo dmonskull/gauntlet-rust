@@ -201,8 +201,16 @@ pub struct PlayerState {
     /// (`quest.rs`).
     pub quest: Quest,
     /// The last quest piece picked up, for the HUD's count: a crystal
-    /// counter, or `0x100` + a gargoyle piece; and when (game seconds).
+    /// counter, `0x100` + a gargoyle piece, or `0x200` + the secret
+    /// character a coin is for; and when (game seconds).
     pub popup: Option<(u16, f32)>,
+    /// The secret realm's coins counted on this level (`+0x930`; every
+    /// level starts it at 0, `exits/secret_realm.rs`).
+    pub coins: u32,
+    /// The secret characters unlocked, a bit per class from the ninth
+    /// (`+0xA8C`, kept with the character): all a secret level's coins
+    /// unlock its character.
+    pub secret_characters: u16,
     /// Realms whose boss this hero has beaten, a bit per realm id (the
     /// record's `+0x1EC8`, set by the boss's death for every player).
     pub realms_beaten: u32,
@@ -354,6 +362,8 @@ impl PlayerState {
             runestones: Vec::new(),
             quest: Quest::default(),
             popup: None,
+            coins: 0,
+            secret_characters: 0,
             realms_beaten: 0,
             alive: true,
             class: class.to_ascii_uppercase(),

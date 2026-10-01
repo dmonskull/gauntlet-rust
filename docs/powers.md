@@ -540,7 +540,8 @@ playing hero has the bit, and `FUN_8007c4f0` sets the hero's `+0x960`.
   play isn't under a menu, and loops `S_HOURGLASS` from the tick it comes
   on to the tick it goes off, following the hero's top point (`+0x54`,
   4.4 above its feet) at 0x7F (`audio::LoopSoundAt`).
-  `f` is clamped to 0–1. The realm-12 level timer isn't drawn.
+  `f` is clamped to 0–1. Without a time stop the same hourglass shows a
+  timed level's timer ([items.md](items.md), "The secret realm").
 
 Not traced: `FUN_800a00ec` (the level items' ambient sound loops,
 [audio-format.md](audio-format.md)) plays them at volume 0x10 while it's
