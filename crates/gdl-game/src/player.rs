@@ -761,6 +761,7 @@ impl Plugin for PlayerPlugin {
             .init_resource::<HeroPad>()
             .init_resource::<HeroModels>()
             .init_resource::<Inputs>()
+            .init_resource::<crate::party::InputGate>()
             // Loaded again whenever a player's choice changes (the front
             // end's character select); the next level spawn uses it.
             .add_systems(Update, load_heroes.run_if(resource_changed::<Party>).before(PlayerSpawn))
@@ -1113,7 +1114,9 @@ fn gather_inputs(
     party: Res<Party>,
     mut controls: ResMut<Controls>,
     mut inputs: ResMut<Inputs>,
+    (mut gate, mut masks): (ResMut<crate::party::InputGate>, Local<[u32; MAX_PLAYERS]>),
 ) {
+    let swallow = std::mem::take(&mut gate.swallow);
     controls.ticks += 1;
     let locals: Vec<usize> = party.members().filter(|(_, m)| !m.devices.remote).map(|(i, _)| i).collect();
     let solo = locals.len() == 1;
@@ -1129,6 +1132,12 @@ fn gather_inputs(
         if locals.first() == Some(&slot) {
             controls.apply_script(&mut input, controls.ticks);
         }
+        // What closed a menu doesn't reach the hero (B would throw magic).
+        if swallow {
+            masks[slot] = input.buttons();
+        }
+        let extras = input.held & !input.buttons();
+        input.held = crate::party::gate_buttons(input.buttons(), &mut masks[slot]) | extras;
         inputs.slots[slot] = input;
     }
 }
@@ -1189,8 +1198,10 @@ pub(crate) fn sample_online(
     lock: Res<crate::online::Lockstep>,
     fe: Option<Res<crate::frontend::Frontend>>,
     mut local: ResMut<crate::online::LocalControls>,
+    (mut gate, mut mask): (ResMut<crate::party::InputGate>, Local<u32>),
 ) {
-    let Some(me) = online.and_then(|o| o.me) else { return };
+    let Some(online) = online else { return };
+    let Some(me) = online.me else { return };
     let Some(member) = party.get(me) else {
         local.0 = SlotInput::default();
         return;
@@ -1199,7 +1210,17 @@ pub(crate) fn sample_online(
     if fe.is_some_and(|f| f.menu_open()) {
         input = SlotInput::default().with_settings(options.player(0));
     }
+    // What closed a menu doesn't reach the hero (B would throw magic).
+    if std::mem::take(&mut gate.swallow) {
+        *mask = input.buttons();
+    }
+    let extras = input.held & !input.buttons();
+    input.held = crate::party::gate_buttons(input.buttons(), &mut mask) | extras;
     controls.apply_script(&mut input, u64::from(lock.tick) + 1);
+    // The host's camera choice rides with its controls.
+    if online.host && options.online_cameras {
+        input.held |= SlotInput::OWN_CAMERAS;
+    }
     // A menu's command rides along for a few frames.
     if let Some((bits, frames)) = local.1 {
         input.held |= bits;

@@ -75,6 +75,9 @@ pub struct GameOptions {
     pub debug_overlay: bool,
     pub frame_rate: bool,
     pub collision: bool,
+    /// Online (the host's choice): each player's camera follows their own
+    /// hero; off, everyone shares the game's co-op camera over the level.
+    pub online_cameras: bool,
 }
 
 impl Default for GameOptions {
@@ -93,6 +96,7 @@ impl Default for GameOptions {
             debug_overlay: false,
             frame_rate: false,
             collision: false,
+            online_cameras: true,
         }
     }
 }
@@ -163,6 +167,7 @@ impl GameOptions {
             "debug_overlay" => self.debug_overlay = flag(v).unwrap_or(self.debug_overlay),
             "frame_rate" => self.frame_rate = flag(v).unwrap_or(self.frame_rate),
             "collision" => self.collision = flag(v).unwrap_or(self.collision),
+            "online_cameras" => self.online_cameras = flag(v).unwrap_or(self.online_cameras),
             _ => {
                 if let Some((n, field)) = k.strip_prefix('p').and_then(|r| r.split_once('.'))
                     && let Some(o) = n.parse::<usize>().ok().and_then(|n| self.players.get_mut(n.checked_sub(1)?))
@@ -194,7 +199,7 @@ impl GameOptions {
     pub fn save(&self) {
         let flag = |b: bool| if b { "1" } else { "0" };
         let mut body = format!(
-            "master_volume={}\nmusic_volume={}\neffects_volume={}\ncompass={}\nfullscreen={}\nvsync={}\ndev_keys={}\ndebug_overlay={}\nframe_rate={}\ncollision={}\n",
+            "master_volume={}\nmusic_volume={}\neffects_volume={}\ncompass={}\nfullscreen={}\nvsync={}\ndev_keys={}\ndebug_overlay={}\nframe_rate={}\ncollision={}\nonline_cameras={}\n",
             self.master_volume,
             self.music_volume,
             self.effects_volume,
@@ -205,6 +210,7 @@ impl GameOptions {
             flag(self.debug_overlay),
             flag(self.frame_rate),
             flag(self.collision),
+            flag(self.online_cameras),
         );
         for (i, o) in self.players.iter().enumerate() {
             let n = i + 1;

@@ -186,6 +186,12 @@ impl PlayCamera {
         self.cut.is_some_and(|c| c.delay <= 0.0) || self.intro.is_some() || self.boss_active
     }
 
+    /// Whether the heroes have cameras of their own (online, the host's
+    /// choice).
+    pub fn per_hero(&self) -> bool {
+        self.own.iter().any(Option::is_some)
+    }
+
     fn own_of(&self, slot: usize) -> Option<&OwnCamera> {
         self.own.get(slot).and_then(Option::as_ref)
     }
@@ -412,10 +418,8 @@ fn start(
         .map(|l| CameraPoint { position: l.position, yaw: l.rotation[1], pitch: l.rotation[0], param: l.param });
     let intro = if boss.is_some() { None } else { intro_shot(&population.population, population.entry, feet) };
     let previous = intro.map_or((rig.eye(), rig.target), |i| (i.eye, i.target));
-    // Online each hero's own camera starts as the game's does.
-    let own = std::array::from_fn(|slot| {
-        (lock.on && party.get(slot).is_some()).then(|| OwnCamera { rig: rig.clone(), previous: (rig.eye(), rig.target) })
-    });
+    // Online each hero's own camera comes with the host's choice (`tick`).
+    let own = std::array::from_fn(|_| None);
     commands.insert_resource(PlayCamera {
         rig,
         previous,
@@ -470,6 +474,20 @@ pub(crate) fn tick(
     (lock, inputs): (Res<crate::online::Lockstep>, Res<crate::party::Inputs>),
 ) {
     let Some(mut camera) = camera else { return };
+    // Online the host's choice (riding with its controls, slot 0's): each
+    // player's own camera, made from the game's where it is, or the game's
+    // one co-op camera for everyone.
+    if lock.on {
+        let own = inputs.slots[0].held & crate::party::SlotInput::OWN_CAMERAS != 0;
+        if own && !camera.per_hero() {
+            let rig = camera.rig.clone();
+            for slot in 0..MAX_PLAYERS {
+                camera.own[slot] = party.get(slot).map(|_| OwnCamera { rig: rig.clone(), previous: (rig.eye(), rig.target) });
+            }
+        } else if !own && camera.per_hero() {
+            camera.own = std::array::from_fn(|_| None);
+        }
+    }
     // The heroes it follows: those in play, else (all dead) every one.
     let heroes: Vec<Hero> = {
         let of = |p: &Player| {

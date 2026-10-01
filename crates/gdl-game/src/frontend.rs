@@ -302,6 +302,7 @@ enum Item {
     Host,
     Join,
     /// Online play's menu.
+    OnlineCamera,
     LeaveGame,
     ConfirmLeave,
     /// Pause menus.
@@ -367,6 +368,8 @@ enum Setting {
     DebugOverlay,
     FrameRate,
     Collision,
+    /// Online, the host's: each player's own camera or the shared one.
+    OnlineCameras,
 }
 
 impl Setting {
@@ -383,6 +386,7 @@ impl Setting {
             Self::DebugOverlay => o.debug_overlay,
             Self::FrameRate => o.frame_rate,
             Self::Collision => o.collision,
+            Self::OnlineCameras => o.online_cameras,
         }
     }
     fn set(self, o: &mut GameOptions, slot: usize, v: bool) {
@@ -398,6 +402,7 @@ impl Setting {
             Self::DebugOverlay => o.debug_overlay = v,
             Self::FrameRate => o.frame_rate = v,
             Self::Collision => o.collision = v,
+            Self::OnlineCameras => o.online_cameras = v,
         }
     }
     /// The game's choice menus: their titles and their two lines (the
@@ -408,6 +413,7 @@ impl Setting {
             Self::AutoAim => ("Auto Aim", [("On", true), ("Off", false)]),
             Self::AutoAttack => ("Auto Attack", [("On", true), ("Off", false)]),
             Self::Compass => ("Compass", [("Hide", false), ("Show", true)]),
+            Self::OnlineCameras => ("Online Camera", [("Each Player", true), ("Overhead", false)]),
             _ => ("", [("On", true), ("Off", false)]),
         }
     }
@@ -655,12 +661,21 @@ static PLAY_MENU: MenuDef = title_menu(&[e("Local Game", Item::Local), e("Online
 static ONLINE_MENU: MenuDef = title_menu(&[e("Host Game", Item::Host), e("Join Game", Item::Join)]);
 /// Online play's Start menu: play goes on underneath. In the tower the Shop
 /// and Inventory open for everyone.
-static ONLINE_GAME_MENU: MenuDef = game_menu("Online Game", true, &[e("Settings", Item::Settings), e("Leave Game", Item::LeaveGame)]);
+static ONLINE_GAME_MENU: MenuDef =
+    game_menu("Online Game", true, &[e("Settings", Item::Settings), e("Camera", Item::OnlineCamera), e("Leave Game", Item::LeaveGame)]);
 static ONLINE_TOWER_MENU: MenuDef = game_menu(
     "Online Game",
     true,
-    &[e("Settings", Item::Settings), e("Shop", Item::Shop), e("Inventory", Item::Inventory), e("Leave Game", Item::LeaveGame)],
+    &[
+        e("Settings", Item::Settings),
+        e("Shop", Item::Shop),
+        e("Inventory", Item::Inventory),
+        e("Camera", Item::OnlineCamera),
+        e("Leave Game", Item::LeaveGame),
+    ],
 );
+/// The host's camera choice.
+static ONLINE_CAMERA_MENU: MenuDef = game_menu("Online Camera", true, &[]);
 static LEAVE_GAME: MenuDef = confirm("Leave Game?", &[e("No", Item::No), e("Yes", Item::ConfirmLeave)]);
 static OPTIONS_MENU: MenuDef = game_menu(
     "Options",
@@ -1070,6 +1085,8 @@ pub struct Frontend {
     /// The level whose after-level screen has been shown (the tower may
     /// load again before another level is played).
     after_level_for: Option<String>,
+    /// Last frame something covered play (a menu, a screen, the box).
+    over_play: bool,
 }
 
 impl Frontend {
@@ -1100,6 +1117,7 @@ impl Frontend {
             shop_kind: None,
             shop_final: false,
             after_level_for: None,
+            over_play: false,
         }
     }
 
@@ -1281,7 +1299,11 @@ pub(crate) fn run(
         MessageWriter<NewGame>,
     ),
     (keys, mut camera): (Res<ButtonInput<KeyCode>>, Option<ResMut<PlayCamera>>),
-    (mut shop, mut local): ((ResMut<ShopScreen>, Option<Res<ShopData>>), ResMut<crate::online::LocalControls>),
+    (mut shop, mut local, mut gate): (
+        (ResMut<ShopScreen>, Option<Res<ShopData>>),
+        ResMut<crate::online::LocalControls>,
+        ResMut<crate::party::InputGate>,
+    ),
 ) {
     let has_saves = !saves.file.characters.is_empty();
     let fields = real.delta_secs() * 60.0;
@@ -1460,6 +1482,18 @@ pub(crate) fn run(
                     }
                     Item::QuitGame => fe.menus.push(Menu::new(&QUIT_GAME)),
                     Item::LeaveGame => fe.menus.push(Menu::new(&LEAVE_GAME)),
+                    // Only the host chooses the online camera.
+                    Item::OnlineCamera => match online.as_deref_mut() {
+                        Some(o) if o.host => {
+                            let setting = Setting::OnlineCameras;
+                            let current = setting.get(&options, 0);
+                            let mut menu = Menu::dynamic(&ONLINE_CAMERA_MENU, Dynamic::Choice(setting), &options, 0, fe.style_pick);
+                            menu.selected = setting.choices().1.iter().position(|&(_, v)| v == current).unwrap_or(0);
+                            fe.menus.push(menu);
+                        }
+                        Some(o) => o.notices.push(("Only the host can change the camera".into(), 4.0)),
+                        None => {}
+                    },
                     Item::ConfirmLeave => {
                         crate::online::leave(&mut commands, &mut lock);
                         fe.menus.clear();
@@ -1541,6 +1575,13 @@ pub(crate) fn run(
         }
     }
 
+    // Something over play just closed: the buttons that closed it stay
+    // away from the heroes until let go (`party::InputGate`).
+    let over_play = fe.screen != Screen::Playing || !fe.menus.is_empty() || boxes.is_open();
+    if fe.over_play && !over_play {
+        gate.swallow = true;
+    }
+    fe.over_play = over_play;
     if lock.on {
         // A shop screen opened on a tick covers play here too.
         if fe.screen == Screen::Playing && shop.0.is_open() {
@@ -2674,7 +2715,7 @@ fn draw(
                 if o.desync.is_some() {
                     small(&mut d, 30.0, "Out of sync with the other players", Color::srgb(1.0, 0.3, 0.3));
                 }
-                if let (Some(me), Some(w)) = (o.me, camera.as_deref().and_then(|c| c.watching))
+                if let (Some(me), Some(w)) = (o.me, camera.as_deref().filter(|c| c.per_hero()).and_then(|c| c.watching))
                     && w != me
                 {
                     let name = party.get(w).map_or_else(|| format!("Player {}", w + 1), |m| m.name.replace('_', " "));
