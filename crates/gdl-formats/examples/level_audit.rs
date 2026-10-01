@@ -264,6 +264,8 @@ fn main() {
             let kind = first.flags as u8;
             let what = if kind & 0x10 != 0 {
                 if kind & 0x20 == 0 { "a bridge, hidden" } else { "a bridge, shown" }
+            } else if in_mode(node) && animation_of(node).is_some_and(|a| a.track.is_some()) {
+                "at its animation's first frame"
             } else if first.off != 0 {
                 "held at its off height"
             } else {
