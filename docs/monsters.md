@@ -112,6 +112,24 @@ Generators pass their `+0xDE` byte as the tier, which is their live count,
 0, at that point — so a generator never makes special variants; placed
 monsters pass their level.
 
+**Special generators** (realms 5 and 6, E and F; `FUN_800646e4` before the
+swap, `r13-0x7220` the realm id): every generator there — their levels
+name the type `SPECIAL` — has its type renamed `CAT` (E) or `HEL` (F), its
+monster type set to −2 or −3 and its strength `+0xE2` to 2 or 3 (after
+its hit points, max and rate were taken from the placement's), and draws
+`GEN_SPECIAL<strength>` from the realm's items (`GEN_SPECIAL0`–`2` in
+`ITEMS/levelE`, `0`–`3` in `levelF`). The monster maker (`FUN_8004f41c`)
+turns −2 into the next of a round shared by them all (`r13-0x73d4`, & 3):
+types `0x8011BA64` [ice, imp, pla, zom] with AIs `0x8011BA74` [7, 7, 7, 7]
+at tier 2; −3 into `0x8011BA84` [dem, war, gho, sky], AIs `0x8011BA94` [30,
+30, 7, 7] at tier 3; a type the level didn't load is refused (−5). Every
+other generator draws `GEN_<code><strength>` with its monster's code after
+the swap above (an ice realm's `gru` generators draw `GEN_ICE<n>`).
+
+Here (`generators.rs`, `population.rs` `GeneratorLook`): both. Before,
+the population drew the placeholder's generator (`GEN_GRU…` in the ice
+realm) and the special realms' generators weren't made at all.
+
 ## Hit and death sounds
 
 `FUN_8009d940(slot, name)` runs for each realm `ENMY` record (not subtypes

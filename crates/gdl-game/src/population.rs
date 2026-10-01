@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use gdl_formats::ModelFile;
+use gdl_formats::enemy::LevelEnemies;
 use gdl_formats::anim::{AnimFile, Atree};
 use gdl_formats::texmod::{TexMod, TexModKind};
 use gdl_formats::population::{
@@ -698,15 +699,65 @@ fn monster_code(ty: &ItemType) -> Option<&'static str> {
     ENEMY_CODES.iter().find(|e| e.0 == id).map(|e| e.2)
 }
 
+/// How a generator looks: `GEN_<code><strength>` with its monster's code
+/// — the realm's own swapped in for a placeholder name, as the game builds
+/// it (`docs/monsters.md`) — or, in the realms whose generators are all
+/// special (E and F), `GEN_SPECIAL<strength>` from the realm's items, the
+/// strength being the round's tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GeneratorLook {
+    Monster(&'static str, i32),
+    Special(i32),
+}
+
+impl GeneratorLook {
+    fn of(ty: &ItemType, placement: &gdl_formats::population::Placement, realm: u32, enemies: Option<&LevelEnemies>) -> Option<Self> {
+        if ty.class != ItemClass::Generator {
+            return None;
+        }
+        let PlacementParams::Generator { strength, .. } = placement.params(ty.class) else { return None };
+        // Every generator of the special realms, whatever its type's name.
+        if let Some((tier, _)) = crate::generators::special_generators(realm) {
+            return Some(GeneratorLook::Special(tier));
+        }
+        let named = ty.enemy()?;
+        let id = enemies.map_or(named, |e| e.substitute(named, 0));
+        let code = gdl_formats::population::ENEMY_CODES.iter().find(|e| e.0 == id).map(|e| e.2)?;
+        Some(GeneratorLook::Monster(code, i32::from(strength.max(1))))
+    }
+
+    /// Its model's name at strength `n`.
+    fn name(self, n: i32) -> String {
+        match self {
+            GeneratorLook::Monster(code, _) => format!("GEN_{code}{n}"),
+            GeneratorLook::Special(_) => format!("GEN_SPECIAL{n}"),
+        }
+    }
+
+    fn strength(self) -> i32 {
+        match self {
+            GeneratorLook::Monster(_, n) | GeneratorLook::Special(n) => n,
+        }
+    }
+
+    /// The monster folder its models are in (the realm's items: none).
+    fn folder(self) -> Option<&'static str> {
+        match self {
+            GeneratorLook::Monster(code, _) => Some(code),
+            GeneratorLook::Special(_) => None,
+        }
+    }
+}
+
 /// Model name the game gives a placement (generators draw
-/// `GEN_<code><strength>`).
-fn model_name(ty: &ItemType, placement: &gdl_formats::population::Placement) -> Option<String> {
+/// `GEN_<code><strength>`, [`GeneratorLook`]).
+fn model_name(ty: &ItemType, placement: &gdl_formats::population::Placement, look: Option<GeneratorLook>) -> Option<String> {
     if placement.flags & 2 != 0 {
         return None; // placed without a model
     }
     if ty.class == ItemClass::Generator {
-        let PlacementParams::Generator { strength, .. } = placement.params(ty.class) else { return None };
-        return Some(format!("GEN_{}{}", monster_code(ty)?, strength.max(1)));
+        let look = look?;
+        return Some(look.name(look.strength()));
     }
     // A safe rock starts at its placement's count as its stage, and shows
     // it: `SAFEROCK3` (`docs/critters.md`, "Safe rocks").
@@ -744,18 +795,15 @@ pub fn spawn(
     level_materials: &mut Assets<LevelMaterial>,
     marker_materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
+    enemies: Option<&LevelEnemies>,
 ) -> Spawned {
     let pop = &level.population;
+    let realm = crate::quest::level_of(&level.name).map_or(0, |(r, _)| r);
+    let look = |p: &gdl_formats::population::Placement| GeneratorLook::of(pop.resolved_type(p), p, realm, enemies);
     let realm_letter = level.name.strip_prefix("level").and_then(|s| s.chars().next()).unwrap_or('A');
     let item_dirs = [format!("ITEMS/level{realm_letter}"), "POWERUPS".to_string(), format!("ITEMS/{}", level.name)];
     let items: Vec<Source> = item_dirs.iter().filter_map(|d| Source::load(install, d)).collect();
-    let mut codes: Vec<&'static str> = pop
-        .placements
-        .iter()
-        .map(|p| pop.resolved_type(p))
-        .filter(|t| t.class == ItemClass::Generator)
-        .filter_map(monster_code)
-        .collect();
+    let mut codes: Vec<&'static str> = pop.placements.iter().filter_map(|p| look(p)?.folder()).collect();
     codes.sort();
     codes.dedup();
     let monsters: Vec<(&'static str, Source)> =
@@ -810,28 +858,27 @@ pub fn spawn(
         marker(category, Transform::from_translation(transform.translation), commands, meshes);
         out.markers += 1;
 
-        let Some(name) = model_name(ty, placement) else { continue };
-        let monster = monster_code(ty).and_then(|c| sources.monsters.get(c).copied());
+        let generator = look(placement);
+        let Some(name) = model_name(ty, placement, generator) else { continue };
+        let monster = match generator {
+            Some(g) => g.folder().and_then(|c| sources.monsters.get(c).copied()),
+            None => monster_code(ty).and_then(|c| sources.monsters.get(c).copied()),
+        };
         let key = format!("{name}/{}", monster.unwrap_or(usize::MAX));
         // Generators draw one model per strength level (`GEN_<code><n>`)
         // and step down as they're damaged: keep the lower levels' meshes.
-        let tier_looks = match placement.params(ty.class) {
-            PlacementParams::Generator { strength, .. } if ty.class == ItemClass::Generator => {
-                monster_code(ty).map(|code| {
-                    (1..=strength.max(1))
-                        .map(|t| {
-                            let n = format!("GEN_{code}{t}");
-                            let k = format!("{n}/{}", monster.unwrap_or(usize::MAX));
-                            let m = built.entry(k).or_insert_with(|| {
-                                build_model(&sources, &mut caches, &n, monster, meshes, level_materials, images)
-                            });
-                            m.parts.iter().flat_map(|(_, p, _)| p.iter().map(|b| (b.mesh.clone(), b.material.clone()))).collect()
-                        })
-                        .collect::<Vec<_>>()
+        let tier_looks = generator.map(|g| {
+            (1..=g.strength())
+                .map(|t| {
+                    let n = g.name(t);
+                    let k = format!("{n}/{}", monster.unwrap_or(usize::MAX));
+                    let m = built
+                        .entry(k)
+                        .or_insert_with(|| build_model(&sources, &mut caches, &n, monster, meshes, level_materials, images));
+                    m.parts.iter().flat_map(|(_, p, _)| p.iter().map(|b| (b.mesh.clone(), b.material.clone()))).collect()
                 })
-            }
-            _ => None,
-        };
+                .collect::<Vec<_>>()
+        });
         let model = built
             .entry(key)
             .or_insert_with(|| build_model(&sources, &mut caches, &name, monster, meshes, level_materials, images));

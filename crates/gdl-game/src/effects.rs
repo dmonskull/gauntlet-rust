@@ -22,7 +22,8 @@ use gdl_formats::anim::AnimFile;
 use gdl_formats::pdata::PlayerStats;
 use gdl_formats::texmod::TexMod;
 
-use crate::audio::PlaySound;
+use crate::audio::{CALL_VOLUME, PlaySoundAt};
+use crate::projectiles::{HERO_TOP, LOUD};
 use crate::breakables::BlastItem;
 use crate::character::{CharacterData, CharacterModel, clip_fps};
 use crate::deaths;
@@ -956,7 +957,7 @@ fn use_potions(
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
     ground: Option<Res<LevelGround>>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
     mut blasts: MessageWriter<BlastAt>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
@@ -983,11 +984,11 @@ fn use_potions(
         );
         match u.mode {
             0 => {
-                sounds.write(PlaySound(POTION_SOUND[c].into()));
+                sounds.write(PlaySoundAt::panned(POTION_SOUND[c], u.feet, CALL_VOLUME));
                 blasts.write(BlastAt { owner: u.hero, at: u.feet, kind: e.kind, damage: e.damage, radius: e.radius });
             }
             1 => {
-                sounds.write(PlaySound(SHIELD_SOUND[c].into()));
+                sounds.write(PlaySoundAt::panned(SHIELD_SOUND[c], u.feet, CALL_VOLUME));
                 let effect = models.effect(SHIELD_FX[c], &mut game, &mut meshes, &mut materials, &mut images);
                 let scale = (e.radius / 12.0).clamp(0.33, 1.0);
                 spawn_blast(
@@ -1052,7 +1053,8 @@ fn set_off_potions(
     magic: Option<Res<HeroMagic>>,
     mut cycle: ResMut<PotionCycle>,
     mut blasts: MessageWriter<BlastAt>,
-    (mut sounds, mut hints): (MessageWriter<PlaySound>, MessageWriter<crate::hints::ShowHint>),
+    (mut sounds, mut hints): (MessageWriter<PlaySoundAt>, MessageWriter<crate::hints::ShowHint>),
+    players: Query<&Player>,
 ) {
     let Some(mut items) = items else {
         strikes.clear();
@@ -1078,7 +1080,9 @@ fn set_off_potions(
             let level = state.as_ref().map_or(1, |s| s.level.max(1));
             let stat = magic.as_ref().map_or(400.0, |m| locomotion::stat_at_level(m.stat[0], m.stat[1], level, 0.0));
             let e = potion_effect(kind, 0, 0, STRUCK_POWER * powered_magic(stat, state.as_deref()), level);
-            sounds.write(PlaySound(POTION_SOUND[colour_index(kind)].into()));
+            // The striker's own magic: its sound at the striker's feet.
+            let feet = players.get(hero).map_or(at, |p| Vec3::from(p.mover.position));
+            sounds.write(PlaySoundAt::panned(POTION_SOUND[colour_index(kind)], feet, CALL_VOLUME));
             blasts.write(BlastAt { owner: hero, at, kind: e.kind, damage: e.damage, radius: e.radius });
             hints.write(crate::hints::ShowHint(crate::hints::Hint::ShootPotion));
         }
@@ -1143,7 +1147,7 @@ fn spawn_explosions(
     mut next: MessageReader<NextStage>,
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
     mut seed: Local<u32>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
@@ -1152,7 +1156,7 @@ fn spawn_explosions(
     for e in requests.read() {
         let monster = e.by == Exploder::Monster;
         if monster {
-            sounds.write(PlaySound(EXPLOSION_SOUND.into()));
+            sounds.write(PlaySoundAt::faded(EXPLOSION_SOUND, e.at, LOUD));
         }
         let (fx, kind, radius, heroes, then, scale, drop) = match (e.poison, e.by) {
             (true, Exploder::Monster) => {
@@ -1262,7 +1266,7 @@ fn spawn_breaths(
     mut requests: MessageReader<BreathAt>,
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut sounds: MessageWriter<PlaySoundAt>,
     bones: Query<&GlobalTransform>,
     players: Query<&Player>,
     (mut meshes, mut materials, mut images): Assets3d,
@@ -1284,7 +1288,7 @@ fn spawn_breaths(
             } else {
                 warn!("the Pojo has no {POJO_MOUTH} node to breathe from");
             }
-            sounds.write(PlaySound(POJO_TURBO_SOUND.into()));
+            sounds.write(PlaySoundAt::panned(POJO_TURBO_SOUND, Vec3::from(p.mover.position), LOUD));
         }
         let effect = models.effect(b.fx, &mut game, &mut meshes, &mut materials, &mut images);
         let life = effect.as_ref().map_or(1.0, |e| e.life);
@@ -1314,7 +1318,7 @@ fn spawn_breaths(
             }
         }
         if let Some(sound) = b.sound {
-            sounds.write(PlaySound(sound.into()));
+            sounds.write(PlaySoundAt::panned(sound, Vec3::from(p.mover.position) + Vec3::Y * HERO_TOP, LOUD));
         }
         info!("{} from the hero: {:.1} damage out to {:.1} over {life:.2} s", b.fx, b.damage, b.radius);
         let blast = Blast {
@@ -1348,7 +1352,7 @@ fn spawn_chops(
     mut requests: MessageReader<ChopAt>,
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<EffectModels>,
-    (mut sounds, mut shakes): (MessageWriter<PlaySound>, MessageWriter<crate::play_camera::Shake>),
+    (mut sounds, mut shakes): (MessageWriter<PlaySoundAt>, MessageWriter<crate::play_camera::Shake>),
     players: Query<&Player>,
     (mut meshes, mut materials, mut images): Assets3d,
 ) {
@@ -1361,7 +1365,7 @@ fn spawn_chops(
             let model = e.model.spawn(Transform::default(), &mut commands);
             commands.entity(model).insert((OneShot(life), ChildOf(c.hero)));
         }
-        sounds.write(PlaySound(CHOP_SOUND.into()));
+        sounds.write(PlaySoundAt::panned(CHOP_SOUND, feet + Vec3::Y * HERO_TOP, LOUD));
         shakes.write(CHOP_SHAKE);
         info!("the hammer comes down: {CHOP_DAMAGE:.0} damage out to {CHOP_RADIUS:.0} over {life:.2} s");
         let blast = Blast {
