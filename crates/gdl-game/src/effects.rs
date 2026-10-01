@@ -608,12 +608,22 @@ pub fn particle_systems(
         .collect()
 }
 
-/// Sprays an effect's particle systems once at `at` (scaled).
-pub fn spray(systems: &ParticleSystems, at: Vec3, scale: f32, seed: &mut u32, commands: &mut Commands, meshes: &mut Assets<Mesh>) {
+/// Sprays an effect's particle systems once at `at` (scaled), for no
+/// longer than the effect's `life` (seconds; `f32::INFINITY` for a piece
+/// left in place).
+pub fn spray(
+    systems: &ParticleSystems,
+    at: Vec3,
+    scale: f32,
+    life: f32,
+    seed: &mut u32,
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+) {
     for (k, (params, material, direction)) in systems.iter().enumerate() {
         *seed = seed.wrapping_add(0x9E37_79B9);
         let seed = *seed ^ k as u32;
-        particles::spawn_burst(params.clone().scaled(scale), material.clone(), at, *direction, seed, commands, meshes);
+        particles::spawn_burst(params.clone().scaled(scale).within(life), material.clone(), at, *direction, seed, commands, meshes);
     }
 }
 
@@ -857,7 +867,7 @@ fn spawn_one_shots(
         };
         debug!("effect {} rides {:?} (tick {:.0})", e.name, e.on, time.elapsed_secs() * 30.0);
         // Its particles burst where it starts; its model rides along.
-        spray(&effect.particles, place.translation(), e.scale, &mut seed, &mut commands, &mut meshes);
+        spray(&effect.particles, place.translation(), e.scale, effect.life, &mut seed, &mut commands, &mut meshes);
         let model = effect.model.spawn(Transform::from_scale(Vec3::splat(e.scale)), &mut commands);
         commands.entity(model).insert((OneShot(effect.life), ChildOf(e.on)));
     }
@@ -875,7 +885,7 @@ fn spawn_one_shots(
             }
             None => (effect.model.spawn(local(e.at), &mut commands), e.at),
         };
-        spray(&effect.particles, start, e.scale, &mut seed, &mut commands, &mut meshes);
+        spray(&effect.particles, start, e.scale, e.life, &mut seed, &mut commands, &mut meshes);
         commands.entity(model).insert((OneShot(e.life), LevelEntity));
     }
 }
@@ -891,7 +901,7 @@ fn play_effect(
     seed: &mut u32,
     meshes: &mut Assets<Mesh>,
 ) {
-    spray(&effect.particles, at, scale.x, seed, commands, meshes);
+    spray(&effect.particles, at, scale.x, effect.life, seed, commands, meshes);
     let transform = Transform::from_translation(at).with_rotation(Quat::from_rotation_y(facing)).with_scale(scale);
     let entity = effect.model.spawn(transform, commands);
     commands.entity(entity).insert((OneShot(effect.life), LevelEntity));
@@ -1303,7 +1313,7 @@ fn spawn_breaths(
             for (k, (params, material, direction)) in e.particles.iter().enumerate() {
                 *seed = seed.wrapping_add(0x9E37_79B9);
                 let direction = turn * *direction;
-                particles::spawn_burst(params.clone(), material.clone(), centre, direction, *seed ^ k as u32, &mut commands, &mut meshes);
+                particles::spawn_burst(params.clone().within(life), material.clone(), centre, direction, *seed ^ k as u32, &mut commands, &mut meshes);
             }
             let model = e.model.spawn(Transform::default(), &mut commands);
             commands.entity(model).insert(OneShot(life));

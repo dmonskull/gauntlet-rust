@@ -770,7 +770,7 @@ fn place(
             let root = model.spawn(Transform::from_translation(at), commands);
             commands.entity(root).insert(LevelEntity);
             let mut seed = PIECE_SEED;
-            crate::effects::spray(&particles, at, 1.0, &mut seed, commands, meshes);
+            crate::effects::spray(&particles, at, 1.0, f32::INFINITY, &mut seed, commands, meshes);
         }
     };
     let sound = |name: &str, sounds: &mut MessageWriter<PlaySoundAt>| {
