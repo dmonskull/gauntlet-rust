@@ -863,8 +863,11 @@ pub(crate) fn build_items(
         match (ty.class, &params) {
             (ItemClass::Exit, _) => {
                 flags = (flags & !USED) | ALWAYS_ACTIVE;
-                // An exit the quest hasn't opened is shut (`quest.rs`).
-                if let (PlacementParams::Exit { destination: Some(code) }, Some(state)) = (&params, &state)
+                // An exit the quest hasn't opened is shut (`quest.rs`) — in
+                // the tower only: the game switches exits off as the tower
+                // loads, and a realm level's own exits are always open.
+                if realm == quest::TOWER as usize
+                    && let (PlacementParams::Exit { destination: Some(code) }, Some(state)) = (&params, &state)
                     && let Some((to_realm, to_level)) = exit_destination(code)
                     && !state.exit_open(to_realm, to_level)
                 {
