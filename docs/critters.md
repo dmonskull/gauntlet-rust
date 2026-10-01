@@ -1856,9 +1856,8 @@ dragon.
     effect update, `0x80094418`, sets a slot so flagged that is less than
     0.2 above the floor under it — the item probe, 4 above to 10 below —
     at 0.1 above it and stops it, whether it moves or not; a key put more
-    than 0.2 up stays in the air); heroes can still be hurt during the
-    end sequence (the game's hurt routine refuses every blow then: a hook
-    for `player.rs`).
+    than 0.2 up stays in the air); from the end sequence's start no blow
+    hurts a hero (`player_state::take_damage`, with the camera cuts').
   - Checked on B6 (`GDL_CRITTER_HP=0.02`): the dragon dies; when its
     body goes (DEATH, then its 2 s hold) the shard shows over the arena,
     the wizard 5 s after that; the two speeches play back to back, and

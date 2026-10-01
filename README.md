@@ -41,7 +41,7 @@ details and the full to-do list):
 | Hero movement, camera, cuts | `██████████` 97 % |
 | Hero combat, magic, power-ups | `█████████░` 88 % |
 | Monsters and generators | `████████░░` 77 % |
-| Bosses and critters | `███████░░░` 72 % |
+| Bosses and critters | `████████░░` 78 % |
 | Items, pickups, doors, exits, hazards | `█████████░` 93 % |
 | Level mechanics (triggers, lifts, moving objects, secret walls) | `█████████░` 86 % |
 | What each level places and hides | `█████████░` 90 % |
@@ -71,13 +71,15 @@ details and the full to-do list):
    (47 of 67 levels left): levers, lifts, doors and keys all working.
 2. Monsters: several AIs still use a stand-in chase; monsters don't yet push
    each other.
-3. Bosses: grabs, the lich's aura damage, the boss key, the health meter.
+3. Bosses: missile lifetimes, the blast areas' hit guards, head stumps and
+   look nodes (grabs, the lich's aura, the health meters and the key are in).
 4. Screens: options, the memory card screens, the attract mode (the shop,
    inventory and after-level screens are in).
 5. Effects: texture wipes, effect lights, weapon and hand glows, exact
    particle maths.
 6. Audio: music switching and ducking.
-7. Co-op: co-op combos, the monsters' crowd penalty.
+7. Co-op: co-op combos (decoded, not yet ported), the monsters' crowd
+   penalty.
 
 ## Play
 

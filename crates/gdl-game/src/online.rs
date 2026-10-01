@@ -35,7 +35,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
 use bevy::app::{RunFixedMainLoop, RunFixedMainLoopSystems};
-use bevy::ecs::schedule::ScheduleLabel;
+use bevy::ecs::schedule::{ExecutorKind, ScheduleLabel};
 use bevy::prelude::*;
 use gdl_net::{Bundle, NetConfig, NetEvent, NetSession, PlayerInput, Relays, Target, Tick};
 use serde::{Deserialize, Serialize};
@@ -65,6 +65,15 @@ pub struct OnlinePlugin;
 
 impl Plugin for OnlinePlugin {
     fn build(&self, app: &mut App) {
+        // Every machine runs a tick's systems in the same order: on one
+        // thread, in the schedule's own order. (Several threads would run
+        // the systems not ordered among themselves in whatever order they
+        // came free, which can differ from machine to machine.)
+        for schedule in [FixedUpdate.intern(), NetTick.intern()] {
+            app.edit_schedule(schedule, |s| {
+                s.set_executor_kind(ExecutorKind::SingleThreaded);
+            });
+        }
         app.init_resource::<Lockstep>()
             .init_resource::<LocalControls>()
             .init_schedule(NetTick)

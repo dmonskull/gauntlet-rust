@@ -212,6 +212,9 @@ how far into the next it is, for drawing between ticks). At most one tick a
 frame, so the systems that run each frame see the state after every tick;
 no tick while a level change settles (`level_work` from `exits.rs` /
 `world.rs`, a new `LevelPopulation`, the front end loading: 4 quiet frames).
+The fixed tick and `NetTick` run on one thread, in the schedule's own order:
+with several threads, systems not ordered among themselves would run in
+whichever order they came free, which can differ between machines.
 After the fixed loop the `NetTick` schedule runs: the message box (it
 freezes play for everyone — the tick is then the box's alone — and any
 player's B puts a page away), the voice queues (2 fields a tick; level

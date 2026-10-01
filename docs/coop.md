@@ -80,7 +80,62 @@ exit's portal steps on only while every living hero stands in it.
 `GDL_FAKE_PAD_PLAYER=<class>` (and `GDL_FAKE_PAD_AT=1`) join at once as
 the next player on a level picked from the command line.
 
+## Co-op combos (decoded, not ported)
+
+Two heroes' combo attack (the help screen's "2P COMBO"; the COMBO_MOVE
+button, `combat.md`). From the player update (`FUN_80080d3c`) and the
+input classifier (`FUN_80088170`); player records are `0x335c` bytes from
+`0x802754c0`, `+8` the class (0 WAR, 1 VAL, 2 WIZ, 3 ARC, 4 DWF, 5 KNI,
+6 SOR, 7 JES).
+
+- **Asking** (classifier, after the magic buttons): COMBO_MOVE held, turbo
+  (`+0x828`) ≥ 50 and a partner found (`FUN_8008872c`) → intent `0x16`,
+  the partner's record kept in `+0x6BC`. The asker must be in play
+  (`+0xE8` = 1), not in a combo (`+0x6B8`, `+0x6BC` both 0), have a carry
+  node (`+0x6DC` ≠ 0), not be the Pojo (`+0x124 & 0x400`), and stand on a
+  node (`+0x8C4`) without flag `0x1000`.
+- **The partner**: the nearest other hero in play, not in a combo, without
+  `+0x964` flags `0x50`, not the Pojo, standing on a node without flag
+  `0x1000`, whose playing action (`+0x208`) is below `0x54` or in
+  `0x5B`–`0x6A`; within 5 (`r2-0x5b44`) and 3 up or down (`r2-0x5c88`),
+  and ahead of the asker: the unit vector to it · the asker's facing
+  (`+0x34`, `+0x3C`) ≥ 0.707 (`r2-0x5aa8`). Not while the asker's
+  legendary-weapon state (`+0x834`) runs on a boss level.
+- **Starting**: intent `0x16` asks for COMBOACT1 (`0x58`) and puts the cost,
+  50 (`r2-0x5b5c`), in `+0x910`. When COMBOACT1 or 2 is playing with a
+  partner pending, the pair link (`+0x6B8` each way), the partner gets
+  `+0x964 |= 0x10` and the asker's turbo loses the cost.
+- **The partner's side**: the classifier gives intent `0x27` while its
+  `+0x964` has `0x40`, else `0x26` with `0x10`, else `0x17` with `0x80`.
+  `0x26` plays the action named after the asker's class — COMBOWAR1,
+  COMBOVAL, COMBOWIZ, COMBOARC, COMBODWF1, COMBOKNI, COMBOSOR, COMBOJES
+  (`0x88`, `0x8B`–`0x8E`, `0x91`–`0x93`); `0x27` COMBOWAR2 (`0x89`) after a
+  warrior, COMBODWF2 (`0x8F`) after a dwarf, else READY; `0x17` COMBOACT2.
+- **By the asker's class**, while its COMBOACT plays (`FUN_800747ac`
+  attaches a hero to another's carry node, `FUN_80074644` lets go):
+  - VAL, ARC: the partner is turned to face away from the asker (heading
+    from the asker + π, `r2-0x5ab8`, also into its `+0x894`) and the asker
+    rides on the partner's carry node; when COMBOACT ends the asker lets
+    go and the pair unlink.
+  - WAR: for COMBOACT1's first 30 frames (`+0x98` < `r2-0x5b28`) the
+    partner rides on the warrior's carry node (its `+0x8FC` = now); then
+    it's thrown: let go, `0x10` → `0x40` (COMBOWAR2), and 240 fields
+    (`+0x1FA`) later the pair unlink (the warrior's `+0x964` loses `0x80`).
+  - DWF: on COMBOACT1 the partner is turned as above and the dwarf rides
+    the partner (`+0x964 |= 0x80`: COMBOACT2 next), 240 fields; after it the
+    partner's `0x10` → `0x40` (COMBODWF2: the dwarf thrown); when the
+    fields run out the dwarf lets go and the pair unlink.
+  - WIZ, KNI, SOR: the partner rides on the asker's carry node for the
+    whole COMBOACT, then is let go and the pair unlink.
+  - JES: the partner is taken onto the carry node and let go at once.
+- **The thrown hero** (COMBOWAR2 / COMBODWF2 movement): what it runs into
+  takes 50 (warrior's) or 10 (dwarf's) heavy (`0x20`) damage
+  (`FUN_8008615c`), objects 50 or 20 (`FUN_8008625c`).
+- Not traced: the combo actions' own blows (their animation events), the
+  COMBO_SPH / COMBO_<colour> effects, the carry node's bone (`+0x6DC`), how
+  a carried hero is placed each frame.
+
 ## Not yet
 
-- Co-op combos (two heroes' combo attack); monsters' crowd penalty in
+- Co-op combos (decoded above, not ported); monsters' crowd penalty in
   their choice of target.

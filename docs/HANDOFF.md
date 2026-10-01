@@ -1,10 +1,70 @@
 # Handoff: where the rewrite stands and how to continue
 
-Last updated 2026-10-01. Read this first when resuming; [STATUS.md](STATUS.md)
-has how close the rewrite is to the original (≈ 81 % for one player,
-≈ 76 % done overall) and everything left to do, in order.
+Last updated 2026-10-01 (v0.2.0). Read this first when resuming;
+[STATUS.md](STATUS.md) has how close the rewrite is to the original
+(≈ 84 % for one player, ≈ 83 % done overall) and everything left to do,
+in order.
+
+## Pick up here
+
+**Next jobs, in order** (the user's list from 2026-10-01: online → co-op →
+settings → bosses; online and bosses are done):
+
+1. **Co-op combos**: decoded in [coop.md](coop.md) "Co-op combos" (the
+   partner test, COMBOACT1/2, the partner's per-class actions, carrying on
+   the carry node, the warrior's and dwarf's throws with their hits), not
+   ported. First trace what the doc lists as not traced (the combo actions'
+   blows, the COMBO_SPH / COMBO_<colour> effects, how a carried hero is
+   placed), then port into `combat.rs` (the classifier's comment marks the
+   spot), `actions.rs` (the chooser's cases for `0x16`, `0x58`–`0x5A`,
+   `0x88`–`0x93`) and `player.rs`. Test with two local players
+   (`GDL_FAKE_PAD`, [coop.md](coop.md) "Testing") and online.
+2. **The monsters' crowd penalty** (`FUN_80051660`: a hero's score is its
+   distance + its record's `+0xA28` past `r2-0x6eb0` × a monster value;
+   find what keeps `+0xA28`). The helper started this and was stopped by
+   the usage limit before changing anything.
+3. **Settings**: Game Options (Difficulty, Multiplayer Mode are stand-ins),
+   the memory card screens, the attract mode ([frontend.md](frontend.md)).
+4. **Check the bosses' new work in game** (merged unverified but for the
+   meters): the lich's aura (levelG5, `GDL_IMMORTAL=1`, stand near the lich:
+   "…'s NULLFX slot: 10 to the first hero within 16…"), the 3D `GMETER`
+   (golems on levelC2/levelJ1, the A1 gargoyle with `GDL_WAKE_STATUES=40`),
+   the chimera's three fills (levelA5), the drider's whip cones (levelD5).
+5. Then the older queue below: the G–T tour's leads, the AIs on the chase
+   stand-in, the level-by-level audit (top priority overall).
 
 ## State of `master`
+
+**2026-10-01 (latest), v0.2.0:**
+- **Online, finished** ([online.md](online.md) "Starting again"): joining a
+  game under way (the joiner picks a hero and waits; the host restarts
+  everyone at the tower with them), Manage Character online (a changed or
+  loaded hero restarts everyone in the tower; Save writes to that
+  machine), and out-of-sync recovery (every machine says so; the host
+  restarts the level under way from its records). `gdl-net` protocol 2: a
+  run number (`epoch`) on every input, bundle and checksum, late joiners'
+  slots kept until `restart()`. The online menus' **Invite** copies the code
+  again; the tower's online menu has seven items (smaller). A message box
+  hides an open online menu. Our own `FONT32` lines map the `: ; - "` the
+  font lacks; invites written with a space for the dash still join.
+  **The fixed tick and `NetTick` run single-threaded** (`online.rs`): every
+  machine runs a tick's systems in the same order.
+  Checked: `tools/online_test.sh` plain (51–53 checks), `HOST_PLAYERS=1`
+  (late join, 71), `CLIENT_MENU=…` (Manage Character VAL → WIZ, 86) and
+  `CLIENT_DESYNC_AT=600` (recovers, 48–51 after the restart), all in sync.
+- **Bosses** (helper, merged `fd427c5`): the blows' effect slots (the lich's
+  axe and chain spheres = its aura; held attacks' steady areas; area
+  cones), the boss key (its pick-up is dead code in retail; the realm bit
+  does everything), the 2D health meters and the 3D `GMETER`. Heroes take
+  no harm once a boss's end sequence starts (`player_state::take_damage`).
+  Checked: the dragon's (B6) and the lich's (G5) meters show.
+- Boot checks: title → Local Game → select screen; `--level` runs of
+  levelL1, levelA1, levelG5, levelB6 without a panic; all tests and clippy
+  clean.
+- The older entries' "parked, unmerged" helper branches (secret realm
+  `worktree-agent-a7499ea16152eadcd`, shop `worktree-agent-aba24fd14c15b99a9`)
+  are merged since. No helper is running; `worktree-agent-a6d001c5d652b400d`
+  holds nothing new.
 
 **2026-10-01 (later), playable release work:** the shop, inventory and
 after-level screen (tally with kills, level-up, shop, stats, inventory,
