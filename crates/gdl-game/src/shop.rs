@@ -902,7 +902,7 @@ fn rank_text(text: &TextRom, class: usize, level: u32) -> Option<String> {
 }
 
 /// The final stats' totals for a hero (the game's per-class counters):
-/// `PlayerState` doesn't keep them yet, so the front end passes them in.
+/// From the hero's record (`PlayerState::kills` …), passed in by the front end.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FinalStats {
     pub kills: u32,

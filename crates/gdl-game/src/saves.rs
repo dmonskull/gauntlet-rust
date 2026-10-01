@@ -38,6 +38,15 @@ pub struct SavedCharacter {
     /// Stat points bought in the shop.
     #[serde(default)]
     pub bought: crate::player_state::StatBonus,
+    /// The final stats' totals.
+    #[serde(default)]
+    pub kills: u32,
+    #[serde(default)]
+    pub generators: u32,
+    #[serde(default)]
+    pub gold_found: u32,
+    #[serde(default)]
+    pub play_fields: u64,
 }
 
 impl SavedCharacter {
@@ -57,6 +66,10 @@ impl SavedCharacter {
             realms_beaten: state.realms_beaten,
             quest: state.quest.clone(),
             bought: state.bought,
+            kills: state.kills,
+            generators: state.generators,
+            gold_found: state.gold_found,
+            play_fields: state.play_fields,
         }
     }
 
@@ -71,6 +84,10 @@ impl SavedCharacter {
         state.realms_beaten = self.realms_beaten;
         state.quest = self.quest.clone();
         state.bought = self.bought;
+        state.kills = self.kills;
+        state.generators = self.generators;
+        state.gold_found = self.gold_found;
+        state.play_fields = self.play_fields;
         state.health = if self.health > 0.0 { self.health.min(state.max_health()) } else { state.max_health() };
     }
 

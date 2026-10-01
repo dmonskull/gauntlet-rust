@@ -223,6 +223,13 @@ pub struct PlayerState {
     warning_timer: i32,
     /// Stat points bought in the shop.
     pub bought: StatBonus,
+    /// Monsters killed, generators destroyed, gold found and fields
+    /// played (60 a second): the after-level tally and the final stats
+    /// (the game keeps them per class in the character record).
+    pub kills: u32,
+    pub generators: u32,
+    pub gold_found: u32,
+    pub play_fields: u64,
 }
 
 /// Stat points bought in the shop (`shop.rs`), on top of the class's stats
@@ -327,7 +334,7 @@ impl PlayerState {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.health.to_bits(), self.level, self.experience, self.gold, self.keys, &self.potions, &self.runestones).hash(&mut h);
-        (self.realms_beaten, self.alive, self.warning_timer).hash(&mut h);
+        (self.realms_beaten, self.alive, self.warning_timer, self.kills, self.generators, self.gold_found).hash(&mut h);
         format!("{:?} {:?} {:?} {:?}", self.powers, self.quest, self.bits, self.bought).hash(&mut h);
         h.finish()
     }
@@ -356,6 +363,10 @@ impl PlayerState {
             powerup_time: stats.map_or(1.0, |s| s.powerup_time),
             warning_timer: 0,
             bought: StatBonus::default(),
+            kills: 0,
+            generators: 0,
+            gold_found: 0,
+            play_fields: 0,
         }
     }
 
@@ -444,8 +455,10 @@ impl PlayerState {
         false
     }
 
+    /// Gold picked up (it counts as found).
     pub fn add_gold(&mut self, amount: u32) {
         self.gold = (self.gold + amount).min(GOLD_CAP);
+        self.gold_found = self.gold_found.saturating_add(amount);
     }
 
     /// Takes up to `count` keys: all of them if they fit on the ring, as
@@ -1027,6 +1040,7 @@ fn powers_and_warning(
     // The shrink and the time stop act on the whole level: any player's.
     let (mut shrink, mut time_stop) = (false, false);
     for (slot, state) in party.states_mut() {
+        state.play_fields += FIELDS_PER_TICK as u64;
         let before = state.bits.special;
         let now = state.tick_powers(clock).special;
         let ended = before & !now;
