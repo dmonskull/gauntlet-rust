@@ -26,7 +26,8 @@
 //!
 //! Stand-ins: triggers run on
 //! or off screen; subtype 1 rotators aren't done; only players (not
-//! monsters) hold a mover still by standing on it; an animated object's
+//! monsters) hold a mover still by standing on it (monsters ride them as
+//! the heroes do); an animated object's
 //! scale is drawn but its collision doesn't scale (not confirmed), and
 //! the bursting ones (node type 0x50000: H1's fire, the I realm's
 //! minecarts) show their explosion and sound as their loop comes round
@@ -941,7 +942,11 @@ fn tick(
     items: Option<ResMut<LevelItems>>,
     ground: Option<ResMut<LevelGround>>,
     party: Res<Party>,
-    mut players: Query<&mut Player>,
+    (mut players, mut monsters, mut critters): (
+        Query<&mut Player>,
+        Query<&mut crate::monsters::Monster>,
+        Query<&mut crate::critters::Critter>,
+    ),
     mut models: Query<&mut Transform, Without<Player>>,
     mut cuts: MessageWriter<StartCut>,
     mut shakes: MessageWriter<Shake>,
@@ -1404,6 +1409,53 @@ fn tick(
             p.mover.facing -= x[2].datan2(x[0]);
         }
     }
+    // And the monsters and critters on them (one that hasn't moved yet
+    // finds what it stands on first: a ship's crew as it sets off).
+    let collision = &ground.0;
+    let carried = |node: Option<usize>| {
+        let root = nodes.group_of(node?, &mech.root_set)?;
+        let &(before, now) = mech.poses.get(&root)?;
+        (before != now).then(|| before.delta_to(&now))
+    };
+    let turn_of = |delta: &NodePose| {
+        let x = delta.apply_vector([1.0, 0.0, 0.0]);
+        x[2].datan2(x[0])
+    };
+    for mut m in &mut monsters {
+        if m.ground_node.is_none() {
+            m.ground_node = ground_under(collision, m.position);
+        }
+        if let Some(delta) = carried(m.ground_node) {
+            let old = m.position;
+            let new = delta.apply(old);
+            m.position = new;
+            m.floor += new[1] - old[1];
+            let turn = turn_of(&delta);
+            m.facing -= turn;
+            m.heading -= turn;
+            trace!("monster carried: {old:?} -> {new:?}");
+        }
+    }
+    for mut c in &mut critters {
+        if c.ground_node.is_none() {
+            c.ground_node = ground_under(collision, [c.position[0], c.floor, c.position[2]]);
+        }
+        if let Some(delta) = carried(c.ground_node) {
+            let old = c.position;
+            let new = delta.apply(old);
+            c.position = new;
+            c.floor += new[1] - old[1];
+            c.home = delta.apply(c.home);
+            c.yaw -= turn_of(&delta);
+            trace!("critter carried: {old:?} -> {new:?}");
+        }
+    }
+}
+
+/// The collision node a creature standing at `feet` is on, as a mover's
+/// floor probe finds it.
+fn ground_under(collision: &gdl_formats::LevelCollision, feet: [f32; 3]) -> Option<usize> {
+    collision.floor_probe([feet[0], feet[1] + 2.0, feet[2]], 4.0, -6.0, 1.0, 2).map(|h| h.node)
 }
 
 /// Each moving root's world pose, parents first: a node's own move (a

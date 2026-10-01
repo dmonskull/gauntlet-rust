@@ -30,7 +30,7 @@ for lv in "$@"; do
   end=$(( EVERY*(i+1) + 150 ))
   GDL_SKIP_BOXES=1 GDL_IMMORTAL=1 GDL_HOPS="$hops" GDL_HOP_TICKS=$EVERY GDL_STICK="0,0.15" GDL_BUTTONS="${buttons%,}" \
     GDL_SHOT_CLOCK=ticks GDL_SHOT_AT=$end GDL_SHOTS=1 GDL_SCREENSHOT=$OUT/$lv.png \
-    RUST_LOG=warn,gdl_game::mechanics=debug,gdl_game::player=info,gdl_game::items=info,gdl_game::message_box=info \
+    RUST_LOG=${TOUR_LOG:-warn,gdl_game::mechanics=debug,gdl_game::player=info,gdl_game::items=info,gdl_game::message_box=info} \
     $ROOT/tools/waitrun.sh timeout $(( 40 + end/30 )) $BIN $GAME --level $lv > $OUT/$lv.log 2>&1
   python3 $ROOT/tools/tour.py $OUT/$lv.triggers $OUT/$lv.log $lv
 done

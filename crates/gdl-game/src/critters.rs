@@ -951,9 +951,12 @@ pub struct Critter {
     pub(crate) spawned_at: [f32; 3],
     pub yaw: f32,
     home_yaw: f32,
-    home: [f32; 3],
+    pub(crate) home: [f32; 3],
     previous: ([f32; 3], f32),
-    floor: f32,
+    pub(crate) floor: f32,
+    /// The collision node of the floor it stands on: a moving one carries
+    /// it (`mechanics.rs`).
+    pub(crate) ground_node: Option<usize>,
     /// Current and chosen move (within the type).
     current: Option<usize>,
     next: Option<usize>,
@@ -1750,6 +1753,7 @@ fn new_critter(
         home: t.fixed_home().unwrap_or(position),
         previous: (position, yaw),
         floor: position[1] - t.hover,
+        ground_node: None,
         current: None,
         next: None,
         pick: None,
@@ -3657,9 +3661,13 @@ fn walk(c: &mut Critter, m: &CritterMove, ty: &TypeInfo, collision: &LevelCollis
             if rise <= 2.0 * (ty.radius + len) {
                 ok = true;
                 c.floor = hit.point[1];
+                c.ground_node = Some(hit.node);
                 if rise > 0.1 * len {
                     match probe([from[0] + v[0], feet_y, from[2] + v[2]]) {
-                        Some(h) => c.floor = h.point[1],
+                        Some(h) => {
+                            c.floor = h.point[1];
+                            c.ground_node = Some(h.node);
+                        }
                         None => ok = false,
                     }
                 }
@@ -3671,6 +3679,7 @@ fn walk(c: &mut Critter, m: &CritterMove, ty: &TypeInfo, collision: &LevelCollis
         }
     } else if let Some(h) = probe([from[0], feet_y, from[2]]) {
         c.floor = h.point[1];
+        c.ground_node = Some(h.node);
     }
     let dy = (c.floor - feet_y).max(-MAX_DROP * DT) + v[1].max(0.0);
     c.position = [from[0] + v[0], c.position[1] + dy, from[2] + v[2]];
