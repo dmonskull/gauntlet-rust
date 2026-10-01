@@ -208,7 +208,7 @@ fn hits(
     contents: Option<Res<ContentModels>>,
     mut mechanics: Option<ResMut<Mechanics>>,
     mut level: Option<ResMut<MonsterLevel>>,
-    players: Query<(), With<Player>>,
+    players: Query<&Player>,
     mut explosions: MessageWriter<ExplosionAt>,
     (mut sounds, mut effects): (MessageWriter<PlaySoundAt>, MessageWriter<EffectAt>),
     mut hints: MessageWriter<ShowHint>,
@@ -247,8 +247,13 @@ fn hits(
         let blow_at = Vec3::from(centre) + Vec3::Y * BLOW_SOUND_RISE;
         // A hero's blow that does damage to a secret wall (a nameless
         // obstacle) tells of them.
-        if class == ItemClass::Obstacle && nameless && hit.kind & NO_DAMAGE == 0 && !hit.ranged && players.contains(hit.attacker) {
-            hints.write(ShowHint::to(0, Hint::SecretWalls));
+        if class == ItemClass::Obstacle
+            && nameless
+            && hit.kind & NO_DAMAGE == 0
+            && !hit.ranged
+            && let Ok(hero) = players.get(hit.attacker)
+        {
+            hints.write(ShowHint::to(hero.slot, Hint::SecretWalls));
         }
         // An obstacle a blow did damage and left standing flashes.
         if class == ItemClass::Obstacle && hit.kind & NO_DAMAGE == 0 && !dead && subtype != items::SAFE_ROCK {
@@ -273,7 +278,7 @@ fn hits(
                         if let Some(s) = barrel_sound("WOOD", realm) {
                             sounds.write(PlaySoundAt::faded(s, blow_at, BARREL_VOLUME));
                         }
-                        hints.write(ShowHint::to(0, Hint::SomeBarrels));
+                        hints.write(ShowHint::all(Hint::SomeBarrels));
                     }
                     // A monster inside (a Death) comes out where the container stood.
                     if let Some(ty) = inside.as_ref() {
@@ -478,13 +483,13 @@ fn apply_blow(
         ItemBlow::Destroyed => {
             pieces(pose.translation, effects);
             wreck(items, placement, ITEM_WRECK, pose, models, commands);
-            hints.write(ShowHint::to(0, Hint::ExplosionsDestroyItems));
+            hints.write(ShowHint::all(Hint::ExplosionsDestroyItems));
         }
         ItemBlow::Spoiled { meat } => {
             let (model, amount) = if meat { BAD_MEAT } else { BAD_FRUIT };
             swap_model(items, placement, model, pose, models, commands);
             items.set_amount(placement, amount);
-            hints.write(ShowHint::to(0, Hint::GasSpoilsFood));
+            hints.write(ShowHint::all(Hint::GasSpoilsFood));
         }
         ItemBlow::ChestBlown { silver } => {
             // A Death inside comes out; anything else is lost with it.
@@ -656,7 +661,7 @@ fn chest_explosions(
             sounds.write(PlaySoundAt::faded(s, Vec3::from(centre), CHEST_EXP_VOLUME));
         }
         items.free(placement, &mut commands);
-        hints.write(ShowHint::to(0, Hint::ChestsExplode));
+        hints.write(ShowHint::all(Hint::ChestsExplode));
         info!("CHESTEXP {placement} explodes");
     }
 }
