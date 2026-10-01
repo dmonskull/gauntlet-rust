@@ -11,8 +11,8 @@ day-to-day state and the job queue.
 
 | measure | estimate |
 | --- | --- |
-| **Faithful to the original, one player** (what a single hero plays through) | **≈ 82 %** |
-| **Done overall** (everything the original does, 2–4 player co-op included, every level checked, no known issues) | **≈ 80 %** |
+| **Faithful to the original, one player** (what a single hero plays through) | **≈ 84 %** |
+| **Done overall** (everything the original does, 2–4 player co-op included, every level checked, no known issues) | **≈ 83 %** |
 
 These are judgements, not measurements. Each area below gets a weight (how
 much of the game it is) and a share done (what's confirmed against the
@@ -26,16 +26,16 @@ leaves co-op out.
 | Level look (geometry, lightmaps, blending, texture animation, particles) | 10 | 88 % | action texture wipes, the hand and weapon glows, effect lights, exact particle maths, shadows |
 | Hero movement, camera, cuts | 7 | 97 % | the step cut under the boss camera |
 | Hero combat, magic, power-ups | 10 | 88 % | rapid fire's rate, missile streaks, magic element models, the legendary weapon's throw |
-| Monsters and generators | 9 | 75 % | most AIs run the chase stand-in; no actor-vs-actor collision |
+| Monsters and generators | 9 | 77 % | most AIs run the chase stand-in; no actor-vs-actor collision (they do ride moving floors) |
 | Bosses and critters | 9 | 72 % | grabs, effect-slot contact damage, missile lifetimes, the boss key, stumps, the health meter |
-| Items, pickups, doors, exits, hazards | 6 | 91 % | random item types, the shop, the secret realm's coins, the keys' turning traced |
-| Level mechanics (triggers, lifts, animated objects, secret walls, falls) | 8 | 84 % | bursting objects, E2's debris, subtype 1 rotators; the tour's re-run pending |
+| Items, pickups, doors, exits, hazards | 6 | 93 % | random item types, the secret realm's coins, the keys' turning traced |
+| Level mechanics (triggers, lifts, animated objects, secret walls, falls) | 8 | 86 % | E2's debris, subtype 1 rotators; the G–T tour's leads (G2, G3, G4, H3, J3, K3, T1, the I2/J3/S3 triggers it found unregistered) |
 | What each level places and hides | 5 | 90 % | every level audited statically (the last round: A5, A6, J, K, L, S, T, DEMO1); random item types take the first choice; the stray objects likely the debug markers (now off) |
-| Every level checked start to exit | 5 | 25 % | only A1's exit to A6 checked; triggers toured on A1–C1 and D1–D4 |
-| Quest, tower, saving | 5 | 88 % | the secret realm's coins, per-class records, memory card screens |
-| Front end, menus, HUD, hints | 7 | 75 % | shop, inventory, options, attract loop, the hints' plates |
+| Every level checked start to exit | 5 | 35 % | only A1's exit checked start to exit; the trigger tour has run on every level (A1–T3) |
+| Quest, tower, saving | 5 | 90 % | the secret realm's coins, per-class records, memory card screens |
+| Front end, menus, HUD, hints | 7 | 85 % | options, the attract loop, the hints' plates, the memory card screens; the HUD panels' text during the shop screen |
 | Audio | 5 | 85 % | music switching and ducking, menu sounds, footstep pan |
-| Co-op (2–4 players) | 6 | 65 % | the after-level progress and shop screen (and joining there), co-op combos, the monsters' crowd penalty, the exits' wait-for-the-others hint |
+| Co-op (2–4 players) | 6 | 72 % | co-op combos, the monsters' crowd penalty, the exits' wait-for-the-others hint; online: joining after the start, the shop screens |
 | Speed and stability | 2 | 85 % | the animated objects' cost unmeasured; warm-up hitches |
 
 ## What's left

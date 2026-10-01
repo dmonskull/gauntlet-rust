@@ -23,8 +23,8 @@ details and the full to-do list):
 
 | | |
 | --- | --- |
-| **Faithful to the original, one player** | `████████░░` **≈ 82 %** |
-| **Done overall** (2–4 player co-op, every level checked, no known issues) | `████████░░` **≈ 80 %** |
+| **Faithful to the original, one player** | `████████░░` **≈ 84 %** |
+| **Done overall** (2–4 player co-op, every level checked, no known issues) | `████████░░` **≈ 83 %** |
 
 | area | done |
 | --- | --- |
@@ -32,16 +32,16 @@ details and the full to-do list):
 | Level look (geometry, lighting, texture animation, particles) | `█████████░` 88 % |
 | Hero movement, camera, cuts | `██████████` 97 % |
 | Hero combat, magic, power-ups | `█████████░` 88 % |
-| Monsters and generators | `████████░░` 75 % |
+| Monsters and generators | `████████░░` 77 % |
 | Bosses and critters | `███████░░░` 72 % |
-| Items, pickups, doors, exits, hazards | `█████████░` 91 % |
-| Level mechanics (triggers, lifts, moving objects, secret walls) | `████████░░` 84 % |
-| What each level places and hides | `████████░░` 82 % |
-| Every level played start to exit | `███░░░░░░░` 25 % |
-| Quest, tower, saving | `█████████░` 88 % |
-| Front end, menus, HUD, hints | `████████░░` 75 % |
+| Items, pickups, doors, exits, hazards | `█████████░` 93 % |
+| Level mechanics (triggers, lifts, moving objects, secret walls) | `█████████░` 86 % |
+| What each level places and hides | `█████████░` 90 % |
+| Every level played start to exit | `████░░░░░░` 35 % |
+| Quest, tower, saving | `█████████░` 90 % |
+| Front end, menus, HUD, hints | `█████████░` 85 % |
 | Audio | `█████████░` 85 % |
-| Local co-op (2–4 players) | `███████░░░` 65 % |
+| Local co-op (2–4 players) | `███████░░░` 72 % |
 | Speed and stability | `█████████░` 85 % |
 
 ### Beyond the original
@@ -62,8 +62,8 @@ details and the full to-do list):
 2. Monsters: several AIs still use a stand-in chase; monsters don't yet push
    each other.
 3. Bosses: grabs, the lich's aura damage, the boss key, the health meter.
-4. Screens: the shop and inventory, the after-level progress screen,
-   options, the memory card screens, the attract mode.
+4. Screens: options, the memory card screens, the attract mode (the shop,
+   inventory and after-level screens are in).
 5. Effects: texture wipes, effect lights, weapon and hand glows, exact
    particle maths.
 6. Audio: music switching and ducking.
