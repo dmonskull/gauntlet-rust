@@ -36,9 +36,11 @@
 //!   more players registers them — the game registers every trigger's
 //!   target, made for the party or not — with the heights it holds them
 //!   at;
-//! - `LINK`: trigger links worth a look: chains to missing ids, quest
-//!   gates, camera points, wake and shake flags, targets shared by
-//!   triggers of different kinds;
+//! - `LINK`: trigger links worth a look: chains to missing ids (or only a
+//!   quest gate's), quest gates, camera points, wake and shake flags,
+//!   targets shared by triggers of different kinds, ids shared by
+//!   triggers (the game clears all but the first's) and camera points
+//!   the game never links (ids of 128 and up);
 //! - `PLACE`: placements the game builds differently: obelisks (never
 //!   made), key rings, rotators without a model, random types;
 //! - `BLOCK`: items that block a hero who walks into them but have no
@@ -320,14 +322,57 @@ fn main() {
             }
         }
 
-        // Trigger links.
-        let ids: HashMap<u8, usize> = triggers.iter().filter(|t| t.5 && t.3 != 0).map(|t| (t.3, t.0)).collect();
+        // Trigger links. A chain reaches only a trigger that isn't a quest
+        // gate.
+        let ids: HashMap<u8, usize> = triggers.iter().filter(|t| t.5 && t.3 != 0 && t.2 & 0x40 == 0).map(|t| (t.3, t.0)).collect();
+        // The game's ids are signed bytes: of the triggers sharing an id of
+        // 1 to 127 (quest gates and the rest apart) only the first keeps
+        // it; a camera point (locator kind 9) goes to the triggers whose id
+        // equals its index as a signed byte — never one of 128 and up —
+        // and in the tower indices 170–183, 198 and above 200 are the
+        // tower's own cameras, no trigger's.
+        let tower = name.eq_ignore_ascii_case("levelL1") || name.eq_ignore_ascii_case("levelL3");
+        let tower_camera = |index: i16| tower && ((170..=183).contains(&index) || index == 198 || index > 200);
+        let mut first_with: HashMap<(u8, bool), usize> = HashMap::new();
+        for &(i, _, flags, id, _, active) in &triggers {
+            if !active || !(1..=127).contains(&id) {
+                continue;
+            }
+            match first_with.get(&(id, flags & 0x40 != 0)) {
+                Some(&first) => {
+                    let camera = pop.locators.iter().any(|l| l.kind == LocatorKind::Transmitter(9) && l.index == i16::from(id));
+                    let chained = triggers.iter().any(|t| t.5 && t.4 == id);
+                    note(
+                        "LINK",
+                        format!(
+                            "trigger {i} shares id {id} with trigger {first}: the game clears its id{}{}",
+                            if chained { " (chains reach the first)" } else { "" },
+                            if camera { " (the camera point goes to the first)" } else { "" }
+                        ),
+                        &mut lines,
+                    );
+                }
+                None => {
+                    first_with.insert((id, flags & 0x40 != 0), i);
+                }
+            }
+        }
+        for &(i, _, _, id, _, active) in &triggers {
+            if !active || id == 0 {
+                continue;
+            }
+            if let Some(l) = pop.locators.iter().find(|l| l.kind == LocatorKind::Transmitter(9) && l.index == i16::from(id))
+                && (id > 127 || tower_camera(l.index))
+            {
+                note("LINK", format!("trigger {i} (id {id}) and camera point {}: the game never links them", l.index), &mut lines);
+            }
+        }
         for &(i, subtype, flags, id, next, active) in &triggers {
             if !active {
                 continue;
             }
             if next != 0 && !ids.contains_key(&next) {
-                note("LINK", format!("trigger {i} (subtype {subtype:#x}) chains to id {next}, which no trigger for one player has"), &mut lines);
+                note("LINK", format!("trigger {i} (subtype {subtype:#x}) chains to id {next}, which no trigger for one player has (a quest gate's doesn't count): it leads nowhere"), &mut lines);
             }
             if flags & 0x40 != 0 && !name.eq_ignore_ascii_case("levelL1") && !name.eq_ignore_ascii_case("levelL3") {
                 note("LINK", format!("trigger {i} (subtype {subtype:#x}, id {id}) is a quest gate outside the tower"), &mut lines);
@@ -520,15 +565,22 @@ fn main() {
                 }
             }
             let animated_set: HashSet<usize> = (0..world_nodes).filter(|&n| in_mode(n)).collect();
+            // The heights the lines run between: the level's bounds, and
+            // past them wherever an animated object's first or last frame
+            // takes its collision (some of J4's flying platforms start
+            // above the level's box, one below it).
+            let (y_lo, y_hi) = [&first_frames, &last_frames]
+                .iter()
+                .flat_map(|c| c.world_triangles().filter(|(n, _, _)| animated_set.contains(n)).flat_map(|(_, _, v)| v))
+                .fold((c0.bounds[0][1], c0.bounds[1][1]), |(lo, hi), v| (lo.min(v[1]), hi.max(v[1])));
             // Every floor down a line through the level at rest, and the
             // animated objects' at their first and last frames.
             let floors = |x: f32, z: f32| -> Vec<(usize, f32)> {
                 let q = gdl_formats::collision::Query { disable_mask: 0, prefer_crossing: false, ..gdl_formats::collision::Query::floors(0.5) };
-                let [lo, hi] = c0.bounds;
                 let mut out = Vec::new();
                 for (k, c) in [c0, &first_frames, &last_frames].into_iter().enumerate() {
-                    let mut y = hi[1] + 1.0;
-                    while let Some(h) = c.cast([x, y, z], [x, lo[1] - 1.0, z], &q) {
+                    let mut y = y_hi + 1.0;
+                    while let Some(h) = c.cast([x, y, z], [x, y_lo - 1.0, z], &q) {
                         if k == 0 || animated_set.contains(&h.node) {
                             out.push((h.node, h.point[1]));
                         }
