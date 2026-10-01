@@ -232,7 +232,7 @@ with `--triggers --anim --falls --walls --reach --ridden`:
   loads (above, "Exit codes"); its triggers move nothing. **L2**: two
   exits only, and no exit leads there.
 - **S1–S9**: no exits; the secret realm's timer sends the heroes back
-  ([items.md](items.md), not in the runtime yet). S3: sixteen paired
+  ([items.md](items.md) "The secret realm", `exits/secret_realm.rs`). S3: sixteen paired
   transporters and a rotator with no node. S4, S6, S7: secret walls;
   S7's `S7WELL` is held at its first frame (a trigger for more players).
 - **T1–T3, DEMO1**: test levels the game doesn't reach (no exit names

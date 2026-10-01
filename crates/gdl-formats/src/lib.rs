@@ -31,5 +31,6 @@ pub use texture::{RgbaImage, TextureError, TextureFormat};
 pub use population::{ItemClass, PlayerStart, Population, PopulationError};
 pub use world::{WorldError, WorldFile, WorldNode};
 pub use world_data::{
-    BossCamera, LevelAudio, LevelCamera, LevelLight, LevelOrder, LevelTuning, RealmEnemy, WorldData, WorldDataError, WorldLevel,
+    BossCamera, LevelAudio, LevelCamera, LevelLight, LevelOrder, LevelTuning, RealmEnemy, TIMED_LEVEL, WorldData, WorldDataError,
+    WorldLevel,
 };

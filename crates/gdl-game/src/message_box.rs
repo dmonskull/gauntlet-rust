@@ -58,26 +58,38 @@ pub struct DrawBox;
 /// Asks for a message in the box: page `index` of a `TEXT/SCROLL_E.ROM`
 /// group (every page in turn when none), with the voice line that plays
 /// while it's up — an announcer's line (the tower's unlocks), queued as
-/// the box opens.
+/// the box opens unless its caller queued it — and stops as a page is put
+/// away.
 #[derive(Message, Clone, Debug)]
 pub struct ShowMessage {
     pub group: String,
     pub index: Option<usize>,
     pub voice: Option<&'static str>,
+    /// The box queues the voice line itself.
+    pub queue_voice: bool,
 }
 
 impl ShowMessage {
     pub fn new(group: impl Into<String>, index: usize) -> Self {
-        Self { group: group.into(), index: Some(index), voice: None }
+        Self { group: group.into(), index: Some(index), voice: None, queue_voice: true }
     }
 
     /// Every page of the group, one after another.
     pub fn all(group: impl Into<String>) -> Self {
-        Self { group: group.into(), index: None, voice: None }
+        Self { group: group.into(), index: None, voice: None, queue_voice: true }
     }
 
     pub fn voice(mut self, line: &'static str) -> Self {
         self.voice = Some(line);
+        self
+    }
+
+    /// A line the caller has queued (with its own wait): the box only
+    /// stops it as a page is put away (the secret character's,
+    /// `exits/secret_realm.rs`).
+    pub fn stopping(mut self, line: &'static str) -> Self {
+        self.voice = Some(line);
+        self.queue_voice = false;
         self
     }
 }
@@ -307,7 +319,7 @@ fn step_box(
             continue;
         }
         info!("message box: {} {:?}", m.group, pages);
-        if let Some(line) = m.voice {
+        if let Some(line) = m.voice.filter(|_| m.queue_voice) {
             voices.write(QueueVoice::announcer(line, VOICE_MOST_WAIT));
         }
         boxes.open = Some(Open { group: g.clone(), pages, page: 0, fields: 0.0, voice: m.voice });

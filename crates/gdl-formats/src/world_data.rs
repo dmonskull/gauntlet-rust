@@ -11,7 +11,8 @@
 //! 0x00  u32 directory offset, u32 chunk count
 //! dir   16 bytes per chunk: u32 tag ('WRLD', 'LEVL', 'AUDS', …),
 //!       u32 offset, u32 record count, u32
-//! LEVL  0x10C bytes per level: +0x08 name ("A1" → LEVELS/levelA1),
+//! LEVL  0x10C bytes per level: +0x00 u32 flags (4 timed), +0x08 name
+//!       ("A1" → LEVELS/levelA1), +0x0C i16 a timed level's seconds,
 //!       +0x4C 6 × i16 ENMY indices, +0x58 i16 camera record,
 //!       +0x5A i16 audio record,
 //!       +0x8E i16 monster slots, +0xAC..+0xD4 f32 monster and generator
@@ -59,6 +60,12 @@ pub enum WorldDataError {
 pub struct WorldLevel {
     /// `A1` for `LEVELS/levelA1`.
     pub name: String,
+    /// `+0x00`: 4 a timed level — its timer ends it (every secret realm
+    /// level); 8 each hero carries a light (S5); 1 shots stun the other
+    /// players (none on the disc). See `docs/items.md`, "The secret realm".
+    pub flags: u32,
+    /// `+0x0C`: a timed level's time, seconds (30 on the untimed ones).
+    pub seconds: i16,
     /// Index into [`WorldData::audio`].
     pub audio: usize,
     /// Index into [`WorldData::cameras`].
@@ -217,9 +224,17 @@ impl LevelTuning {
     }
 }
 
+/// The level record flag of a timed level.
+pub const TIMED_LEVEL: u32 = 0x4;
+
 impl WorldLevel {
     pub fn folder(&self) -> String {
         format!("level{}", self.name)
+    }
+
+    /// A timed level's seconds.
+    pub fn timed(&self) -> Option<i16> {
+        (self.flags & TIMED_LEVEL != 0).then_some(self.seconds)
     }
 }
 
@@ -443,7 +458,17 @@ impl WorldData {
                 let listed = (0..6).map(|i| le_u16(l, 0x4C + i * 2) as i16);
                 let enemies = listed.filter_map(|i| usize::try_from(i).ok()).filter(|&i| i < enemies.len()).collect();
                 let boss_camera = usize::try_from(le_u16(l, 0x8C) as i16).ok().and_then(|i| boss_cameras.get(i).copied());
-                Ok(WorldLevel { name, audio: audio_index, camera, light, tuning: LevelTuning::parse(l), enemies, boss_camera })
+                Ok(WorldLevel {
+                    name,
+                    flags: le_u32(l, 0x00),
+                    seconds: le_u16(l, 0x0C) as i16,
+                    audio: audio_index,
+                    camera,
+                    light,
+                    tuning: LevelTuning::parse(l),
+                    enemies,
+                    boss_camera,
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -654,5 +679,34 @@ mod tests {
         }
         eprintln!("{levels} levels with camera records");
         assert!(levels > 60);
+    }
+
+    /// Only the secret realm's levels are timed, each with its own time;
+    /// S5 alone has its heroes carry lights.
+    #[test]
+    fn the_secret_realms_levels_are_timed() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT")
+            .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let Ok(dir) = std::fs::read_dir(std::path::Path::new(&root).join("WDATA")) else {
+            eprintln!("skipping: no WDATA folder");
+            return;
+        };
+        let mut timed = Vec::new();
+        for path in dir.flatten().map(|e| e.path()) {
+            let Ok(w) = WorldData::parse(&std::fs::read(&path).unwrap()) else { continue };
+            for l in &w.levels {
+                if let Some(s) = l.timed() {
+                    timed.push((l.name.clone(), s, l.flags));
+                } else {
+                    assert_eq!((l.flags, l.seconds), (0, 30), "{}", l.name);
+                }
+            }
+        }
+        timed.sort();
+        let seconds: Vec<i16> = timed.iter().map(|t| t.1).collect();
+        let names: Vec<&str> = timed.iter().map(|t| t.0.as_str()).collect();
+        assert_eq!(names, ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9"]);
+        assert_eq!(seconds, [70, 40, 45, 50, 130, 100, 55, 70, 60]);
+        assert_eq!(timed[4].2, TIMED_LEVEL | 8);
     }
 }

@@ -502,8 +502,9 @@ item/object mechanic work. Split, side by side:
    - Records are applied by `FUN_800ceeb8`; the update is `FUN_800cdfdc`.
 5. ~~Tower progression~~: done for one player, with the gem count above
    the panel, the legendary items' hints, the wizard's messages
-   (NEWSHARDS … RUNE13*) and the pickup notices. Left: the secret realm's
-   coins and ALLCOINS (items.md). Saving is done (a file for the card).
+   (NEWSHARDS … RUNE13*) and the pickup notices; the secret realm's
+   timer, coins and ALLCOINS (items.md "The secret realm"). Saving is done
+   (a file for the card).
 6. **Co-op** (up to 4 players), **hints 0x14/0x15/0x1B**. (Hit flashes
    are done but for node spheres', whose model node isn't traced.)
 7. ~~Hit effects~~: done — blood sprays (BLOODFX1 per blow, BLOODFX2 on
