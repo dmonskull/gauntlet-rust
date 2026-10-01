@@ -174,6 +174,9 @@ pub struct Player {
     /// The level node and point the last tick's move ran into, if a wall
     /// stopped it (damaging walls, `hazards.rs`).
     pub wall_hit: Option<(usize, [f32; 3])>,
+    /// Moved instantly since the item touch test last ran (`items.rs`
+    /// takes it): that test starts from here, not from where the hero was.
+    pub teleported: bool,
 }
 
 /// The hero's working stats at a character level: strength (5–20),
@@ -592,12 +595,14 @@ impl Player {
     }
 
     /// Moves the hero instantly (no interpolation smear), standing on a
-    /// fresh floor.
+    /// fresh floor; the item touch test starts again from there rather
+    /// than sweeping the jump (`teleported`).
     pub fn teleport(&mut self, at: [f32; 3], facing: f32) {
         self.mover.position = at;
         self.mover.facing = facing;
         self.ground = PlayerGround::new(at[1]);
         self.previous = (at, facing);
+        self.teleported = true;
     }
 }
 
@@ -762,6 +767,7 @@ fn spawn_player(
         attack_started: 0.0,
         magic: MagicState::default(),
         wall_hit: None,
+        teleported: false,
     };
     commands.entity(root).insert((player, LevelEntity));
     controls.ticks = 0;

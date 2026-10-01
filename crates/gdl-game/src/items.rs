@@ -1493,7 +1493,9 @@ fn run(
         return;
     }
     let to = player.mover.position;
-    let from = items.last_feet.unwrap_or(to);
+    // A hero moved instantly (put back at the start, a test's hop) is
+    // touched where it is now, not swept along the jump.
+    let from = if std::mem::take(&mut player.teleported) { to } else { items.last_feet.unwrap_or(to) };
     if !state.alive {
         items.last_feet = Some(to);
         return;
