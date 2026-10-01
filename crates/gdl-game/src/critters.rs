@@ -103,7 +103,7 @@ use crate::mechanics::Mechanics;
 use crate::monsters::{MonsterLevel, MonsterTick, game_view, on_screen};
 use crate::play_camera::PlayCamera;
 use crate::player::Player;
-use crate::player_state::{DamagePlayer, EnemyScale, PlayerState, TimeStop};
+use crate::player_state::{Cry, EnemyScale, HurtHero, PlayerState, TimeStop};
 use crate::population::{ContentModels, LevelPopulation};
 use crate::projectiles::{CritterMissile, CritterStop, cylinder_hit, load_atree, spawn_critter_missile};
 use crate::world::{LevelEntity, LevelGround};
@@ -1802,7 +1802,7 @@ fn tick_critters(
     mut statues: Query<&mut Animator, With<StatueModel>>,
     mut spheres: Query<&mut Transform, (With<CritterSphere>, Without<Critter>)>,
     bones: Query<&GlobalTransform>,
-    mut hurt: MessageWriter<DamagePlayer>,
+    mut hurt: MessageWriter<HurtHero>,
     mut sounds: MessageWriter<PlaySoundAt>,
     (mut death_shot, camera): (Local<Option<u32>>, Option<Res<PlayCamera>>),
     (colours, mut tags, enemies, stop): (Res<FlashColours>, Query<&mut MeshTag>, Res<EnemyScale>, Res<TimeStop>),
@@ -2113,8 +2113,9 @@ fn tick_critters(
     for (player, amount, kind_bits, push) in blows {
         let Ok((_, mut p)) = players.get_mut(player) else { continue };
         let amount = p.take_blow(amount, kind_bits, Vec3::from(push));
+        // Voiced as the game's critter blows are: the hurt sound by kind.
         if amount != 0.0 {
-            hurt.write(DamagePlayer { amount });
+            hurt.write(HurtHero { amount, kind: kind_bits, cry: Cry::Hurt });
         }
         info!("a critter hits the hero for {amount:.1} (kind {kind_bits:#x})");
     }
