@@ -95,6 +95,9 @@ pub(crate) fn apply_hits(
                         }
                         m.die(hit.kind, hit.at.to_array());
                         commands.entity(hit.target).try_remove::<Targetable>();
+                        if let Some(state) = state.as_deref_mut() {
+                            state.kills += 1;
+                        }
                         info!("Death dies");
                     }
                     continue;
@@ -160,6 +163,10 @@ pub(crate) fn apply_hits(
                 }
                 m.die(kind, hit.at.to_array());
                 commands.entity(hit.target).try_remove::<Targetable>();
+                // A hero's killing blow counts for its tally.
+                if by_hero && let Some(state) = state.as_mut() {
+                    state.kills += 1;
+                }
                 debug!("monster {:?} dies", hit.target);
             }
             TargetKind::Generator => {
@@ -203,6 +210,9 @@ pub(crate) fn apply_hits(
                     // walk into.
                     if let Some(items) = items.as_deref_mut() {
                         items.free(g.placement, &mut commands);
+                    }
+                    if by_hero && let Some(state) = state.as_mut() {
+                        state.generators += 1;
                     }
                     debug!("generator {} destroyed", g.placement);
                 } else if g.hit_points_per_tier > 0.0 {

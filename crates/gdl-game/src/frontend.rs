@@ -2402,6 +2402,15 @@ fn level_started(
                 open.out[slot] = fe.out[slot];
                 if let Some(state) = party.state(slot) {
                     open.bonus[slot] = state.bought;
+                    // This level's kills: monsters and generators.
+                    let before = snapshot.0[slot].as_ref().map_or(0, |s| s.kills + s.generators);
+                    open.kills[slot] = (state.kills + state.generators).saturating_sub(before);
+                    open.totals[slot] = crate::shop::FinalStats {
+                        kills: state.kills,
+                        generators: state.generators,
+                        gold: state.gold_found,
+                        seconds: state.play_fields as f32 / 60.0,
+                    };
                 }
             }
             info!("after {level}: the after-level screen");
