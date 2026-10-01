@@ -647,8 +647,12 @@ pub struct CritterLevel {
     /// and whether time is stopped (`TimeStop`).
     enemy_scale: f32,
     time_stopped: bool,
-    /// Per player: until when critter blows can't hit it.
-    guard: HashMap<Entity, f32>,
+    /// Per player: until when blows can't hit it — the game's one guard
+    /// (`+0x8E8`) that the missiles and blasts set too (taken from and
+    /// given back to `projectiles::PlayerGuard` each tick; fixed-clock
+    /// seconds, `clock` now).
+    guard: HashMap<Entity, f64>,
+    clock: f64,
     /// The boss, once made; whether it has died (its DEATH has played:
     /// the game's `r13-0x7784`).
     pub boss: Option<Entity>,
@@ -1417,6 +1421,7 @@ fn setup_level(
         enemy_scale: 1.0,
         time_stopped: false,
         guard: HashMap::new(),
+        clock: 0.0,
         boss: None,
         boss_dead: false,
         boss_type: monsters.boss,
@@ -1806,9 +1811,13 @@ fn tick_critters(
     mut sounds: MessageWriter<PlaySoundAt>,
     (mut death_shot, camera): (Local<Option<u32>>, Option<Res<PlayCamera>>),
     (colours, mut tags, enemies, stop): (Res<FlashColours>, Query<&mut MeshTag>, Res<EnemyScale>, Res<TimeStop>),
+    (time, mut guard): (Res<Time>, ResMut<crate::projectiles::PlayerGuard>),
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     let level = &mut *level;
+    // The heroes' guard, shared with the missiles and blasts.
+    level.guard = guard.snapshot();
+    level.clock = time.elapsed_secs_f64();
     level.now += DT;
     level.enemy_scale = enemies.0;
     level.time_stopped = stop.0;
@@ -2143,6 +2152,7 @@ fn tick_critters(
         }
     }
     sounds.write_batch(to_play);
+    guard.merge(&level.guard);
 }
 
 /// Old damage is forgotten after 3 s, and during ROAR and hit reactions.
@@ -2807,7 +2817,7 @@ fn track(c: &mut Critter, ty: &TypeInfo, centre: [f32; 3], heroes: &[Hero], leve
     let mut found: Vec<Tracked> = Vec::new();
     for h in heroes.iter().filter(|h| !h.hidden || ty.class == class::BOSS) {
         let (mut s, distance, direction) = score(c, &ty.target, centre, h.feet);
-        if level.guard.get(&h.entity).is_some_and(|&until| level.now < until) {
+        if level.guard.get(&h.entity).is_some_and(|&until| level.clock < until) {
             s *= RECENTLY_HIT;
         }
         if ty.class == class::BOSS && s >= REJECTED {
@@ -3277,7 +3287,7 @@ fn deal(
     // The breath's direction: the node's forward axis, turned.
     let forward = turn_dir(Vec3::from(node.matrix3.z_axis).normalize_or_zero(), d.yaw, d.pitch);
     for h in heroes {
-        if level.guard.get(&h.entity).is_some_and(|&until| level.now < until) {
+        if level.guard.get(&h.entity).is_some_and(|&until| level.clock < until) {
             continue;
         }
         let centre = Vec3::from(h.feet) + Vec3::Y * h.half;
@@ -3309,7 +3319,7 @@ fn deal(
             kind_bits |= crate::combat::hit_kind::NO_HIT_LOOK;
         }
         blows.push((h.entity, damage, kind_bits, push.to_array()));
-        level.guard.insert(h.entity, level.now + HIT_GUARD);
+        level.guard.insert(h.entity, level.clock + f64::from(HIT_GUARD));
         c.blows_dealt += 1;
         debug!("critter {me:?} blow kind {} lands for {damage:.1}", d.kind);
     }
@@ -3847,6 +3857,7 @@ mod tests {
             enemy_scale: 1.0,
             time_stopped: false,
             guard: HashMap::new(),
+            clock: 0.0,
             boss: None,
             boss_dead: false,
             boss_type,
