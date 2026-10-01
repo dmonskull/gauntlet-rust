@@ -175,9 +175,9 @@ centre `+0x5C`, radius from type `+0x7C`), so a critter is a
 | `+0x398` / `+0x3C8` / `+0x428` | the move node's matrix / position / previous position |
 | `+0x3D8`, `+0x418` | spawn matrix and position |
 | `+0x438` | floor point |
-| `+0x44C` | health meter |
+| `+0x44C` i16 | its 2D health meter's number (−1 none) |
 | `+0x44E` / `+0x44F` | parts made / parts alive |
-| `+0x450` | health-meter model (`GMETER`) |
+| `+0x450` | its 3D health meter's model (`GMETER`); `+0x498` its `RED_FILLE` node |
 | `+0x49C` | home |
 | `+0x4AC` | distance from home |
 | `+0x4B0` | hit points |
@@ -550,7 +550,10 @@ setup-function numbers:
   - `0x80035908` hits regular monsters (state 1/6, or 8 during
     `r13-0x731c`; not type 0x1F) the same way (`0x8004e660`).
   - Non-bosses deal half damage while `r13-0x7320` < 1.
-  - On first frames it also spawns the projectile/effect as for kind 1.
+  - On first frames it also starts the blow's effect slot
+    (`0x8003cfbc(…, 1, 0)`, attached): with an effect record it's a still
+    slot that hurts the first hero it touches ("The blow's effect slot"
+    below).
 - **1 — projectile** (`0x8003cfbc(…, 0, node position)`).
   - **Start:** `DAMG +0x20` in the critter's space plus the node position.
   - **Effect:** the `SFXX +0x40` effect is the projectile (`0x8003d6f8` →
@@ -562,9 +565,9 @@ setup-function numbers:
   - **Stats:** damage = `+0x2C` × level `+0xBC`. It also gets the `+0x18`
     parameter, radius `+0x0C`, kind `+0x04`, hit effect `+0x42`, and trails
     `+0x44`/`+0x46` lasting `+0x3C`.
-  - **Speed:** min `+0x30` ≤ 0 means a still effect lasting `+0x08`.
-    Otherwise speed = min + (clamp(anger, 0.5, 1.5) − 0.5) × 0.75 × (max
-    `+0x34` − min).
+  - **Speed:** min `+0x30` ≤ 0 means a still effect (radius `+0x08`, the
+    record's life). Otherwise speed = min + (clamp(anger, 0.5, 1.5) − 0.5)
+    × 0.75 × (max `+0x34` − min).
   - **Direction:**
     - flag 4: the full forward row;
     - flag 1 with a target: at the target (`+0x54`) from the projectile;
@@ -572,15 +575,19 @@ setup-function numbers:
   - **Aim:** without flag 8 the direction is solved for an arc under
     gravity `+0x38` (`0x80030a9c`). Kind 1 is then turned by `+0x14` ±
     spread `+0x48`/2 at random, and tilted by `+0x1C` with flag 8.
-  - **Launch:** `0x80093688(gravity, life +0x08, …, velocity)`.
+  - **Launch:** `0x80093688(gravity, radius +0x08, …, velocity)` (the
+    slot's own radius `+0x84`; not a life).
 - **2, 3 — attached or ground effect** (`0x8003cfbc(…, 1, 0)`): the same
   effect with damage, attached to the move node. Kind 3 is the golem and
-  garm stomp ring, radius `+0x0C` (55–75).
+  garm stomp ring, radius `+0x0C` (55–75), growing as a blast; kind 2's
+  slot (flags `| 0x30`) holds its whole radius at full damage instead.
 - **4 — breath cone** (`0x80036050`). A segment from the node point along
   the node's direction, turned by `+0x14`/`+0x1C`, of length `+0x0C`.
   Players between `+0x10` and `+0x0C` horizontally, within `+0x08` + their
   cylinder, and with a clear line (`0x8005fb34`) take the damage. The hit
-  timer is as for kind 0.
+  timer is as for kind 0. Its effect slot (first frame, attached) is only
+  shown: `0x8003cfbc` gives kind 4 damage −1 and no flags, so the slot gets
+  no damage, radius or kind and touches nothing.
 - **5 — at every safe rock**: for each of the level's safe rocks
   (`0x802409f0`, up to 16, found by `0x80063efc`; `0x80063c30` gives a
   rock's object), the blow's projectile (`0x8003cfbc(…, 0,
@@ -701,6 +708,88 @@ clip from the `WEAPONS` bank; it has no model here.
     mode and the thrown flight).
 - **8 — projectile at a point**: aimed at `+0x1FC`.
 - **9 — the boss's loot** (below).
+
+### The blow's effect slot (`0x8003cfbc`, flown by `0x80094418`)
+
+Every kind but 9 starts its `DAMG +0x40` effect record on its first frame
+through `0x8003cfbc(critter, damg, attached, point)` (kinds 0, 2, 3, 4
+attached to the move node; 1 and 7 at the node's point, 8 at the target,
+5/6 at rocks). With no record (`+0x40` < 0), or one whose effect didn't
+load (`SFXX +0x08` < 0), there's no slot (`0x8003d6f8` returns −1). The
+slot is an ordinary effect slot (`docs/projectiles.md`): `0x8003db7c`
+places the record's effect where the record's flags say (1/0x800 on the
+root, 0x80 at the spawn point, 0x40 at the node's point, else attached to
+the move node `+0xD0` at the blow's offset `+0x20` plus the record's
+`+0x30`, all × the critter's scale), with the record's life `SFXX +0x3C`
+(else its clip's); its owner (`+0xA8`) is the critter's serial | 0x1000
+(the hit goes into the critter's per-player record, `0x800367f4`).
+Then `0x8003cfbc` ORs in its flags — `0x801` for a boss's (players; `0x800`:
+never a boss), `0x809` for others' (and monsters and critters: the
+critter's own slot is noted as having hit it already, `0x80037de8` for
+999 s) — by kind: 1 `| 6` (items, level), 2 `| 0x30`, 3/5/6/8 `| 0x20`,
+**4: none, and damage −1**, 0 and 7 nothing more; and `DAMG` flags 0x40
+(`& ~6`), 0x1000 (`& ~1`, no players), 0x2000 (`| 0x400`). When the damage
+is ≥ 0 (every kind but 4) it sets damage `+0x2C` × level `+0xBC`, kind
+`+0x04`, the `+0x18` parameter (a cone for areas, below), the burst radius
+`+0x0C`, the hit record `+0x42` (its effect becomes the follow-up, its
+sound the hit and wall sounds, `0x800937ac`) and the slot's own radius
+`+0x08` (`0x80093688`); with a speed it flies (kind 1).
+
+The effect update (`0x80094418`, once a frame) treats the slot by its
+flags:
+
+- **No `0x20`: a missile** (mode 0 in the code): the segment it moved
+  this frame — none for a still slot, so a point — against each player's
+  cylinder grown by the slot's radius (`0x8002f978`: centre `+0x64`,
+  radius r + `+0x850`, half height r + `+0x854`), the first met. A hero
+  whose critter guard `+0x8E8` hasn't passed takes nothing; otherwise the
+  damage, kind and its flight's direction (`0x80078560`) and, above 2, the
+  guard = now + 0.25 s (`r2-0x55e8`). Either way the slot **stops**
+  there (unless the kind pierces, `0x100000`): its hit sound, and its
+  follow-up effect — bursting out to `+0x0C` — or, with none, it ends.
+  A reflecting hero turns it back (damage at most 15, monsters, its end a
+  second sooner). Its life running out: with a burst radius (and not
+  `0x4020`) it stops two frames early as at a wall — its wall sound and
+  follow-up, else the element's default wall effect (`0x80122560[kind &
+  0xF]`: 1 SPARKS for kind 0, 10 for fire…), whose burst then hits
+  monsters only (`flags & ~0xF`, `| 0x28`); else it just goes.
+- **`0x20` without `0x10`: a growing blast** (mode 1) from where it is, as
+  [projectiles.md](projectiles.md) "Blast": reach `+0x0C` × (1.33 − f),
+  share 1.5 × (f − 0.33); a hero hit is guarded for the rest of the
+  blast's life + 2 frames (`r2-0x55f0`), so once a blast.
+- **`0x30`: a steady area** (mode 2, kind 2): its whole radius `+0x0C` at
+  full damage while it lasts; a hero hit is guarded min(its life left, 1
+  s) (`r2-0x5698`).
+- Areas hit heroes within (radius + their radius) across and (radius +
+  their half height) up or down — with a clear line beyond 10
+  (`0x8005fb34`) — through their guard; a hit under 5 (`r2-0x55a0`) loses
+  the knock kinds and gets `0x1000000`; the push is 0.25 × the way across.
+  With the parameter `+0x18` above −1 an area is a cone: only what's ahead
+  of the slot's facing by at least that cosine (× 0.85 within 0.3 of the
+  reach) is hit (the drider's whips 0.866, the dragon's stomp −0: its
+  front half).
+
+So a **kind 0** blow with an effect record leaves, held on its node for
+the record's life, a slot that hurts the first hero coming within its
+radius and then goes; on the disc only the lich has such blows: AXEF
+(`DAMG` 3, NULLFX for 1 s: 5 within 4 of the axe, `0x20`) and the chain's
+second blow (`DAMG` 7, NULLFX for its 30-frame second: 10 within 16 of its
+upper torso less 5, kind 0 — its own sphere has radius 0) — the lich's
+"aura". A **kind 4** blow's effect (the dragon's and gargoyles' breaths,
+the wraith's NULLFX) is only shown.
+
+Here (`critters.rs` `touch_slot`, `projectiles.rs`): kind 0's slot is a
+critter missile held on the node (`Projectile::anchor`, a child of the
+node's entity) with no velocity, the blow's damage and kind, its own
+radius, the record's life, the heroes only (not the level or items), and
+the hit record as any critter missile's stop; reflected missiles' ends
+come a second sooner. Kind 2 is a steady blast (`effects::BlastShape::
+Holds`), kinds 3 and 8 grow. Not done: the areas' cone (`+0x18`), an
+area's hero guard for the rest of its life (here the usual 0.25 s and the
+blast's own one hit each), the element's default wall effect and its
+monsters-only burst when a missile with a burst radius but no hit record
+stops at a wall or runs out (kind 0's slot after its life, the critter
+missiles), and non-bosses' slots hitting monsters (`0x809`).
 
 ### The boss's loot (`DAMG` kind 9, `0x8001a914`)
 
@@ -900,11 +989,27 @@ isn't traced).
     frames at rate 30). A sound plays at it (`0x8009eb78`: the realm's
     entry of `0x80122f4c`, `S_BOSSKEY<realm letter>`);
   - it calls `0x800b2bd4(…, 1)` on the HUD sprites at `0x8023ddc8` and
-    `0x8023dde0` (3 × 2 each).
+    `0x8023dde0` (3 × 2 each): it hides the 2D health meters ("The health
+    meters").
 - **No pick-up.** The heroes' action 0x1C (PICK) needs `r13-0x7768` ≥ 0
-  as well as a dead boss (`0x80080d3c`), and the only store to
-  `r13-0x7768` in the DOL is −1 (`0x80057090`; no other store and no
-  address taken): dead code in retail. The key is only shown.
+  as well as a dead boss and the end sequence before its wizard
+  (`r13-0x7790` < 2; `0x80080d3c`), and the only store to `r13-0x7768` in
+  the DOL is −1 (`0x80057090`; no other store and no address taken —
+  checked over the whole text: its other uses are loads at `0x8004d008`,
+  `0x800786bc`, `0x80082b04`): dead code in retail. `r13-0x7768` is a
+  monster's number — the monster update keeps that monster's `+0xB4` at 1,
+  and while a boss level has it not at 1 the heroes can't be hurt — a key
+  carried by a monster, cut. The key is only shown; the camera frames it
+  while it shows (`r13-0x776c`, "Boss camera").
+- **What it opens.** Nothing by itself: the realm's bit, set for every hero
+  as the boss's body goes, lights the realm's key in the HUD's
+  legendary-key row ([frontend.md](frontend.md)), puts the realm's shard
+  in the tower's window — announced by the tower wizard on the next visit
+  — and the eight shards open the Desecrated Temple's portal
+  ([items.md](items.md), "The tower's shards and runes").
+- **No harm after.** The hurt-player routine (`0x80078560`) does nothing
+  while the end sequence runs (`r13-0x7790` ≠ 0): from the boss's
+  removal no hero can be hurt (nor during a camera cut, `r13-0x774c`).
 - **The end sequence** (`0x80019044`, run by the level update while
   `r13-0x7790` ≠ 0; its state is `r13-0x7790`):
   1. a timer: now + 5 s (`r2-0x7d28`), or 10 s (`r2-0x7d30`) for the
@@ -1246,6 +1351,81 @@ the bottom side tests the feet). Retail records use flags 0, 1, 2, 3 and
 offset, the step cut's stop cases, and the scripted cameras' precedence
 other than trigger cuts.
 
+## The health meters
+
+The critter set-up (`0x8003e6e8`, step 4 of "Spawning", for a body and
+for each part as it's made) builds them:
+
+- **2D** (`TYPE` flag 4): `0x8001b620(hit points, type, +0xF8, +0xFA,
+  +0xFC, +0xFE, flag 8)` returns the meter's number, kept in `+0x44C`
+  (−1 none). At most three a level (`r13-0x777c`, cleared with the
+  starts by `0x8001b7e4`; past it `"Too many health meters: %d"`). With
+  flag 8 it has a back: the last start `r13-0x7778` = the next
+  `r13-0x7774`, which moves on by `+0xFA` (256), and `+0xF8` sprites
+  `"%s%sMETER_BG%d"` (`0x80110f28`: the type's name, `"_"` after a name
+  — `""` for none, `r2-0x7bbc`/`-0x7bc0` —, 1…) at (last start + 256 × i,
+  8) (`r13-0x7f90`), their textures' size (`0x800b3090` → `0x800b32bc`),
+  in `0x8023ddc8` (2 a meter). Its fill sprites `"%s%sMETER_FG%d"` go at
+  the same places from the last start — a meter without a back overlays
+  the last one made — in `0x8023dde0`. Every sprite gets transparency
+  0x70 (`0x800b20cc`: alpha 0x80 − 0x38 of 0x80). The meter keeps its
+  count `0x8023ddf8`, the hit points shown `0x8023de04` and full
+  `0x8023de10` (both the hit points now), and the margins `+0xFC`
+  (`0x8023de1c`) and `+0xFE` (`0x8023de28`).
+- **3D** (flag `0x800`): the `GMETER` atree of the critter's own model
+  set (`0x80011d1c`) as a model in `+0x450`, its root under the
+  critter's root node (`0x800bb084`) at `TYPE +0x100` (0, 9, 0 for the
+  golem — 10.5 for the fire golem —, (0, 8.5, 7) for the gargoyles),
+  with facing mode `0x2000000` on that root alone (`0x800ba658(…, 0)`;
+  `0x800c81ac` → `0x800b90e0`: turned about Y so its +Z points back along
+  the camera's view, `π` + the camera's yaw — parallel to the screen,
+  unlike mode 1's turn toward the camera's position), and its
+  `RED_FILLE` node in `+0x498` (`0x80010bb8`, 9 letters). The model
+  (`MONSTERS/GOLEM/level<realm>`, `GAR_<kind>`): `GEOMETRY` →
+  `GLASS_TUB` (x −1.8…1.8, render flag `0x8000`) and `RED_FILLE` at x
+  1.51, its geometry from x −3 to 0: a red bar in a glass tube.
+
+On the disc every boss has flag 4 and two sprites (`+0xF8` 2, `+0xFA`
+256, margins from (31, 50) for the yeti to (49, 68) for the chimera),
+all with flag 8, but for the chimera: its body has no meter, its eagle
+head has the back and the lion's and snake's fills go over it. The boss folders
+hold `METER_BG1/2`, `METER_FG1/2` (`EAGLE_`…, `LION_METER_FG1`…), 256 × 64.
+The golems and gargoyles have the 3D meter; the general neither.
+
+**Each tick** (the critter update `0x80038cf4`, for the body and every
+part, before the class update; also while asleep):
+
+- `0x8001b284(hit points, meter)`: the hit points shown (never below 0)
+  move toward the critter's by 3 × the video fields this frame
+  (`r13-0x7584`: 6 a tick at 30 a second). With two sprites, f = 2 ×
+  shown ÷ full: the first fill is (int)(left + f × (256 − left)) wide
+  while f < 1 (else its texture's own width), the second (int)((f − 1) ×
+  (256 − right)) — each drawn that wide from its left with its texture
+  cut to the same 256th (`0x800b2a48`, `0x800b2358`); a width of 0
+  leaves the sprite's old width with its texture cut to its first texel
+  column. With one sprite: (shown ÷ full) × (256 − left − right). The
+  backs are tinted `0xFF8080FF` (red) while the level's boss
+  (`r13-0x7760`) is frozen (`+0xAC4`, the dragon in its intro), else
+  white (`0x800b2100`).
+- The 3D meter: while the hit points are above 0, `RED_FILLE`'s scale is
+  (hit points ÷ (`TYPE +0xE4` × level `+0xAC`), 1, 1) (`0x800ba6f8`): the
+  bar shrinks toward its x 1.51 end; at 0 the model is freed
+  (`0x800115d0`), `+0x498` = 0.
+
+**The victory** (`0x8001b854`, as the boss's body is removed) hides every
+2D meter sprite (`0x800b2bd4(…, 1)`): these are the "HUD sprites" it
+hides.
+
+Here (`critters/meter.rs`): the 2D meters made with the critter
+(`spawn_critter`; the shown hit points stepped each tick after the
+critters' update, the sprites drawn each frame from the critter's folder
+into the 2D screen, backs first, and hidden at the victory) and the 3D
+`GMETER` on the critter's root (`Billboard::ScreenYaw`, its filler's
+scale set after the pose each frame, gone at 0 hit points). Stand-ins:
+the 2D meters aren't drawn under an open menu (the HUD's rule here); an
+empty second fill draws nothing rather than its old width's first
+column; the 3D meter on a part (none on the disc) isn't made.
+
 ## Record layouts
 
 Little-endian on the disc (the game byte-swaps). Field names match
@@ -1295,8 +1475,8 @@ Little-endian on the disc (the game byte-swaps). Field names match
 | `+0xEC` | wake distance |
 | `+0xF0` | not traced |
 | `+0xF4`/`+0xF6` i16 | hit `SFXX` |
-| `+0xF8`..`+0xFE` i16 | meter parameters |
-| `+0x100`..`+0x108` | meter offset |
+| `+0xF8`..`+0xFE` i16 | 2D meter: sprites, how far its back moves the next start, the fill's left and right margins |
+| `+0x100`..`+0x108` | where the 3D meter stands on the root |
 | `+0x110`/`+0x114`/`+0x118` | i16 count + i16 first for `MOVE`/`PTRN`/`NODE` |
 | `+0x11C` i16 | child |
 | `+0x11E` i16 | parent (shares atree) |
@@ -1559,9 +1739,13 @@ in the game) and the bosses on the 30 Hz tick, interpolated for drawing.
   lich's at their target. Effects a critter's folder lacks (EXPRING,
   NULLFX) come from the `WEAPONS` bank (`effects::BankEffect`). A record
   with flag 2 shakes the camera as it starts (0.1, 90 fields, priority
-  100). Kinds 0 and 4 show their effects too; the game's slot for them
-  can hurt a hero it touches (radius `+0x08`, e.g. the lich's aura):
-  not done. A moving still effect (the garm's, speed 10) stays put.
+  100). Kind 2 holds its whole radius at full damage while it lasts
+  (its slot's flags `0x30`), kinds 3 and 8 grow. Kinds 0 and 4 show
+  their effects too; a sphere's (kind 0) slot is held on its node and
+  hurts the first hero it touches within `+0x08` (the lich's axe and
+  chain), a cone's (kind 4) carries no damage ("The blow's effect slot").
+  A moving still effect (the garm's, speed 10) stays put. The areas'
+  cone (`DAMG +0x18`) isn't applied.
 - **Missiles** (kind 1, `launch`, `projectiles::spawn_critter_missile`):
   none without an effect the table holds; they hit with `DAMG +0x08` (the
   missile's own radius, the slot's `+0x84`), are drawn at the effect
@@ -1584,7 +1768,7 @@ in the game) and the bosses on the 30 Hz tick, interpolated for drawing.
 - **Only one target is tracked.** Condition `[6]` (distance from home) and
   the multi-target weighting are bosses' and aren't done.
 - **Not done:**
-  - look nodes, the health meter (`GMETER`), hit effects, node spheres'
+  - look nodes, hit effects, node spheres'
     flashes (the body's and parts' are done),
     fading, shadows;
   - breakable `NODE`s' own breaking (flags 2 and 4: `DAMG +0x12`, the
@@ -1665,10 +1849,16 @@ dragon.
   and holds it; the 2 s countdown then sends the hero to `levelL1` —
   step 9 waits for the voice queues before the teleport's step, and the
   level change waits for them too (`exits.rs`).
-  - Stand-ins: the wizard doesn't fade in; the teleport-out effect,
-    the HUD sprites and the next level's choice (`levelL1` for world
-    13's first) aren't the game's; the shard doesn't drop to the floor
-    (flag 0x40 only acts on moving effects, and it has no velocity).
+  - The "HUD sprites" it hides are the 2D health meters (`meter.rs`).
+  - Stand-ins: the wizard doesn't fade in; the teleport-out effect and
+    the next level's choice (`levelL1` for world 13's first) aren't the
+    game's; the key's effect flag 0x40 isn't applied (each frame the
+    effect update, `0x80094418`, sets a slot so flagged that is less than
+    0.2 above the floor under it — the item probe, 4 above to 10 below —
+    at 0.1 above it and stops it, whether it moves or not; a key put more
+    than 0.2 up stays in the air); heroes can still be hurt during the
+    end sequence (the game's hurt routine refuses every blow then: a hook
+    for `player.rs`).
   - Checked on B6 (`GDL_CRITTER_HP=0.02`): the dragon dies; when its
     body goes (DEATH, then its 2 s hold) the shard shows over the arena,
     the wizard 5 s after that; the two speeches play back to back, and
