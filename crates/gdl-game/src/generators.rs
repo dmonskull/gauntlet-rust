@@ -179,6 +179,7 @@ pub fn from_population(
     tuning: &LevelTuning,
     enemies: &LevelEnemies,
     realm: u32,
+    players: u8,
 ) -> (Vec<Generator>, Vec<PlacedMonster>) {
     let mut generators = Vec::new();
     let mut placed = Vec::new();
@@ -192,7 +193,7 @@ pub fn from_population(
             (None, Some(_)) => -1,
             (None, None) => continue,
         };
-        if !p.active_for(1) {
+        if !p.active_for(players) {
             continue; // needs more players
         }
         // The realm's own monster for the placeholder name. Generators

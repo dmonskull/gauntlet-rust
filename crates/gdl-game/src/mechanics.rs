@@ -208,13 +208,13 @@ impl LevelNodes {
 /// a mover of it whether or not the trigger is for the party, and holds
 /// it at its off height (or hides a bridge) — the party's rotators' nodes
 /// and the animated objects.
-pub fn moving_roots(population: &Population) -> HashSet<usize> {
+pub fn moving_roots(population: &Population, players: u8) -> HashSet<usize> {
     population
         .placements
         .iter()
         .filter_map(|p| match p.params(population.resolved_type(p).class) {
             PlacementParams::Trigger { target, .. } => target,
-            PlacementParams::Rotator { target, .. } if p.active_for(1) => target,
+            PlacementParams::Rotator { target, .. } if p.active_for(players) => target,
             _ => None,
         })
         .chain(population.animations.iter().filter(|a| a.track.is_some()).map(|a| a.node))
@@ -704,7 +704,7 @@ fn setup(
     for (placement, p) in pop.placements.iter().enumerate() {
         let ty = pop.resolved_type(p);
         // Only the party's triggers and rotators run.
-        if !p.active_for(1) {
+        if !p.active_for(population.players) {
             continue;
         }
         match p.params(ty.class) {

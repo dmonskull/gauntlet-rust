@@ -72,10 +72,36 @@ camera faces; [player-movement.md](player-movement.md)).
 - At level start it snaps to the nearest point instead of turning from
   wherever it was.
 
+## Several players (`FUN_8006ed50`)
+
+The update (`FUN_8006df34`) picks the preferred distance (`+0xDC`): the
+record's near × 0.8 (`r13-0x7e18`) for one player (never used: the fit
+returns near), and for several the current camera point's byte (its
+locator's `+1`) or, when that's 0, the record's far × 0.9375
+(`r13-0x7e1c`). `FUN_8006ed50` then gives the distance that goes in the
+9-slot ring: with near = far, near; with one player (`r13-0x7394`, the
+count; `r13-0x706c` never set), near; with several, for each of the
+camera's four view-side planes (`+0x40`, 4 × 16 bytes, inward normals)
+and each player in state 1 or 4 without flag `0x20` (`+0x964`), the
+distance that puts its top point (`+0x54`) and feet (`+0x44`) on the
+plane's inner side looking at the focus along the view —
+(focus · n − p · n) / (dir · n), `r2-0x62a8` = 1 — the largest of those
+("needed"), then: when the players fit within near − 10 (`r13-0x7e28`)
+and the preferred distance is past near, near; otherwise needed + 10, or
+the preferred distance once needed is past preferred − 10, or needed + 4
+(`r13-0x7e24`) once past preferred − 4. No far limit. With several
+players the target pitch is no shallower than the record's pitch limit
+(`+0x08`).
+
+Here (`camera_rig.rs` `fit`): as above, the planes being the 4:3 view's
+sides (60° across, 46.8° up) through the eye along the current yaw and
+pitch — the game's `+0x40` planes aren't traced, so their margins (if
+any) aren't known. The heroes framed are those alive (all of them when
+none is).
+
 ## Not yet
 
 - Starting (kind 1), intro path (3/4) and trigger (9) cameras.
-- Several players: the fit distance and pitch limit.
 - Camera modes other than 0. (Boss levels use the boss camera:
   [critters.md](critters.md) "Boss camera".)
 

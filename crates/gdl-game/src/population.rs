@@ -145,6 +145,9 @@ pub struct LevelPopulation {
     pub population: Population,
     /// The start the heroes arrive at ([`start_entry`]).
     pub entry: i16,
+    /// Players in the game as it began: the placements for 2–4 players
+    /// come with them.
+    pub players: u8,
 }
 
 /// The tower's order of the realms: its start `i` is for arriving from
@@ -845,6 +848,7 @@ pub fn spawn(
     marker_materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
     enemies: Option<&LevelEnemies>,
+    players: u8,
 ) -> Spawned {
     let pop = &level.population;
     let realm = crate::quest::level_of(&level.name).map_or(0, |(r, _)| r);
@@ -886,9 +890,9 @@ pub fn spawn(
     let mut counts: HashMap<Category, usize> = HashMap::new();
     for (index, placement) in pop.placements.iter().enumerate() {
         // Placements for more players (a second key, barrels for a bigger
-        // party…) aren't made in a one-player game (`items.rs` doesn't
-        // make their items either).
-        if !placement.active_for(1) {
+        // party…) come only with them (`items.rs` makes their items the
+        // same way).
+        if !placement.active_for(players) {
             continue;
         }
         let ty = pop.resolved_type(placement);

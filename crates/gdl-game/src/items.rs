@@ -1183,8 +1183,9 @@ pub(crate) fn build_items(
     let mut out = Vec::new();
     let mut ambient = Vec::new();
     for (index, placement) in pop.placements.iter().enumerate() {
-        // One player: the rest are hidden and never touched.
-        if !placement.active_for(1) {
+        // The placements for the players in the game; the rest are hidden
+        // and never touched.
+        if !placement.active_for(population.players) {
             continue;
         }
         let ty = pop.resolved_type(placement).clone();

@@ -5,7 +5,8 @@
 //! nearest point's angles, switching points only when another is clearly
 //! nearer to the players' feet and then turning over 50 ticks; it looks at
 //! the players' top points, clamped to a box and smoothed over the last 9
-//! ticks, from the level's distance.
+//! ticks, from the level's distance — with several players, from as far as
+//! keeps every one in view, looking down at least the level's pitch limit.
 
 use crate::locomotion::wrap;
 
@@ -16,6 +17,16 @@ pub const TURN_TICKS: f32 = 50.0;
 /// A point takes over when its squared distance is at most this fraction of
 /// the current point's — i.e. it is at most 2/3 as far away.
 pub const SWITCH_RATIO: f32 = 4.0 / 9.0;
+/// The game's view, 60° across at 4:3 and 46.8° up: with several players
+/// the camera keeps every one inside it.
+const HALF_ACROSS: f32 = 30.0 * std::f32::consts::PI / 180.0;
+const HALF_UP: f32 = 23.4 * std::f32::consts::PI / 180.0;
+/// With several players the camera stands this much farther than it must,
+/// this much near its preferred distance, which is a point's own (its
+/// byte) or this share of the level's far distance.
+const FIT_MARGIN: f32 = 10.0;
+const FIT_CLOSE: f32 = 4.0;
+const FAR_SHARE: f32 = 0.9375;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraPoint {
@@ -24,7 +35,13 @@ pub struct CameraPoint {
     pub yaw: f32,
     /// How far it looks down, radians (positive = down).
     pub pitch: f32,
+    /// The locator's byte: with several players, the distance the camera
+    /// prefers here (0: the level's).
+    pub param: u8,
 }
+
+/// A hero as the camera frames it: its top point and its feet.
+pub type Framed = ([f32; 3], [f32; 3]);
 
 #[derive(Clone, Debug)]
 pub struct CameraRig {
@@ -32,6 +49,12 @@ pub struct CameraRig {
     current: Option<usize>,
     bounds: ([f32; 3], [f32; 3]),
     near: f32,
+    /// The level's far distance and, with several players, the least the
+    /// camera looks down.
+    far: f32,
+    pitch_limit: f32,
+    /// How many players it follows.
+    players: usize,
     /// Facing, and pitch in the game's sign (negative looks down).
     pub yaw: f32,
     pub pitch: f32,
@@ -54,6 +77,9 @@ impl CameraRig {
             current: None,
             bounds,
             near,
+            far: near,
+            pitch_limit: 0.0,
+            players: 1,
             yaw: 0.0,
             pitch: 0.0,
             turn: (0.0, 0.0),
@@ -67,6 +93,12 @@ impl CameraRig {
         rig.current = rig.nearest(clamp(feet, bounds));
         (rig.yaw, rig.pitch) = rig.wanted();
         rig
+    }
+
+    /// The level's far distance and pitch limit, for several players.
+    pub fn with_far(mut self, far: f32, pitch_limit: f32) -> Self {
+        (self.far, self.pitch_limit) = (far, pitch_limit);
+        self
     }
 
     /// The level's ordinary camera points.
@@ -84,8 +116,18 @@ impl CameraRig {
     }
 
     /// One game tick following `focus` (the players' top points' centre)
-    /// with points chosen by `feet` (their feet's centre).
-    pub fn tick(&mut self, focus: [f32; 3], feet: [f32; 3]) {
+    /// with points chosen by `feet` (their feet's centre), framing
+    /// `heroes`.
+    pub fn tick(&mut self, focus: [f32; 3], feet: [f32; 3], heroes: &[Framed]) {
+        let players = heroes.len().max(1);
+        let several = players > 1;
+        if (self.players > 1) != several {
+            // The pitch limit comes or goes: turn to the angles again.
+            let (yaw, pitch) = self.wanted_for(several);
+            self.turn = (wrap(yaw - self.yaw) / TURN_TICKS, wrap(pitch - self.pitch) / TURN_TICKS);
+            self.turned = 0.0;
+        }
+        self.players = players;
         self.slot = (self.slot + 1) % SMOOTHING;
         self.samples[self.slot] = clamp(focus, self.bounds);
 
@@ -114,9 +156,53 @@ impl CameraRig {
             let pull: f32 = self.samples.iter().map(|s| s[axis] - self.target[axis]).sum();
             self.target[axis] += pull / SMOOTHING as f32;
         }
-        self.distances[self.slot] = self.near;
+        self.distances[self.slot] = if several && self.near < self.far { self.fit(self.samples[self.slot], heroes) } else { self.near };
         let pull: f32 = self.distances.iter().map(|d| d - self.distance).sum();
         self.distance += pull / SMOOTHING as f32;
+    }
+
+    /// The distance for several players: the least that keeps every
+    /// hero's top point and feet inside the view's four sides (looking at
+    /// `target` as the camera faces now), then — unless they're close
+    /// enough for the level's near distance — that plus 10, holding at
+    /// the preferred distance as it nears it and 4 past it.
+    fn fit(&self, target: [f32; 3], heroes: &[Framed]) -> f32 {
+        let dir = self.direction();
+        let (sy, cy) = self.yaw.sin_cos();
+        let right = [cy, 0.0, -sy];
+        // Up: right × direction, turned to point up.
+        let mut up = [right[1] * dir[2] - right[2] * dir[1], right[2] * dir[0] - right[0] * dir[2], right[0] * dir[1] - right[1] * dir[0]];
+        if up[1] < 0.0 {
+            up = up.map(|v| -v);
+        }
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let side = |axis: [f32; 3], half: f32, sign: f32| -> [f32; 3] {
+            let (s, c) = half.sin_cos();
+            std::array::from_fn(|i| dir[i] * s - sign * axis[i] * c)
+        };
+        let planes = [side(right, HALF_ACROSS, 1.0), side(right, HALF_ACROSS, -1.0), side(up, HALF_UP, 1.0), side(up, HALF_UP, -1.0)];
+        let mut needed = 0.0f32;
+        for n in planes {
+            let (along, at) = (dot(dir, n), dot(target, n));
+            for &(top, feet) in heroes {
+                for p in [top, feet] {
+                    needed = needed.max((at - dot(p, n)) / along);
+                }
+            }
+        }
+        let preferred = match self.current_point() {
+            Some(c) if c.param > 0 => f32::from(c.param),
+            _ => self.far * FAR_SHARE,
+        };
+        if self.near - FIT_MARGIN < needed || preferred <= self.near {
+            if preferred - FIT_MARGIN < needed {
+                if preferred - FIT_CLOSE < needed { needed + FIT_CLOSE } else { preferred }
+            } else {
+                needed + FIT_MARGIN
+            }
+        } else {
+            self.near
+        }
     }
 
     /// Unit vector the camera looks along.
@@ -132,9 +218,17 @@ impl CameraRig {
     }
 
     /// The angles the current point asks for (none: level with the horizon,
-    /// facing +Z).
+    /// facing +Z); with several players it looks down at least the
+    /// level's pitch limit.
     fn wanted(&self) -> (f32, f32) {
-        self.current_point().map_or((0.0, 0.0), |c| (wrap(c.yaw), -c.pitch))
+        self.wanted_for(self.players > 1)
+    }
+
+    fn wanted_for(&self, several: bool) -> (f32, f32) {
+        self.current_point().map_or((0.0, 0.0), |c| {
+            let pitch = if several { (-c.pitch).min(-self.pitch_limit) } else { -c.pitch };
+            (wrap(c.yaw), pitch)
+        })
     }
 
     /// Nearest point to `p`, other than the current one.
@@ -161,7 +255,7 @@ mod tests {
     const WIDE: ([f32; 3], [f32; 3]) = ([-1000.0; 3], [1000.0; 3]);
 
     fn point(x: f32, yaw: f32, pitch: f32) -> CameraPoint {
-        CameraPoint { position: [x, 0.0, 0.0], yaw, pitch }
+        CameraPoint { position: [x, 0.0, 0.0], yaw, pitch, param: 0 }
     }
 
     #[test]
@@ -179,12 +273,12 @@ mod tests {
     fn looks_at_the_top_point_and_picks_points_by_the_feet() {
         // The feet are nearer the first point, the top point (4.4 higher)
         // the second: the feet choose, the top is looked at.
-        let high = CameraPoint { position: [5.0, 9.0, 0.0], yaw: 1.0, pitch: 0.3 };
+        let high = CameraPoint { position: [5.0, 9.0, 0.0], yaw: 1.0, pitch: 0.3, param: 0 };
         let (feet, top) = ([5.0, 0.0, 0.0], [5.0, 4.4, 0.0]);
         let mut rig = CameraRig::new(vec![point(0.0, 0.0, 0.6), high], WIDE, 24.0, top, feet);
         assert_eq!(rig.current_point().unwrap().position, [0.0; 3]);
         assert!((rig.target[1] - 4.4).abs() < 1e-6);
-        rig.tick(top, feet);
+        rig.tick(top, feet, &[]);
         assert_eq!(rig.current_point().unwrap().position, [0.0; 3]);
         assert!((rig.target[1] - 4.4).abs() < 1e-6);
     }
@@ -193,17 +287,17 @@ mod tests {
     fn switches_only_when_clearly_nearer_then_turns_over_fifty_ticks() {
         let mut rig = CameraRig::new(vec![point(0.0, 0.0, 0.5), point(30.0, FRAC_PI_2, 0.5)], WIDE, 24.0, [0.0; 3], [0.0; 3]);
         // At x = 16 the second point is 14 away vs 16: not 2/3 as far.
-        rig.tick([16.0, 0.0, 0.0], [16.0, 0.0, 0.0]);
+        rig.tick([16.0, 0.0, 0.0], [16.0, 0.0, 0.0], &[]);
         assert_eq!(rig.current_point().unwrap().position[0], 0.0);
         // At x = 20: 10 vs 20.
-        rig.tick([20.0, 0.0, 0.0], [20.0, 0.0, 0.0]);
+        rig.tick([20.0, 0.0, 0.0], [20.0, 0.0, 0.0], &[]);
         assert_eq!(rig.current_point().unwrap().position[0], 30.0);
         for _ in 0..25 {
-            rig.tick([20.0, 0.0, 0.0], [20.0, 0.0, 0.0]);
+            rig.tick([20.0, 0.0, 0.0], [20.0, 0.0, 0.0], &[]);
         }
         assert!((rig.yaw - FRAC_PI_2 * 26.0 / 50.0).abs() < 1e-4, "{}", rig.yaw);
         for _ in 0..40 {
-            rig.tick([20.0, 0.0, 0.0], [20.0, 0.0, 0.0]);
+            rig.tick([20.0, 0.0, 0.0], [20.0, 0.0, 0.0], &[]);
         }
         assert!((rig.yaw - FRAC_PI_2).abs() < 1e-4);
     }
@@ -212,12 +306,43 @@ mod tests {
     fn target_is_clamped_and_smoothed() {
         let bounds = ([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]);
         let mut rig = CameraRig::new(vec![point(0.0, 0.0, 0.5)], bounds, 24.0, [0.0; 3], [0.0; 3]);
-        rig.tick([100.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
+        rig.tick([100.0, 0.0, 0.0], [100.0, 0.0, 0.0], &[]);
         // One of nine samples moved to the clamp edge.
         assert!((rig.target[0] - 10.0 / 9.0).abs() < 1e-5, "{:?}", rig.target);
         for _ in 0..200 {
-            rig.tick([100.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
+            rig.tick([100.0, 0.0, 0.0], [100.0, 0.0, 0.0], &[]);
         }
         assert!((rig.target[0] - 10.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn several_players_pull_the_camera_back_to_keep_them_in_view() {
+        // Looking down 45° along +Z from a point; near 24, far 40.
+        let points = vec![CameraPoint { position: [0.0, 0.0, 0.0], yaw: 0.0, pitch: std::f32::consts::FRAC_PI_4, param: 0 }];
+        let bounds = ([-1000.0; 3], [1000.0; 3]);
+        let mut rig = CameraRig::new(points, bounds, 24.0, [0.0, 4.4, 0.0], [0.0; 3]).with_far(40.0, 0.35);
+        let hero = |x: f32| ([x, 4.4, 0.0], [x, 0.0, 0.0]);
+        // Close together: the near distance.
+        for _ in 0..30 {
+            rig.tick([0.0, 4.4, 0.0], [0.0; 3], &[hero(-2.0), hero(2.0)]);
+        }
+        assert!((rig.distance - 24.0).abs() < 0.01, "{}", rig.distance);
+        // Far apart (60 across): far enough that both stand inside the
+        // view's sides.
+        for _ in 0..30 {
+            rig.tick([0.0, 4.4, 0.0], [0.0; 3], &[hero(-30.0), hero(30.0)]);
+        }
+        let d = rig.direction();
+        let eye: [f32; 3] = std::array::from_fn(|i| rig.target[i] - d[i] * rig.distance);
+        // The heroes' feet are within 30° of the view's axis across.
+        for x in [-30.0f32, 30.0] {
+            let p = [x - eye[0], -eye[1], -eye[2]];
+            let along = p[0] * d[0] + p[1] * d[1] + p[2] * d[2];
+            assert!(x.abs() / along < HALF_ACROSS.tan(), "{x}: {} at {}", x.abs() / along, rig.distance);
+        }
+        assert!(rig.distance > 40.0, "{}", rig.distance);
+        // Several players look down at least the limit; one, the point's
+        // own (here more already).
+        assert!(rig.pitch <= -0.35);
     }
 }
