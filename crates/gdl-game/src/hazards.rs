@@ -136,7 +136,7 @@ fn setup(mut commands: Commands, population: Res<LevelPopulation>) {
     let pop = &population.population;
     let mut h = Hazards { rng: 0x2545_F491, ..default() };
     for (placement, p) in pop.placements.iter().enumerate() {
-        if !p.active_for(1) {
+        if !p.active_for(population.players) {
             continue;
         }
         let ty = pop.resolved_type(p);

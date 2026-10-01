@@ -107,7 +107,6 @@ impl Party {
     }
 
     /// The first free slot.
-    #[allow(dead_code)] // joining mid-game (coming next)
     pub fn free_slot(&self) -> Option<usize> {
         self.members.iter().position(Option::is_none)
     }

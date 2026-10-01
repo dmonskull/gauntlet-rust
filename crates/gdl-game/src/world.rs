@@ -131,10 +131,13 @@ fn change_level(
     mut last_realm: Local<Option<u32>>,
     mut flash_colours: ResMut<FlashColours>,
     tunings: Option<Res<crate::monsters::LevelTunings>>,
+    party: Option<Res<crate::party::Party>>,
 ) {
     let Some(step) = requests.read().map(|r| r.0).reduce(|a, b| a + b) else {
         return;
     };
+    // The level's placements for this many players.
+    let players = party.map_or(1, |p| p.len().clamp(1, 4)) as u8;
     let count = game.levels.len() as isize;
     game.current = (game.current as isize + step).rem_euclid(count) as usize;
 
@@ -154,7 +157,7 @@ fn change_level(
             // Some level textures animate through frames kept in the always
             // loaded WEAPONS model file (torches).
             let shared = shared_textures(&mut game.install);
-            let mut built = spawn_level(&level, shared.as_ref(), &mut commands, &mut meshes, &mut materials, &mut images);
+            let mut built = spawn_level(&level, shared.as_ref(), players, &mut commands, &mut meshes, &mut materials, &mut images);
             collision_debug::spawn_overlay(
                 &level.collision,
                 overlay.visible,
@@ -177,6 +180,7 @@ fn change_level(
                 &mut marker_materials,
                 &mut images,
                 tunings.as_deref().and_then(|t| t.enemies(&level.name)),
+                players,
             );
             stats.population = spawned.summary;
             info!("{} texture animations on the level's items", spawned.texanims.len());
@@ -201,7 +205,7 @@ fn change_level(
             if entry != 0 {
                 info!("{}: arriving at start {entry}", level.name);
             }
-            commands.insert_resource(LevelPopulation { level: level.name.clone(), population: level.population, entry });
+            commands.insert_resource(LevelPopulation { level: level.name.clone(), population: level.population, entry, players });
         }
         Err(why) => stats.error = Some(why),
     }
@@ -238,6 +242,7 @@ fn shared_textures(install: &mut gdl_install::GameInstall) -> Option<(gdl_format
 fn spawn_level(
     level: &LevelData,
     common: Option<&(gdl_formats::ModelFile, Vec<u8>)>,
+    players: u8,
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<LevelMaterial>,
@@ -265,7 +270,7 @@ fn spawn_level(
     // What triggers and rotators move (`mechanics.rs`) is drawn apart,
     // one entity per moving group, so it can be posed.
     let nodes = mechanics::LevelNodes::new(level.nodes.clone());
-    let roots = mechanics::moving_roots(&level.population);
+    let roots = mechanics::moving_roots(&level.population, players);
     let group_of = |i: usize| level.placement_nodes.get(i).and_then(|&n| nodes.group_of(n, &roots));
     // Particle-system nodes only mark where effects come from.
     let emitter = |i: usize| {

@@ -522,8 +522,6 @@ const KILL_EXPERIENCE: f32 = 0.2;
 const BOSS_DAMAGE_BY_PLAYERS: [f32; 5] = [1.0, 1.0, 0.5, 0.3, 0.2];
 /// The roar damage is × this for 0..4 players.
 const ROAR_BY_PLAYERS: [f32; 5] = [1.0, 1.0, 1.5, 2.0, 2.0];
-/// Players: only one hero runs here.
-const PLAYERS: usize = 1;
 /// Knockback per unit of push by blow kind, the golem's reduction, cap,
 /// decay per tick, stop threshold and upward fall per second.
 const KNOCK_HEAVY: f32 = 10.0;
@@ -660,6 +658,9 @@ pub struct CritterLevel {
     /// seconds, `clock` now).
     guard: HashMap<Entity, f64>,
     clock: f64,
+    /// Players in the game as the level began (the bosses' blows and roar
+    /// scale by them).
+    pub players: usize,
     /// The boss, once made; whether it has died (its DEATH has played:
     /// the game's `r13-0x7784`).
     pub boss: Option<Entity>,
@@ -754,6 +755,11 @@ const MAX_ROCKS: usize = 16;
 const SFXX_VOLUME: u8 = 0xE0;
 
 impl CritterLevel {
+    /// The damage after which a critter roars, by the players in the game.
+    fn roar_at(&self) -> f32 {
+        ROAR_DAMAGE * ROAR_BY_PLAYERS[self.players.min(4)]
+    }
+
     /// The offset the game adds to the scene's brightness (0 normally, down
     /// to −0.8 in the boss intro; the brightness is clamped to 0..1). The
     /// renderer doesn't apply it yet.
@@ -1116,13 +1122,14 @@ impl Critter {
         self.damage_taken += damage;
         // Bosses take less with more players, except in their intro's
         // first four states.
+        let players = level.map_or(1, |l| l.players).min(4);
         if boss && !(intro::START..=intro::ROARED).contains(&intro) {
-            damage *= BOSS_DAMAGE_BY_PLAYERS[PLAYERS];
+            damage *= BOSS_DAMAGE_BY_PLAYERS[players];
         }
         let share = damage.clamp(0.0, self.hit_points.max(0.0)) / (1.0 + self.full_hit_points);
         let mut xp = (share * ty.experience) as u32;
         if boss {
-            xp *= PLAYERS as u32;
+            xp *= players as u32;
         }
         // A blow on a hit sphere that still has hit points is scaled by it,
         // up to what it has left; once a sphere is spent, blows on it land
@@ -1372,7 +1379,7 @@ fn setup_level(
     let mut statues = Vec::new();
     for (placement, p) in pop.placements.iter().enumerate() {
         let ty = pop.resolved_type(p);
-        if ty.class != ItemClass::EnemyInfo || !p.active_for(1) {
+        if ty.class != ItemClass::EnemyInfo || !p.active_for(population.players) {
             continue;
         }
         let Some(enemy) = ty.enemy() else { continue };
@@ -1418,6 +1425,7 @@ fn setup_level(
     // points (to see one die sooner).
     let testing_scale = std::env::var("GDL_CRITTER_HP").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
     let mut level = CritterLevel {
+        players: party.len().max(1),
         kinds,
         statues,
         now: 0.0,
@@ -1960,7 +1968,7 @@ fn tick_critters(
         c.next = None;
         c.pick = None;
         c.chosen_pattern = None;
-        forced(c, &ty, now, level.intro, level.boss_type);
+        forced(c, &ty, now, level.intro, level.boss_type, level.roar_at());
         // Time stopped, no pattern is chosen; only a start or death move
         // switches in, and only a death plays on.
         let stopped = level.time_stopped;
@@ -1970,7 +1978,7 @@ fn tick_critters(
             }
             if c.next.is_none() {
                 choose_attack(c, now);
-                choose_parts(c, now, level.intro, level.boss_type);
+                choose_parts(c, now, level.intro, level.boss_type, level.roar_at());
             }
             let attacking = cur_kind.is_some_and(|k| k >= kind::ATTACK_FIRST);
             if c.next.is_none() && !(boss && attacking) {
@@ -2263,7 +2271,7 @@ fn idle(c: &Critter, now: f32) -> Option<usize> {
 /// a pattern, the step of their own pattern of the same number; when the
 /// body chose nothing, their forced moves, their attacks, or idling. A
 /// part attacking makes the body play TOGETHER.
-fn choose_parts(c: &mut Critter, now: f32, intro: i32, boss_type: i32) {
+fn choose_parts(c: &mut Critter, now: f32, intro: i32, boss_type: i32, roar_at: f32) {
     if c.parts.is_empty() {
         return;
     }
@@ -2275,7 +2283,7 @@ fn choose_parts(c: &mut Critter, now: f32, intro: i32, boss_type: i32) {
         p.chosen_pattern = None;
         match pattern {
             None if free => {
-                forced_part(p, now, intro, boss_type);
+                forced_part(p, now, intro, boss_type, roar_at);
                 if p.next.is_none() {
                     choose_attack(p, now);
                 }
@@ -2302,7 +2310,7 @@ fn choose_parts(c: &mut Critter, now: f32, intro: i32, boss_type: i32) {
 /// A part's forced moves: DEATH when dying; else its move's follow-up, or
 /// READY for the chimera's heads in the intro's states 3–5; then its
 /// reactions to the blows it took.
-fn forced_part(p: &mut Critter, now: f32, intro: i32, boss_type: i32) {
+fn forced_part(p: &mut Critter, now: f32, intro: i32, boss_type: i32, roar_at: f32) {
     let chimera_waits = (intro::ROAR..=intro::AFTER).contains(&intro) && boss_type == CHIMERA;
     p.next = if p.state == CritterState::Dying {
         find(p, kind::DEATH, Find::Nearest, now)
@@ -2311,7 +2319,7 @@ fn forced_part(p: &mut Critter, now: f32, intro: i32, boss_type: i32) {
     } else {
         p.current.map(|i| p.moves()[i].next).and_then(|n| usize::try_from(n).ok())
     };
-    reactions(p, now);
+    reactions(p, now, roar_at);
 }
 
 /// The parts after the body's switch: a dying part plays DEATH; while the
@@ -2897,7 +2905,7 @@ fn ready(c: &Critter, i: usize, now: f32) -> bool {
 /// the boss intro's state, READY in 1–2, ROAR in 3, READY for the chimera
 /// in 3–5, and otherwise a boss's READY after START; then reactions to the
 /// blows taken.
-fn forced(c: &mut Critter, ty: &TypeInfo, now: f32, intro: i32, boss_type: i32) {
+fn forced(c: &mut Critter, ty: &TypeInfo, now: f32, intro: i32, boss_type: i32, roar_at: f32) {
     let cur = c.current.map(|i| c.moves()[i].clone());
     let chimera_waits = (intro::ROAR..=intro::AFTER).contains(&intro) && boss_type == CHIMERA;
     let next = match (&cur, c.state) {
@@ -2912,7 +2920,7 @@ fn forced(c: &mut Critter, ty: &TypeInfo, now: f32, intro: i32, boss_type: i32) 
         _ => None,
     };
     c.next = next;
-    reactions(c, now);
+    reactions(c, now, roar_at);
     if c.next.is_some() {
         // A forced move ends a pattern, the parts' too.
         c.pattern = None;
@@ -2924,7 +2932,7 @@ fn forced(c: &mut Critter, ty: &TypeInfo, now: f32, intro: i32, boss_type: i32) 
 
 /// Reactions to the blows taken, when nothing else is forced: a knockdown
 /// or knockback, a roar after enough damage, a flinch.
-fn reactions(c: &mut Critter, now: f32) {
+fn reactions(c: &mut Critter, now: f32, roar_at: f32) {
     if c.next.is_none() && c.kinds & 0x120 != 0 {
         if c.kinds & KIND_HEAVY != 0 {
             c.next = find(c, kind::KNOCKDOWN, Find::Ready, now);
@@ -2933,7 +2941,7 @@ fn reactions(c: &mut Critter, now: f32) {
             c.next = find(c, kind::KNOCKBACK, Find::Ready, now);
         }
     }
-    if c.next.is_none() && c.damage_taken >= ROAR_DAMAGE * ROAR_BY_PLAYERS[PLAYERS] {
+    if c.next.is_none() && c.damage_taken >= roar_at {
         c.next = find(c, kind::ROAR, Find::Ready, now);
     }
     if c.next.is_none() && c.kinds & KIND_STRONG != 0 {
@@ -3847,6 +3855,7 @@ mod tests {
 
     fn level_with(boss_type: i32, state: i32) -> CritterLevel {
         CritterLevel {
+            players: 1,
             kinds: HashMap::new(),
             statues: Vec::new(),
             now: 0.0,

@@ -687,7 +687,7 @@ mod tests {
             wizard: None,
             bounds: ([-1000.0; 3], [1000.0; 3]),
             points,
-            start: Some(CameraPoint { position: [0.0, 30.0, -60.0], yaw: 0.0, pitch: 0.4 }),
+            start: Some(CameraPoint { position: [0.0, 30.0, -60.0], yaw: 0.0, pitch: 0.4, param: 0 }),
         }
     }
 
@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn it_opens_at_the_starting_point_then_backs_off_to_frame_the_heroes() {
         let heroes = [hero([0.0, 0.0, 0.0])];
-        let points = [CameraPoint { position: [0.0, 20.0, -30.0], yaw: 0.0, pitch: 0.5 }];
+        let points = [CameraPoint { position: [0.0, 20.0, -30.0], yaw: 0.0, pitch: 0.5, param: 0 }];
         let mut cam = BossCam::new(record());
         let s = scene(&heroes, &points, None, false);
         cam.tick(&s, DT);

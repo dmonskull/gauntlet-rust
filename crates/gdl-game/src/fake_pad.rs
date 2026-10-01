@@ -5,7 +5,10 @@
 //! `east`, `west`, `north`, `select`, `lb`, `rb`, `lt`, `rt`, `up`,
 //! `down`, `left`, `right`) or a stick (`lstick=x:y`, `rstick=x:y`) at a
 //! frame or held over a range of frames (Update frames since start); the
-//! pad connects on frame `GDL_FAKE_PAD_AT` (default 10).
+//! pad connects on frame `GDL_FAKE_PAD_AT` (default 10). With
+//! `GDL_FAKE_PAD_PLAYER=<class>` it joins the party at once as the next
+//! player (testing co-op on a level picked from the command line; connect
+//! it on frame 1 so it's there as the first level spawns its heroes).
 
 use bevy::input::gamepad::{
     GamepadAxis, GamepadButton, GamepadConnection, GamepadConnectionEvent, RawGamepadAxisChangedEvent,
@@ -83,6 +86,7 @@ fn drive(
     mut commands: Commands,
     mut raw: MessageWriter<RawGamepadEvent>,
     mut connections: MessageWriter<GamepadConnectionEvent>,
+    (party, mut changes): (Res<crate::party::Party>, MessageWriter<crate::player_state::PartyChange>),
 ) {
     fake.frame += 1;
     let frame = fake.frame;
@@ -95,6 +99,14 @@ fn drive(
         connections.write(GamepadConnectionEvent::new(pad, connection.clone()));
         raw.write(RawGamepadEvent::Connection(GamepadConnectionEvent::new(pad, connection)));
         info!("GDL_FAKE_PAD: connected as {pad:?}");
+        if let Ok(class) = std::env::var("GDL_FAKE_PAD_PLAYER")
+            && let Some(slot) = party.free_slot()
+        {
+            let choice = crate::player::PlayerChoice { class: class.to_ascii_uppercase(), variant: "BLU".into() };
+            let devices = crate::party::Devices { pad: Some(pad), ..default() };
+            changes.write(crate::player_state::PartyChange::Set { slot, choice, name: "PELE".into(), saved: None, fresh: true, devices });
+            info!("GDL_FAKE_PAD: joins as player {}", slot + 1);
+        }
         return;
     }
     let Some(pad) = fake.pad else { return };

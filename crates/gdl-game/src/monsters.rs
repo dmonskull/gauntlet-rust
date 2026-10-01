@@ -792,7 +792,7 @@ fn setup_level(
         damage: tuning.monster_damage,
     };
     let realm = crate::quest::level_of(&population.level).map_or(0, |(r, _)| r);
-    let (gens, placed) = generators::from_population(&population.population, &ground.0, &tuning, &enemies, realm);
+    let (gens, placed) = generators::from_population(&population.population, &ground.0, &tuning, &enemies, realm, population.players);
 
     let mut wanted: Vec<(i32, i32)> =
         gens.iter().flat_map(|g| g.makes()).chain(placed.iter().map(|p| (p.enemy, p.tier))).collect();

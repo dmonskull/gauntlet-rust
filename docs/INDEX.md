@@ -110,3 +110,4 @@ names), which is how most systems here were found.
 Kept current in [STATUS.md](STATUS.md) "What's left" (this list was
 outgrown: the critters, the bosses, the HUD, the effects, the quest and
 the audio's positional sounds have since been decoded and ported).
+- [coop.md](coop.md): local co-op — the party, devices, joining, per-player settings.

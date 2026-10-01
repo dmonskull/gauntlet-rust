@@ -317,19 +317,19 @@ fn start(
         .locators
         .iter()
         .filter(|l| l.kind == LocatorKind::Transmitter(2))
-        .map(|l| CameraPoint { position: l.position, yaw: l.rotation[1], pitch: l.rotation[0] })
+        .map(|l| CameraPoint { position: l.position, yaw: l.rotation[1], pitch: l.rotation[0], param: l.param })
         .collect();
     let [lo, hi] = ground.0.bounds;
     let bounds = record.target_bounds(lo, hi);
     let feet = population.player_start().map_or([0.0; 3], |s| s.position);
     let head = party.states().next().map_or(DEFAULT_HEAD, |(_, s)| s.head_height);
-    let rig = CameraRig::new(points, bounds, record.near, top_point(feet, head), feet);
+    let rig = CameraRig::new(points, bounds, record.near, top_point(feet, head), feet).with_far(record.far, record.pitch_limit);
     // A boss level with a boss camera opens with it instead of the
     // starting shot.
     let has_boss = population.population.locators.iter().any(|l| l.kind == LocatorKind::Boss);
     let boss = boss_record.filter(|_| has_boss).map(BossCam::new);
     let start_point = starting_locator(&population.population, population.entry)
-        .map(|l| CameraPoint { position: l.position, yaw: l.rotation[1], pitch: l.rotation[0] });
+        .map(|l| CameraPoint { position: l.position, yaw: l.rotation[1], pitch: l.rotation[0], param: l.param });
     let intro = if boss.is_some() { None } else { intro_shot(&population.population, population.entry, feet) };
     let previous = intro.map_or((rig.eye(), rig.target), |i| (i.eye, i.target));
     commands.insert_resource(PlayCamera {
@@ -426,7 +426,8 @@ pub(crate) fn tick(
             *boss_active = true;
         }
         _ => {
-            rig.tick(top, feet);
+            let framed: Vec<crate::camera_rig::Framed> = heroes.iter().map(|h| (h.top, h.feet)).collect();
+            rig.tick(top, feet, &framed);
             *boss_active = false;
         }
     }
