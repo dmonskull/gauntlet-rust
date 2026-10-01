@@ -1521,6 +1521,8 @@ fn critter_stops(
             damage: p.damage,
             radius: c.blast,
             life: c.life,
+            heroes: true,
+            follow: None,
             monsters: true,
             items: p.kind & combat::hit_kind::MAGIC != 0,
         });
