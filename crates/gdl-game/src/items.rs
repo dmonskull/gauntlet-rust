@@ -11,7 +11,10 @@
 //! triangles), blocking items push the hero back out, and at most one
 //! powerup is picked up. Rock falls, sinking rocks and falling leaves the
 //! hero comes near — and walls shot down — fall spinning out of the level
-//! (`docs/items.md`, "Falling obstacles").
+//! (`docs/items.md`, "Falling obstacles"). A key opens a locked chest and
+//! what it holds comes out: a powerup hangs in it, growing as the lid
+//! opens, till the hero walks into the open chest and takes it — and the
+//! chest goes with it (`docs/items.md`, "Containers").
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,7 +57,14 @@ impl Plugin for ItemsPlugin {
             .add_systems(FixedUpdate, tick.in_set(ItemTick))
             .add_systems(
                 Update,
-                (build_items.run_if(resource_exists_and_changed::<LevelPopulation>), attach_models, pose_items, show_rocks, place_falling)
+                (
+                    build_items.run_if(resource_exists_and_changed::<LevelPopulation>),
+                    attach_models,
+                    pose_items,
+                    show_rocks,
+                    place_falling,
+                    show_contents,
+                )
                     .chain(),
             );
     }
@@ -102,8 +112,24 @@ const GARGOYLE_PIECE: i32 = 16;
 pub const SAFE_ROCK: i32 = 0x29;
 
 /// Fields a picked-up item lingers before it's freed: 8, or 15 when a
-/// player dropped it.
+/// player let it out (a chest's contents, and the chest with them).
 const PICKUP_LINGER: i32 = 8;
+const RELEASED_LINGER: i32 = 15;
+/// Fields before a container's powerup can be picked up.
+const CONTENTS_DELAY: i32 = 30;
+/// Container subtypes: the barrel, the gold chest (its gold is its
+/// amount) and the silver chest (gold in it makes it a gold chest).
+const BARREL: i32 = 0x2B;
+const GOLD_CHEST: i32 = 0x2F;
+const SILVER_CHEST: i32 = 0x30;
+/// Powerup subtypes: gold and keys; more than one key comes as the
+/// `KEYRING` type.
+const GOLD: i32 = 1;
+const KEY: i32 = 2;
+const KEY_RING: &str = "KEYRING";
+/// Contents hanging in a chest are this big till it opens, growing to
+/// their own size over its opening action.
+const CONTENTS_SMALL: f32 = 0.2;
 /// A transport takes this many fields; the hero moves when it's half done.
 const TRANSPORT_FIELDS: i32 = 60;
 
@@ -519,6 +545,15 @@ struct Item {
     ride: Option<Ride>,
     /// The clip the model build started is still on (it goes round).
     first_loops: bool,
+    /// A container's contents while they're in it (the game's `+0xE8`
+    /// both ways): on the contents, the container (placement) they hang
+    /// in; on the container, what it holds.
+    inside: Option<usize>,
+    holds: Option<usize>,
+    /// Contents whose model has been asked for (`show_contents`).
+    shown: bool,
+    /// Its model has a contents node to hang what it lets out on.
+    hangs: bool,
 }
 
 impl Item {
@@ -641,6 +676,15 @@ pub struct LevelItems {
     scrolls: String,
     /// Statues walked into since the critters last looked (placements).
     woken: Vec<usize>,
+    /// The types letting out contents can change to: the gold chest a
+    /// silver chest holding gold becomes (the level's last container type
+    /// of subtype `0x2F`), and the key ring more than one key comes as.
+    gold_chest: Option<ItemType>,
+    key_ring: Option<ItemType>,
+    /// Model swaps waiting for `show_contents` (placement, model), and
+    /// monsters let out of containers waiting for `breakables.rs`.
+    swaps: Vec<(usize, &'static str)>,
+    let_out: Vec<(ItemType, [f32; 3])>,
 }
 
 /// What the level's other item code (`mechanics.rs`, `hazards.rs`,
@@ -702,7 +746,7 @@ impl LevelItems {
             action: item.action,
             done: item.done,
             actions: item.action_count(),
-            live: !item.gone && !item.leaving && !item.held,
+            live: !item.gone && !item.leaving && !item.held && item.inside.is_none(),
             armor: item.armor,
             rock: item.is_safe_rock() && item.stage >= 0,
             statue: item.statue,
@@ -923,22 +967,19 @@ impl LevelItems {
         Some(stage)
     }
 
-    /// Frees the item at once, model and all (the game's `+0xC4 = 0xFFFF`).
+    /// Frees the item at once, model and all (the game's `+0xC4 = 0xFFFF`),
+    /// and what it holds hanging in it.
     pub fn free(&mut self, placement: usize, commands: &mut Commands) {
-        if let Some(i) = self.find_mut(placement) {
-            i.gone = true;
-            if let Some(m) = i.model.take() {
-                commands.entity(m).try_despawn();
-            }
+        let Some(i) = self.find_mut(placement) else { return };
+        i.gone = true;
+        if let Some(m) = i.model.take() {
+            commands.entity(m).try_despawn();
+        }
+        if let Some(held) = i.holds.take() {
+            self.free(held, commands);
         }
     }
 
-    /// A new item of type `ty` standing at `position` (turned by the
-    /// placement-style `rotation`), the way the game releases a container's
-    /// contents: `amount` overrides the type's (keys take the container's
-    /// count), and it can't be picked up for `delay` fields. Returns its
-    /// placement number; its model, if one was built for the level, is
-    /// spawned by the caller with it ([`crate::population::ItemModels`]).
     /// A boss that makes the level's safe rocks (the yeti's boulders)
     /// starts without them: each is hidden and walked through until it's
     /// made (`docs/critters.md`, "Safe rocks"). Returns how many.
@@ -972,6 +1013,12 @@ impl LevelItems {
         Some(i.ty.name.clone())
     }
 
+    /// A new item of type `ty` standing at `position` (turned by the
+    /// placement-style `rotation`), the way the game releases a container's
+    /// contents: `amount` overrides the type's (keys take the container's
+    /// count), and it can't be picked up for `delay` fields. Returns its
+    /// placement number; its model, if one was built for the level, is
+    /// spawned by the caller with it ([`ContentModels::spawn`]).
     pub fn release(&mut self, ty: ItemType, position: [f32; 3], rotation: [f32; 9], amount: Option<i32>, delay: i32) -> usize {
         let (hit_points_of_type, armor_of_type) = (ty.hit_points, ty.armor);
         let placement = RELEASED_BASE + self.released;
@@ -1010,8 +1057,78 @@ impl LevelItems {
             floor_node: None,
             ride: None,
             first_loops: true,
+            inside: None,
+            holds: None,
+            shown: false,
+            hangs: false,
         });
         placement
+    }
+
+    /// The monsters let out of containers since the last call: their type
+    /// and where (the container's centre), for `breakables.rs` to make.
+    pub fn take_let_out(&mut self) -> Vec<(ItemType, [f32; 3])> {
+        std::mem::take(&mut self.let_out)
+    }
+
+    /// What container `i` holds comes out, as the game lets it out when a
+    /// key opens a chest (`docs/items.md`, "Containers"). A silver chest
+    /// holding gold becomes the level's gold chest (its model the realm's
+    /// `CHESTSG`) and a gold chest keeps the gold, both taken by walking
+    /// into the open chest; more than one key comes as the key ring. A
+    /// powerup hangs on the chest's contents node (its model's `NULL1`)
+    /// till it's taken; one without a model to hang on is let out where
+    /// the chest stands, as a barrel's is; a monster is let out there too.
+    fn release_contents(&mut self, i: usize) {
+        let Some(ty) = self.items[i].contents.clone() else { return };
+        let chest = &self.items[i];
+        let (subtype, placement, centre) = (chest.ty.subtype, chest.placement, chest.shape.centre);
+        let count = match chest.params {
+            PlacementParams::Container { param, .. } => i32::from(param),
+            _ => 0,
+        };
+        let hangs = chest.hangs;
+        let (position, rotation) = (chest.position, chest.rotation);
+        let powerup = ty.class == ItemClass::Powerup;
+        if subtype == SILVER_CHEST && powerup && ty.subtype == GOLD {
+            let gold = self.gold_chest.clone();
+            let chest = &mut self.items[i];
+            if let Some(t) = gold {
+                chest.ty = t;
+            }
+            chest.amount = i32::from(ty.amount);
+            self.swaps.push((placement, crate::population::SILVER_GOLD_CHEST));
+            return;
+        }
+        if subtype == GOLD_CHEST {
+            self.items[i].amount = i32::from(ty.amount);
+            return;
+        }
+        if ty.class == ItemClass::EnemyInfo {
+            self.let_out.push((ty, centre));
+            return;
+        }
+        let ty = match &self.key_ring {
+            Some(ring) if powerup && ty.subtype == KEY && count > 1 => ring.clone(),
+            _ => ty,
+        };
+        // Keys come as many as the container says (at least one), a
+        // scroll as its number.
+        let amount = match ty.subtype {
+            KEY if powerup => Some(count.max(1)),
+            SCROLL if powerup => Some(count),
+            _ => None,
+        };
+        let delay = if powerup { CONTENTS_DELAY } else { 0 };
+        if powerup && hangs {
+            let new = self.release(ty, centre, rotation_matrix([0.0; 3]), amount, delay);
+            if let Some(item) = self.find_mut(new) {
+                item.inside = Some(placement);
+            }
+            self.items[i].holds = Some(new);
+        } else {
+            self.release(ty, position, rotation, amount, delay);
+        }
     }
 }
 
@@ -1188,6 +1305,10 @@ pub(crate) fn build_items(
             // The build starts action 0; one made used starts action 1
             // instead (unless its type steps actions, flag 4), a restart.
             first_loops: flags & USED == 0 || flags & 4 != 0,
+            inside: None,
+            holds: None,
+            shown: false,
+            hangs: false,
         });
     }
     let doors = out.iter().filter(|i| i.class() == ItemClass::Door).count();
@@ -1200,7 +1321,13 @@ pub(crate) fn build_items(
     // The secret realm's first level record is levelS1.
     let secret_first = population.level.eq_ignore_ascii_case(SECRET_FIRST_LEVEL);
     let level = population.level.chars().last().and_then(|c| c.to_digit(10)).map_or(0, |d| d.saturating_sub(1) as usize);
-    *items = LevelItems { items: out, realm, level, doors, scrolls, ambient, secret_first, ..default() };
+    let gold_chest = pop.item_types.iter().rev().find(|t| t.class == ItemClass::Container && t.subtype == GOLD_CHEST).cloned();
+    let key_ring = pop
+        .item_types
+        .iter()
+        .find(|t| t.name == KEY_RING && t.class == ItemClass::Powerup && t.subtype == KEY)
+        .cloned();
+    *items = LevelItems { items: out, realm, level, doors, scrolls, ambient, secret_first, gold_chest, key_ring, ..default() };
 }
 
 /// An exit's destination code (`g1`) as a realm id and level (0 the
@@ -1239,12 +1366,16 @@ fn attach_models(
             Some(item) => {
                 item.model = Some(entity);
                 item.atree = rig.map(|r| r.atree.clone());
+                item.hangs = rig.is_some_and(|r| r.atree.node_index(crate::population::CONTENTS_NODE).is_some());
                 // Where the item's drop put it (with the movers at their
-                // off heights).
-                let place = Transform {
-                    translation: Vec3::from(item.position),
-                    rotation: Quat::from_mat3(&Mat3::from_cols_array(&item.rotation)),
-                    scale: transform.scale,
+                // off heights); contents hang at their chest's node.
+                let place = match item.inside {
+                    Some(_) => Transform::from_scale(transform.scale),
+                    None => Transform {
+                        translation: Vec3::from(item.position),
+                        rotation: Quat::from_mat3(&Mat3::from_cols_array(&item.rotation)),
+                        scale: transform.scale,
+                    },
                 };
                 commands.entity(entity).insert(place);
                 let shown = vec![(0, Some(0)); rig.map_or(0, |r| r.flipbooks.len())];
@@ -1637,7 +1768,11 @@ fn run(
     let mut on_exit = Vec::new();
     for i in 0..items.items.len() {
         let item = &items.items[i];
-        if item.gone || item.leaving || item.held || !(item.flags & ALWAYS_ACTIVE != 0 || visible(item.shape.centre)) {
+        // Contents still in their chest are only taken through it.
+        if item.gone || item.leaving || item.held || item.inside.is_some() {
+            continue;
+        }
+        if !(item.flags & ALWAYS_ACTIVE != 0 || visible(item.shape.centre)) {
             continue;
         }
         if !touchable(item) {
@@ -1759,7 +1894,7 @@ fn touch(
             Touch::Pass
         }
         ItemClass::Container => {
-            if item.state == 2 && item.ty.subtype == 0x2F {
+            if item.state == 2 && item.ty.subtype == GOLD_CHEST {
                 // An opened gold chest: its gold, and the chest goes.
                 let gold = item.amount.max(0) as u32;
                 if gold > 24 {
@@ -1771,12 +1906,22 @@ fn touch(
                 out.sound("S_PICKUPMAGIC");
                 item.leaving = true;
                 item.timer = PICKUP_LINGER;
+            } else if item.state == 2
+                && let Some(held) = item.holds
+            {
+                // Open and holding what came out: walked into, it's taken
+                // (one powerup per hero per tick).
+                if !*picked {
+                    *picked = true;
+                    take_contents(items, i, held, state, out);
+                }
+                return Touch::Pass;
             } else if item.flags & LOCKED != 0 && item.state == 0 && item.flags & USED == 0 {
                 if state.use_key() {
                     info!("chest {} opened with a key; {} left", item.ty.name, state.keys);
                     out.sound_at("S_CHEST", item.shape.centre);
                     item.flags |= USED;
-                    open_chest(items, i, state, out);
+                    open_chest(items, i, out);
                 } else {
                     out.hint(Hint::UseKeyOnChest);
                 }
@@ -1837,13 +1982,11 @@ fn touch(
     }
 }
 
-/// A key opened chest `i`: it plays its opening action and releases what
-/// it holds. Stand-in: the contents go straight to the hero rather than
-/// appearing as an item in the chest (see `docs/items.md`). A CHESTEXP
-/// releases nothing: it ticks (and keeps running off screen) until it's
-/// open, then explodes (`breakables.rs`).
-fn open_chest(items: &mut LevelItems, i: usize, state: &mut PlayerState, out: &mut Out) {
-    let doors = items.doors;
+/// A key opened chest `i`: it plays its opening action and lets out what
+/// it holds (`LevelItems::release_contents`). A CHESTEXP releases
+/// nothing: it ticks (and keeps running off screen) until it's open, then
+/// explodes (`breakables.rs`).
+fn open_chest(items: &mut LevelItems, i: usize, out: &mut Out) {
     let chest = &mut items.items[i];
     chest.play(1.min(chest.action_count().saturating_sub(1)));
     if chest.ty.subtype == CHEST_EXP {
@@ -1851,16 +1994,25 @@ fn open_chest(items: &mut LevelItems, i: usize, state: &mut PlayerState, out: &m
         out.sound_as(CHEST_EXP_TICK, CHEST_EXP_TICK_VOLUME);
         return;
     }
-    let Some(ty) = chest.contents.clone() else { return };
-    if chest.ty.subtype == 0x2F {
-        // Gold chests keep the gold until the hero comes back for it.
-        chest.amount = ty.amount as i32;
-        return;
-    }
-    if ty.class == ItemClass::Powerup {
-        let mut amount = ty.amount as i32;
-        pick_up(state, ty.subtype, ty.value, &ty.name, &mut amount, ty.duration as f32, doors, out);
-        out.sparkle_at(chest.shape.centre);
+    items.release_contents(i);
+}
+
+/// The hero walked into open chest `chest` holding contents `placement`:
+/// they're picked up like a powerup on the floor, and if they're taken
+/// the chest goes with them, both after [`RELEASED_LINGER`] fields.
+fn take_contents(items: &mut LevelItems, chest: usize, placement: usize, state: &mut PlayerState, out: &mut Out) {
+    let doors = items.doors;
+    let Some(k) = items.items.iter().position(|i| i.placement == placement && !i.gone && !i.leaving) else { return };
+    let item = &mut items.items[k];
+    let (sub, value, name, duration) = (item.ty.subtype, item.ty.value, item.ty.name.clone(), item.ty.duration as f32);
+    let taken = pick_up(state, sub, value, &name, &mut item.amount, duration, doors, out);
+    out.sparkle_at(item.shape.centre);
+    if taken {
+        info!("took {name} from {}", items.items[chest].ty.name);
+        for j in [k, chest] {
+            items.items[j].leaving = true;
+            items.items[j].timer = RELEASED_LINGER;
+        }
     }
 }
 
@@ -2097,8 +2249,9 @@ fn update_items(items: &mut LevelItems, dt: f32, commands: &mut Commands) {
             item.timer -= FIELDS_PER_TICK;
             if item.timer <= 0 {
                 item.gone = true;
+                // (Contents hanging in a chest go with its model.)
                 if let Some(m) = item.model.take() {
-                    commands.entity(m).despawn();
+                    commands.entity(m).try_despawn();
                 }
             }
             continue;
@@ -2110,6 +2263,21 @@ fn update_items(items: &mut LevelItems, dt: f32, commands: &mut Commands) {
             // opened doors and chests (`breakables.rs` marks them used).
             ItemClass::Door | ItemClass::Container | ItemClass::Obstacle if item.flags & USED != 0 => open_step(item),
             _ => {}
+        }
+        // An open chest holding nothing goes at once (the game's
+        // container update): one that held a monster, or nothing; not a
+        // barrel, a gold chest (it goes as its gold is taken) or a
+        // CHESTEXP (it explodes).
+        if item.class() == ItemClass::Container
+            && item.state == 2
+            && item.holds.is_none()
+            && !matches!(item.ty.subtype, BARREL | GOLD_CHEST | CHEST_EXP)
+        {
+            debug!("open chest {} ({}) holds nothing: gone", item.placement, item.ty.name);
+            item.gone = true;
+            if let Some(m) = item.model.take() {
+                commands.entity(m).try_despawn();
+            }
         }
     }
 }
@@ -2147,6 +2315,76 @@ fn place_falling(items: Res<LevelItems>, mut models: Query<&mut Transform>) {
         let Some(mut t) = item.model.and_then(|m| models.get_mut(m).ok()) else { continue };
         t.translation = Vec3::from(item.position);
         t.rotation = Quat::from_mat3(&Mat3::from_cols_array(&item.rotation));
+    }
+}
+
+/// How big contents hanging in a chest are by how far it has opened (the
+/// game's container update), from the chest's action, its frame and that
+/// action's length: a fifth of their size till it starts opening, then
+/// 0.2 + 0.8 × (frame + 1) / frames through its opening action, and their
+/// own size once it's open.
+fn contents_scale(action: usize, frame: f32, frames: u16) -> f32 {
+    match action {
+        0 => CONTENTS_SMALL,
+        1 if frames >= 2 => (CONTENTS_SMALL + (1.0 - CONTENTS_SMALL) * (frame + 1.0) / f32::from(frames)).min(1.0),
+        _ => 1.0,
+    }
+}
+
+/// What a chest lets out hangs on its model's contents node (`NULL1`),
+/// sized by how far it has opened ([`contents_scale`]), till it's taken;
+/// and a silver chest holding gold takes the gold-filled chest's model as
+/// it opens.
+fn show_contents(
+    mut commands: Commands,
+    mut items: ResMut<LevelItems>,
+    contents: Option<Res<ContentModels>>,
+    rigs: Query<&ItemRig>,
+    mut transforms: Query<&mut Transform>,
+) {
+    for (placement, name) in std::mem::take(&mut items.swaps) {
+        let Some(models) = contents.as_ref() else { continue };
+        let Some(pose) = items.find(placement).map(|i| Transform {
+            translation: Vec3::from(i.position),
+            rotation: Quat::from_mat3(&Mat3::from_cols_array(&i.rotation)),
+            ..default()
+        }) else {
+            continue;
+        };
+        if models.spawn(name, pose, placement, &mut commands).is_none() {
+            debug!("no {name} model in this level");
+            continue;
+        }
+        if let Some(old) = items.take_model(placement) {
+            commands.entity(old).try_despawn();
+        }
+    }
+    for k in 0..items.items.len() {
+        let item = &items.items[k];
+        if item.gone {
+            continue;
+        }
+        let Some(chest) = item.inside.and_then(|c| items.find(c)) else { continue };
+        let frames = chest.atree.as_ref().and_then(|a| a.actions.get(chest.action)).map_or(0, |a| a.frames);
+        let scale = Vec3::splat(contents_scale(chest.action, chest.frame, frames));
+        if let Some(m) = item.model {
+            if let Ok(mut t) = transforms.get_mut(m) {
+                t.scale = scale;
+            }
+            continue;
+        }
+        if item.shown {
+            continue;
+        }
+        let (Some(models), Some(bone)) =
+            (contents.as_ref(), chest.model.and_then(|m| rigs.get(m).ok()).and_then(crate::population::contents_bone))
+        else {
+            continue;
+        };
+        if let Some(e) = models.spawn(&item.ty.name, Transform::from_scale(scale), item.placement, &mut commands) {
+            commands.entity(e).insert(ChildOf(bone));
+        }
+        items.items[k].shown = true;
     }
 }
 
@@ -2418,6 +2656,123 @@ mod tests {
             })
             .collect();
         assert_eq!(by_action, [true, true, false, true, false]);
+    }
+
+    /// What the touch handler reports to (nothing seen yet).
+    fn out(seen: &Hints) -> Out<'_> {
+        Out {
+            sounds: Vec::new(),
+            voices: Vec::new(),
+            poison: Vec::new(),
+            hints: Vec::new(),
+            messages: Vec::new(),
+            sparkle: None,
+            effects: Vec::new(),
+            woken: Vec::new(),
+            notices: Vec::new(),
+            seen,
+            scrolls: String::new(),
+            now: 0.0,
+            realm: 1,
+        }
+    }
+
+    /// A locked chest of `subtype` holding `contents` (`count` of them) at
+    /// the origin, and its index.
+    fn chest(items: &mut LevelItems, subtype: i32, contents: ItemType, count: i16) -> usize {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let ty = ItemType { class: ItemClass::Container, flags: LOCKED | 6, extent: [3.9, 2.0, 1.2, 1.0], ..obstacle(subtype) };
+        let p = items.release(ty, [0.0; 3], identity, None, 0);
+        let i = items.items.iter().position(|i| i.placement == p).unwrap();
+        let c = &mut items.items[i];
+        c.contents = Some(contents);
+        c.params = PlacementParams::Container { contents: Some(0), param: count };
+        c.hangs = true;
+        i
+    }
+
+    fn powerup(subtype: i32, name: &str, amount: i16) -> ItemType {
+        ItemType { class: ItemClass::Powerup, name: name.into(), amount, extent: [0.5, 2.0, 0.0, 0.0], ..obstacle(subtype) }
+    }
+
+    #[test]
+    fn a_chest_lets_out_its_contents_and_goes_with_them() {
+        let seen = Hints::default();
+        let mut out = out(&seen);
+        let mut state = PlayerState::default();
+        let mut items = LevelItems::default();
+        let c = chest(&mut items, 0x2E, powerup(GOLD, "TREAS_GOLD", 200), 0);
+        // A key opens it: the gold hangs in it, out of reach on its own,
+        // and can't be picked up for 30 fields.
+        open_chest(&mut items, c, &mut out);
+        let held = items.items[c].holds.expect("the chest holds what came out");
+        let g = items.items.iter().position(|i| i.placement == held).unwrap();
+        assert_eq!(items.items[g].inside, Some(items.items[c].placement));
+        assert_eq!((items.items[g].amount, items.items[g].delay), (200, CONTENTS_DELAY));
+        assert!(!LevelItems::view_of(&items.items[g]).live);
+        // Shut, it blocks; open, the hero walks in and takes the gold, and
+        // the chest goes with it, both after 15 fields.
+        let mut picked = false;
+        let at = items.items[c].shape.centre;
+        assert!(matches!(touch(&mut items, c, &mut state, at, at, &mut picked, &mut out), Touch::Block));
+        items.items[c].state = 2;
+        assert!(matches!(touch(&mut items, c, &mut state, at, at, &mut picked, &mut out), Touch::Pass));
+        assert_eq!(state.gold, 200);
+        for i in [c, g] {
+            assert!(items.items[i].leaving && items.items[i].timer == RELEASED_LINGER, "{i}");
+        }
+    }
+
+    #[test]
+    fn contents_grow_as_the_chest_opens() {
+        assert_eq!(contents_scale(0, 0.0, 0), CONTENTS_SMALL);
+        // Through the 50-frame opening: 0.2 + 0.8 × (frame + 1) / 50.
+        assert!((contents_scale(1, 0.0, 50) - 0.216).abs() < 1e-5);
+        assert!((contents_scale(1, 24.0, 50) - 0.6).abs() < 1e-5);
+        assert_eq!(contents_scale(1, 49.0, 50), 1.0);
+        assert_eq!(contents_scale(2, 0.0, 0), 1.0);
+    }
+
+    #[test]
+    fn chests_by_what_they_hold() {
+        let seen = Hints::default();
+        let mut out = out(&seen);
+        let gold_chest = ItemType { class: ItemClass::Container, name: "CHESTG1".into(), ..obstacle(GOLD_CHEST) };
+        let key_ring = powerup(KEY, KEY_RING, 1);
+        let mut items = LevelItems { gold_chest: Some(gold_chest), key_ring: Some(key_ring), ..default() };
+        // A silver chest holding gold becomes a gold chest, its model the
+        // gold-filled silver chest; the gold stays in it.
+        let s = chest(&mut items, SILVER_CHEST, powerup(GOLD, "TREAS_JUNK", 10), 0);
+        open_chest(&mut items, s, &mut out);
+        let p = items.items[s].placement;
+        assert_eq!((items.items[s].ty.subtype, items.items[s].amount, items.items[s].holds), (GOLD_CHEST, 10, None));
+        assert_eq!(items.swaps, [(p, crate::population::SILVER_GOLD_CHEST)]);
+        // More than one key comes as the key ring, as many as it says.
+        let k = chest(&mut items, 0x2E, powerup(KEY, "KEY", 1), 3);
+        open_chest(&mut items, k, &mut out);
+        let held = items.items[k].holds.and_then(|h| items.find(h)).expect("keys hang in it");
+        assert_eq!((held.ty.name.as_str(), held.amount), (KEY_RING, 3));
+        // A Death is let out where the chest stands, and the open chest,
+        // holding nothing, goes at once.
+        let death = ItemType { class: ItemClass::EnemyInfo, name: "DEATH".into(), ..obstacle(0) };
+        let d = chest(&mut items, 0x2E, death, 0);
+        open_chest(&mut items, d, &mut out);
+        assert_eq!(items.take_let_out().len(), 1);
+        items.items[d].flags |= USED;
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let world = World::new();
+        let mut commands = Commands::new(&mut queue, &world);
+        update_items(&mut items, 1.0 / 30.0, &mut commands);
+        assert!(items.items[d].gone);
+        // A gold chest stays open with its gold; a chest without a node to
+        // hang them on lets its contents out where it stands.
+        assert!(!items.items[s].gone);
+        let n = chest(&mut items, 0x2E, powerup(3, "HAM", 200), 0);
+        items.items[n].hangs = false;
+        let before = items.items.len();
+        open_chest(&mut items, n, &mut out);
+        assert_eq!((items.items.len(), items.items[n].holds), (before + 1, None));
+        assert_eq!(items.items.last().map(|i| i.inside), Some(None));
     }
 
     #[test]

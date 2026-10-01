@@ -289,7 +289,7 @@ Items shape 1 (cylinder) on the disc: powerups (extent 0.5, 2 — gold
 | class | on touch |
 | --- | --- |
 | POWERUP | if its pickup delay (`+0xEC`) is over and the hero hasn't touched a powerup this tick, it's the one picked up (`+0x8B0`) |
-| CONTAINER | blocks. Locked (`0x10`, every chest) and closed: a key opens it (key −1, `S_CHEST`, flag `0x1`, contents released by `FUN_8005e8f8`); no key: hint 2. An opened gold chest (subtype `0x2F`) gives its gold and goes |
+| CONTAINER | blocks. Locked (`0x10`, every chest) and closed: a key opens it (key −1, `S_CHEST`, flag `0x1`, contents let out by `FUN_8005e8f8`, "Containers" below); no key: hint 2. Open: a gold chest (subtype `0x2F`) gives its gold and goes; one holding what it let out is walked through and that is picked up |
 | GENERATOR | blocks while it has strength |
 | DOOR | closed: if the hero moves toward it (hero's move · (door − hero) ≥ 0), a key opens it (key −1, flag `0x1`, door sound, walk-through this tick); no key: hint 1 and block. Opening: blocks |
 | DAMAGETILE | while active (states 2/4): `FUN_80078560(amount × level factor)` with a per-hero cooldown |
@@ -505,15 +505,74 @@ realms have none. No `LevelCollision` node is disabled: none is involved.
 ### Containers
 
 Chests carry flag `0x10`: a key opens them on touch. Barrels (`0x206`, no
-`0x10`) and the rest break when hit (combat, not built). `FUN_8005e8f8`
-releases the contents: a random type is resolved like a placement's; a
-`CHEST GOLD` (`0x2F`) keeps the contents' amount as its own gold, taken by
-touching it once open; `EXP BARREL` (`0x2C`) explodes (`FUN_8009d330`);
-otherwise a new item of the contents type is made at the container,
-dropped to the floor, with a 30-field pickup delay (keys take the
-placement's count, `+0x34`). Stand-in: the runtime can't spawn a new
-item's model yet, so a key-opened chest's contents are applied to the hero
-at once, as if picked up.
+`0x10`) and the rest break when hit ([mechanics.md](mechanics.md), "Blows
+on items"). Container subtypes: `0x2B` barrel (`BAROBJ`), `0x2C`
+`CHESTEXP`, `0x2E` chest, `0x2F` gold chest (`CHESTG0`–`5`, the gold in
+the model), `0x30` silver chest (`CHESTS`).
+
+**The contents node.** After building a container's model
+(`FUN_800646e4`, class 2) the game formats `%sNULL1` (`r2-0x6600`) with
+the item's model name, finds that object (`FUN_800b8684`) and the model's
+node drawing it (`FUN_800114e8`), keeps the node's instance as `+0xE4`
+and hides it (instance flag 1). Only the chests have one — `CHESTNULL1`
+and `CHESTSNULL1` in every realm's items, a 1.4 × 1.3 card: a placeholder
+for where the contents go, never shown.
+
+**Letting out** (`FUN_8005e8f8`, called as a key opens the chest; the
+touch handler takes the key, sounds `S_CHEST` at it, sets flag 1 and
+`+0xCB` = the player): a random contents type is resolved (choice =
+(`r13-0x71B8` >> 5) + the item's slot, modulo the choices; the seed moves
+on by `0x1B7` per pick and by 1 per item update, so it's effectively
+random), then by the container's subtype:
+
+- `0x30` (silver chest) holding gold becomes the level's gold chest: its
+  type the last container type of subtype `0x2F` (`r13-0x71C8`), its
+  model the realm items' `CHESTSG` (`r13-0x71BC`, `r2-0x65D8`; both found
+  by `FUN_80067338`), `+0xE0` the gold;
+- `0x2F` (gold chest): `+0xE0` = the gold;
+- `0x2C` (`CHESTEXP`): flag `0x40`, `FUN_8009d330` (it ticks, then
+  explodes);
+- anything else: more than one key (the container's count `+0xEC` > 1)
+  comes as the `KEYRING` type (`r2-0x674C`). A powerup, when the container
+  has its contents node, is a new item made at the identity
+  (`DAT_80127528`) and hung on the node (`FUN_800bb084`), scaled 0.2
+  (instance flag 8 and `+0x40`..`+0x48` = `r2-0x6744`); the container's
+  `+0xE8` and the item's point at each other. Otherwise the new item
+  stands at the container and is dropped (`FUN_80064140`) — a barrel's
+  `+0xCB` = `0xFE`. Keys get `+0xE0` = the count (at least 1), a scroll
+  the count, and a powerup can't be picked up for 30 fields (`+0xEC`); a
+  monster (class 4) is woken (`+0xE4 |= 1`).
+
+**Growing** (the item update, class 2): while a container holds a hung
+item (and isn't `0x2C`), the item's scale follows the container's state —
+0.2 at 0; at 1, 0.8 × (frame + 1) / frames + 0.2 (`r2-0x66B0`,
+`r2-0x66B8`, the opening clip's frame and length), or 1 if the clip is
+under 2 frames; at 2 its own size (flag 8 off). The chest's `NULL1` rises
+with a bounce as the lid opens (1.9 up at frame 24, then settling at
+1.45), so the item comes up out of the chest growing to full size.
+
+**Taking.** Open (state 2), a chest holding an item is walked through
+(the touch handler returns 0) and the item becomes the hero's touched
+powerup (`+0x8B0`) if there's none yet. The pickup (`FUN_8005de3c`) frees
+the item after 8 fields (`+0xC6`, flag `0x100`), 15 when a player let it
+out (`+0xCB` ≠ −1); a hung item goes back to the scene root, and its
+container gets the same countdown and flag: **the chest goes with its
+contents**. An opened gold chest gives its gold (hint `0x11` over 24) and
+goes after 8 fields.
+
+**Empty chests.** The item update frees an open container (state 2)
+holding no item at once — but a barrel (`0x2B`) or a gold chest (`0x2F`);
+a `CHESTEXP` explodes instead (`FUN_8009d210`, then freed). So a chest
+that held a monster, or nothing, goes as it finishes opening.
+
+In this rewrite (`items.rs` `release_contents`, `take_contents`,
+`show_contents`; `population.rs` `CONTENTS_NODE`) as above, but: the
+contents' random type is its first choice (`Population::resolve`, as
+everywhere — so a silver chest's nested random always gives the first
+treasure, `TREAS_JUNK`, and turns gold); a hung item stands at its
+chest's centre rather than the origin and is only taken through the
+chest; a monster let out comes out as a barrel's Death does
+(`breakables.rs`).
 
 ### Exits
 

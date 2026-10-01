@@ -377,28 +377,34 @@ fn animated_nodes(pop: &Population, nodes: &LevelNodes) -> HashSet<usize> {
 }
 
 /// Where the level's nodes stand as its items are dropped onto their
-/// floors: the item set-up runs the mover update once after making the
-/// items, so each mover's node — and everything under it — is at its off
-/// height (not bridges and particle nodes, which don't move, nor nodes in
-/// the animated mode, at rest till they play). Every node so moved, with
-/// its pose.
+/// floors: the level load runs the world's update once just before the
+/// item set-up (`docs/level-population.md`), which poses every animated
+/// object at its first frame, and the item set-up runs the mover
+/// update once after making the items, so each mover's node — and
+/// everything under it — is at its off height (not bridges and particle
+/// nodes, which don't move; a mover in the animated mode only gets its
+/// play flags). Every node so moved, with its pose.
 pub fn start_poses(pop: &Population, nodes: &LevelNodes) -> HashMap<usize, NodePose> {
     let (movers, _) = register_movers(pop, nodes.nodes.len());
     let animated = animated_nodes(pop, nodes);
-    let offsets: HashMap<usize, f32> = movers
+    let mut local: HashMap<usize, NodePose> = movers
         .iter()
         .filter(|mv| mv.flags & BRIDGE == 0 && !animated.contains(&mv.node))
         .filter(|mv| nodes.nodes[mv.node].flags & gdl_formats::collision::node_flags::PARTICLES == 0)
-        .map(|mv| (mv.node, mv.off))
+        .map(|mv| (mv.node, NodePose::translation([0.0, mv.off, 0.0])))
         .collect();
-    let root_set: HashSet<usize> = offsets.keys().copied().collect();
+    for a in pop.animations.iter().filter(|a| a.node < nodes.nodes.len()) {
+        let Some(track) = &a.track else { continue };
+        local.insert(a.node, animated_pose(track, &track.sample(0.0), nodes.origin[a.node]));
+    }
+    let root_set: HashSet<usize> = local.keys().copied().collect();
     let mut roots: Vec<usize> = root_set.iter().copied().collect();
     roots.sort_by_key(|&r| (nodes.depth(r), r));
     let mut world: HashMap<usize, NodePose> = HashMap::new();
     for &root in &roots {
-        let local = NodePose::translation([0.0, offsets[&root], 0.0]);
+        let here = local[&root];
         let above = nodes.parent[root].and_then(|p| nodes.group_of(p, &root_set)).and_then(|p| world.get(&p).copied());
-        world.insert(root, above.map_or(local, |parent| local.then(&parent)));
+        world.insert(root, above.map_or(here, |parent| here.then(&parent)));
     }
     (0..nodes.nodes.len())
         .filter_map(|n| nodes.group_of(n, &root_set).map(|r| (n, world[&r])))
@@ -1471,6 +1477,42 @@ mod tests {
         assert_eq!(drive_animation(0x02, true, &mut st, &mut play), None);
         play_animation(&mut a, &mut play, false, [0.0; 3]);
         assert_eq!((a.frame, play & ANIMATING), (0.0, 0));
+    }
+
+    /// On the disc: the level load poses the animated objects at their
+    /// first frame before the items are dropped, so G1's lift pads land
+    /// on the platforms they send — the swinging arm's swung out, the
+    /// lift lowered — and ride them (real data).
+    #[test]
+    fn items_drop_onto_animated_objects_at_their_first_frame() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT")
+            .unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let Ok(bytes) = std::fs::read(std::path::Path::new(&root).join("LEVELS/levelG1/WORLDS.PS2")) else {
+            eprintln!("skipping: no levelG1");
+            return;
+        };
+        let pop = Population::parse(&bytes).expect("population");
+        let world = gdl_formats::WorldFile::parse(&bytes).expect("world");
+        let nodes = LevelNodes::new(world.nodes.clone());
+        let starts = start_poses(&pop, &nodes);
+        let mut c = gdl_formats::LevelCollision::new(&world).expect("collision");
+        for (&n, &pose) in &starts {
+            c.set_pose(n, pose);
+        }
+        let node = |name: &str| world.nodes.iter().position(|n| n.name == name).expect(name);
+        for (target, floor) in [("G1WOOD_ARM", "G1FLOOR#29"), ("G1PLAT1", "G1FLOOR#44")] {
+            let target = node(target);
+            let pad = pop
+                .placements
+                .iter()
+                .find(|p| {
+                    let ty = pop.resolved_type(p);
+                    matches!(p.params(ty.class), PlacementParams::Trigger { target: Some(t), flags, .. } if t == target && flags & STAND_ON_TARGET != 0)
+                })
+                .expect("its lift pad");
+            let hit = c.floor_probe(pad.position, 4.0, -10.0, 1.0, 0).expect("a floor under the pad");
+            assert_eq!(world.nodes[hit.node].name, floor, "{target}");
+        }
     }
 
     #[test]

@@ -71,6 +71,7 @@ impl Plugin for BreakablesPlugin {
                     flash_obstacles.after(hits),
                     // A chest set off explodes on the next tick.
                     (chest_explosions, blasted_items).chain().after(ItemTick),
+                    let_out_of_chests.after(ItemTick),
                 ),
             );
     }
@@ -559,6 +560,15 @@ fn let_out_monster(ty: &ItemType, pos: [f32; 3], level: Option<&mut MonsterLevel
     };
     if spawn_monster(level, new, commands).is_some() {
         info!("a container lets out monster {id:#x}");
+    }
+}
+
+/// Monsters a key-opened chest lets out (`items.rs`) come out where it
+/// stood.
+fn let_out_of_chests(mut commands: Commands, items: Option<ResMut<LevelItems>>, mut level: Option<ResMut<MonsterLevel>>) {
+    let Some(mut items) = items else { return };
+    for (ty, at) in items.take_let_out() {
+        let_out_monster(&ty, at, level.as_deref_mut(), &mut commands);
     }
 }
 
