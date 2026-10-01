@@ -25,13 +25,14 @@ use crate::font::{Draw2d, Flush2d, GameFonts, TextStyle};
 use crate::frontend::{self, Frontend};
 use crate::message_box::DrawBox;
 use crate::player::{HeroPad, PlayerTick};
+use crate::party::{MAX_PLAYERS, Party};
 use crate::player_state::{PlayerState, SlotState};
 
 pub struct PowerMenuPlugin;
 
 impl Plugin for PowerMenuPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PowerMenu>()
+        app.init_resource::<PowerMenus>()
             .add_systems(FixedUpdate, run.after(PlayerTick))
             .add_systems(PostUpdate, draw.before(DrawBox).before(Flush2d));
     }
@@ -47,6 +48,8 @@ const STEP_PER_FIELD: f32 = 4.0;
 const NAME_X: f32 = 24.0;
 const NAME_Y: f32 = 310.0;
 const NAME_SCALE: f32 = 0.45;
+/// Players 2–4's panels follow player 1's this far apart.
+const PANEL_WIDTH: f32 = 128.0;
 const SOUND_VOLUME: u8 = 0x7F;
 const DPAD: u32 = button::DPAD_LEFT | button::DPAD_RIGHT | button::DPAD_UP | button::DPAD_DOWN;
 const OPEN_CLOSE: &str = "S_OPTMENUMOVVRT";
@@ -62,10 +65,14 @@ enum State {
     Closing,
 }
 
-/// The menu: its state, the slot it shows (kept between openings), how
-/// far opening or closing has got, and the fields it has run (the glow's
-/// pulse).
+/// Each player's menu, by slot (the game keeps one per player).
 #[derive(Resource, Default)]
+pub struct PowerMenus([PowerMenu; MAX_PLAYERS]);
+
+/// A menu: its state, the slot it shows (kept between openings), how far
+/// opening or closing has got, and the fields it has run (the glow's
+/// pulse).
+#[derive(Default)]
 pub struct PowerMenu {
     state: State,
     slot: Option<usize>,
@@ -86,11 +93,18 @@ fn next(powers: &PlayerState, from: Option<usize>) -> Option<usize> {
     (0..SHOWN_SLOTS).map(|k| (start + k) % SHOWN_SLOTS).find(|&i| powers.powers[i].live())
 }
 
-/// One tick of the menu (the game's player update runs it every frame of
-/// play).
-fn run(mut menu: ResMut<PowerMenu>, mut pad: ResMut<HeroPad>, mut state: ResMut<PlayerState>, mut sounds: MessageWriter<PlaySoundAt>) {
-    let pressed = std::mem::take(&mut pad.pressed);
-    let menu = &mut *menu;
+/// One tick of each player's menu (the game's player update runs it every
+/// frame of play).
+fn run(mut menus: ResMut<PowerMenus>, mut pad: ResMut<HeroPad>, mut party: ResMut<Party>, mut sounds: MessageWriter<PlaySoundAt>) {
+    for (slot, menu) in menus.0.iter_mut().enumerate() {
+        let pressed = std::mem::take(&mut pad.pressed[slot]);
+        if let Some(state) = party.state_mut(slot) {
+            run_menu(menu, pressed, state, &mut sounds);
+        }
+    }
+}
+
+fn run_menu(menu: &mut PowerMenu, pressed: u32, state: &mut PlayerState, sounds: &mut MessageWriter<PlaySoundAt>) {
     if pressed & DPAD != 0 {
         debug!("power menu: D-pad {:#x} while {:?}", pressed & DPAD, menu.state);
     }
@@ -106,14 +120,14 @@ fn run(mut menu: ResMut<PowerMenu>, mut pad: ResMut<HeroPad>, mut state: ResMut<
         let shown_gone = menu.slot.is_none_or(|s| !state.powers[s].live());
         if shown_gone || pressed & button::DPAD_LEFT != 0 {
             sound(STEP);
-            match previous(&state, menu.slot) {
+            match previous(state, menu.slot) {
                 Some(s) => menu.slot = Some(s),
                 None => close(menu),
             }
         }
         if pressed & button::DPAD_RIGHT != 0 {
             sound(STEP);
-            match next(&state, menu.slot) {
+            match next(state, menu.slot) {
                 Some(s) => menu.slot = Some(s),
                 None => {
                     menu.slot = None;
@@ -136,7 +150,7 @@ fn run(mut menu: ResMut<PowerMenu>, mut pad: ResMut<HeroPad>, mut state: ResMut<
         sound(OPEN_CLOSE);
         if menu.state == State::Closed {
             if menu.slot.is_none() {
-                menu.slot = previous(&state, None);
+                menu.slot = previous(state, None);
             }
             if menu.slot.is_some() {
                 menu.state = State::Opening;
@@ -240,24 +254,28 @@ fn name(subtype: i32, value: u32) -> Option<&'static str> {
     NAMES.iter().find(|&&(s, bits, _)| s == subtype && value & bits == bits).map(|&(_, _, n)| n)
 }
 
-/// Draws the shown power's name while the menu is open, over play.
+/// Draws each open menu's power name over its player's panel, over play.
 fn draw(
-    menu: Res<PowerMenu>,
-    state: Res<PlayerState>,
+    menus: Res<PowerMenus>,
+    party: Res<Party>,
     frontend: Option<Res<Frontend>>,
     fonts: Option<Res<GameFonts>>,
     mut draw: ResMut<Draw2d>,
 ) {
-    let (State::Open, Some(slot), Some(fonts)) = (menu.state, menu.slot, fonts) else { return };
+    let Some(fonts) = fonts else { return };
     if frontend.is_some_and(|f| !f.playing() || f.menu_open()) {
         return;
     }
-    let p = &state.powers[slot];
-    let Some(text) = p.live().then(|| name(p.subtype, p.value)).flatten() else { return };
-    if p.state == SlotState::On {
-        draw.shimmer(&fonts, FONT32, NAME_SCALE, NAME_X, NAME_Y, text, frontend::glow_colour(), frontend::pulse(menu.fields));
-    } else {
-        draw.text(&fonts, &TextStyle::new(FONT32, NAME_SCALE, Color::WHITE), NAME_X, NAME_Y, text);
+    for (player, menu) in menus.0.iter().enumerate() {
+        let (State::Open, Some(slot), Some(state)) = (menu.state, menu.slot, party.state(player)) else { continue };
+        let p = &state.powers[slot];
+        let Some(text) = p.live().then(|| name(p.subtype, p.value)).flatten() else { continue };
+        let x = NAME_X + PANEL_WIDTH * player as f32;
+        if p.state == SlotState::On {
+            draw.shimmer(&fonts, FONT32, NAME_SCALE, x, NAME_Y, text, frontend::glow_colour(), frontend::pulse(menu.fields));
+        } else {
+            draw.text(&fonts, &TextStyle::new(FONT32, NAME_SCALE, Color::WHITE), x, NAME_Y, text);
+        }
     }
 }
 

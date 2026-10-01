@@ -39,6 +39,7 @@ use crate::message_box::ShowMessage;
 use crate::pickup_notices::PickupNotice;
 use crate::level_material::LevelMaterial;
 use crate::player::{Player, PlayerTick};
+use crate::party::{MAX_PLAYERS, Party};
 use crate::player_state::{Cry, FIELDS_PER_TICK, Heal, HurtHero, PlayerState, TimeStop, power};
 use crate::quest;
 use crate::population::{ContentModels, ItemRig, LevelPopulation, PlacementIndex};
@@ -648,6 +649,16 @@ struct Transport {
     fields: i32,
 }
 
+/// What the items keep of a hero between ticks: its feet at the end of the
+/// last tick, the transport under way, and the cooldown until the next
+/// transporter works (set on arrival, cleared by stepping off).
+#[derive(Default)]
+struct HeroTouch {
+    last_feet: Option<[f32; 3]>,
+    transport: Option<Transport>,
+    transport_cooldown: i32,
+}
+
 /// The current level's items.
 #[derive(Resource, Default)]
 pub struct LevelItems {
@@ -656,12 +667,8 @@ pub struct LevelItems {
     /// The level within its realm (0 the first).
     level: usize,
     doors: usize,
-    /// The hero's feet at the end of the last tick.
-    last_feet: Option<[f32; 3]>,
-    /// The transporter touched this tick, and the cooldown until the next
-    /// one works (set on arrival, cleared by stepping off).
-    transport: Option<Transport>,
-    transport_cooldown: i32,
+    /// By slot: what the items keep of each hero between ticks.
+    heroes: [HeroTouch; MAX_PLAYERS],
     leaving: Option<Leaving>,
     /// The hero stood in an open exit this tick (its flame burns).
     in_exit: bool,
@@ -1153,7 +1160,7 @@ pub(crate) fn build_items(
     population: Res<LevelPopulation>,
     ground: Option<Res<LevelGround>>,
     nodes: Option<Res<LevelNodes>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
 ) {
     let pop = &population.population;
     // The items are dropped with the movers at their off heights (the
@@ -1185,7 +1192,7 @@ pub(crate) fn build_items(
         if ty.class == ItemClass::Powerup
             && ty.subtype == GEM
             && realm == quest::TOWER as usize
-            && state.as_ref().is_some_and(|s| s.quest.crystals_open(1))
+            && party.any(|s| s.quest.crystals_open(1))
         {
             continue;
         }
@@ -1248,9 +1255,9 @@ pub(crate) fn build_items(
                 // the tower only: the game switches exits off as the tower
                 // loads, and a realm level's own exits are always open.
                 if realm == quest::TOWER as usize
-                    && let (PlacementParams::Exit { destination: Some(code) }, Some(state)) = (&params, &state)
+                    && let PlacementParams::Exit { destination: Some(code) } = &params
                     && let Some((to_realm, to_level)) = exit_destination(code)
-                    && !state.exit_open(to_realm, to_level)
+                    && !party.any(|s| s.exit_open(to_realm, to_level))
                 {
                     flags |= CLOSED;
                 }
@@ -1616,7 +1623,7 @@ impl Out<'_> {
 
     /// The plate for a pickup: its subtype and the game's value for it.
     fn notice(&mut self, subtype: i32, value: i32) {
-        self.notices.push(PickupNotice { subtype, value });
+        self.notices.push(PickupNotice { slot: 0, subtype, value });
     }
 }
 
@@ -1624,7 +1631,7 @@ impl Out<'_> {
 fn tick(
     time: Res<Time>,
     mut items: ResMut<LevelItems>,
-    mut state: ResMut<PlayerState>,
+    mut party: ResMut<Party>,
     ground: Option<Res<LevelGround>>,
     mut players: Query<&mut Player>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
@@ -1641,9 +1648,11 @@ fn tick(
 ) {
     let dt = time.delta_secs();
     let items = &mut *items;
-    let scrolls = items.scrolls.clone();
     let now = time.elapsed_secs();
-    let mut out = Out {
+    update_items(items, dt, &mut commands);
+    // Going out: the level changes once the heroes' fields are up.
+    let leaving = step_leaving(items, &mut change);
+    let new_out = |items: &LevelItems| Out {
         sounds: Vec::new(),
         voices: Vec::new(),
         poison: Vec::new(),
@@ -1654,44 +1663,116 @@ fn tick(
         woken: Vec::new(),
         notices: Vec::new(),
         seen: &seen,
-        scrolls,
+        scrolls: items.scrolls.clone(),
         now,
         realm: items.realm,
     };
-    update_items(items, dt, &mut commands);
-    run(items, dt, &mut state, ground.as_deref(), &mut players, &cameras, &mut out, &mut change);
-    fall_items(items, dt, ground.as_deref(), &cameras, &mut commands);
-    items.woken.append(&mut out.woken);
-    // Poison eaten is a poison blow on the hero, through its armour powers
-    // and its reactions (the gold armour's heal comes back negative); the
-    // food's own line is its only cry.
-    if let Ok(mut player) = players.single_mut() {
+    // Each hero against the items, in slot order: the exits each living
+    // hero stands in, and where they all are.
+    let mut order: Vec<usize> = players.iter().map(|p| p.slot).collect();
+    order.sort_unstable();
+    let mut stood: Vec<Vec<usize>> = Vec::new();
+    let mut living = 0;
+    let mut feet_all: Vec<Vec3> = Vec::new();
+    for slot in order {
+        let Some(mut player) = players.iter_mut().find(|p| p.slot == slot) else { continue };
+        let Some(state) = party.state_mut(slot) else { continue };
+        let mut out = new_out(items);
+        let exits_here = if leaving { None } else { run_hero(items, dt, state, ground.as_deref(), &mut player, &cameras, &mut out) };
+        if state.alive {
+            living += 1;
+            feet_all.push(Vec3::from(player.mover.position));
+        }
+        stood.extend(exits_here);
+        // Poison eaten is a poison blow on the hero, through its armour
+        // powers and its reactions (the gold armour's heal comes back
+        // negative); the food's own line is its only cry.
         for amount in out.poison.drain(..) {
             let taken = player.take_blow(amount, hit_kind::POISON, Vec3::ZERO);
             if taken != 0.0 {
-                hurt.write(HurtHero { amount: taken, kind: hit_kind::POISON, cry: Cry::Silent });
+                hurt.write(HurtHero { slot, amount: taken, kind: hit_kind::POISON, cry: Cry::Silent });
+            }
+        }
+        let at = Vec3::from(player.mover.position);
+        for n in &mut out.notices {
+            n.slot = slot;
+        }
+        flush(out, at, items, (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects));
+    }
+    // The portal steps on while every living hero stands in it; a secret
+    // exit takes them as soon as one does.
+    let mut out = new_out(items);
+    let mut on_exit: Vec<usize> = match stood.split_first() {
+        Some((first, rest)) if stood.len() == living => {
+            first.iter().copied().filter(|i| rest.iter().all(|e| e.contains(i))).collect()
+        }
+        _ => Vec::new(),
+    };
+    on_exit.extend(stood.iter().flatten().copied().filter(|&i| items.items[i].ty.subtype == SECRET_EXIT));
+    on_exit.sort_unstable();
+    on_exit.dedup();
+    let first_feet = feet_all.first().map_or([0.0; 3], |f| f.to_array());
+    exits(items, &on_exit, first_feet, &mut out);
+    // The flame burns while any hero stands in an open exit that isn't
+    // secret.
+    items.in_exit = stood.iter().flatten().any(|&i| items.items[i].ty.subtype != SECRET_EXIT);
+    if let Some(leaving) = &items.leaving {
+        for mut player in &mut players {
+            if player.going_out.is_none() && party.state(player.slot).is_some_and(|s| s.alive) {
+                let floor = player.mover.position[1];
+                player.going_out = Some(crate::going_out::GoingOut::new(floor, leaving.fields));
             }
         }
     }
-    let feet = players.iter().next().map(|p| Vec3::from(p.mover.position));
-    sounds.write_batch(out.sounds);
-    // The hero's own lines, panned from where it is.
-    if let Some(at) = feet {
-        voices.write_batch(out.voices.into_iter().map(|line| QueueHeroLine { line, volume: HERO_LINE_VOLUME, at }));
-    }
-    exit_flame(items, feet, &mut loops);
+    flush(out, Vec3::from(first_feet), items, (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects));
+    fall_items(items, dt, ground.as_deref(), &cameras, &mut commands);
+    exit_flame(items, feet_all.first().copied(), &mut loops);
     let quiet = stop.0 || camera.is_some_and(|c| c.in_cut());
-    ambient_sounds(items, feet.filter(|_| state.alive), quiet, &mut loops);
-    hints.write_batch(out.hints.into_iter().map(ShowHint));
-    messages.write_batch(out.messages);
-    notices.write_batch(out.notices);
-    effects.write_batch(out.effects.into_iter().map(|(name, at)| EffectAt {
+    ambient_sounds(items, &feet_all, quiet, &mut loops);
+}
+
+/// What a hero's touches asked for, sent: its lines from where it is.
+#[allow(clippy::type_complexity)]
+fn flush(
+    out: Out,
+    at: Vec3,
+    items: &mut LevelItems,
+    (sounds, voices, hints, messages, notices, effects): (
+        &mut MessageWriter<PlaySoundAt>,
+        &mut MessageWriter<QueueHeroLine>,
+        &mut MessageWriter<ShowHint>,
+        &mut MessageWriter<ShowMessage>,
+        &mut MessageWriter<PickupNotice>,
+        &mut MessageWriter<EffectAt>,
+    ),
+) {
+    let Out { sounds: s, voices: v, hints: h, messages: m, notices: n, effects: e, mut woken, .. } = out;
+    items.woken.append(&mut woken);
+    sounds.write_batch(s);
+    voices.write_batch(v.into_iter().map(|line| QueueHeroLine { line, volume: HERO_LINE_VOLUME, at }));
+    hints.write_batch(h.into_iter().map(ShowHint));
+    messages.write_batch(m);
+    notices.write_batch(n);
+    effects.write_batch(e.into_iter().map(|(name, at)| EffectAt {
         name,
         bank: Some(SPARKLE_BANK),
         at: Vec3::from(at),
         facing: 0.0,
         scale: 1.0,
     }));
+}
+
+/// Counts down the heroes' going out; when it's over, the level changes
+/// to where the exit goes. Whether they're going out.
+fn step_leaving(items: &mut LevelItems, change: &mut MessageWriter<ChangeLevelTo>) -> bool {
+    let Some(leaving) = &mut items.leaving else { return false };
+    leaving.fields -= FIELDS_PER_TICK;
+    if leaving.fields <= 0 {
+        info!("exit to {}", leaving.to);
+        change.write(ChangeLevelTo::finishing(leaving.to.clone()));
+        items.leaving = None;
+    }
+    true
 }
 
 /// Where the pickup sparkles are.
@@ -1712,59 +1793,47 @@ const GEM_SPARKLES: [&str; 9] = [
 const GARGOYLE_SPARKLE: &str = "GETGARG";
 const RUNE_SPARKLE: &str = "GETRUNE";
 
-/// One tick of the hero against the items.
+/// One tick of a hero against the items: what it touches, what blocks it,
+/// the transporters. The exits it stands in (none while it's dead or being
+/// transported).
 #[allow(clippy::too_many_arguments)]
-fn run(
+fn run_hero(
     items: &mut LevelItems,
     dt: f32,
     state: &mut PlayerState,
     ground: Option<&LevelGround>,
-    players: &mut Query<&mut Player>,
+    player: &mut Player,
     cameras: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     out: &mut Out,
-    change: &mut MessageWriter<ChangeLevelTo>,
-) {
-    items.in_exit = false;
-    let Ok(mut player) = players.single_mut() else {
-        items.last_feet = None;
-        return;
-    };
-    if let Some(leaving) = &mut items.leaving {
-        leaving.fields -= FIELDS_PER_TICK;
-        if leaving.fields <= 0 {
-            info!("exit to {}", leaving.to);
-            change.write(ChangeLevelTo::finishing(leaving.to.clone()));
-            items.leaving = None;
-        }
-        return;
-    }
+) -> Option<Vec<usize>> {
+    let slot = player.slot.min(MAX_PLAYERS - 1);
     let to = player.mover.position;
     // A hero moved instantly (put back at the start, a test's hop) is
     // touched where it is now, not swept along the jump.
-    let from = if std::mem::take(&mut player.teleported) { to } else { items.last_feet.unwrap_or(to) };
+    let from = if std::mem::take(&mut player.teleported) { to } else { items.heroes[slot].last_feet.unwrap_or(to) };
     if !state.alive {
-        items.last_feet = Some(to);
-        return;
+        items.heroes[slot].last_feet = Some(to);
+        return None;
     }
 
     // A transport under way holds the hero still, then moves them when
     // it's half done.
-    if let Some(t) = &mut items.transport {
+    if let Some(t) = &mut items.heroes[slot].transport {
         let before = t.fields;
         t.fields -= 2 * FIELDS_PER_TICK;
         let at = if before >= TRANSPORT_FIELDS / 2 && t.fields < TRANSPORT_FIELDS / 2 {
             out.hint(Hint::Transporter);
-            items.transport_cooldown = 1;
+            items.heroes[slot].transport_cooldown = 1;
             t.to
         } else {
             from
         };
         if t.fields <= 0 {
-            items.transport = None;
+            items.heroes[slot].transport = None;
         }
         player.mover.position = at;
-        items.last_feet = Some(at);
-        return;
+        items.heroes[slot].last_feet = Some(at);
+        return None;
     }
 
     let visible = |c: [f32; 3]| on_screen(cameras, c);
@@ -1834,18 +1903,13 @@ fn run(
         player.mover.position = feet;
     }
 
-    items.in_exit = exits(items, &on_exit, feet, out);
-    if let Some(leaving) = &items.leaving
-        && player.going_out.is_none()
-    {
-        player.going_out = Some(crate::going_out::GoingOut::new(feet[1], leaving.fields));
-    }
     if let Some(t) = on_transporter {
-        start_transport(items, t, r, ground.map(|g| &*g.0), cameras, out);
-    } else if items.transport_cooldown > 0 {
-        items.transport_cooldown -= 1;
+        start_transport(items, slot, t, r, ground.map(|g| &*g.0), cameras, out);
+    } else if items.heroes[slot].transport_cooldown > 0 {
+        items.heroes[slot].transport_cooldown -= 1;
     }
-    items.last_feet = Some(feet);
+    items.heroes[slot].last_feet = Some(feet);
+    Some(on_exit)
 }
 
 /// Items the touch test skips outright: freed ones, open doors, burst
@@ -2447,21 +2511,22 @@ fn exit_goes_to(realm: usize, level: usize, secret: bool, code: Option<&str>) ->
 const REALM_E: usize = 5;
 const REALM_F: usize = 6;
 
-/// Exits the hero stands in this tick: the portal steps through its
-/// actions while the hero stays, and when the last one has played the hero
-/// goes out (`going_out.rs`) to where the exit takes it ([`exit_goes_to`]),
-/// `S_TUNNEL` panned at its feet. Secret exits go at once. Whether the hero
-/// stands in an open exit (not a secret one: those have no flame).
-fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Out) -> bool {
+/// A secret exit's subtype (`SECRET_ICON`).
+const SECRET_EXIT: i32 = 0x32;
+
+/// Exits the heroes stand in this tick: the portal steps through its
+/// actions while they stay, and when the last one has played the heroes go
+/// out (`going_out.rs`) to where the exit takes them ([`exit_goes_to`]),
+/// `S_TUNNEL` panned at the first one's feet. Secret exits go at once.
+fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Out) {
     let (realm, level) = (items.realm, items.level);
     let mut go = None;
-    let mut standing = false;
     for (i, item) in items.items.iter_mut().enumerate() {
         if item.class() != ItemClass::Exit || item.gone || item.flags & CLOSED != 0 {
             continue;
         }
         let here = on_exit.contains(&i);
-        let secret = item.ty.subtype == 0x32;
+        let secret = item.ty.subtype == SECRET_EXIT;
         if !here {
             if item.action != 0 && !secret {
                 item.play(0);
@@ -2469,7 +2534,6 @@ fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Ou
             }
             continue;
         }
-        standing |= !secret;
         let code = match &item.params {
             PlacementParams::Exit { destination } => destination.as_deref(),
             _ => None,
@@ -2499,7 +2563,6 @@ fn exits(items: &mut LevelItems, on_exit: &[usize], feet: [f32; 3], out: &mut Ou
         items.leaving = Some(Leaving { to, fields, secret });
         out.sounds.push(PlaySoundAt::panned(TUNNEL_SOUND, Vec3::from(feet), CALL_VOLUME));
     }
-    standing
 }
 
 /// Going out through an exit.
@@ -2532,11 +2595,12 @@ fn exit_flame(items: &mut LevelItems, feet: Option<Vec3>, loops: &mut MessageWri
 /// 16 while time stands still or a cut is on; four times louder (64 to
 /// 255) on the secret realm's first level — following the volume as the
 /// hero moves, and all stopped once the hero goes out.
-fn ambient_sounds(items: &mut LevelItems, feet: Option<Vec3>, quiet: bool, loops: &mut MessageWriter<LoopSoundAt>) {
+fn ambient_sounds(items: &mut LevelItems, feet: &[Vec3], quiet: bool, loops: &mut MessageWriter<LoopSoundAt>) {
     let gone_out = items.leaving.is_some();
     let secret_first = items.secret_first;
     for (i, a) in items.ambient.iter_mut().enumerate() {
-        let distance = feet.map_or(NO_HERO, |f| f.distance(a.at));
+        // From the nearest hero in play.
+        let distance = feet.iter().map(|f| f.distance(a.at)).fold(NO_HERO, f32::min);
         let near = ambient_near(distance, a.reach);
         if near > 0.0 && !gone_out {
             let volume = ambient_volume(near, quiet, secret_first);
@@ -2572,14 +2636,15 @@ fn ambient_volume(near: f32, quiet: bool, secret_first: bool) -> u8 {
 /// there's floor there, the transport starts.
 fn start_transport(
     items: &mut LevelItems,
+    slot: usize,
     t: usize,
     radius: f32,
     ground: Option<&LevelCollision>,
     cameras: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     out: &mut Out,
 ) {
-    if items.transport_cooldown > 0 {
-        items.transport_cooldown = 1;
+    if items.heroes[slot].transport_cooldown > 0 {
+        items.heroes[slot].transport_cooldown = 1;
         return;
     }
     let PlacementParams::Transporter { destination, .. } = items.items[t].params else { return };
@@ -2598,7 +2663,7 @@ fn start_transport(
     // Faded at the transporter gone to (stand-in: where the hero lands,
     // under its centre, for its place).
     out.sound_at(TRANSPORT_SOUNDS.get(items.realm).copied().unwrap_or(""), to);
-    items.transport = Some(Transport { to, fields: TRANSPORT_FIELDS });
+    items.heroes[slot].transport = Some(Transport { to, fields: TRANSPORT_FIELDS });
 }
 
 #[cfg(test)]

@@ -39,7 +39,8 @@ use crate::level_material::LevelMaterial;
 use crate::locomotion;
 use crate::monsters::{Monster, MonsterLevel, MonsterTick};
 use crate::player::{Player, PlayerChoice};
-use crate::player_state::{Cry, EnemyScale, HurtHero, PlayerState, SpendPower, power};
+use crate::party::{MAX_PLAYERS, Party};
+use crate::player_state::{Cry, EnemyScale, HurtHero, SpendPower, power};
 use crate::population::LevelPopulation;
 use crate::world::{LevelEntity, LevelGround};
 
@@ -847,12 +848,15 @@ pub(crate) fn load_atree(game: &mut LoadedGame, folder: &str, atree: &str) -> Op
     })
 }
 
+/// Each player's missile, by slot (its class's, at its level).
+#[derive(Resource, Default)]
+struct HeroMissiles([Option<HeroMissile>; MAX_PLAYERS]);
+
 #[allow(clippy::too_many_arguments)]
 fn setup_level(
     mut commands: Commands,
     mut game: ResMut<LoadedGame>,
-    choice: Option<Res<PlayerChoice>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     mut models: ResMut<MissileModels>,
     mut guard: ResMut<PlayerGuard>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -861,9 +865,22 @@ fn setup_level(
 ) {
     models.0.clear();
     guard.0.clear();
-    let Some(choice) = choice else { return };
-    let Some(class) = character::class_index(&choice.class) else { return };
-    let level = state.as_ref().map_or(1, |s| s.level.max(1));
+    let mut missiles = HeroMissiles::default();
+    for (slot, member) in party.members() {
+        missiles.0[slot] = hero_missile(&member.choice, member.state.level, &mut game, (&mut meshes, &mut materials, &mut images));
+    }
+    commands.insert_resource(missiles);
+}
+
+/// The missile a hero of `choice` throws at `level`.
+fn hero_missile(
+    choice: &PlayerChoice,
+    level: u32,
+    game: &mut LoadedGame,
+    (meshes, materials, images): (&mut Assets<Mesh>, &mut Assets<LevelMaterial>, &mut Assets<Image>),
+) -> Option<HeroMissile> {
+    let class = character::class_index(&choice.class)?;
+    let level = level.max(1);
     let stats = game
         .install
         .read(&format!("PDATA/{}.WAD", choice.class))
@@ -885,20 +902,20 @@ fn setup_level(
         let own = format!("PLAYERS/{}/{}", choice.class, choice.variant);
         let effects = [format!("PLAYERS/{}/SFX{colour}", choice.class), format!("PLAYERS/{base}/SFX{colour}")];
         let data = if digit == '0' {
-            load_atree(&mut game, &own, &format!("{weapon}_THROW0"))
+            load_atree(game, &own, &format!("{weapon}_THROW0"))
         } else {
             let name = format!("{weapon}_THROW{digit}");
-            effects.iter().find_map(|f| load_atree(&mut game, f, &name))
+            effects.iter().find_map(|f| load_atree(game, f, &name))
         };
-        let data = data.or_else(|| load_atree(&mut game, &own, &format!("{weapon}_THROW1")));
+        let data = data.or_else(|| load_atree(game, &own, &format!("{weapon}_THROW1")));
         if data.is_none() {
             warn!("no thrown-weapon model for {} ({weapon}, {digit})", choice.class);
         }
-        data.map(|d| Arc::new(CharacterModel::build(&d, &mut meshes, &mut materials, &mut images)))
+        data.map(|d| Arc::new(CharacterModel::build(&d, meshes, materials, images)))
     });
     let mut weapon = |name: &str| {
-        let model = load_atree(&mut game, "WEAPONS", name)
-            .map(|d| Arc::new(CharacterModel::build(&d, &mut meshes, &mut materials, &mut images)));
+        let model = load_atree(game, "WEAPONS", name)
+            .map(|d| Arc::new(CharacterModel::build(&d, meshes, materials, images)));
         if model.is_none() {
             warn!("no {name} in WEAPONS");
         }
@@ -910,7 +927,7 @@ fn setup_level(
     let acid_model = weapon(ACID_MISSILE);
     let v = |a: [f32; 3]| Vec3::from(a);
     info!("{} throws: {damage:.1} damage at {speed:.1} units/s", choice.class);
-    commands.insert_resource(HeroMissile {
+    Some(HeroMissile {
         class,
         kind: HERO_MISSILES[missile_class(class)],
         throw_offset: stats.map_or(Vec3::Y, |s| v(s.throw_offset)),
@@ -922,7 +939,7 @@ fn setup_level(
         bolt_model,
         lightning_model,
         acid_model,
-    });
+    })
 }
 
 /// A monster or object as a missile sees it: an upright cylinder.
@@ -1135,8 +1152,8 @@ pub fn spawn_critter_missile(commands: &mut Commands, m: CritterMissile) -> Enti
 fn launch_hero(
     mut commands: Commands,
     mut shots: MessageReader<HeroShot>,
-    hero: Option<Res<HeroMissile>>,
-    (state, level): (Option<Res<PlayerState>>, Option<Res<MonsterLevel>>),
+    missiles: Option<Res<HeroMissiles>>,
+    (party, level): (Res<Party>, Option<Res<MonsterLevel>>),
     ground: Option<Res<LevelGround>>,
     targets: Query<(Entity, &GlobalTransform, &Targetable)>,
     mut hits: MessageWriter<Hit>,
@@ -1145,15 +1162,16 @@ fn launch_hero(
     players: Query<&Player>,
 ) {
     let boss_level = level.as_ref().is_some_and(|l| l.boss >= 0);
-    let top_level = state.as_ref().is_some_and(|s| s.level > TOP_LEVEL);
     for shot in shots.read() {
-        let Some(hero) = hero.as_deref() else { continue };
+        let slot = players.get(shot.hero).map_or(0, |p| p.slot);
+        let Some(hero) = missiles.as_ref().and_then(|m| m.0.get(slot)).and_then(Option::as_ref) else { continue };
+        let top_level = party.state(slot).is_some_and(|s| s.level > TOP_LEVEL);
         let (weapon, special) = players.get(shot.hero).map_or((0, 0), |p| (p.weapon, p.special_bits));
         // The crossbow's bolt spends a use of it; with none left it's the
         // class's missile.
         let crossbow_use = shot.strike.0 & Strike::CROSSBOW != 0 && weapon & shot_kind::PIERCE != 0;
         if crossbow_use {
-            spent.write(SpendPower { subtype: power::WEAPON, bits: shot_kind::PIERCE });
+            spent.write(SpendPower { slot, subtype: power::WEAPON, bits: shot_kind::PIERCE });
         }
         let r = release(shot, crossbow_use, boss_level);
         // The throw starts from the hero's weapon bits.
@@ -1369,7 +1387,7 @@ fn fly(
                     // kind (stand-in: the game's missiles of flag 0x2000
                     // are silent; which ones carry it isn't traced here).
                     if amount != 0.0 {
-                        damage.write(HurtHero { amount, kind: p.kind, cry: Cry::Hurt });
+                        damage.write(HurtHero { slot: pl.slot, amount, kind: p.kind, cry: Cry::Hurt });
                     }
                     if p.damage > GUARD_ABOVE {
                         guard.0.insert(player, now + PLAYER_GUARD as f64);
@@ -1588,7 +1606,7 @@ fn burst(
                 let (kind, push) = crate::effects::blast_on_hero(blow, p.kind, at, feet);
                 let amount = pl.take_blow(blow, kind, push);
                 if amount != 0.0 {
-                    damage.write(HurtHero { amount, kind, cry: Cry::Hurt });
+                    damage.write(HurtHero { slot: pl.slot, amount, kind, cry: Cry::Hurt });
                 }
                 if blow > GUARD_ABOVE {
                     guard.0.insert(e, now + PLAYER_GUARD as f64);

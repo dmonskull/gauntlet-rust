@@ -12,7 +12,8 @@ use bevy::input::gamepad::{Gamepad, GamepadRumbleIntensity, GamepadRumbleRequest
 use bevy::prelude::*;
 
 use crate::options::GameOptions;
-use crate::player_state::{DamagePlayer, HurtHero, PlayerState};
+use crate::party::Party;
+use crate::player_state::{DamagePlayer, HurtHero};
 
 pub struct RumblePlugin;
 
@@ -38,26 +39,38 @@ fn strength(kind: u32) -> (f32, f32) {
 
 fn rumble(
     options: Res<GameOptions>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     camera: Option<Res<crate::play_camera::PlayCamera>>,
     (mut hurts, mut hits): (MessageReader<HurtHero>, MessageReader<DamagePlayer>),
     pads: Query<Entity, With<Gamepad>>,
     mut requests: MessageWriter<GamepadRumbleRequest>,
 ) {
-    let kinds: Vec<u32> = hurts
+    let blows: Vec<(usize, u32)> = hurts
         .read()
         .filter(|h| h.amount > 0.0)
-        .map(|h| h.kind)
-        .chain(hits.read().filter(|h| h.amount > 0.0).map(|_| 0))
+        .map(|h| (h.slot, h.kind))
+        .chain(hits.read().filter(|h| h.amount > 0.0).map(|h| (h.slot, 0)))
         .collect();
-    let calm = !options.rumble || camera.is_some_and(|c| c.in_cut()) || state.is_some_and(|s| !s.alive);
-    let Some((level, fields)) = kinds.into_iter().map(strength).reduce(|a, b| if b.0 > a.0 { b } else { a }) else { return };
-    if calm {
+    if !options.rumble || camera.is_some_and(|c| c.in_cut()) {
         return;
     }
-    let intensity = GamepadRumbleIntensity { strong_motor: level, weak_motor: level };
-    for gamepad in &pads {
-        requests.write(GamepadRumbleRequest::Add { gamepad, intensity, duration: Duration::from_secs_f32(fields / 60.0) });
+    let solo = party.members().filter(|(_, m)| !m.devices.remote).count() == 1;
+    for (slot, member) in party.members() {
+        if !member.state.alive {
+            continue;
+        }
+        let Some((level, fields)) =
+            blows.iter().filter(|(s, _)| *s == slot).map(|&(_, kind)| strength(kind)).reduce(|a, b| if b.0 > a.0 { b } else { a })
+        else {
+            continue;
+        };
+        // The hit player's pad (alone, every pad nobody else holds).
+        let intensity = GamepadRumbleIntensity { strong_motor: level, weak_motor: level };
+        for gamepad in &pads {
+            if member.devices.pad == Some(gamepad) || (solo && party.slot_of_pad(gamepad).is_none()) {
+                requests.write(GamepadRumbleRequest::Add { gamepad, intensity, duration: Duration::from_secs_f32(fields / 60.0) });
+            }
+        }
     }
 }
 

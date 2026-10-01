@@ -18,7 +18,7 @@ use bevy::prelude::*;
 use gdl_formats::population::REALM_LETTERS;
 
 use crate::message_box::ShowMessage;
-use crate::player_state::PlayerState;
+use crate::party::Party;
 use crate::population::LevelPopulation;
 
 pub struct QuestPlugin;
@@ -51,8 +51,8 @@ pub fn level_of(name: &str) -> Option<(u32, u32)> {
 /// (a bit per realm id) and `GDL_RUNES=<bits>` the runestones (a bit per
 /// stone); bits in decimal or `0x` hex. `GDL_EXPERIENCE=<n>` gives the hero
 /// that much experience, its rank last checked at the level it had.
-pub(crate) fn seed_tests(state: Option<ResMut<PlayerState>>, mut seeded: Local<bool>) {
-    let Some(mut state) = state else { return };
+pub(crate) fn seed_tests(mut party: ResMut<Party>, mut seeded: Local<bool>) {
+    let Some(state) = party.state_mut(0) else { return };
     if !std::mem::replace(&mut *seeded, true) {
         for (c, n) in std::env::var("GDL_CRYSTALS").unwrap_or_default().split(',').filter_map(|p| p.split_once(':')) {
             if let (Ok(c), Ok(n)) = (c.trim().parse::<usize>(), n.trim().parse::<i16>())
@@ -153,15 +153,11 @@ pub fn rank_changed(before: u32, now: u32) -> bool {
 #[derive(Resource, Default)]
 pub struct ShardLight(pub bool);
 
-fn show_tower_pieces(
-    state: Option<Res<PlayerState>>,
-    light: Res<ShardLight>,
-    mut pieces: Query<(&TowerPiece, &mut Visibility)>,
-) {
-    let Some(state) = state else { return };
+fn show_tower_pieces(party: Res<Party>, light: Res<ShardLight>, mut pieces: Query<(&TowerPiece, &mut Visibility)>) {
     for (piece, mut v) in &mut pieces {
         let shown = match *piece {
-            TowerPiece::ExitGlow { realm, level } => state.exit_open(realm, level),
+            // Open by any player's progress.
+            TowerPiece::ExitGlow { realm, level } => party.any(|s| s.exit_open(realm, level)),
             TowerPiece::ShardLight => light.0,
         };
         v.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
@@ -173,11 +169,11 @@ fn show_tower_pieces(
 fn announce_unlocks(
     time: Res<Time>,
     population: Option<Res<LevelPopulation>>,
-    state: Option<ResMut<PlayerState>>,
+    mut party: ResMut<Party>,
     mut messages: MessageWriter<ShowMessage>,
     mut last: Local<Option<f32>>,
 ) {
-    let (Some(population), Some(mut state)) = (population, state) else { return };
+    let Some(population) = population else { return };
     if level_of(&population.level).is_none_or(|(realm, _)| realm != TOWER) {
         return;
     }
@@ -185,7 +181,17 @@ fn announce_unlocks(
     if last.is_some_and(|t| now - t < ANNOUNCE_SECONDS) {
         return;
     }
-    let (counters, sections) = state.quest.newly_open();
+    // Each player's counters; one announcement each.
+    let (mut counters, mut sections) = (Vec::new(), Vec::new());
+    for (_, state) in party.states_mut() {
+        let (c, g) = state.quest.newly_open();
+        counters.extend(c);
+        sections.extend(g);
+    }
+    counters.sort_unstable();
+    counters.dedup();
+    sections.sort_unstable();
+    sections.dedup();
     for s in &sections {
         messages.write(ShowMessage::new("UNLOCKSECTION", *s).voice(GARGOYLE_VOICES[*s]));
     }

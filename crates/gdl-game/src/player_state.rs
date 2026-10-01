@@ -14,9 +14,11 @@
 use bevy::prelude::*;
 use gdl_formats::pdata::PlayerStats;
 
+use gdl_install::GameInstall;
+
 use crate::audio::{CALL_VOLUME, PlaySoundAt, QueueHeroLine, QueueVoice};
-use crate::level::LoadedGame;
-use crate::player::{PlayerChoice, PlayerSpawn, PlayerTick};
+use crate::party::{Devices, MAX_PLAYERS, Member, Party};
+use crate::player::{PlayerChoice, PlayerTick};
 use crate::population::LevelPopulation;
 use crate::quest::Quest;
 
@@ -58,6 +60,8 @@ pub const DEFAULT_HEAD: f32 = 4.4;
 /// (`Player::take_blow`).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct DamagePlayer {
+    /// The hero's slot (`party.rs`).
+    pub slot: usize,
     pub amount: f32,
 }
 
@@ -84,6 +88,8 @@ pub enum Cry {
 /// [`Cry::Hurt`].
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
 pub struct HurtHero {
+    /// The hero's slot (`party.rs`).
+    pub slot: usize,
     pub amount: f32,
     pub kind: u32,
     pub cry: Cry,
@@ -93,6 +99,7 @@ pub struct HurtHero {
 /// health, capped at the maximum): the Health Vampire's drink.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct HealPlayer {
+    pub slot: usize,
     pub amount: f32,
 }
 
@@ -100,8 +107,21 @@ pub struct HealPlayer {
 /// any of `bits` (a breath, the crossbow, the hammer).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct SpendPower {
+    pub slot: usize,
     pub subtype: i32,
     pub bits: u32,
+}
+
+/// A player picked on the select screen: `slot` plays `choice` under
+/// `name` — with a fresh record (a saved character's laid on it), or, not
+/// fresh, the record it has (its name changed).
+#[derive(Message, Clone, Debug)]
+pub struct SetMember {
+    pub slot: usize,
+    pub choice: PlayerChoice,
+    pub name: String,
+    pub saved: Option<crate::saves::SavedCharacter>,
+    pub fresh: bool,
 }
 
 /// A timed or counted powerup the hero carries — one slot of the record's
@@ -157,7 +177,7 @@ pub enum Heal {
     Healed,
 }
 
-#[derive(Resource, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct PlayerState {
     pub health: f32,
     pub level: u32,
@@ -548,11 +568,11 @@ impl Plugin for PlayerStatePlugin {
             .add_message::<HurtHero>()
             .add_message::<SpendPower>()
             .add_message::<HealPlayer>()
-            .init_resource::<PlayerState>()
+            .add_message::<SetMember>()
+            .add_systems(Update, set_members.before(crate::player::PlayerSpawn))
+            .init_resource::<Party>()
             .init_resource::<EnemyScale>()
             .init_resource::<TimeStop>()
-            // A new hero whenever the class choice changes.
-            .add_systems(Update, new_hero.run_if(resource_changed::<PlayerChoice>).before(PlayerSpawn))
             .add_systems(
                 FixedUpdate,
                 (take_damage, spend_powers, powers_and_warning.in_set(PowersTick)).chain().after(PlayerTick),
@@ -561,32 +581,46 @@ impl Plugin for PlayerStatePlugin {
     }
 }
 
-/// Sets up the chosen class's hero with its class record, and a loaded
-/// character's saved record on top (`saves.rs`).
-fn new_hero(
-    mut commands: Commands,
-    mut game: ResMut<LoadedGame>,
-    choice: Option<Res<PlayerChoice>>,
-    saves: Option<ResMut<crate::saves::Saves>>,
-) {
-    let class = choice.map_or_else(|| "WAR".to_string(), |c| c.class.clone());
-    let stats = game
-        .install
-        .read(&format!("PDATA/{class}.WAD"))
-        .ok()
-        .and_then(|b| PlayerStats::parse(&b).ok().flatten());
+/// A new player of `choice`'s class: the class record's hero
+/// (`PDATA/<class>.WAD`), a saved character's record laid on top
+/// (`saves.rs`), and `GDL_KEYS=n` keys (testing).
+pub fn new_member(
+    install: &mut GameInstall,
+    choice: PlayerChoice,
+    name: &str,
+    saved: Option<&crate::saves::SavedCharacter>,
+    devices: Devices,
+) -> Member {
+    let stats = install.read(&format!("PDATA/{}.WAD", choice.class)).ok().and_then(|b| PlayerStats::parse(&b).ok().flatten());
     if stats.is_none() {
-        warn!("no PDATA record for {class}; using stand-in hero size");
+        warn!("no PDATA record for {}; using stand-in hero size", choice.class);
     }
-    let mut state = PlayerState::new(&class, stats.as_ref());
-    // Debugging aid: `GDL_KEYS=n` starts the hero with n keys.
+    let mut state = PlayerState::new(&choice.class, stats.as_ref());
     if let Some(keys) = std::env::var("GDL_KEYS").ok().and_then(|k| k.parse().ok()) {
         state.take_keys(keys);
     }
-    if let Some(saved) = saves.and_then(|mut s| s.pending.take()) {
+    if let Some(saved) = saved {
         saved.apply(&mut state);
     }
-    commands.insert_resource(state);
+    Member { choice, name: name.to_string(), state, devices }
+}
+
+/// Puts the players picked on the select screen in the party. A new one
+/// keeps the devices whoever had its slot used (player 1: the keyboard).
+fn set_members(mut picks: MessageReader<SetMember>, mut game: ResMut<crate::level::LoadedGame>, mut party: ResMut<Party>) {
+    for pick in picks.read() {
+        if let Some(member) = party.get_mut(pick.slot)
+            && !pick.fresh
+            && member.choice == pick.choice
+        {
+            member.name = pick.name.clone();
+            continue;
+        }
+        let devices = party.get(pick.slot).map_or(Devices { keyboard: pick.slot == 0, ..Devices::default() }, |m| m.devices);
+        let member = new_member(&mut game.install, pick.choice.clone(), &pick.name, pick.saved.as_ref(), devices);
+        info!("player {}: {} the {} ({})", pick.slot + 1, member.name, member.choice.class, member.choice.variant);
+        party.join(pick.slot, member);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -594,35 +628,46 @@ fn take_damage(
     mut hits: MessageReader<DamagePlayer>,
     mut hurts: MessageReader<HurtHero>,
     mut heals: MessageReader<HealPlayer>,
-    mut state: ResMut<PlayerState>,
+    mut party: ResMut<Party>,
     camera: Option<Res<crate::play_camera::PlayCamera>>,
     heroes: Query<&crate::player::Player>,
-    (mut cries, choice, time): (Local<Cries>, Option<Res<PlayerChoice>>, Res<Time>),
+    (mut cries, time): (Local<[Cries; MAX_PLAYERS]>, Res<Time>),
     (mut sounds, mut lines, mut announce): (MessageWriter<PlaySoundAt>, MessageWriter<QueueHeroLine>, MessageWriter<QueueVoice>),
 ) {
     for h in heals.read() {
-        if state.alive {
+        if let Some(state) = party.state_mut(h.slot)
+            && state.alive
+        {
             state.heal(h.amount);
         }
     }
-    cries.wait -= FIELDS_PER_TICK;
-    // No harm comes to the hero during a camera cut.
+    for c in cries.iter_mut() {
+        c.wait -= FIELDS_PER_TICK;
+    }
+    // No harm comes to the heroes during a camera cut.
     let cut = camera.is_some_and(|c| c.in_cut());
-    let blows: Vec<HurtHero> =
-        hits.read().map(|h| HurtHero { amount: h.amount, kind: 0, cry: Cry::Hurt }).chain(hurts.read().copied()).collect();
-    let feet = heroes.iter().next().map(|p| Vec3::from(p.mover.position));
+    let blows: Vec<HurtHero> = hits
+        .read()
+        .map(|h| HurtHero { slot: h.slot, amount: h.amount, kind: 0, cry: Cry::Hurt })
+        .chain(hurts.read().copied())
+        .collect();
     for hit in blows {
         if cut {
             continue;
         }
+        let Some(member) = party.get_mut(hit.slot) else { continue };
+        let choice = member.choice.clone();
+        let state = &mut member.state;
         let (in_play, before) = (state.alive, state.health);
         let died = state.damage(hit.amount);
-        debug!("the hero takes {:.1}: {:.1} health", hit.amount, state.health);
+        debug!("player {} takes {:.1}: {:.1} health", hit.slot + 1, hit.amount, state.health);
         if died {
-            info!("the hero has died");
+            info!("player {} has died", hit.slot + 1);
         }
         // Only a hero in play cries out, at its feet.
+        let feet = heroes.iter().find(|p| p.slot == hit.slot).map(|p| Vec3::from(p.mover.position));
         let Some(feet) = feet.filter(|_| in_play) else { continue };
+        let cries = &mut cries[hit.slot.min(MAX_PLAYERS - 1)];
         let hero = Hero {
             class: &state.class,
             pojo: state.bits.special & power::POJO != 0,
@@ -641,7 +686,7 @@ fn take_damage(
                     lines.write(QueueHeroLine { line, volume, at: feet });
                 }
                 Voiced::Warning(line, most_wait) => {
-                    let name = hero_name_line(choice.as_deref(), hero.pojo);
+                    let name = hero_name_line(Some(&choice), hero.pojo);
                     announce.write(QueueVoice::announcer(name, most_wait).then(line).gated());
                 }
             }
@@ -825,14 +870,10 @@ fn hurt_sound(kind: u32) -> &'static str {
 }
 
 /// Spends the counted powers' uses (not in the tower).
-fn spend_powers(
-    mut spent: MessageReader<SpendPower>,
-    mut state: ResMut<PlayerState>,
-    population: Option<Res<LevelPopulation>>,
-) {
+fn spend_powers(mut spent: MessageReader<SpendPower>, mut party: ResMut<Party>, population: Option<Res<LevelPopulation>>) {
     let in_tower = population.as_ref().and_then(|p| crate::quest::level_of(&p.level)).is_some_and(|(realm, _)| realm == TOWER_REALM);
     for s in spent.read() {
-        if !in_tower {
+        if !in_tower && let Some(state) = party.state_mut(s.slot) {
             state.spend_power(s.subtype, s.bits);
         }
     }
@@ -849,7 +890,8 @@ pub struct PowersTick;
 /// aid): powerups granted at the first level start, as picking them up
 /// would (`0x…` values allowed; seconds default to 60, −1 for counted
 /// ones). E.g. `5:1` a fire weapon, `7:0:4:40` a speed boost.
-fn test_powers(mut state: ResMut<PlayerState>, mut done: Local<bool>) {
+fn test_powers(mut party: ResMut<Party>, mut done: Local<bool>) {
+    let Some(state) = party.state_mut(0) else { return };
     if *done {
         return;
     }
@@ -926,7 +968,7 @@ fn warning_volume(health: f32) -> u8 {
 #[allow(clippy::too_many_arguments)]
 fn powers_and_warning(
     time: Res<Time>,
-    mut state: ResMut<PlayerState>,
+    mut party: ResMut<Party>,
     population: Option<Res<LevelPopulation>>,
     camera: Option<Res<crate::play_camera::PlayCamera>>,
     level: Option<Res<crate::monsters::MonsterLevel>>,
@@ -939,50 +981,57 @@ fn powers_and_warning(
     let cut = camera.is_some_and(|c| c.in_cut());
     let boss_level = level.is_some_and(|l| l.boss >= 0);
     let (awake, dead) = boss.map_or((false, false), |b| (b.awake, b.dead));
-    let before = state.bits.special;
-    let now = state.tick_powers(time.delta_secs() * power_clock(in_tower, cut, boss_level, awake, dead)).special;
-    let ended = before & !now;
-    // The powers' ends are heard at the hero's top point (the shrink's,
-    // centred), louder than the calls' own (`docs/audio-format.md`).
-    let top = heroes.iter().next().map(|p| Vec3::from(p.mover.position) + Vec3::Y * HERO_TOP);
-    let lapse = |name: &str| match top {
-        Some(at) => PlaySoundAt::panned(name, at, LAPSE_VOLUME),
-        None => PlaySoundAt::centred(name, LAPSE_VOLUME),
-    };
-    if ended & power::LEVITATE != 0 {
-        sound.write(lapse("S_LEVITATEDOWN"));
+    let clock = time.delta_secs() * power_clock(in_tower, cut, boss_level, awake, dead);
+    // The shrink and the time stop act on the whole level: any player's.
+    let (mut shrink, mut time_stop) = (false, false);
+    for (slot, state) in party.states_mut() {
+        let before = state.bits.special;
+        let now = state.tick_powers(clock).special;
+        let ended = before & !now;
+        shrink |= now & power::SHRINK != 0;
+        time_stop |= state.alive && now & power::TIME_STOP != 0;
+        // The powers' ends are heard at the hero's top point (the shrink's,
+        // centred), louder than the calls' own (`docs/audio-format.md`).
+        let top = heroes.iter().find(|p| p.slot == slot).map(|p| Vec3::from(p.mover.position) + Vec3::Y * HERO_TOP);
+        let lapse = |name: &str| match top {
+            Some(at) => PlaySoundAt::panned(name, at, LAPSE_VOLUME),
+            None => PlaySoundAt::centred(name, LAPSE_VOLUME),
+        };
+        if ended & power::LEVITATE != 0 {
+            sound.write(lapse("S_LEVITATEDOWN"));
+        }
+        if ended & power::GROW != 0 && state.level < BIG_LEVEL {
+            sound.write(lapse("S_UNGROW"));
+        }
+        if ended & power::POJO != 0 {
+            sound.write(lapse("S_UNPOJO"));
+        }
+        if !state.alive || state.health > 200.0 {
+            continue;
+        }
+        state.warning_timer -= FIELDS_PER_TICK;
+        if state.warning_timer < 1 {
+            let invulnerable = state.bits.armour & (crate::damage::resists::INVULNERABLE | crate::damage::resists::GOLD) != 0;
+            if !in_tower && !invulnerable {
+                sound.write(PlaySoundAt::centred("S_WARN", warning_volume(state.health)));
+            }
+            state.warning_timer = match state.health {
+                h if h < 25.0 => 30,
+                h if h < 100.0 => 60,
+                _ => 120,
+            };
+        }
     }
-    if ended & power::GROW != 0 && state.level < BIG_LEVEL {
-        sound.write(lapse("S_UNGROW"));
-    }
-    if ended & power::POJO != 0 {
-        sound.write(lapse("S_UNPOJO"));
-    }
-    let scale = EnemyScale(if !boss_level && now & power::SHRINK != 0 { SHRINK_SCALE } else { 1.0 });
+    let scale = EnemyScale(if !boss_level && shrink { SHRINK_SCALE } else { 1.0 });
     if scale.0 > enemies.0 {
         sound.write(PlaySoundAt::centred("S_UNSHRINK", LAPSE_VOLUME));
     }
     if *enemies != scale {
         *enemies = scale;
     }
-    let stopped = TimeStop(state.alive && now & power::TIME_STOP != 0);
+    let stopped = TimeStop(time_stop);
     if *stop != stopped {
         *stop = stopped;
-    }
-    if !state.alive || state.health > 200.0 {
-        return;
-    }
-    state.warning_timer -= FIELDS_PER_TICK;
-    if state.warning_timer < 1 {
-        let invulnerable = state.bits.armour & (crate::damage::resists::INVULNERABLE | crate::damage::resists::GOLD) != 0;
-        if !in_tower && !invulnerable {
-            sound.write(PlaySoundAt::centred("S_WARN", warning_volume(state.health)));
-        }
-        state.warning_timer = match state.health {
-            h if h < 25.0 => 30,
-            h if h < 100.0 => 60,
-            _ => 120,
-        };
     }
 }
 
@@ -993,7 +1042,7 @@ mod tests {
     const WAR: Hero = Hero { class: "WAR", pojo: false, invulnerable: false };
 
     fn hurt(amount: f32, kind: u32, cry: Cry) -> HurtHero {
-        HurtHero { amount, kind, cry }
+        HurtHero { slot: 0, amount, kind, cry }
     }
 
     fn sound(name: &str, volume: u8) -> Voiced {

@@ -32,8 +32,9 @@ use crate::level::LoadedGame;
 use crate::level_material::LevelMaterial;
 use crate::model_mesh::TextureCache;
 use crate::monsters::MonsterLevel;
+use crate::party::Party;
 use crate::player::{Player, PlayerChoice};
-use crate::player_state::{PlayerState, PowersTick};
+use crate::player_state::PowersTick;
 use crate::projectiles::{self, HeroShot};
 use crate::texanim::{self, TexAnim};
 
@@ -127,7 +128,7 @@ struct Familiar {
 struct FamiliarModels {
     models: HashMap<(String, &'static str), Option<Arc<CharacterModel>>>,
     /// The class code, and its familiar place and mouth point.
-    points: Option<(String, Vec3, Vec3)>,
+    points: HashMap<String, (Vec3, Vec3)>,
     /// `WEAPONS`' files: the textures an effects bank names but doesn't
     /// hold (the spit's `PIXIE_<colour>`, `WIZ_HEAD_<colour>` and their
     /// frames), found by name as the game does.
@@ -191,7 +192,7 @@ impl FamiliarModels {
     /// The class's familiar place and mouth point (`PDAT +0x164`,
     /// `+0x170`).
     fn points(&mut self, class: &str, game: &mut LoadedGame) -> (Vec3, Vec3) {
-        if self.points.as_ref().is_none_or(|(c, ..)| c != class) {
+        if !self.points.contains_key(class) {
             let mut read = || {
                 let bytes = game.install.read(&format!("PDATA/{class}.WAD")).ok()?;
                 let file = ChunkFile::parse(&bytes).ok()?;
@@ -204,9 +205,9 @@ impl FamiliarModels {
                 warn!("no familiar points for {class}");
                 (Vec3::ZERO, Vec3::new(-1.0, 5.0, -1.0))
             });
-            self.points = Some((class.to_string(), at, mouth));
+            self.points.insert(class.to_string(), (at, mouth));
         }
-        self.points.as_ref().map_or((Vec3::ZERO, Vec3::ZERO), |&(_, at, mouth)| (at, mouth))
+        self.points.get(class).copied().unwrap_or((Vec3::ZERO, Vec3::ZERO))
     }
 }
 
@@ -270,7 +271,7 @@ fn familiars(
     mut commands: Commands,
     mut shots: MessageReader<HeroShot>,
     mut pending: Local<Vec<HeroShot>>,
-    (state, choice, level): (Option<Res<PlayerState>>, Option<Res<PlayerChoice>>, Option<Res<MonsterLevel>>),
+    (party, level): (Res<Party>, Option<Res<MonsterLevel>>),
     mut game: ResMut<LoadedGame>,
     mut models: ResMut<FamiliarModels>,
     mut heroes: Query<(Entity, &Player, &Transform, Option<&mut Familiar>)>,
@@ -281,14 +282,13 @@ fn familiars(
     let fire = std::mem::take(&mut *pending);
     pending.extend(shots.read().copied());
     models.step(&mut materials);
-    let (Some(state), Some(choice)) = (state, choice) else { return };
-    let banks = effects_banks(&choice);
-    let class = character::class_index(&choice.class);
     let boss = level.as_ref().is_some_and(|l| l.boss >= 0);
-    let phoenix = state.bits.special & PHOENIX != 0;
-    let (at, mouth) = models.points(&choice.class, &mut game);
 
-    for (hero, _, _, familiar) in &mut heroes {
+    for (hero, player, _, familiar) in &mut heroes {
+        let Some(member) = party.get(player.slot) else { continue };
+        let (state, banks) = (&member.state, effects_banks(&member.choice));
+        let phoenix = state.bits.special & PHOENIX != 0;
+        let (at, _) = models.points(&member.choice.class, &mut game);
         let Some(mut familiar) = familiar else {
             commands.entity(hero).insert(Familiar::default());
             continue;
@@ -329,6 +329,11 @@ fn familiars(
     // The shots, from where each hero is now.
     for s in fire {
         let Ok((hero, player, transform, familiar)) = heroes.get(s.hero) else { continue };
+        let Some(member) = party.get(player.slot) else { continue };
+        let (state, banks) = (&member.state, effects_banks(&member.choice));
+        let phoenix = state.bits.special & PHOENIX != 0;
+        let class = character::class_index(&member.choice.class);
+        let (_, mouth) = models.points(&member.choice.class, &mut game);
         let has_familiar = familiar.is_some_and(|f| f.worn.is_some());
         if !phoenix && !has_familiar {
             continue;
@@ -336,7 +341,7 @@ fn familiars(
         let (name, folders, damage, kind) = if phoenix {
             (FIREBALL, vec![WEAPONS.to_string()], FIREBALL_DAMAGE, FIREBALL_KIND)
         } else {
-            (SPIT, banks.clone(), spit_damage(state.level), 0)
+            (SPIT, banks, spit_damage(state.level), 0)
         };
         let model = models.get(&folders, name, &mut game, &mut meshes, &mut materials, &mut images);
         let feet = Vec3::from(player.mover.position);

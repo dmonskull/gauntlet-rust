@@ -18,6 +18,7 @@ use crate::items::{self, LevelItems};
 use crate::mechanics::{LevelNodes, Mechanics};
 use crate::monsters::MonsterLevel;
 use crate::player::{Player, PlayerTick};
+use crate::party::{MAX_PLAYERS, Party};
 use crate::player_state::{Cry, DamagePlayer, HurtHero, PlayerState};
 use crate::population::LevelPopulation;
 
@@ -99,11 +100,11 @@ struct Tile {
 #[derive(Resource, Default)]
 struct Hazards {
     tiles: Vec<Tile>,
-    /// The tile and phase that last hurt the hero: the game's guard lasts
-    /// until that tile's phase is over.
-    tile_guard: Option<(usize, u32)>,
-    /// Game seconds before a wall can hurt the hero again.
-    wall_guard: f32,
+    /// By slot: the tile and phase that last hurt the hero — the game's
+    /// guard lasts until that tile's phase is over.
+    tile_guard: [Option<(usize, u32)>; MAX_PLAYERS],
+    /// By slot: game seconds before a wall can hurt the hero again.
+    wall_guard: [f32; MAX_PLAYERS],
     rng: u32,
 }
 
@@ -173,14 +174,14 @@ fn tiles(
     hazards: Option<ResMut<Hazards>>,
     items: Option<ResMut<LevelItems>>,
     level: Option<Res<MonsterLevel>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     mut players: Query<&mut Player>,
     mut hurt: MessageWriter<HurtHero>,
     mut sounds: MessageWriter<PlaySoundAt>,
     mut hints: MessageWriter<ShowHint>,
     stop: Res<crate::player_state::TimeStop>,
 ) {
-    let (Some(mut h), Some(mut items), Some(state)) = (hazards, items, state) else { return };
+    let (Some(mut h), Some(mut items)) = (hazards, items) else { return };
     let h = &mut *h;
     let (damage_scale, time_scale) = level.as_ref().map_or((1.0, 1.0), |l| (l.tuning.hazard_damage, l.tuning.tile_time));
     let realm = items.realm();
@@ -237,17 +238,35 @@ fn tiles(
         }
     }
 
-    // Hurting: out (state 2 or 4) and standing in it.
-    let Ok(mut p) = players.single_mut() else { return };
-    if let Some((i, phase)) = h.tile_guard
-        && h.tiles.get(i).is_some_and(|t| t.phase == phase)
-    {
-        return;
+    // Hurting: out (state 2 or 4) and standing in it — each hero.
+    for mut p in &mut players {
+        let slot = p.slot.min(MAX_PLAYERS - 1);
+        let Some(state) = party.state(slot) else { continue };
+        if let Some((i, phase)) = h.tile_guard[slot]
+            && h.tiles.get(i).is_some_and(|t| t.phase == phase)
+        {
+            continue;
+        }
+        h.tile_guard[slot] = None;
+        if !state.alive || levitating(state) {
+            continue;
+        }
+        if let Some(guard) = tile_hurts(h, &items, &mut p, state, (damage_scale, realm, level.as_deref()), (&mut hurt, &mut sounds, &mut hints)) {
+            h.tile_guard[slot] = Some(guard);
+        }
     }
-    h.tile_guard = None;
-    if !state.alive || levitating(&state) {
-        return;
-    }
+}
+
+/// The first damage tile out under the hero hurts it: the guard to set
+/// (the tile and its phase).
+fn tile_hurts(
+    h: &Hazards,
+    items: &LevelItems,
+    p: &mut Player,
+    state: &PlayerState,
+    (damage_scale, realm, level): (f32, usize, Option<&MonsterLevel>),
+    (hurt, sounds, hints): (&mut MessageWriter<HurtHero>, &mut MessageWriter<PlaySoundAt>, &mut MessageWriter<ShowHint>),
+) -> Option<(usize, u32)> {
     let feet = p.mover.position;
     for (i, t) in h.tiles.iter().enumerate() {
         if t.flags & TILE_HURTS == 0 || !(t.action == 2 || t.action == 4) {
@@ -266,21 +285,21 @@ fn tiles(
         };
         let amount = p.take_blow(t.damage * damage_scale, flags, push);
         if amount != 0.0 {
-            hurt.write(HurtHero { amount, kind: flags, cry: tile_cry(t.subtype) });
+            hurt.write(HurtHero { slot: p.slot, amount, kind: flags, cry: tile_cry(t.subtype) });
         }
         if let Some(name) = TILE_SOUNDS.get(realm).and_then(|row| row.get(t.subtype.clamp(0, 6) as usize))
             && !name.is_empty()
         {
             // Panned at the hero's feet.
-            let boss = level.as_ref().map_or(-1, |l| l.boss);
+            let boss = level.map_or(-1, |l| l.boss);
             sounds.write(PlaySoundAt::panned(tile_sound(name, boss), Vec3::from(feet), tile_volume(name)));
         }
         hints.write(ShowHint(Hint::AvoidObjects));
-        debug!("damage tile {} hurts the hero for {amount:.1}", t.placement);
+        debug!("damage tile {} hurts player {} for {amount:.1}", t.placement, p.slot + 1);
         // Once per phase: until this one is over.
-        h.tile_guard = Some((i, t.phase));
-        break;
+        return Some((i, t.phase));
     }
+    None
 }
 
 /// The special powerup's levitation bit keeps the hero off damage tiles.
@@ -299,24 +318,33 @@ fn walls(
     hazards: Option<ResMut<Hazards>>,
     nodes: Option<Res<LevelNodes>>,
     mechanics: Option<Res<Mechanics>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     mut players: Query<&mut Player>,
     mut hurt: MessageWriter<DamagePlayer>,
 ) {
-    let (Some(mut h), Some(nodes), Some(state)) = (hazards, nodes, state) else { return };
-    h.wall_guard = (h.wall_guard - 1.0 / 30.0).max(0.0);
-    let Ok(mut p) = players.single_mut() else { return };
-    let Some((node, point)) = p.wall_hit else { return };
-    if !state.alive || h.wall_guard > 0.0 {
-        return;
+    let (Some(mut h), Some(nodes)) = (hazards, nodes) else { return };
+    for guard in &mut h.wall_guard {
+        *guard = (*guard - 1.0 / 30.0).max(0.0);
     }
+    for mut p in &mut players {
+        let slot = p.slot.min(MAX_PLAYERS - 1);
+        if party.state(slot).is_some_and(|s| s.alive) && h.wall_guard[slot] <= 0.0 && wall_hurts(&nodes, mechanics.as_deref(), &mut p, &mut hurt) {
+            h.wall_guard[slot] = 1.0;
+        }
+    }
+}
+
+/// The wall the hero ran into this tick hurts it, if its node's flags say
+/// so: whether it did.
+fn wall_hurts(nodes: &LevelNodes, mechanics: Option<&Mechanics>, p: &mut Player, hurt: &mut MessageWriter<DamagePlayer>) -> bool {
+    let Some((node, point)) = p.wall_hit else { return false };
     // The node's flags OR'ed up its parents, with what the game sets on
     // them as it runs.
     let mut flags = 0;
     let mut n = Some(node);
     let mut steps = 0;
     while let Some(k) = n {
-        flags |= nodes.nodes.get(k).map_or(0, |w| w.flags) | mechanics.as_ref().map_or(0, |m| m.node_flags(k));
+        flags |= nodes.nodes.get(k).map_or(0, |w| w.flags) | mechanics.map_or(0, |m| m.node_flags(k));
         n = nodes.parent.get(k).copied().flatten();
         steps += 1;
         if steps > nodes.nodes.len() {
@@ -324,7 +352,7 @@ fn walls(
         }
     }
     if flags & HURTS == 0 || (flags & HURTS_WHILE_MOVING != 0 && flags & NODE_MOVING == 0) {
-        return;
+        return false;
     }
     let (damage, blow) = match flags & HURTS {
         0x3_0000 | 0x4_0000 | 0x5_0000 => (15.0, 0x20),
@@ -340,10 +368,10 @@ fn walls(
     };
     let amount = p.take_blow(damage, blow, push);
     if amount != 0.0 {
-        hurt.write(DamagePlayer { amount });
+        hurt.write(DamagePlayer { slot: p.slot, amount });
     }
-    h.wall_guard = 1.0;
-    debug!("wall node {node} hurts the hero for {amount:.1}");
+    debug!("wall node {node} hurts player {} for {amount:.1}", p.slot + 1);
+    true
 }
 
 #[cfg(test)]

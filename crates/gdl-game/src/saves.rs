@@ -91,11 +91,10 @@ impl SaveFile {
     }
 }
 
-/// The saved characters, and one chosen to load onto the next hero.
+/// The saved characters.
 #[derive(Resource, Default)]
 pub struct Saves {
     pub file: SaveFile,
-    pub pending: Option<SavedCharacter>,
 }
 
 impl Saves {
@@ -108,7 +107,7 @@ impl Saves {
             Err(_) => SaveFile::default(),
         };
         info!("{} saved characters in {}", file.characters.len(), path().display());
-        Self { file, pending: None }
+        Self { file }
     }
 
     /// Saves the character into the file, and the file to disk.

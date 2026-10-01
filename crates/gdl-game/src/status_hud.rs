@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use crate::player::Player;
 
 use crate::hints::Hints;
+use crate::party::Party;
 use crate::player_state::PlayerState;
 
 pub struct StatusHudPlugin;
@@ -54,20 +55,24 @@ fn spawn(mut commands: Commands) {
 }
 
 fn update(
-    state: Res<PlayerState>,
+    party: Res<Party>,
     hints: Res<Hints>,
     players: Query<&Player>,
-    mut shown_turbo: Local<i32>,
+    mut shown_turbo: Local<Vec<i32>>,
     mut status: Query<&mut Text, (With<StatusText>, Without<HintText>)>,
     mut hint: Query<&mut Text, (With<HintText>, Without<StatusText>)>,
 ) {
-    let turbo = players.iter().next().map_or(0, |p| p.turbo as i32);
+    let turbos: Vec<i32> = party.members().map(|(slot, _)| players.iter().find(|p| p.slot == slot).map_or(0, |p| p.turbo as i32)).collect();
     if let Ok(mut text) = status.single_mut()
-        && (state.is_changed() || turbo != *shown_turbo)
+        && (party.is_changed() || turbos != *shown_turbo)
     {
-        *shown_turbo = turbo;
-        text.0 = status_line(&state);
-        text.0 += &format!("   TURBO {turbo}");
+        text.0 = party
+            .states()
+            .zip(&turbos)
+            .map(|((slot, state), turbo)| format!("P{} {}   TURBO {turbo}", slot + 1, status_line(state)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        *shown_turbo = turbos;
     }
     if let Ok(mut text) = hint.single_mut()
         && hints.is_changed()

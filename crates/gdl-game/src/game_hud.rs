@@ -33,8 +33,8 @@ use crate::critters::CritterLevel;
 use crate::font::{Draw2d, GameFonts, Quad, TextStyle, UiTextures};
 use crate::frontend::Frontend;
 use crate::level::LoadedGame;
-use crate::player::{Player, PlayerChoice};
-use crate::player_state::PlayerState;
+use crate::party::{MAX_PLAYERS, Member, Party};
+use crate::player::Player;
 use crate::population::LevelPopulation;
 use crate::quest;
 
@@ -86,7 +86,7 @@ struct Hourglass {
 #[allow(clippy::too_many_arguments)]
 fn draw_hourglass(
     frontend: Option<Res<Frontend>>,
-    state: Res<PlayerState>,
+    party: Res<Party>,
     mut game: Option<ResMut<LoadedGame>>,
     mut images: ResMut<Assets<Image>>,
     mut draw: ResMut<Draw2d>,
@@ -96,6 +96,11 @@ fn draw_hourglass(
     time: Res<Time<Virtual>>,
 ) {
     let g = &mut *glass;
+    // The player whose time stop runs (the first, if several).
+    let Some((slot, state)) = party.states().find(|(_, s)| s.bits.special & TIME_STOP != 0).or_else(|| party.states().next())
+    else {
+        return;
+    };
     // A grant (or top-up) of a power with bit 8 sets the time it's
     // measured out of, as the game's grant does.
     let slots: Vec<((i32, u32), f32)> =
@@ -108,7 +113,7 @@ fn draw_hourglass(
     g.seen = slots;
     let on = state.bits.special & TIME_STOP != 0;
     // Its sound follows the hero (at its top point) while it's on.
-    let hero = players.iter().next().map(|p| Vec3::from(p.mover.position) + Vec3::Y * HERO_TOP);
+    let hero = players.iter().find(|p| p.slot == slot).map(|p| Vec3::from(p.mover.position) + Vec3::Y * HERO_TOP);
     match hero.filter(|_| on) {
         Some(at) => {
             loops.write(LoopSoundAt::at(HOURGLASS_CHANNEL, HOURGLASS_SOUND, at, CALL_VOLUME));
@@ -204,9 +209,6 @@ struct Timers {
     /// has no health).
     quest_icon: bool,
     rune_13: bool,
-    /// The level's own item textures, where `QUEST_ICON` is (read when the
-    /// icon first shows in a level).
-    level_textures: Option<UiTextures>,
 }
 
 /// What the turbo meter plays (`docs/frontend.md`, "In-game HUD").
@@ -244,19 +246,25 @@ fn turbo_band(shown: f32) -> u8 {
     }
 }
 
+/// One panel's own counts and animations (each player's).
+#[derive(Default)]
+struct PanelShow {
+    timers: Timers,
+    shown_turbo: f32,
+    meter: TurboShow,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw(
     frontend: Option<Res<Frontend>>,
-    state: Res<PlayerState>,
-    choice: Res<PlayerChoice>,
+    party: Res<Party>,
     players: Query<&Player>,
     fonts: Option<Res<GameFonts>>,
     mut tex: Option<ResMut<UiTextures>>,
     mut images: ResMut<Assets<Image>>,
     mut draw: ResMut<Draw2d>,
-    mut shown_turbo: Local<f32>,
-    mut meter: Local<TurboShow>,
-    mut timers: Local<Timers>,
+    mut panels: Local<[PanelShow; MAX_PLAYERS]>,
+    mut level_textures: Local<Option<UiTextures>>,
     population: Option<Res<LevelPopulation>>,
     critters: Option<Res<CritterLevel>>,
     mut game: Option<ResMut<LoadedGame>>,
@@ -265,22 +273,24 @@ fn draw(
 ) {
     // The key row starts as a level starts (not in the secret realm) and
     // when a new runestone is picked up; a new pickup count starts its 3 s.
-    let t = &mut *timers;
     let mut started = false;
     if let Some(level) = population.as_ref().filter(|p| p.is_changed()) {
         started = quest::level_of(&level.level).is_none_or(|(realm, _)| realm != SECRET_REALM);
-        t.level_textures = None;
+        *level_textures = None;
     }
-    let runes = state.runestone_bits();
-    if started || runes & !t.runes != 0 {
-        t.key_row = KEY_ROW_FIELDS;
-    }
-    t.runes = runes;
-    if let Some((_, at)) = state.popup
-        && t.popup.is_none_or(|(_, seen)| at > seen)
-    {
-        t.popup = state.popup;
-        t.popup_left = POPUP_SECONDS;
+    for (slot, state) in party.states() {
+        let t = &mut panels[slot].timers;
+        let runes = state.runestone_bits();
+        if started || runes & !t.runes != 0 {
+            t.key_row = KEY_ROW_FIELDS;
+        }
+        t.runes = runes;
+        if let Some((_, at)) = state.popup
+            && t.popup.is_none_or(|(_, seen)| at > seen)
+        {
+            t.popup = state.popup;
+            t.popup_left = POPUP_SECONDS;
+        }
     }
 
     let (Some(fonts), Some(tex)) = (fonts, tex.as_deref_mut()) else { return };
@@ -290,51 +300,77 @@ fn draw(
     if frontend.as_deref().is_some_and(|f| !f.playing() || f.menu_open()) {
         return;
     }
-    // The hero out of the level: its panel is set up afresh, the plain
-    // one in its joined colour, and says "IN TOWER".
-    let out = frontend.as_deref().is_some_and(Frontend::hero_out);
+    let mut p = Painter { draw: &mut draw, tex, images: &mut images };
+    for slot in 0..MAX_PLAYERS {
+        let x = PANEL_X + PANEL_WIDTH * slot as f32;
+        let Some(member) = party.get(slot) else {
+            // A slot nobody plays: its panel waits, `S3` over `S4` in the
+            // slot's dim colour, framed.
+            let [r, g, b] = NOT_JOINED[slot];
+            image(&mut p, "S3", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
+            image(&mut p, "S4", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::srgb_u8(r, g, b));
+            image(&mut p, "S4_FRAME", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
+            continue;
+        };
+        let out = frontend.as_deref().is_some_and(|f| f.hero_out(slot));
+        let turbo = players.iter().find(|h| h.slot == slot).map_or(0.0, |h| h.turbo);
+        let textures = (&mut *level_textures, game.as_deref_mut(), population.as_deref());
+        let intro_start = critters.as_ref().is_some_and(|c| c.intro == INTRO_START);
+        let fields = (game_time.delta_secs(), real.delta_secs() * 60.0);
+        draw_panel(&mut p, &fonts, x, member, out, turbo, intro_start, &mut panels[slot], textures, fields);
+    }
+}
+
+/// A player's panel at `x`: the runestone bar and class plate (out of the
+/// level, the plain one saying "IN TOWER"), the key row or the pickup
+/// count above it, the turbo meter, keys, potions, name, level, gold and
+/// health.
+#[allow(clippy::too_many_arguments)]
+fn draw_panel(
+    p: &mut Painter,
+    fonts: &GameFonts,
+    x: f32,
+    member: &Member,
+    out: bool,
+    turbo: f32,
+    intro_start: bool,
+    show: &mut PanelShow,
+    (level_textures, game, population): (&mut Option<UiTextures>, Option<&mut LoadedGame>, Option<&LevelPopulation>),
+    (game_secs, real_fields): (f32, f32),
+) {
+    let (state, choice) = (&member.state, &member.choice);
+    let t = &mut show.timers;
     // The pickup count shows, and counts down, only once the key row is
     // gone (and not for an out hero); the key row counts fields while it
     // shows.
     let key_row = t.key_row >= 1.0;
     let popup_shows = !key_row && !out && t.popup_left > 0.0;
     if popup_shows {
-        t.popup_left -= game_time.delta_secs();
+        t.popup_left -= game_secs;
     }
     if key_row {
-        t.key_row = (t.key_row - game_time.delta_secs() * 60.0).max(0.0);
+        t.key_row = (t.key_row - game_secs * 60.0).max(0.0);
     }
-    let x = PANEL_X;
     let colour = COLOURS.iter().position(|c| choice.variant.to_ascii_uppercase().starts_with(c)).unwrap_or(0);
     let tint = Color::srgb_u8(NUMBER_COLOUR[colour][0], NUMBER_COLOUR[colour][1], NUMBER_COLOUR[colour][2]);
-    let mut p = Painter { draw: &mut draw, tex, images: &mut images };
-
-    // Players 2–4 aren't in (one player): their panels wait, `S3` over
-    // `S4` in the slot's dim colour, framed.
-    for (slot, [r, g, b]) in NOT_JOINED.iter().copied().enumerate().skip(1) {
-        let px = PANEL_X + PANEL_WIDTH * slot as f32;
-        image(&mut p, "S3", px, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
-        image(&mut p, "S4", px, 320.0, Some(Vec2::new(128.0, 64.0)), Color::srgb_u8(r, g, b));
-        image(&mut p, "S4_FRAME", px, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
-    }
 
     // The runestone bar and the class plate in its frame; out, `S3` over
     // `S4` in the player's colour, framed.
     if out {
         let [r, g, b] = JOINED[colour];
-        image(&mut p, "S3", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
-        image(&mut p, "S4", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::srgb_u8(r, g, b));
+        image(p, "S3", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
+        image(p, "S4", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::srgb_u8(r, g, b));
     } else {
-        image(&mut p, "BK_RUNE_STONE_02", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
-        image(&mut p, &format!("S4_{}", choice.class), x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
+        image(p, "BK_RUNE_STONE_02", x, 304.0, Some(Vec2::new(128.0, 16.0)), Color::WHITE);
+        image(p, &format!("S4_{}", choice.class), x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
     }
-    image(&mut p, "S4_FRAME", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
+    image(p, "S4_FRAME", x, 320.0, Some(Vec2::new(128.0, 64.0)), Color::WHITE);
     // Twelve runestone slots, lit for the stones held (stone n in slot n).
     for i in 0..12usize {
         let held = !out && state.runestones.contains(&(i as i32));
         if held {
             let name = format!("SM_RUNE_{}_{:02}", RUNE_COLOURS[i / 3], i % 3 + 1);
-            image(&mut p, &name, x + 8.0 * i as f32 + (i / 3) as f32 + 15.0, 306.0, None, Color::WHITE);
+            image(p, &name, x + 8.0 * i as f32 + (i / 3) as f32 + 15.0, 306.0, None, Color::WHITE);
         }
     }
     // The key row, for a hero still in play (behind the turbo meter): key
@@ -343,7 +379,7 @@ fn draw(
         let beaten = quest::boss_marks(state.realms_beaten);
         for (i, colour) in KEY_COLOURS.iter().enumerate() {
             if beaten & (1 << i) != 0 {
-                image(&mut p, &format!("SM_KEY_{colour}"), x + 12.0 + 12.0 * i as f32, 300.0, None, Color::WHITE);
+                image(p, &format!("SM_KEY_{colour}"), x + 12.0 + 12.0 * i as f32, 300.0, None, Color::WHITE);
             }
         }
     }
@@ -353,22 +389,22 @@ fn draw(
     // their look and the turbo meter is hidden; the out panel has neither.
     let has_health = state.health > 0.0;
     if has_health {
-        t.quest_icon = critters.as_ref().is_some_and(|c| c.intro == INTRO_START);
+        t.quest_icon = intro_start && state.quest.legendary != 0;
         t.rune_13 = state.runestones.contains(&RUNE_13);
     } else if out {
         (t.quest_icon, t.rune_13) = (false, false);
     }
     if t.rune_13 {
-        image(&mut p, "RUNE13", x + 8.0, 340.0, Some(Vec2::splat(16.0)), Color::WHITE);
+        image(p, "RUNE13", x + 8.0, 340.0, Some(Vec2::splat(16.0)), Color::WHITE);
     }
     if t.quest_icon {
         // The icon is among the boss level's item textures.
-        if t.level_textures.is_none()
-            && let (Some(game), Some(level)) = (game.as_deref_mut(), population.as_ref())
+        if level_textures.is_none()
+            && let (Some(game), Some(level)) = (game, population)
         {
-            t.level_textures = Some(UiTextures::load(&mut game.install, &[&format!("ITEMS/{}", level.level)]));
+            *level_textures = Some(UiTextures::load(&mut game.install, &[&format!("ITEMS/{}", level.level)]));
         }
-        if let Some(icon) = t.level_textures.as_mut().and_then(|textures| textures.get("QUEST_ICON", p.images)) {
+        if let Some(icon) = level_textures.as_mut().and_then(|textures| textures.get("QUEST_ICON", p.images)) {
             p.draw.image(&icon, x + 104.0, 338.0, 16.0, 16.0, Color::WHITE);
         }
     }
@@ -377,20 +413,19 @@ fn draw(
     // a field's worth per field, down twice as fast); below 40% a yellow
     // bar grows from the middle over a black one, then red over yellow.
     if has_health {
-        let target = players.iter().next().map_or(0.0, |p| p.turbo).clamp(0.0, 100.0);
-        turbo_meter(&mut p, x, target, &mut shown_turbo, &mut meter, real.delta_secs() * 60.0);
+        turbo_meter(p, x, turbo.clamp(0.0, 100.0), &mut show.shown_turbo, &mut show.meter, real_fields);
     }
 
     // Coin and heart.
-    image(&mut p, "COIN", x + 6.0, 357.0, Some(Vec2::splat(20.0)), Color::WHITE);
-    image(&mut p, "HEART", x + 61.0, 357.0, Some(Vec2::splat(20.0)), Color::WHITE);
+    image(p, "COIN", x + 6.0, 357.0, Some(Vec2::splat(20.0)), Color::WHITE);
+    image(p, "HEART", x + 61.0, 357.0, Some(Vec2::splat(20.0)), Color::WHITE);
     // Keys and potions: an icon and a count each.
     if state.keys > 0 {
-        image(&mut p, "KEY_ICON", x + 8.0, 323.0, None, Color::WHITE);
+        image(p, "KEY_ICON", x + 8.0, 323.0, None, Color::WHITE);
     }
     if let Some(&kind) = state.potions.last() {
         let icon = POTION_ICONS[(kind.max(0) as usize).min(POTION_ICONS.len() - 1)];
-        image(&mut p, icon, x + 102.0, 323.0, None, Color::WHITE);
+        image(p, icon, x + 102.0, 323.0, None, Color::WHITE);
     }
     // (The `BTMBK_LEVL` plate is made off screen and hidden; only a
     // special mode shows it.)
@@ -413,34 +448,34 @@ fn draw(
         Some((icon, if count < 0 { need } else { count }, need))
     });
     if let Some((icon, _, _)) = &popup {
-        image(&mut p, icon, x + 28.0, 288.0, Some(Vec2::splat(16.0)), Color::WHITE);
+        image(p, icon, x + 28.0, 288.0, Some(Vec2::splat(16.0)), Color::WHITE);
     }
 
-    let draw = p.draw;
+    let draw = &mut *p.draw;
     let small = TextStyle::new(SCORE, 0.8, tint);
     if state.keys > 0 {
-        draw.text(&fonts, &small, x + 26.0, 327.0, &state.keys.to_string());
+        draw.text(fonts, &small, x + 26.0, 327.0, &state.keys.to_string());
     }
     if !state.potions.is_empty() {
-        draw.text(&fonts, &small, x + 92.0, 327.0, &state.potions.len().to_string());
+        draw.text(fonts, &small, x + 92.0, 327.0, &state.potions.len().to_string());
     }
     // Name (initials font, centred) and level, or out of the level "IN
     // TOWER"; gold and health right-aligned at 60 and 116.
     if out {
-        draw.text(&fonts, &TextStyle::new(FONT_8HI, 1.2, tint), -(x + 64.0), 340.0, "IN TOWER");
+        draw.text(fonts, &TextStyle::new(FONT_8HI, 1.2, tint), -(x + 64.0), 340.0, "IN TOWER");
     } else {
-        draw.text(&fonts, &TextStyle::new(INITIALS, 0.667, tint), -(x + 64.0), 339.0, &name(&frontend_name(frontend.as_deref())));
-        draw.text(&fonts, &TextStyle::new(FONT_8HI, 1.0, Color::WHITE), -(x + 64.0), 326.0, &format!("LV {}", state.level));
+        draw.text(fonts, &TextStyle::new(INITIALS, 0.667, tint), -(x + 64.0), 339.0, &name(&member.name));
+        draw.text(fonts, &TextStyle::new(FONT_8HI, 1.0, Color::WHITE), -(x + 64.0), 326.0, &format!("LV {}", state.level));
     }
     let numbers = TextStyle::new(SCORE, 1.0, tint);
     let gold = state.gold.min(99_999).to_string();
     let w = fonts.width(SCORE, 1.0, &gold);
-    draw.text(&fonts, &numbers, x + 60.0 - w, 359.0, &gold);
+    draw.text(fonts, &numbers, x + 60.0 - w, 359.0, &gold);
     let health = (state.health.clamp(0.0, 9999.0) as i32).to_string();
     let w = fonts.width(SCORE, 1.0, &health);
-    draw.text(&fonts, &numbers, x + 116.0 - w, 359.0, &health);
+    draw.text(fonts, &numbers, x + 116.0 - w, 359.0, &health);
     if let Some((_, count, need)) = popup {
-        draw.text(&fonts, &TextStyle::new(FONT_8HI, 1.5, Color::WHITE), x + 48.0, 292.0, &format!("{count}/{need}"));
+        draw.text(fonts, &TextStyle::new(FONT_8HI, 1.5, Color::WHITE), x + 48.0, 292.0, &format!("{count}/{need}"));
     }
 }
 
@@ -528,10 +563,6 @@ struct Painter<'a> {
     draw: &'a mut Draw2d,
     tex: &'a mut UiTextures,
     images: &'a mut Assets<Image>,
-}
-
-fn frontend_name(frontend: Option<&Frontend>) -> String {
-    frontend.map(|f| f.hero_name.clone()).unwrap_or_default()
 }
 
 /// The record's name has `_` for spaces.

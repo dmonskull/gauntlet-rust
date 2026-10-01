@@ -3,10 +3,13 @@
 # first panic or missing screenshot.
 # Usage: tools/smoke.sh [first-level]   (resume from that level)
 # Output in $GDL_TEST_OUT/smoke (default $TMPDIR/gdl-tests); the game
-# folder is $GDL_GAME.
+# folder is $GDL_GAME; $GDL_BIN runs a copy of the game (so building can go
+# on meanwhile). Muted unless GDL_MUTE says otherwise.
 ROOT=${0:A:h:h}
 cd $ROOT
 GAME=${GDL_GAME:-$HOME/Desktop/GauntletDarkLegacy}
+BIN=${GDL_BIN:-./target/debug/gdl-game}
+export GDL_MUTE=${GDL_MUTE:-1}
 OUT=${GDL_TEST_OUT:-${TMPDIR:-/tmp}/gdl-tests}/smoke
 mkdir -p $OUT
 start=${1:-}
@@ -20,7 +23,7 @@ for dir in $GAME/Gauntlet/LEVELS/level*(/) $GAME/Gauntlet/LEVELS/DEMO1; do
     echo "$level skipped (empty folder)"; continue
   fi
   GDL_BUTTONS=attack GDL_STICK="0.4,1" GDL_SHOT_AT=400 GDL_SCREENSHOT=$OUT/$level.png RUST_LOG=warn \
-    $ROOT/tools/waitrun.sh timeout 120 ./target/debug/gdl-game $GAME --level $level > $OUT/$level.log 2>&1
+    $ROOT/tools/waitrun.sh timeout 120 $BIN $GAME --level $level > $OUT/$level.log 2>&1
   code=$?
   if grep -q "panicked" $OUT/$level.log; then
     echo "$level PANIC (exit $code)"; grep -m 3 -A 2 "panicked" $OUT/$level.log

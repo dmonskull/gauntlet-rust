@@ -34,7 +34,7 @@ use crate::level::LoadedGame;
 use crate::options::{GameOptions, SoundKind};
 use crate::play_camera::PlayCamera;
 use crate::player::Player;
-use crate::player_state::PlayerState;
+use crate::party::Party;
 use crate::world::{CurrentLevelStats, LevelEntity};
 
 pub struct GameAudioPlugin;
@@ -793,7 +793,7 @@ fn play_sounds_at(
     mut effects: Effects,
     camera: Option<Res<PlayCamera>>,
     heroes: Query<&Player>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     frontend: Option<Res<Frontend>>,
 ) {
     if requests.is_empty() {
@@ -801,8 +801,11 @@ fn play_sounds_at(
     }
     let ear = camera.as_deref().map(ear);
     // The heroes in play (not dead, not out of the level): their feet.
-    let in_play = state.is_some_and(|s| s.alive) && !frontend.is_some_and(|f| f.hero_out());
-    let feet: Vec<Vec3> = if in_play { heroes.iter().map(|p| Vec3::from(p.mover.position)).collect() } else { Vec::new() };
+    let feet: Vec<Vec3> = heroes
+        .iter()
+        .filter(|p| !frontend.as_ref().is_some_and(|f| f.hero_out(p.slot)) && party.state(p.slot).is_some_and(|s| s.alive))
+        .map(|p| Vec3::from(p.mover.position))
+        .collect();
     for r in requests.read() {
         let volume = match r.at.filter(|_| r.fade) {
             Some(at) => {

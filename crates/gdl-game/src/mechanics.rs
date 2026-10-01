@@ -48,7 +48,8 @@ use crate::monsters::MonsterLevel;
 use crate::play_camera::{PlayCamera, Shake, StartCut};
 use crate::player::{Player, PlayerTick};
 use crate::message_box::ShowMessage;
-use crate::player_state::{PlayerState, TimeStop};
+use crate::party::Party;
+use crate::player_state::TimeStop;
 use crate::population::LevelPopulation;
 use crate::quest;
 use crate::world::LevelGround;
@@ -657,16 +658,16 @@ impl Mechanics {
 /// opened it, it says what it needs — at most every
 /// [`quest::NEED_AGAIN_SECONDS`] — and forgets the touch. Its touches
 /// then go down its chain.
-fn quest_gate(mech: &mut Mechanics, i: usize, state: Option<&PlayerState>, messages: &mut MessageWriter<ShowMessage>) {
+fn quest_gate(mech: &mut Mechanics, i: usize, party: &Party, messages: &mut MessageWriter<ShowMessage>) {
     let t = &mech.triggers[i];
     if t.touches != 0 {
-        let q = state.map(|s| &s.quest);
+        // Any player's progress opens it.
         let id = i32::from(t.id);
         let (open, need) = if id < 100 {
-            (q.is_some_and(|q| q.crystals_open(id as usize)), Some(("NEEDCRYSTALS", id as usize)))
+            (party.any(|s| s.quest.crystals_open(id as usize)), Some(("NEEDCRYSTALS", id as usize)))
         } else {
             let section = id - 101;
-            let open = q.is_some_and(|q| q.gargoyle_open(section.clamp(0, 2) as usize));
+            let open = party.any(|s| s.quest.gargoyle_open(section.clamp(0, 2) as usize));
             (open, (0..3).contains(&section).then_some(("NEEDGARGITEMS", section as usize)))
         };
         if !open {
@@ -694,7 +695,7 @@ fn setup(
     mut commands: Commands,
     population: Res<LevelPopulation>,
     nodes: Option<Res<LevelNodes>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
 ) {
     let Some(nodes) = nodes else { return };
     let pop = &population.population;
@@ -807,11 +808,13 @@ fn setup(
         m.poses.insert(r, (NodePose::REST, NodePose::REST));
     }
     m.roots = roots;
-    // The tower opens the gates the quest has opened for good as it loads.
-    if let Some(state) = &state
-        && quest::level_of(&population.level).is_some_and(|(realm, _)| realm == quest::TOWER)
-    {
-        for id in state.quest.tower_gates(state.runestone_bits()) {
+    // The tower opens the gates the quest has opened for good as it loads
+    // (any player's).
+    if quest::level_of(&population.level).is_some_and(|(realm, _)| realm == quest::TOWER) {
+        let mut gates: Vec<u8> = party.states().flat_map(|(_, s)| s.quest.tower_gates(s.runestone_bits())).collect();
+        gates.sort_unstable();
+        gates.dedup();
+        for id in gates {
             m.fire(id, true);
         }
     }
@@ -835,13 +838,17 @@ fn setup(
     commands.insert_resource(m);
 }
 
+/// A hero in play as the mechanics see it: its slot's bit, feet, radius,
+/// half height and the node it stands on.
+type InPlay = (u8, [f32; 3], f32, f32, Option<usize>);
+
 #[allow(clippy::too_many_arguments)]
 fn tick(
     mechanics: Option<ResMut<Mechanics>>,
     nodes: Option<Res<LevelNodes>>,
     items: Option<ResMut<LevelItems>>,
     ground: Option<ResMut<LevelGround>>,
-    state: Option<Res<PlayerState>>,
+    party: Res<Party>,
     mut players: Query<&mut Player>,
     mut models: Query<&mut Transform, Without<Player>>,
     mut cuts: MessageWriter<StartCut>,
@@ -857,13 +864,18 @@ fn tick(
         return;
     };
     let mech = &mut *mech;
-    let alive = state.as_ref().is_none_or(|s| s.alive);
-    let mut player = players.single_mut().ok();
-    let standing = player.as_ref().and_then(|p| p.ground.node);
-    let (feet, radius, half) = match (&player, &state) {
-        (Some(p), Some(s)) => (Some(p.mover.position), s.radius, s.half_height),
-        _ => (None, 0.0, 0.0),
-    };
+    // The heroes in play: their slot's bit, feet, size and the node each
+    // stands on.
+    let heroes: Vec<InPlay> = players
+        .iter()
+        .filter_map(|p| {
+            let s = party.state(p.slot).filter(|s| s.alive)?;
+            Some((1u8 << p.slot.min(3), p.mover.position, s.radius, s.half_height, p.ground.node))
+        })
+        .collect();
+    // Every player in the game, by bit, and how many.
+    let in_game = party.members().fold(0u8, |bits, (slot, _)| bits | 1 << slot.min(3));
+    let player_count = party.len().max(1);
 
     // A trigger for every player (0x400) the item drop put on its target
     // — or on a child of it — counts only while stood on there (the drop
@@ -881,7 +893,7 @@ fn tick(
     }
 
     // Touches.
-    if let (Some(feet), true) = (feet, alive) {
+    for &(bit, feet, radius, half, _) in &heroes {
         for i in 0..mech.triggers.len() {
             let t = &mech.triggers[i];
             if t.flags & CHAINED_TO != 0 || t.subtype == HIT_SWITCH {
@@ -904,7 +916,7 @@ fn tick(
             let quest = t.flags & QUEST != 0;
             let mut k = Some(i);
             while let Some(j) = k {
-                mech.triggers[j].touches |= 1;
+                mech.triggers[j].touches |= bit;
                 k = if quest { None } else { mech.triggers[j].chain };
                 if k == Some(i) {
                     break;
@@ -925,11 +937,17 @@ fn tick(
 
     // Triggers.
     mech.clock += DT;
-    let on_target = |target: usize| standing.is_some_and(|n| n == target || nodes.parent.get(n).copied().flatten() == Some(target));
+    // The players standing on a node or on one of its children, by bit.
+    let on_target = |target: usize| {
+        heroes
+            .iter()
+            .filter(|h| h.4.is_some_and(|n| n == target || nodes.parent.get(n).copied().flatten() == Some(target)))
+            .fold(0u8, |bits, h| bits | h.0)
+    };
     for i in 0..mech.triggers.len() {
         let (flags, target) = (mech.triggers[i].flags, mech.triggers[i].target);
         if flags & QUEST != 0 {
-            quest_gate(mech, i, state.as_deref(), &mut messages);
+            quest_gate(mech, i, &party, &mut messages);
         }
         let t = &mut mech.triggers[i];
         if t.timer > 0.0 {
@@ -937,11 +955,12 @@ fn tick(
         }
         let mut m = t.touches;
         if m != 0 && flags & STAND_ON_TARGET != 0 {
-            let standing_bits = if target.is_some_and(on_target) { 1 } else { 0 };
+            let standing_bits = target.map_or(0, on_target);
             t.touches &= 0xF0 | standing_bits;
             m = t.touches;
         }
-        if flags & ALL_PLAYERS != 0 && m != 1 {
+        // Every player in the game on it.
+        if flags & ALL_PLAYERS != 0 && m != in_game {
             t.touches = 0;
             m = 0;
         }
@@ -985,8 +1004,8 @@ fn tick(
                     if m == 0 {
                         t.action = 0;
                         if flags & LIFT_DELAY != 0 {
-                            // (players − 1) × 60 fields; one player.
-                            t.timer = 0.0;
+                            // (players − 1) × 60 fields.
+                            t.timer = 60.0 * (player_count - 1) as f32;
                         }
                     } else {
                         let lo = *st & PLAYERS;
@@ -1087,7 +1106,7 @@ fn tick(
     // Sounds to play at a node, once the nodes' poses are known.
     let mut shots: Vec<(usize, String)> = Vec::new();
     for mv in &mut mech.movers {
-        let carrying = standing == Some(mv.node);
+        let carrying = heroes.iter().any(|h| h.4 == Some(mv.node));
         let mut st = mv.state;
         // Sounds, from this state against the last update's.
         let prev = mv.previous;
@@ -1275,20 +1294,22 @@ fn tick(
         }
     }
 
-    // Carry the hero with what it stands on.
-    if let (Some(p), Some(node)) = (player.as_mut(), standing)
-        && let Some(root) = nodes.group_of(node, &mech.root_set)
-        && let Some(&(before, now)) = mech.poses.get(&root)
-        && before != now
-    {
-        let delta = before.delta_to(&now);
-        let old = p.mover.position;
-        let new = delta.apply(old);
-        p.mover.position = new;
-        p.ground.floor += new[1] - old[1];
-        // The turn about the vertical: where the X axis went.
-        let x = delta.apply_vector([1.0, 0.0, 0.0]);
-        p.mover.facing -= x[2].atan2(x[0]);
+    // Carry each hero with what it stands on.
+    for mut p in &mut players {
+        if let Some(node) = p.ground.node
+            && let Some(root) = nodes.group_of(node, &mech.root_set)
+            && let Some(&(before, now)) = mech.poses.get(&root)
+            && before != now
+        {
+            let delta = before.delta_to(&now);
+            let old = p.mover.position;
+            let new = delta.apply(old);
+            p.mover.position = new;
+            p.ground.floor += new[1] - old[1];
+            // The turn about the vertical: where the X axis went.
+            let x = delta.apply_vector([1.0, 0.0, 0.0]);
+            p.mover.facing -= x[2].atan2(x[0]);
+        }
     }
 }
 
