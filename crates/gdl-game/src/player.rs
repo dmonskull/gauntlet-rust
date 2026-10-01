@@ -1160,7 +1160,7 @@ fn tick(
         let has_potions = !state.potions.is_empty();
         if intent == Intent::Magic && !has_potions {
             // No potion: the hint, and the hero moves as the stick says.
-            hints.write(ShowHint(Hint::CollectMagicFirst));
+            hints.write(ShowHint::to(p.slot, Hint::CollectMagicFirst));
             intent = combat::classify(Buttons::default(), stick.magnitude, 0.0, p.turbo);
         }
         // The Robotron style (`docs/combat.md`, "Intents"): after magic,

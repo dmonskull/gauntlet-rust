@@ -1568,7 +1568,7 @@ fn leave_tick(
         return false;
     }
     if m.death.left && m.death.drained.is_some() {
-        hints.write(ShowHint(if m.strength == 2 { Hint::DeathLeftAfterExperience } else { Hint::DeathLeftAfterHealth }));
+        hints.write(ShowHint::to(0, if m.strength == 2 { Hint::DeathLeftAfterExperience } else { Hint::DeathLeftAfterHealth }));
     }
     true
 }

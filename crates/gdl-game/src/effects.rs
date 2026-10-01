@@ -1103,7 +1103,7 @@ fn set_off_potions(
             let feet = players.get(hero).map_or(at, |p| Vec3::from(p.mover.position));
             sounds.write(PlaySoundAt::panned(POTION_SOUND[colour_index(kind)], feet, CALL_VOLUME));
             blasts.write(BlastAt { owner: hero, at, kind: e.kind, damage: e.damage, radius: e.radius });
-            hints.write(crate::hints::ShowHint(crate::hints::Hint::ShootPotion));
+            hints.write(crate::hints::ShowHint::to(slot, crate::hints::Hint::ShootPotion));
         }
     }
 }

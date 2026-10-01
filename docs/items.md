@@ -752,9 +752,12 @@ the box (`FUN_8001f440`, y flag `0x1000`), in the player's ink
 yellow, blue, red, green), `0x160C03` for all. It stays up (`r13-0x6e2c`)
 60 fields a line + 30, counted outside cuts, where it's hidden.
 
-Here (`hints.rs`): the box, ink, font, timing, cut rule and cool-down
-for player 1. Stand-in: once-only hints are remembered for the session,
-not in the character's record.
+Here (`hints.rs`): the box, ink, font, timing, cut rule and cool-down,
+the box over the panel of the player the hint is for in that player's
+ink (a hint for every player at (256, 192) in `0x160C03`). Stand-ins:
+"seen" is mode 2 for every once-only hint (unless this player has seen
+it), kept per player for the session, not in the character's record;
+the barrels', critters' and Deaths' hints go to player 1.
 
 ## Not done
 

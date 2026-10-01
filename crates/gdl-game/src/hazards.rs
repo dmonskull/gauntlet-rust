@@ -294,7 +294,7 @@ fn tile_hurts(
             let boss = level.map_or(-1, |l| l.boss);
             sounds.write(PlaySoundAt::panned(tile_sound(name, boss), Vec3::from(feet), tile_volume(name)));
         }
-        hints.write(ShowHint(Hint::AvoidObjects));
+        hints.write(ShowHint::to(p.slot, Hint::AvoidObjects));
         debug!("damage tile {} hurts player {} for {amount:.1}", t.placement, p.slot + 1);
         // Once per phase: until this one is over.
         return Some((i, t.phase));

@@ -2617,10 +2617,10 @@ fn drop_items(
         if dropped {
             match d.class {
                 class::GENERAL => {
-                    hints.write(ShowHint(Hint::GeneralsCarryItems));
+                    hints.write(ShowHint::to(0, Hint::GeneralsCarryItems));
                 }
                 class::GARGOYLE => {
-                    hints.write(ShowHint(Hint::DefeatGargoyles));
+                    hints.write(ShowHint::to(0, Hint::DefeatGargoyles));
                 }
                 _ => {}
             }

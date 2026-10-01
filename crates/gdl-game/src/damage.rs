@@ -408,7 +408,7 @@ fn blow_on_death(
                 }
             }
             (Some(_), _) => {
-                hints.write(ShowHint(Hint::KillDeathWithMagic));
+                hints.write(ShowHint::to(hero.map_or(0, |p| p.slot), Hint::KillDeathWithMagic));
             }
             _ => {}
         }
@@ -436,13 +436,13 @@ fn death_drains(
                     info!("Death drains the hero down to level {}", state.level);
                 }
             }
-            hints.write(ShowHint(Hint::DeathDrainsExperience));
+            hints.write(ShowHint::to(p.slot, Hint::DeathDrainsExperience));
         } else {
             let amount = p.take_blow(-d.amount, hit_kind::DRAIN, Vec3::ZERO);
             if amount != 0.0 {
                 damage.write(HurtHero { slot: p.slot, amount, kind: hit_kind::DRAIN, cry: Cry::Hurt });
             }
-            hints.write(ShowHint(Hint::DeathDrainsHealth));
+            hints.write(ShowHint::to(p.slot, Hint::DeathDrainsHealth));
         }
         debug!("Death {:?} drains the hero", d.death);
     }

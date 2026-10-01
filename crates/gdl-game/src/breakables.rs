@@ -248,7 +248,7 @@ fn hits(
         // A hero's blow that does damage to a secret wall (a nameless
         // obstacle) tells of them.
         if class == ItemClass::Obstacle && nameless && hit.kind & NO_DAMAGE == 0 && !hit.ranged && players.contains(hit.attacker) {
-            hints.write(ShowHint(Hint::SecretWalls));
+            hints.write(ShowHint::to(0, Hint::SecretWalls));
         }
         // An obstacle a blow did damage and left standing flashes.
         if class == ItemClass::Obstacle && hit.kind & NO_DAMAGE == 0 && !dead && subtype != items::SAFE_ROCK {
@@ -273,7 +273,7 @@ fn hits(
                         if let Some(s) = barrel_sound("WOOD", realm) {
                             sounds.write(PlaySoundAt::faded(s, blow_at, BARREL_VOLUME));
                         }
-                        hints.write(ShowHint(Hint::SomeBarrels));
+                        hints.write(ShowHint::to(0, Hint::SomeBarrels));
                     }
                     // A monster inside (a Death) comes out where the container stood.
                     if let Some(ty) = inside.as_ref() {
@@ -478,13 +478,13 @@ fn apply_blow(
         ItemBlow::Destroyed => {
             pieces(pose.translation, effects);
             wreck(items, placement, ITEM_WRECK, pose, models, commands);
-            hints.write(ShowHint(Hint::ExplosionsDestroyItems));
+            hints.write(ShowHint::to(0, Hint::ExplosionsDestroyItems));
         }
         ItemBlow::Spoiled { meat } => {
             let (model, amount) = if meat { BAD_MEAT } else { BAD_FRUIT };
             swap_model(items, placement, model, pose, models, commands);
             items.set_amount(placement, amount);
-            hints.write(ShowHint(Hint::GasSpoilsFood));
+            hints.write(ShowHint::to(0, Hint::GasSpoilsFood));
         }
         ItemBlow::ChestBlown { silver } => {
             // A Death inside comes out; anything else is lost with it.
@@ -656,7 +656,7 @@ fn chest_explosions(
             sounds.write(PlaySoundAt::faded(s, Vec3::from(centre), CHEST_EXP_VOLUME));
         }
         items.free(placement, &mut commands);
-        hints.write(ShowHint(Hint::ChestsExplode));
+        hints.write(ShowHint::to(0, Hint::ChestsExplode));
         info!("CHESTEXP {placement} explodes");
     }
 }
