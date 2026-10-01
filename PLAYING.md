@@ -48,11 +48,19 @@ relays when it has to).
    you saved on your machine.
 4. When everyone is ready the host presses **Start**.
 
-Each player has their own screen and camera and their own settings. If your
-hero dies you watch a teammate (L / R picks another) until the level ends.
-Start opens the online menu (Settings, Leave Game) — the game goes on
-underneath. Saving: your hero is yours — save it from a local game.
+Friends can **join later** with the same code (Start → **Invite** copies it
+again): they pick their hero and come in when the party is next in the
+tower.
+
+Each player has their own screen and their own settings; the host picks the
+camera (Start → **Camera**: each player's own, or the overhead co-op one).
+If your hero dies you watch a teammate (L / R picks another) until the
+level ends. Start opens the online menu — the game goes on underneath. In
+the tower it also has **Shop** and **Inventory** (they open for everyone)
+and **Manage Character**: change or load your hero (everyone starts again
+in the tower with it), or **Save** it on your machine.
 
 Everyone must run **the same version** of the program and the same game
 (USA disc); Windows, Mac and Linux players can play together. If the
-machines ever disagree, the game shows "Out of sync".
+machines ever disagree, the level starts again for everyone, each hero with
+what they had.
