@@ -452,14 +452,26 @@ load sets, and `GDL_RUNES`, count as held), queues its lines.
 There's no spin or bob in code: **items animate through their atree**
 (item `+0x6C`, `FUN_80011104(anim, action, mode)`). Every powerup's atree
 has one action `ACTIVE` (potions 30 frames, gems 60, shields ~30;
-treasure piles are still), so they turn and bob as keyframed. Most are
-flagged to loop (`+0x24` = 1); the key's, key ring's, scroll's and the
-reflect and boost icons' aren't (0), yet the user reports the original's
-keys keep turning. The item update passes mode 0 while the item's state
-(`+0xC8`) matches its action (`+0xCA`), else 2, and `FUN_8000eb70`
-restarts a finished clip only in modes 1 and 2 (or for another action),
-so how the game replays those isn't traced; the rewrite loops every
-powerup's action. Doors have
+treasure piles are still), so they turn and bob as keyframed.
+
+**Which clips go round.** The animation state sits in the item at
+`+0x70`; its `+0x34` (item `+0xA4`) is the clip's loop flag, which
+`FUN_8000ef18` reads at the clip's end (round again, or hold the last
+frame and flag it ended, `+0x36 = 0xFF`). `FUN_8000ed70` sets it from the
+action's own flag (`+0x24`) whenever a clip starts. The model build
+(`FUN_80065b4c`) creates the animation — its set-up (`FUN_8000e910`)
+starts action 0 — then sets `+0xA4 = 1` and plays the item's action in
+mode 2, which doesn't restart a clip still running with the same action:
+so **an item's first action goes round until the item moves to another**,
+whatever its own flag. The item update asks mode 0 while its state
+(`+0xC8`) equals its action (`+0xCA`) — restart only for another action —
+so a powerup, which never changes action, turns for good: the key's, key
+ring's, scroll's and the reflect and boost icons' `ACTIVE` have no loop
+flag of their own. An item made used (flag 1, without flag 4) starts
+action 1, a restart, so its own flag rules. The trigger update clears
+`+0xA4` every frame (pads never go round); the exit update sets it for
+actions 0, 1 and 3 and clears it for the rest (`items.rs`,
+`Item::loops`). Doors have
 `CLOSE` / `ACTIV` (12 frames: the gate slides 6.5 units down) / `OPEN`;
 chests `CLOSED` / `ACTIVE` / `OPEN`; exit portals `IDLE`, `READY`,
 `ACTIVE1..3`; transporters a looping `ACTIVE`.

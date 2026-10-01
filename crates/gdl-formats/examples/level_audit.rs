@@ -12,7 +12,8 @@
 //! With `--anim`, each animated object a trigger plays is described: the
 //! middle of each of its nodes' collision at rest, at its first frame
 //! (where the level starts it) and at its last (where the trigger takes
-//! it). With `--falls`, the falling obstacles (rock falls, leaves, debris,
+//! it); and each bursting one (node type `0x50000`) that goes round:
+//! where it bursts and how often. With `--falls`, the falling obstacles (rock falls, leaves, debris,
 //! shot-down walls, sinking rocks): their model, shape, links and the
 //! floor under each. With `--walls`, each secret wall's own triangles
 //! (their box in the world and the way they face) and a warp point on the
@@ -368,6 +369,26 @@ fn main() {
                     ));
                 }
             }
+            // The bursting ones (node type 0x50000) that go round: each
+            // bursts where its lap's last shown frame (the one before its
+            // last) puts it.
+            let bursting = |a: &&gdl_formats::world::ObjectAnimation| {
+                a.track.is_some() && !registered.contains_key(&a.node) && world.nodes[a.node].flags & 0x100F_0000 == 0x5_0000
+            };
+            for a in pop.animations.iter().filter(bursting) {
+                let origin = origins.get(a.node).copied().flatten().unwrap_or_default();
+                let at = animated_pose(a, f32::from(a.frames.saturating_sub(2)), origin).apply(origin);
+                let under = floor(at).map_or("no floor".to_string(), |y| format!("floor {y:.2}"));
+                lines.push(format!(
+                    "  BURST node {} {} every {:.1} s at ({:.1}, {:.1}, {:.1}); {under}",
+                    a.node,
+                    world.nodes[a.node].name,
+                    f32::from(a.frames.saturating_sub(1)) / 30.0,
+                    at[0],
+                    at[1],
+                    at[2]
+                ));
+            }
         }
         let walls: Vec<usize> = pop
             .placements
@@ -434,15 +455,69 @@ fn main() {
                     start.set_pose(n, NodePose::translation([0.0, dy, 0.0]));
                 }
             }
-            // Every floor down a line through the level at rest.
+            // The animated objects at their first frame (as the level
+            // starts them) and at their last (where a trigger takes them):
+            // their floors count where they are then.
+            let world_nodes = world.nodes.len();
+            let depth = |n: usize| {
+                let (mut d, mut k) = (0, parent[n]);
+                while let Some(x) = k {
+                    d += 1;
+                    k = parent[x];
+                    if d > world_nodes {
+                        break;
+                    }
+                }
+                d
+            };
+            let animated_at = |last: bool| -> LevelCollision {
+                let mut c = c0.clone();
+                let mut posed: BTreeMap<usize, NodePose> = BTreeMap::new();
+                let mut order: Vec<usize> = pop.animations.iter().filter(|a| a.track.is_some()).map(|a| a.node).collect();
+                order.sort_by_key(|&n| (depth(n), n));
+                for &n in &order {
+                    let Some(a) = animation_of(n) else { continue };
+                    let origin = origins.get(n).copied().flatten().unwrap_or_default();
+                    let mut pose = animated_pose(a, if last { f32::from(a.frames - 1) } else { 0.0 }, origin);
+                    let mut k = parent[n];
+                    while let Some(x) = k {
+                        if let Some(up) = posed.get(&x) {
+                            pose = pose.then(up);
+                            break;
+                        }
+                        k = parent[x];
+                    }
+                    posed.insert(n, pose);
+                }
+                for node in 0..world_nodes {
+                    let mut k = Some(node);
+                    while let Some(x) = k {
+                        if let Some(&pose) = posed.get(&x) {
+                            c.set_pose(node, pose);
+                            break;
+                        }
+                        k = parent[x];
+                    }
+                }
+                c
+            };
+            let first_frames = animated_at(false);
+            let last_frames = animated_at(true);
+            let animated_set: HashSet<usize> = (0..world_nodes).filter(|&n| in_mode(n)).collect();
+            // Every floor down a line through the level at rest, and the
+            // animated objects' at their first and last frames.
             let floors = |x: f32, z: f32| -> Vec<(usize, f32)> {
                 let q = gdl_formats::collision::Query { disable_mask: 0, prefer_crossing: false, ..gdl_formats::collision::Query::floors(0.5) };
                 let [lo, hi] = c0.bounds;
                 let mut out = Vec::new();
-                let mut y = hi[1] + 1.0;
-                while let Some(h) = c0.cast([x, y, z], [x, lo[1] - 1.0, z], &q) {
-                    out.push((h.node, h.point[1]));
-                    y = h.point[1].min(y) - 0.55;
+                for (k, c) in [c0, &first_frames, &last_frames].into_iter().enumerate() {
+                    let mut y = hi[1] + 1.0;
+                    while let Some(h) = c.cast([x, y, z], [x, lo[1] - 1.0, z], &q) {
+                        if k == 0 || animated_set.contains(&h.node) {
+                            out.push((h.node, h.point[1]));
+                        }
+                        y = h.point[1].min(y) - 0.55;
+                    }
                 }
                 out
             };
