@@ -328,6 +328,8 @@ pub struct Mechanics {
     /// say what it needs again.
     clock: f32,
     need_again: HashMap<u8, f32>,
+    /// The movers' loop asked for last tick (the one playing).
+    mover_loop: Option<String>,
 }
 
 impl Mechanics {
@@ -774,7 +776,8 @@ fn tick(
                 if let Some((run, stop)) = mover_loop(mv.sound, letter, boss_level) {
                     if st & MOVING != 0 {
                         looping.get_or_insert((run, mv.node));
-                    } else if prev & MOVING != 0 {
+                    } else if prev & MOVING != 0 && mech.mover_loop.as_deref() == Some(run.as_str()) {
+                        // Its stop sound only if its set's loop was playing.
                         shots.push((mv.node, stop));
                     }
                 }
@@ -907,6 +910,7 @@ fn tick(
     for (node, name) in shots {
         sounds.write(PlaySoundAt::panned(name, place(node), MECHANISM_VOLUME));
     }
+    mech.mover_loop = looping.as_ref().map(|(name, _)| name.clone());
     for (key, sound) in [("mover", looping), ("rotator", grind)] {
         loops.write(match sound {
             Some((name, node)) => LoopSoundAt::at(key, name, place(node), MECHANISM_VOLUME),
