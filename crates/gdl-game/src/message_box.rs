@@ -488,7 +488,11 @@ fn run_captions(
     }
 }
 
-fn draw_captions(captions: Res<Captions>, fonts: Option<Res<GameFonts>>, mut draw: ResMut<Draw2d>) {
+fn draw_captions(captions: Res<Captions>, fonts: Option<Res<GameFonts>>, mut draw: ResMut<Draw2d>, fe: Option<Res<Frontend>>) {
+    // Not over a screen that covers play (the shop, the select screen).
+    if fe.is_some_and(|f| f.covers_play()) {
+        return;
+    }
     let (Some(c), Some(fonts)) = (captions.up.as_ref(), fonts) else { return };
     let Some(page) = c.pages.get(c.page) else { return };
     let style = TextStyle::new(FONT32, c.scale, Color::WHITE);

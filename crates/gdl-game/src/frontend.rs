@@ -1111,6 +1111,12 @@ impl Frontend {
         matches!(self.screen, Screen::Title | Screen::Connecting | Screen::LoadingSelect | Screen::LoadingGame | Screen::Shop)
     }
 
+    /// Whether a 2D screen covers play: the title, loading, the select
+    /// screen, the shop.
+    pub fn covers_play(&self) -> bool {
+        self.full_screen() || self.screen == Screen::Select
+    }
+
     /// Whether a level is being played (menus may be open over it).
     pub fn playing(&self) -> bool {
         self.screen == Screen::Playing
