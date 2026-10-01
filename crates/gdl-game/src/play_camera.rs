@@ -352,7 +352,7 @@ fn top_point(feet: [f32; 3], head: f32) -> [f32; 3] {
     [feet[0], feet[1] + head, feet[2]]
 }
 
-/// The centre of the box round some points (the game's `FUN_8006f8f0`):
+/// The centre of the box round some points (`docs/camera.md`, "Update"):
 /// what the camera follows with several players.
 fn box_centre(points: impl Iterator<Item = [f32; 3]>) -> Option<[f32; 3]> {
     let mut lo = [f32::MAX; 3];
