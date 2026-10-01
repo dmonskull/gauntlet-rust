@@ -32,8 +32,10 @@ const DELTA_TABLE_LEN: usize = 256;
 pub const ROTATION_BITS: [u16; 3] = [0x001, 0x002, 0x004];
 pub const TRANSLATION_BITS: [u16; 3] = [0x010, 0x020, 0x040];
 pub const SCALE_BITS: [u16; 3] = [0x100, 0x200, 0x400];
-/// Rotation matrix uses the alternate Euler order.
-pub const ALT_EULER: u16 = 0x0080;
+/// Rotation matrix uses the alternate Euler order. The game tests `0x80`
+/// on the entry's flags read big-endian — the little-endian value's
+/// `0x8000` (no track on the disc sets it).
+pub const ALT_EULER: u16 = 0x8000;
 /// Keys after the first are one byte per channel into the delta tables.
 pub const DELTA_KEYS: u16 = 0x2000;
 /// A single key: the track is a static pose.
@@ -299,13 +301,17 @@ impl Atree {
 }
 
 impl Clips {
-    fn track(&self, bone: usize, action: usize, frames: usize) -> Result<Option<Track>, AnimError> {
+    /// Decodes `bone`'s track for `action`, `frames` long (the world's
+    /// animated objects use these too, one bone each, `world.rs`).
+    pub(crate) fn track(&self, bone: usize, action: usize, frames: usize) -> Result<Option<Track>, AnimError> {
         let bad = |why: String| AnimError::BadTrack { bone, action, why };
         let Some(&(flags, channels, offset)) = self.entries.get(bone * self.num_actions + action) else {
             return Ok(None);
         };
-        // No channel bits and no high byte: the game leaves the bone at rest.
-        if flags & 0x0F == 0 && flags >> 8 == 0 {
+        // No channel bits: the game leaves the bone at rest. (It reads the
+        // little-endian flags big-endian and tests the low nibble and the
+        // high byte: the channels' `0x0F00` and `0x00FF`.)
+        if flags & 0x0FFF == 0 {
             return Ok(None);
         }
         let groups = [ROTATION_BITS, TRANSLATION_BITS, SCALE_BITS];
@@ -506,8 +512,9 @@ fn parse_flipbook(file: &[u8], at: usize) -> Result<(Vec<FlipbookEntry>, u32), A
 }
 
 /// `None` for the empty block skeleton-only files carry (no actions, no
-/// bones, every offset pointing back at the header).
-fn parse_clips(file: &[u8], at: usize) -> Result<Option<Clips>, AnimError> {
+/// bones, every offset pointing back at the header). The world files
+/// carry one for their animated objects (`world.rs`).
+pub(crate) fn parse_clips(file: &[u8], at: usize) -> Result<Option<Clips>, AnimError> {
     let h = slice(file, at, 0x1C)?;
     let off = |i: usize| le_u32(h, i * 4) as usize;
     let num_actions = le_u32(h, 0x14) as usize;

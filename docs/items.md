@@ -259,7 +259,14 @@ extents `+0x0C..+0x1C`, and the item's world centre `C`:
   difference within extent 1 + `h`;
 - shape 1 upright cylinder: that's all; 2 sphere: 3D distance within
   `R + r`; 3 box: also within extent 2 + `r` along the item's X axis and
-  extent 3 + `r` along its Z; 4 walls (`FUN_8005fd94`, not ported);
+  extent 3 + `r` along its Z; 4 walls (`FUN_8005fd94`, the secret walls,
+  obstacle `0x2A`): the hero's centre (`+0x64`, 2.5 above its feet) swept
+  from `from` to `to`, radius `r`, against the level collision triangles
+  the placement names (`+0x04` first, `+0x06` count → item `+0xC0/+0xC2`;
+  stored in the item's frame), in the item's frame (`FUN_800bde10`) and
+  within the sweep's height ± `r` (`FUN_8000e3b8`); a hit is a touch, and
+  the hero is pushed out along the hit triangle's normal, level, until
+  `r` from the hit point (`items::wall_contact`);
 - result: `max(distance − R, 0)`, −1 for no touch;
 - triggers, damage tiles, exits and transporters stop there; for the rest,
   if the hero already reached the item at `from` (always, for shape 1) and

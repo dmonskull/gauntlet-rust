@@ -18,14 +18,23 @@
 //! Quest triggers (flag 0x40) are the tower's gates: shut until the
 //! hero's crystals or gargoyle pieces open them (`quest.rs`).
 //!
+//! Animated objects (the world file's table, `docs/mechanics.md`,
+//! "Animated objects") pose their nodes from their tracks at 30 frames a
+//! second: round and round, or — aimed at by a trigger — back to their
+//! first frame while it's off and on to their last while it's on, with the
+//! cut that shows them waiting for them.
+//!
 //! Stand-ins: triggers run on
-//! or off screen; subtype 1 rotators and the node flag 0x2000000 mode
-//! aren't done; only players (not monsters) hold a mover still by standing
-//! on it.
+//! or off screen; subtype 1 rotators aren't done; only players (not
+//! monsters) hold a mover still by standing on it; an animated object's
+//! scale is drawn but its collision doesn't scale (not confirmed), and
+//! the bursting ones (node type 0x50000: H1's fire, the I realm's
+//! minecarts) don't burst or hide as their loop comes round.
 
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
+use gdl_formats::anim::{Pose, ROTATION_BITS, SCALE_BITS, TRANSLATION_BITS, Track, rotation_matrix as pose_matrix};
 use gdl_formats::collision::NodePose;
 use gdl_formats::population::{LocatorKind, PlacementParams, Population};
 use gdl_formats::WorldNode;
@@ -34,10 +43,10 @@ use crate::audio::{LoopSoundAt, PlaySoundAt};
 use crate::items::{self, LevelItems};
 use crate::level_material::LevelMaterial;
 use crate::monsters::MonsterLevel;
-use crate::play_camera::{Shake, StartCut};
+use crate::play_camera::{PlayCamera, Shake, StartCut};
 use crate::player::{Player, PlayerTick};
 use crate::message_box::ShowMessage;
-use crate::player_state::PlayerState;
+use crate::player_state::{PlayerState, TimeStop};
 use crate::population::LevelPopulation;
 use crate::quest;
 use crate::world::LevelGround;
@@ -192,16 +201,20 @@ impl LevelNodes {
     }
 }
 
-/// The nodes something moves: trigger targets and rotators' nodes.
+/// The nodes something moves: every trigger's target — the game makes
+/// a mover of it whether or not the trigger is for the party, and holds
+/// it at its off height (or hides a bridge) — the party's rotators' nodes
+/// and the animated objects.
 pub fn moving_roots(population: &Population) -> HashSet<usize> {
     population
         .placements
         .iter()
-        .filter(|p| p.active_for(1))
         .filter_map(|p| match p.params(population.resolved_type(p).class) {
-            PlacementParams::Trigger { target, .. } | PlacementParams::Rotator { target, .. } => target,
+            PlacementParams::Trigger { target, .. } => target,
+            PlacementParams::Rotator { target, .. } if p.active_for(1) => target,
             _ => None,
         })
+        .chain(population.animations.iter().filter(|a| a.track.is_some()).map(|a| a.node))
         .collect()
 }
 
@@ -303,6 +316,129 @@ struct Rotator {
     done: bool,
 }
 
+/// Node flags the animated objects play by (the game keeps them in the
+/// node's `+0x10`): back to the first frame, on to the last — both: held
+/// where it is, neither: round and round — and which end it's at.
+const PLAY_BACK: u32 = 0x10_0000;
+const PLAY_ON: u32 = 0x20_0000;
+const AT_START: u32 = 0x40_0000;
+const AT_END: u32 = 0x80_0000;
+/// Its frame moved this tick (a cut showing the node holds meanwhile);
+/// the movers set it on a node they move too.
+const ANIMATING: u32 = 0x800_0000;
+/// The animated mode's node flag.
+const ANIMATED_MODE: u32 = 0x200_0000;
+/// Frames a second the animated objects play at (`r2-0x5040` × the
+/// frame's time).
+const ANIMATION_FPS: f32 = 30.0;
+/// They wait while a camera cut has at least this many fields left to
+/// hold (playing in its last ten, and through an endless one).
+const CUT_HOLDS_ANIMATIONS: f32 = 11.0;
+const ENDLESS_CUT: f32 = 99_999.0;
+
+/// A world object the level animates (the world file's table,
+/// `docs/mechanics.md`, "Animated objects").
+struct Animation {
+    node: usize,
+    frames: u16,
+    track: Track,
+    frame: f32,
+    /// The node's pose from the track: turned about its origin by the
+    /// track's angles and moved by its translation.
+    local: NodePose,
+    /// The track's scale, where it has one.
+    scale: Option<[f32; 3]>,
+}
+
+/// Where an animated object's track puts its node, about the node's
+/// origin: the angles become its rotation (the game's own two builders),
+/// the translation adds to where the file puts it; channels the track
+/// lacks leave the node's (identity, none) alone.
+fn animated_pose(track: &Track, pose: &Pose, origin: [f32; 3]) -> NodePose {
+    let has = |bits: [u16; 3]| bits.iter().any(|&b| track.flags & b != 0);
+    let rotation = if has(ROTATION_BITS) {
+        // Row vectors (v · M) to column vectors, row-major.
+        let m = pose_matrix(pose.rotation, track.flags);
+        [m[0], m[4], m[8], m[1], m[5], m[9], m[2], m[6], m[10]]
+    } else {
+        NodePose::REST.rotation
+    };
+    let t = if has(TRANSLATION_BITS) { pose.translation } else { [0.0; 3] };
+    let turned = NodePose { rotation, translation: [0.0; 3] }.apply_vector(origin);
+    NodePose { rotation, translation: std::array::from_fn(|i| origin[i] + t[i] - turned[i]) }
+}
+
+/// One tick of an animated object (the game's per-object update): with
+/// both play flags it's held, else it poses its node at its frame and —
+/// unless it goes round and round while time is stopped — moves the frame
+/// on: back to the first frame (`PLAY_BACK`), on to the last (`PLAY_ON`)
+/// or round (neither), flagging the end it's at and whether it animated.
+fn play_animation(a: &mut Animation, play: &mut u32, stopped: bool, origin: [f32; 3]) {
+    let (back, on) = (*play & PLAY_BACK != 0, *play & PLAY_ON != 0);
+    if back && on {
+        *play &= !ANIMATING;
+        return;
+    }
+    let pose = a.track.sample(a.frame);
+    a.local = animated_pose(&a.track, &pose, origin);
+    a.scale = SCALE_BITS.iter().any(|&b| a.track.flags & b != 0).then_some(pose.scale);
+    let round = !back && !on;
+    if stopped && round {
+        return;
+    }
+    *play = (*play & !(AT_START | AT_END)) | ANIMATING;
+    let last = f32::from(a.frames.saturating_sub(1));
+    if back {
+        a.frame -= ANIMATION_FPS * DT;
+        if a.frame < 0.0 {
+            a.frame = 0.0;
+            *play = (*play & !ANIMATING) | AT_START;
+        }
+    } else {
+        a.frame += ANIMATION_FPS * DT;
+        if a.frame.trunc() >= last {
+            if round {
+                a.frame = 0.0;
+            } else {
+                a.frame = last;
+                *play &= !ANIMATING;
+            }
+            *play |= AT_END;
+        }
+    }
+}
+
+/// A mover on a node in the animated mode (kind flags `flags`, state
+/// `st`): no heights — on plays its node's animation on to the last frame,
+/// off back to the first, and it has arrived at that end; a returning one
+/// (kind flag 0x20) goes round while held and stops at its end once let
+/// go. Whether it's moving; `None` when a hero stands on it (without kind
+/// flag 8), which holds it where it is.
+fn drive_animation(flags: u8, carrying: bool, st: &mut u8, play: &mut u32) -> Option<bool> {
+    if flags & MOVES_CARRYING == 0 && carrying {
+        *play |= PLAY_BACK | PLAY_ON;
+        *st &= !MOVING;
+        return None;
+    }
+    let mut go = true;
+    if flags & RETURNS == 0 {
+        *play = if *st & ON == 0 { (*play | PLAY_BACK) & !PLAY_ON } else { (*play | PLAY_ON) & !PLAY_BACK };
+        if (*play & PLAY_BACK != 0 && *play & AT_START != 0) || (*play & PLAY_ON != 0 && *play & AT_END != 0) {
+            go = false;
+        }
+    } else if *st & PLAYERS == 0 {
+        if *play & AT_END != 0 {
+            *st &= !(ON | MOVING);
+            go = false;
+            *play |= PLAY_BACK | PLAY_ON;
+        }
+    } else {
+        *st |= ON | MOVING;
+        *play &= !(PLAY_BACK | PLAY_ON);
+    }
+    Some(go)
+}
+
 /// The current level's triggers, movers and rotators.
 #[derive(Resource, Default)]
 pub struct Mechanics {
@@ -330,6 +466,15 @@ pub struct Mechanics {
     need_again: HashMap<u8, f32>,
     /// The movers' loop asked for last tick (the one playing).
     mover_loop: Option<String>,
+    /// The animated objects; the nodes in their mode (theirs and their
+    /// subtrees', which the game passes the flag down to); those nodes'
+    /// play flags; and the animation of each animated node.
+    animations: Vec<Animation>,
+    animated: HashSet<usize>,
+    play: HashMap<usize, u32>,
+    animation_of: HashMap<usize, usize>,
+    /// Roots drawn scaled: their scale and the point it's about.
+    scales: HashMap<usize, ([f32; 3], [f32; 3])>,
 }
 
 impl Mechanics {
@@ -419,14 +564,17 @@ fn setup(
     let pop = &population.population;
     let mut m = Mechanics::default();
     for (placement, p) in pop.placements.iter().enumerate() {
-        if !p.active_for(1) {
-            continue;
-        }
         let ty = pop.resolved_type(p);
+        let party = p.active_for(1);
         match p.params(ty.class) {
             PlacementParams::Trigger { target, flags, radius, sound, id, next, off, on } => {
                 let target = target.filter(|&t| t < nodes.nodes.len());
                 let flags = default_flags(ty.subtype, flags);
+                // The game registers every trigger's target as it makes the
+                // item, the first registration setting the mover's kind,
+                // heights and sound — a trigger for more players too, which
+                // is never touched but leaves its node at its off height
+                // (a bridge of its hidden).
                 if let Some(node) = target {
                     let kind = ty.subtype;
                     match m.mover_of.get(&node) {
@@ -434,6 +582,18 @@ fn setup(
                             let mv = &mut m.movers[i];
                             if (LIFTPAD..=LIFTEND).contains(&mv.kind) && (LIFTPAD..=LIFTEND).contains(&kind) {
                                 mv.kind = LIFTPAD;
+                            }
+                            // Heights the first left at 0 — and a sound of 0
+                            // or none — come from a later one.
+                            if mv.off == 0.0 {
+                                mv.off = 0.1 * f32::from(off);
+                                mv.offset = mv.off;
+                            }
+                            if mv.on == 0.0 {
+                                mv.on = 0.1 * f32::from(on);
+                            }
+                            if mv.sound <= 0 {
+                                mv.sound = sound;
                             }
                         }
                         None => {
@@ -453,6 +613,9 @@ fn setup(
                             });
                         }
                     }
+                }
+                if !party {
+                    continue;
                 }
                 debug!(
                     "trigger {placement} {:#x} flags {flags:#x} at {:?} -> node {target:?} ({:?}) heights {off}/{on} id {id} next {next}",
@@ -484,7 +647,7 @@ fn setup(
                         .flatten(),
                 });
             }
-            PlacementParams::Rotator { target: Some(node), angle, limit } if node < nodes.nodes.len() => {
+            PlacementParams::Rotator { target: Some(node), angle, limit } if party && node < nodes.nodes.len() => {
                 m.rotators.push(Rotator {
                     placement,
                     node,
@@ -511,7 +674,26 @@ fn setup(
             m.triggers[k].flags |= CHAINED_TO;
         }
     }
-    let mut roots: Vec<usize> = m.movers.iter().map(|mv| mv.node).chain(m.rotators.iter().map(|r| r.node)).collect();
+    // Animated objects: the loader puts their nodes (and every node under
+    // them) in the animated mode; the item set-up has every trigger's
+    // target play back to its first frame.
+    let table: HashSet<usize> = pop.animations.iter().map(|a| a.node).filter(|&n| n < nodes.nodes.len()).collect();
+    m.animated = (0..nodes.nodes.len()).filter(|&n| nodes.group_of(n, &table).is_some()).collect();
+    for a in pop.animations.iter().filter(|a| a.node < nodes.nodes.len()) {
+        let Some(track) = a.track.clone() else { continue };
+        m.animation_of.insert(a.node, m.animations.len());
+        m.animations.push(Animation { node: a.node, frames: a.frames, track, frame: 0.0, local: NodePose::REST, scale: None });
+    }
+    for mv in &m.movers {
+        m.play.insert(mv.node, PLAY_BACK);
+    }
+    let mut roots: Vec<usize> = m
+        .movers
+        .iter()
+        .map(|mv| mv.node)
+        .chain(m.rotators.iter().map(|r| r.node))
+        .chain(m.animations.iter().map(|a| a.node))
+        .collect();
     roots.sort_by_key(|&r| (nodes.depth(r), r));
     roots.dedup();
     m.root_set = roots.iter().copied().collect();
@@ -533,17 +715,21 @@ fn setup(
         }
     }
     info!(
-        "mechanics: {} triggers, {} movers, {} rotators, {} chained",
+        "mechanics: {} triggers, {} movers ({} animated), {} rotators, {} chained, {} animated objects",
         m.triggers.len(),
         m.movers.len(),
+        m.movers.iter().filter(|mv| m.animated.contains(&mv.node)).count(),
         m.rotators.len(),
-        m.triggers.iter().filter(|t| t.chain.is_some()).count()
+        m.triggers.iter().filter(|t| t.chain.is_some()).count(),
+        m.animations.len()
     );
-    // Movers that start off their rest height.
-    let start: Vec<(usize, f32)> = m.movers.iter().filter(|mv| mv.offset != 0.0).map(|mv| (mv.node, mv.offset)).collect();
-    for (node, offset) in start {
-        let pose = NodePose::translation([0.0, offset, 0.0]);
-        m.poses.insert(node, (pose, pose));
+    // Movers that start off their rest height, animated objects at their
+    // first frame.
+    for a in &mut m.animations {
+        a.local = animated_pose(&a.track, &a.track.sample(0.0), nodes.origin[a.node]);
+    }
+    for (root, pose) in world_poses(&m, &nodes) {
+        m.poses.insert(root, (pose, pose));
     }
     commands.insert_resource(m);
 }
@@ -563,6 +749,7 @@ fn tick(
     mut loops: MessageWriter<LoopSoundAt>,
     level: Option<Res<MonsterLevel>>,
     mut messages: MessageWriter<ShowMessage>,
+    (camera, time_stop): (Option<Res<PlayCamera>>, Option<Res<TimeStop>>),
 ) {
     let (Some(mut mech), Some(nodes), Some(mut items), Some(mut ground)) = (mechanics, nodes, items, ground) else {
         return;
@@ -746,6 +933,22 @@ fn tick(
         }
     }
 
+    // Animated objects (the game runs them before the item update's
+    // movers): each poses its node at its frame, then moves the frame on —
+    // unless a camera cut holds more than ten fields yet; round-and-round
+    // ones wait while time is stopped.
+    let cut_holds = camera
+        .as_ref()
+        .and_then(|c| c.cut_counts())
+        .is_some_and(|(hold, _)| (CUT_HOLDS_ANIMATIONS..=ENDLESS_CUT).contains(&hold));
+    if !cut_holds {
+        let stopped = time_stop.as_ref().is_some_and(|t| t.0);
+        for a in &mut mech.animations {
+            let play = mech.play.entry(a.node).or_default();
+            play_animation(a, play, stopped, nodes.origin[a.node]);
+        }
+    }
+
     // Movers.
     // Only this resource holds the level's collision, so it can be changed
     // in place.
@@ -791,7 +994,23 @@ fn tick(
         }
         let mut disable = 0u8;
         let moving;
-        if mv.flags & BRIDGE != 0 {
+        let animated = mech.animated.contains(&mv.node);
+        if mv.flags & BRIDGE == 0 && animated {
+            // The animated mode: no heights; on plays the node's animation
+            // on to its last frame, off back to its first, and it has
+            // arrived at that end. A returning one (kind flag 0x20) goes
+            // round while held and stops at its end once let go.
+            let play = mech.play.entry(mv.node).or_insert(PLAY_BACK);
+            let Some(go) = drive_animation(mv.flags, carrying, &mut st, play) else {
+                // Stood on: held where it is.
+                mv.state = st;
+                if let Some(c) = collision.as_mut() {
+                    c.set_disable(mv.node, 0);
+                }
+                continue;
+            };
+            moving = go;
+        } else if mv.flags & BRIDGE != 0 {
             let hide = if mv.flags & RETURNS == 0 { st & PLAYERS == 0 } else { st & (PLAYERS | ON) != 0 };
             disable = if hide { 0xFF } else { 0 };
             let before = mv.alpha;
@@ -877,23 +1096,12 @@ fn tick(
     }
     let grind = rotator_sound.zip(grinding).map(|((run, _), node)| (run.to_string(), node));
 
-    // World poses, parents first: a node's own move, then its parent's.
-    let mut world: HashMap<usize, NodePose> = HashMap::new();
-    for &root in &mech.roots {
-        let mut local = NodePose::REST;
-        if let Some(&k) = mech.mover_of.get(&root) {
-            local = NodePose::translation([0.0, mech.movers[k].offset, 0.0]);
-        }
-        if let Some(r) = mech.rotators.iter().find(|r| r.node == root) {
-            local = local.then(&NodePose::turn_about(nodes.origin[root], r.total));
-        }
-        let above = nodes.parent[root].and_then(|p| nodes.group_of(p, &mech.root_set)).and_then(|p| world.get(&p).copied());
-        let pose = match above {
-            Some(parent) => local.then(&parent),
-            None => local,
-        };
-        world.insert(root, pose);
-    }
+    let world = world_poses(mech, &nodes);
+    mech.scales = mech
+        .animations
+        .iter()
+        .filter_map(|a| a.scale.map(|s| (a.node, (s, nodes.origin[a.node]))))
+        .collect();
     for (&root, &pose) in &world {
         let entry = mech.poses.entry(root).or_insert((pose, pose));
         *entry = (entry.1, pose);
@@ -967,6 +1175,34 @@ fn tick(
     }
 }
 
+/// Each moving root's world pose, parents first: a node's own move (a
+/// mover's height, a rotator's turn, an animated object's pose), then its
+/// parent's.
+fn world_poses(mech: &Mechanics, nodes: &LevelNodes) -> HashMap<usize, NodePose> {
+    let mut world: HashMap<usize, NodePose> = HashMap::new();
+    for &root in &mech.roots {
+        let mut local = NodePose::REST;
+        if let Some(&k) = mech.mover_of.get(&root)
+            && !mech.animated.contains(&root)
+        {
+            local = NodePose::translation([0.0, mech.movers[k].offset, 0.0]);
+        }
+        if let Some(r) = mech.rotators.iter().find(|r| r.node == root) {
+            local = local.then(&NodePose::turn_about(nodes.origin[root], r.total));
+        }
+        if let Some(&k) = mech.animation_of.get(&root) {
+            local = local.then(&mech.animations[k].local);
+        }
+        let above = nodes.parent[root].and_then(|p| nodes.group_of(p, &mech.root_set)).and_then(|p| world.get(&p).copied());
+        let pose = match above {
+            Some(parent) => local.then(&parent),
+            None => local,
+        };
+        world.insert(root, pose);
+    }
+    world
+}
+
 /// Puts each moving group where its node is, between the last two ticks,
 /// fades bridges in and out (8 alpha steps a field) and hides vanished
 /// ones.
@@ -985,6 +1221,16 @@ fn pose_groups(
         let b = to_transform(&now);
         transform.translation = a.translation.lerp(b.translation, f);
         transform.rotation = a.rotation.slerp(b.rotation, f);
+        // An animated object's scale, about its node's origin.
+        transform.scale = match mech.scales.get(&g.root) {
+            Some(&(scale, pivot)) => {
+                let (s, p) = (Vec3::from(scale), Vec3::from(pivot));
+                let shift = transform.rotation * (p - s * p);
+                transform.translation += shift;
+                s
+            }
+            None => Vec3::ONE,
+        };
         let want = if mech.hidden.contains(&g.root) { Visibility::Hidden } else { Visibility::Inherited };
         visibility.set_if_neq(want);
         let fade = mech.fades.get(&g.root).copied().unwrap_or(0.0);
@@ -1010,9 +1256,25 @@ fn to_transform(p: &NodePose) -> Transform {
 }
 
 impl Mechanics {
-    /// Whether the mover on `node` is moving (or a bridge fading).
+    /// Whether the mover on `node` is moving (or a bridge fading); an
+    /// animated node, whether its frame moved this tick.
     pub fn node_moving(&self, node: usize) -> bool {
+        if self.animated.contains(&node) {
+            return self.play.get(&node).is_some_and(|p| p & ANIMATING != 0);
+        }
         self.mover_of.get(&node).is_some_and(|&k| self.movers[k].state & MOVING != 0)
+    }
+
+    /// The node flags the game sets at run time that its other code reads
+    /// beside the file's: `0x2000000` on a node in the animated mode, and
+    /// `0x8000000` while its animation plays — or while a mover moves it.
+    pub fn node_flags(&self, node: usize) -> u32 {
+        if self.animated.contains(&node) {
+            let playing = self.play.get(&node).is_some_and(|p| p & ANIMATING != 0);
+            return ANIMATED_MODE | if playing { ANIMATING } else { 0 };
+        }
+        let moving = self.mover_of.get(&node).is_some_and(|&k| self.movers[k].flags & BRIDGE == 0 && self.movers[k].state & MOVING != 0);
+        if moving { ANIMATING } else { 0 }
     }
 }
 
@@ -1045,6 +1307,79 @@ mod tests {
         assert_eq!(mover_loop(-1, 'A', false), None);
         assert_eq!(default_flags(0x18, 0x0002), 0x000A);
         assert_eq!(default_flags(LIFTPAD, 0), 0x80C);
+    }
+
+    /// A track turning about Y through `keys` (frame, angle), `frames` long.
+    fn turning(frames: u16, keys: &[(u16, f32)]) -> Animation {
+        let keys = keys.iter().map(|&(f, y)| (f, Pose { rotation: [0.0, y, 0.0], ..Pose::default() })).collect();
+        Animation { node: 0, frames, track: Track { flags: 0x0002, keys }, frame: 0.0, local: NodePose::REST, scale: None }
+    }
+
+    #[test]
+    fn a_switched_animation_plays_on_then_back() {
+        let mut a = turning(5, &[(0, 0.0), (4, 1.0)]);
+        // As the level loads every trigger target plays back, and is at
+        // its start after one tick.
+        let (mut play, mut st) = (PLAY_BACK, 0u8);
+        play_animation(&mut a, &mut play, false, [0.0; 3]);
+        assert_eq!(drive_animation(0x02, false, &mut st, &mut play), Some(false));
+        assert_eq!((a.frame, play & (AT_START | ANIMATING)), (0.0, AT_START));
+        // Switched on (the animations run before the movers each tick): it
+        // turns the mover's way the tick after, frames 0 to 4 a tick each,
+        // and has arrived once the last comes up.
+        st = ON;
+        let tick = |a: &mut Animation, st: &mut u8, play: &mut u32| {
+            play_animation(a, play, false, [0.0; 3]);
+            drive_animation(0x02, false, st, play).unwrap()
+        };
+        let moving: Vec<bool> = (0..7).map(|_| tick(&mut a, &mut st, &mut play)).collect();
+        assert_eq!(moving, [true, true, true, true, false, false, false]);
+        assert_eq!(a.frame, 4.0);
+        assert_eq!(play & (PLAY_ON | AT_END | ANIMATING), PLAY_ON | AT_END);
+        // Posed at the last key: a turn of 1 radian about Y.
+        let x = a.local.apply_vector([1.0, 0.0, 0.0]);
+        assert!((x[0] - 1f32.cos()).abs() < 1e-5 && (x[2].abs() - 1f32.sin()).abs() < 1e-5, "{x:?}");
+        // Off again: back to the first frame — a tick longer, as it only
+        // stops once the frame goes below the first.
+        st = 0;
+        let moving: Vec<bool> = (0..7).map(|_| tick(&mut a, &mut st, &mut play)).collect();
+        assert_eq!(moving, [true, true, true, true, true, false, false]);
+        assert_eq!(a.frame, 0.0);
+        assert_eq!(play & (PLAY_BACK | AT_START), PLAY_BACK | AT_START);
+        // A hero standing on it (no kind flag 8) holds it.
+        st = ON;
+        assert_eq!(drive_animation(0x02, true, &mut st, &mut play), None);
+        play_animation(&mut a, &mut play, false, [0.0; 3]);
+        assert_eq!((a.frame, play & ANIMATING), (0.0, 0));
+    }
+
+    #[test]
+    fn untriggered_animations_go_round_unless_time_stops() {
+        let mut a = turning(3, &[(0, 0.0), (2, 0.5)]);
+        let mut play = 0;
+        let frames: Vec<f32> = (0..4)
+            .map(|_| {
+                play_animation(&mut a, &mut play, false, [0.0; 3]);
+                a.frame
+            })
+            .collect();
+        assert_eq!(frames, [1.0, 0.0, 1.0, 0.0]);
+        play_animation(&mut a, &mut play, true, [0.0; 3]);
+        assert_eq!(a.frame, 0.0);
+    }
+
+    #[test]
+    fn animated_poses_turn_about_the_node() {
+        let a = turning(1, &[(0, std::f32::consts::FRAC_PI_2)]);
+        let origin = [10.0, 2.0, -4.0];
+        let pose = animated_pose(&a.track, &a.track.sample(0.0), origin);
+        // The origin stays put; a point a unit along X from it turns as the
+        // game's builder turns it (row vectors: X · M is M's first row).
+        let at = pose.apply(origin);
+        assert!(at.iter().zip(origin).all(|(a, b)| (a - b).abs() < 1e-5), "{at:?}");
+        let m = pose_matrix([0.0, std::f32::consts::FRAC_PI_2, 0.0], 0x0002);
+        let x = pose.apply_vector([1.0, 0.0, 0.0]);
+        assert!((0..3).all(|i| (x[i] - m[i]).abs() < 1e-5), "{x:?} vs {m:?}");
     }
 
     #[test]

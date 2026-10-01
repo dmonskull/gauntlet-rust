@@ -19,7 +19,7 @@ use gdl_formats::texmod::TexModKind;
 use gdl_formats::population::{
     ItemClass, ItemType, PlacementParams, REALM_LETTERS, level_for_code, rotation_matrix,
 };
-use gdl_formats::{LevelCollision, MoveParams};
+use gdl_formats::{CollisionTriangle, LevelCollision, MoveParams};
 
 use crate::audio::{CALL_VOLUME, HERO_LINE_VOLUME, LoopSoundAt, PlaySoundAt, QueueHeroLine};
 use crate::combat::hit_kind;
@@ -85,7 +85,9 @@ const POJO_POISON_AMOUNT: f32 = -100.0;
 pub const CHEST_EXP: i32 = 0x2C;
 pub const CHEST_EXP_TICK: &str = "S_TICKY";
 
-/// Powerup subtypes of the quest's pieces.
+/// Powerup subtypes: the obelisk (never made), and the quest's pieces —
+/// legendary items, scrolls, gems, gargoyle pieces.
+const OBELISK: i32 = 12;
 const LEGENDARY: i32 = 13;
 const SCROLL: i32 = 14;
 const GEM: i32 = 15;
@@ -299,6 +301,68 @@ fn normalize(v: &mut [f32; 2]) {
     }
 }
 
+/// An item's own collision (shape 4, the secret walls): the level's
+/// collision triangles its placement names (`+0x04` first, `+0x06`
+/// count), in the item's frame, and where the item stands.
+struct Wall {
+    triangles: Vec<CollisionTriangle>,
+    position: [f32; 3],
+    /// Row vectors: world = local · rotation + position.
+    rotation: [f32; 9],
+}
+
+impl Wall {
+    /// The placement's triangles, if it names any.
+    fn of(collision: &LevelCollision, links: [i16; 2], position: [f32; 3], rotation: [f32; 9]) -> Option<Self> {
+        let (first, count) = (usize::try_from(links[0]).ok()?, usize::try_from(links[1]).ok()?);
+        let triangles = collision.triangles.get(first..first.checked_add(count)?)?.to_vec();
+        (!triangles.is_empty()).then_some(Self { triangles, position, rotation })
+    }
+
+    fn to_local(&self, p: [f32; 3]) -> [f32; 3] {
+        let d = [p[0] - self.position[0], p[1] - self.position[1], p[2] - self.position[2]];
+        let r = &self.rotation;
+        std::array::from_fn(|i| d[0] * r[i * 3] + d[1] * r[i * 3 + 1] + d[2] * r[i * 3 + 2])
+    }
+
+    fn to_world(&self, p: [f32; 3]) -> [f32; 3] {
+        let r = &self.rotation;
+        std::array::from_fn(|j| self.position[j] + (0..3).map(|i| p[i] * r[i * 3 + j]).sum::<f32>())
+    }
+
+    fn direction_to_world(&self, v: [f32; 3]) -> [f32; 3] {
+        let r = &self.rotation;
+        std::array::from_fn(|j| (0..3).map(|i| v[i] * r[i * 3 + j]).sum::<f32>())
+    }
+}
+
+/// The game's test of a hero against a shape-4 item: its collision centre
+/// (`HERO_CENTRE` above the feet) swept from `from` to `to` with radius
+/// `r` against the wall's triangles (front faces) in the wall's frame; the
+/// nearest hit pushes the hero out along its normal, level, until it's `r`
+/// from the point it touched.
+fn wall_contact(w: &Wall, from: [f32; 3], to: [f32; 3], r: f32) -> Option<Contact> {
+    let centre = |p: [f32; 3]| [p[0], p[1] + HERO_CENTRE, p[2]];
+    let (a, b) = (w.to_local(centre(from)), w.to_local(centre(to)));
+    let (dist, point, normal) = w
+        .triangles
+        .iter()
+        .filter_map(|t| t.sweep(a, b, r).map(|(d, p)| (d, p, t.normal)))
+        .min_by(|x, y| x.0.total_cmp(&y.0))?;
+    let point = w.to_world(point);
+    let n = w.direction_to_world(normal);
+    let mut level = [n[0], n[2]];
+    normalize(&mut level);
+    let c = centre(to);
+    let push = (point[0] - c[0]) * level[0] + (point[2] - c[2]) * level[1] + r;
+    let out = if push > 0.0 { [to[0] + level[0] * push, to[1], to[2] + level[1] * push] } else { to };
+    Some(Contact { clearance: dist.sqrt(), out })
+}
+
+/// The hero's collision centre above its feet (`+0x64`), where the item
+/// query tests from.
+const HERO_CENTRE: f32 = 2.5;
+
 /// One placed item's run-time state (the game's `0xF0`-byte item record).
 struct Item {
     placement: usize,
@@ -342,6 +406,8 @@ struct Item {
     model: Option<Entity>,
     /// A container's contents, resolved.
     contents: Option<ItemType>,
+    /// Shape 4: its own collision triangles.
+    wall: Option<Arc<Wall>>,
 }
 
 impl Item {
@@ -781,6 +847,7 @@ impl LevelItems {
             atree: None,
             model: None,
             contents: None,
+            wall: None,
         });
         placement
     }
@@ -829,6 +896,10 @@ pub(crate) fn build_items(
             && realm == quest::TOWER as usize
             && state.as_ref().is_some_and(|s| s.quest.crystals_open(1))
         {
+            continue;
+        }
+        // An obelisk is never made (the game frees it as it's built).
+        if ty.class == ItemClass::Powerup && ty.subtype == OBELISK {
             continue;
         }
         let rotation = rotation_matrix(placement.rotation);
@@ -885,9 +956,14 @@ pub(crate) fn build_items(
             }
             _ => {}
         }
+        let shape = Shape::of(&ty, position, rotation);
+        let wall = (shape.kind == 4)
+            .then(|| ground.as_ref().and_then(|g| Wall::of(&g.0, placement.links, position, rotation)))
+            .flatten()
+            .map(Arc::new);
         out.push(Item {
             placement: index,
-            shape: Shape::of(&ty, position, rotation),
+            shape,
             ty,
             params,
             flags,
@@ -908,6 +984,7 @@ pub(crate) fn build_items(
             atree: None,
             model: None,
             contents,
+            wall,
         });
     }
     let doors = out.iter().filter(|i| i.class() == ItemClass::Door).count();
@@ -1351,11 +1428,26 @@ fn run(
         if !touchable(item) {
             continue;
         }
+        // A sleeping critter's statue is touched out to its placement's
+        // range — the game's touch shape for a placed monster is a
+        // cylinder that wide — which wakes it (a negative range never
+        // does); it blocks only up close, within its own shape.
+        if let PlacementParams::Enemy { range, .. } = item.params
+            && item.class() == ItemClass::EnemyInfo
+            && range >= 0.0
+            && contact(&Shape { kind: 1, radius: range, ..item.shape }, true, from, to, r, h).is_some()
+        {
+            out.woken.push(item.placement);
+        }
         let pass = matches!(
             item.class(),
             ItemClass::Trigger | ItemClass::DamageTile | ItemClass::Exit | ItemClass::Transporter
         );
-        let Some(c) = contact(&item.shape, pass, from, to, r, h) else { continue };
+        let c = match &item.wall {
+            Some(w) => wall_contact(w, from, to, r),
+            None => contact(&item.shape, pass, from, to, r, h),
+        };
+        let Some(c) = c else { continue };
         match touch(items, i, state, from, to, &mut picked, out) {
             Touch::Pass => {}
             Touch::Block => {
@@ -2040,6 +2132,42 @@ mod tests {
         assert_eq!((a.name.as_str(), a.reach), ("S_WATERFALL", 15.0));
         params[4] = 1;
         assert!(Ambient::of("S_WATERFALL", &params, Vec3::ZERO).is_none());
+    }
+
+    /// A collision triangle with corners `a`, `b`, `c` (counter-clockwise
+    /// round `normal`), its corners in the plane frame as the file has them.
+    fn triangle(normal: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> CollisionTriangle {
+        let mut t = CollisionTriangle { height_range: [i16::MIN, i16::MAX], frame_scale: 1.0, normal, origin: a, corners: [[0; 2]; 2] };
+        for (k, v) in [b, c].iter().enumerate() {
+            let p = t.to_plane([v[0] - a[0], v[1] - a[1], v[2] - a[2]]);
+            t.corners[k] = [(p[0] * 64.0).round() as i16, (p[2] * 64.0).round() as i16];
+        }
+        t
+    }
+
+    #[test]
+    fn secret_walls_block() {
+        // A wall 10 wide and 10 high across z = 0, facing +Z, standing at
+        // (0, 0, 20) unturned.
+        let n = [0.0, 0.0, 1.0];
+        let triangles = vec![
+            triangle(n, [-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 10.0, 0.0]),
+            triangle(n, [-5.0, 0.0, 0.0], [5.0, 10.0, 0.0], [-5.0, 10.0, 0.0]),
+        ];
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let w = Wall { triangles, position: [0.0, 0.0, 20.0], rotation: identity };
+        // Walking into it: pushed back out to a radius from it.
+        let c = wall_contact(&w, [0.0, 0.0, 23.0], [0.0, 0.0, 21.0], 1.5).expect("a contact");
+        assert!((c.out[2] - 21.5).abs() < 1e-3 && c.out[0].abs() < 1e-3, "{c:?}");
+        // Out of reach, past its side, or walking away: none.
+        assert!(wall_contact(&w, [0.0, 0.0, 25.0], [0.0, 0.0, 24.0], 1.5).is_none());
+        assert!(wall_contact(&w, [9.0, 0.0, 23.0], [9.0, 0.0, 21.0], 1.5).is_none());
+        assert!(wall_contact(&w, [0.0, 0.0, 21.0], [0.0, 0.0, 23.0], 1.5).is_none());
+        // Turned half round (facing −Z), it blocks from the other side.
+        let turned = [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0];
+        let w = Wall { rotation: turned, ..w };
+        let c = wall_contact(&w, [0.0, 0.0, 17.0], [0.0, 0.0, 19.0], 1.5).expect("a contact");
+        assert!((c.out[2] - 18.5).abs() < 1e-3, "{c:?}");
     }
 
     #[test]
