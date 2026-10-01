@@ -771,6 +771,7 @@ mod tests {
             statue: false,
             contents: None,
             model: None,
+            floor_node: None,
         };
         blast_reaches(&v, kind)
     }
