@@ -143,6 +143,24 @@ at `0x8011bf08` (`0x2C`-byte entries: realm id, name `castle`…, letter at
 H battle, I ice, J dream, K sky, L tower (id 13), S secret, T test) and the
 digit gives the level: `realm << 8 | digit − '1'`.
 
+That level id is an index into the realm WAD's level records, not a
+folder: `FUN_8005638c` → `FUN_80058074(id)` takes record `id & 0xFF` of the
+WAD's `LEVL` chunk (the first one when the index is past the last) as the
+level (`r13-0x72bc`) and loads `"levels/level%s"` with its name (`+0x08`);
+finishing a level marks that id. The records aren't all in the folders'
+order: CASTLE.WAD lists A1, A6, A2, A3, A4, A5, DREAM.WAD J1, J2, J3, J6,
+J4, J5 and SKY.WAD K2, K3, K4, K1, K5 (the other realms in order; each
+realm's boss level last). So the tower's `a2` portal leads to `levelA6`,
+`a6` to the boss level `levelA5`, `j4` to `levelJ6`, `k1` to `levelK2`
+and `k4` to `levelK1`. The runtime maps ids and folders through the WADs
+the same way (`gdl_formats::LevelOrder`, `exits::LevelIds`); it had loaded
+the folder the code spelled (`levelA2` for `a2`) and marked a level
+finished by its folder's digit. TOWER.WAD has only L1 and L2 and TEST.WAD
+T1–T3, so `levelL3` (a stripped copy of the tower whose triggers move no
+node) and `levelT4` (empty) can't be loaded, nor `DEMO1` (no `level`
+prefix; no WAD names it) or `ORIGlevelL1`; no exit names L2, L3 or a test
+level.
+
 Transporters: `FUN_80064600` links each to the transporter whose id is its
 destination (`"Transporter id %d no dest %d"`). Triggers: `FUN_8006437c`
 checks ids are unique and chains `next` ids (`"Linked Triggers loop"`).
@@ -166,6 +184,60 @@ targets under an animated object with no animation of their own;
 `--triggers` lists the party's triggers with a warp point on the floor
 under each and what it moves (or plays), `--anim` where each animated
 target's collision is at rest, at its first frame and at its last.
+The link checks also flag triggers whose shared id the game clears, ids
+of 128 and up that a camera point never reaches, and chains whose id only
+a quest gate has ([mechanics.md](mechanics.md), "Chains"). `--reach`
+looks for floors down lines from above the highest to below the lowest
+an animated object's first or last frame takes its collision, not just
+within the level's box (`WORLDS.PS2` header bounds): J4's flying
+platforms start above it (J4A14 at 75, J4A40 at 103; the top is 65) or
+below it (J4A18 at −59; the bottom is −48), which made J4's 335, 366,
+422 and 429 read as unreachable.
+
+The last round (A5, A6, J1–J6, K1–K5, L1–L3, S1–S9, T1–T4, DEMO1),
+with `--triggers --anim --falls --walls --reach --ridden`:
+
+- **A5** (the castle's boss): the nine ELEVSWs all lower `A5ELEVATOR`
+  (eight chain to the first); three safe rocks (`SAFEROCK1`). **A6**: six
+  triggers, all reached (the tour saw each arrive), three secret walls,
+  four shot-down falls (`0x34`), two key rings.
+- **J1, J2, J6, K2**: key rings and secret walls only. **J3**: two movers
+  only triggers for more players register (`J3ELEV26` held 5 below,
+  `J3PILLAR` at its first frame — the game registers every trigger's
+  target); the lift pad 483 with the off switch 495 on `J3ELEV2` is the
+  game's own clash ([mechanics.md](mechanics.md), "Movers"). **J4**:
+  every trigger is reached once the platforms are counted where they
+  start: 335 rides `J4A14`, which trigger 421 brings down from 75 to 37;
+  366 and 429 ride `J4A40` (365 brings it from 103 down to 23); 422 rides
+  `J4A18` (339 raises it from −59 to 26). The game drops them onto the
+  platforms' first frames and they ride them, as the runtime does.
+  **J5**: the dream's boss level (its WAD's last record): a turbo
+  powerup, three more for more players.
+- **K1**: `K1PAD8` held at its first frame (only a trigger for more
+  players plays it). **K3** and **T1**: a node moved by an ACTIVESW and a
+  hit switch (`K3ELEV13`, `T1ELEV1`): the game keeps the first
+  registration's kind and flags ("TRIGGER TYPES DIFFER"), as the runtime
+  does. **K4**: trigger 438 (the balloon) chains to id 100, which no
+  trigger has: nothing more. K3, K4 and T2 have random types (the runtime
+  takes the first choice, a stand-in). **K5** (the sky's boss): three
+  safe rocks (`SAFEROCK3`).
+- **L1** (the tower): 81 and 83, pads placed without a model with a touch
+  radius of 25 at (0, −59.7, 81.3), are 21 below the lowered H4 platform
+  `L1ELEV669` (its floor at −38.5) with no floor in their reach (the
+  touch reaches 5.5 up and down): only a hero falling past them touches
+  them — 81's chain (to the quest gate 104) leads nowhere, 83 calls
+  `L1ELEV02` (id 199), as its own trigger 84 and the pads 85–93 and 148
+  do. The pad 145 on the wizard's pedestal (id 240) has no camera cut
+  ([mechanics.md](mechanics.md), "Chains"). **L3**: not a level the game
+  loads (above, "Exit codes"); its triggers move nothing. **L2**: two
+  exits only, and no exit leads there.
+- **S1–S9**: no exits; the secret realm's timer sends the heroes back
+  ([items.md](items.md), not in the runtime yet). S3: sixteen paired
+  transporters and a rotator with no node. S4, S6, S7: secret walls;
+  S7's `S7WELL` is held at its first frame (a trigger for more players).
+- **T1–T3, DEMO1**: test levels the game doesn't reach (no exit names
+  them; DEMO1 isn't in any WAD); T2 lays out the powerups (random types,
+  key rings, an obelisk the game never makes). T4 is an empty folder.
 
 ## Monster names
 
@@ -192,7 +264,7 @@ monsters (`gru`, `kni`, `rat`), which the realm's enemy list replaces
 | 6 | boss spawn: builds a matrix and spawns monster set 4 there (`FUN_8001bb54`); present once in each boss level only |
 | 7 | **player start**: `index` is the entry; position; `rotation.y` is the facing handed to the players (`r13−0x6fe0`) |
 | 8, 10 | lookout (`"> %d LOOKOUTS"`, 20) |
-| 9 | transmitter linked to the trigger with id `index` (`"Two cameras link to trigger"`) |
+| 9 | transmitter linked to the triggers whose id, read as a signed byte, is `index` (`"Two cameras link to trigger"`; the tower keeps 170–183, 198 and above 200 for its own cameras — [mechanics.md](mechanics.md) "Chains") |
 
 Outside the tower realm (13) the start index is forced to 0, and every
 level but the two hub levels (`levelL1`, `levelL3`: 12 entries each) has a
