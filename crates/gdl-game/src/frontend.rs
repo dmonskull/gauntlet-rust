@@ -694,6 +694,10 @@ static ONLINE_TOWER_MENU: MenuDef = MenuDef {
 /// The host's camera choice.
 static ONLINE_CAMERA_MENU: MenuDef = game_menu("Online Camera", true, &[]);
 static LEAVE_GAME: MenuDef = confirm("Leave Game?", &[e("No", Item::No), e("Yes", Item::ConfirmLeave)]);
+/// Leaving online before the tower: taller, with what's lost under the
+/// title (`LEAVE_LEVEL_NOTE`).
+static LEAVE_LEVEL: MenuDef = MenuDef { panel: Some((40.0, 400.0, 300.0)), y: -262.0, ..LEAVE_GAME };
+const LEAVE_LEVEL_NOTE: &str = "Leaving before reaching the tower will make you lose all progress in this level for this character.";
 static OPTIONS_MENU: MenuDef = game_menu(
     "Options",
     true,
@@ -876,11 +880,17 @@ struct Menu {
     column: f32,
     /// What its run-time lines show, to make them again.
     kind: Option<Dynamic>,
+    /// Words under the title (a confirmation's warning).
+    note: Option<&'static str>,
 }
 
 impl Menu {
     fn new(def: &'static MenuDef) -> Self {
-        Self { def, lines: None, selected: 0, t: 0.0, disabled: Vec::new(), column: 0.0, kind: None }
+        Self { def, lines: None, selected: 0, t: 0.0, disabled: Vec::new(), column: 0.0, kind: None, note: None }
+    }
+    /// With words under its title.
+    fn with_note(def: &'static MenuDef, note: &'static str) -> Self {
+        Self { note: Some(note), ..Self::new(def) }
     }
     /// A menu of run-time lines showing `kind`.
     fn dynamic(def: &'static MenuDef, kind: Dynamic, o: &GameOptions, slot: usize, style_pick: usize) -> Self {
@@ -1556,6 +1566,8 @@ pub(crate) fn run(
                         fe.menus.push(Menu::new(if in_tower { &TOWER_SETTINGS } else { &LEVEL_SETTINGS }))
                     }
                     Item::QuitGame => fe.menus.push(Menu::new(&QUIT_GAME)),
+                    // Before the tower the level's progress goes with them.
+                    Item::LeaveGame if !in_tower => fe.menus.push(Menu::with_note(&LEAVE_LEVEL, LEAVE_LEVEL_NOTE)),
                     Item::LeaveGame => fe.menus.push(Menu::new(&LEAVE_GAME)),
                     // Only the host chooses the online camera.
                     Item::OnlineCamera => match online.as_deref_mut() {
@@ -3117,6 +3129,11 @@ fn title(d: &mut Painter, t: f32) {
     d.image_sized("GLOWCROP_00", frame, 192.0, 0.0, 128.0, 128.0, Color::WHITE.with_alpha(alpha));
 }
 
+/// A menu's note: small parchment letters, wrapped to the scroll.
+const NOTE_SCALE: f32 = 0.55;
+const NOTE_WRAP: usize = 34;
+const NOTE_STEP: f32 = 18.0;
+
 fn draw_menu(d: &mut Painter, m: &Menu, options: &GameOptions) {
     let def = m.def;
     let fade = if def.fade { (m.t / 30.0).clamp(0.0, 1.0) } else { 1.0 };
@@ -3127,6 +3144,12 @@ fn draw_menu(d: &mut Painter, m: &Menu, options: &GameOptions) {
         if let Some(title) = def.title {
             let style = TextStyle::new(FONT32, def.title_scale, Color::WHITE.with_alpha(fade)).with_texture(texture);
             d.draw.text(d.fonts, &style, -(x + w / 2.0), top + 58.0, title);
+        }
+        if let Some(note) = m.note {
+            let style = TextStyle::new(FONT32, NOTE_SCALE, Color::WHITE.with_alpha(fade)).with_texture(texture);
+            for (i, line) in wrap(&font32_text(note), NOTE_WRAP).iter().enumerate() {
+                d.draw.text(d.fonts, &style, -(x + w / 2.0), top + 104.0 + NOTE_STEP * i as f32, line);
+            }
         }
     }
     if def.logo {

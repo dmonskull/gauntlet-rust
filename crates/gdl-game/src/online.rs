@@ -61,6 +61,13 @@ const MOST_OWED: u32 = 4;
 /// After this long waiting on the network the screen says who for.
 pub const WAIT_SHOWN: f32 = 0.5;
 
+/// A machine that says nothing this long has left (its game crashed or its
+/// network went): the others go on without it. A player who leaves or
+/// quits says goodbye and is gone at once. The network thread answers
+/// every 250 ms however busy the game is, so only a dead machine or
+/// connection is this quiet.
+const SILENT_LEAVES: Duration = Duration::from_secs(4);
+
 pub struct OnlinePlugin;
 
 impl Plugin for OnlinePlugin {
@@ -342,7 +349,13 @@ fn game_version(game: &LoadedGame) -> String {
 /// The session's settings. `GDL_NET_LOCAL=1` (testing: two games on one
 /// machine) keeps it to this machine's loopback, without relays.
 fn config(game: &LoadedGame) -> NetConfig {
-    let mut cfg = NetConfig { name: "Player".into(), local_players: 1, game_version: game_version(game), ..default() };
+    let mut cfg = NetConfig {
+        name: "Player".into(),
+        local_players: 1,
+        game_version: game_version(game),
+        timeout: SILENT_LEAVES,
+        ..default()
+    };
     if std::env::var("GDL_NET_LOCAL").is_ok_and(|v| !v.is_empty() && v != "0") {
         cfg.relays = Relays::Disabled;
         cfg.bind = Some(std::net::SocketAddr::from(([127, 0, 0, 1], 0)));

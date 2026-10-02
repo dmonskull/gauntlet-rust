@@ -162,12 +162,17 @@ pub(crate) fn change_level_to(
         trail.finished = Some(leaving.clone());
     }
     let delta = to as isize - game.current as isize;
-    // Any level but the tower comes after its loading screen and movie,
-    // which make the change once the screen is up (`level_intro.rs`).
-    // Online every machine starts it after this same tick, and no tick
-    // runs until every machine is through it.
+    // Leaving a level for any level but the tower, the next comes after
+    // its loading screen and movie, which make the change once the screen
+    // is up (`level_intro.rs`) — not a game starting or starting again on
+    // a level. Online every machine starts it after this same tick, and no
+    // tick runs until every machine is through it.
     let going_to = &game.levels[to].name;
-    if fe.playing() && !going_to.eq_ignore_ascii_case(crate::frontend::TOWER) && !crate::level_intro::skipped() {
+    if request.finishing
+        && fe.playing()
+        && !going_to.eq_ignore_ascii_case(crate::frontend::TOWER)
+        && !crate::level_intro::skipped()
+    {
         let info = intros.0.get(&going_to.to_ascii_lowercase());
         intro.begin(going_to, info, delta, back.coming_back_to(going_to));
         lock.level_work = true;
