@@ -4,6 +4,11 @@
 //! sound. The level records name theirs (`LEVL +0x34`, `docs/frontend.md`,
 //! "Movies").
 //!
+//! The sound: the AVI's header says 8-bit PCM, but the game's movies carry
+//! an ADS stream in it (`dhSS`/`dbSS`, DSP-ADPCM, as the music's:
+//! [`crate::audio::AdsStream`]) — played as PCM it's only static.
+//! [`Movie::audio`] decodes it.
+//!
 //! A video frame (as FFmpeg's `midivid` decoder reads it, which this
 //! follows; `examples/moviecheck.rs` compares every frame with FFmpeg's):
 //!
@@ -125,7 +130,27 @@ impl Movie {
         self.frames.get(i).map(|&(a, b)| &self.data[a..b])
     }
 
-    /// The sound as a WAV file (for an audio player).
+    /// The sound, decoded: 16-bit samples (channels interleaved), the rate
+    /// and the channel count. An ADS stream in the sound chunks (every
+    /// retail movie's) is decoded; anything else is taken as the PCM the
+    /// header says.
+    pub fn audio(&self) -> Option<(Vec<i16>, u32, u16)> {
+        if self.sound.is_empty() {
+            return None;
+        }
+        if self.sound.starts_with(crate::audio::stream::HEADER_MAGIC) {
+            let stream = crate::audio::AdsStream::parse(&self.sound).ok()?;
+            let channels = stream.channel_count() as u16;
+            return Some((stream.decode(), stream.sample_rate, channels));
+        }
+        let pcm = match self.bits {
+            16 => self.sound.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)).collect(),
+            _ => self.sound.iter().map(|&b| (i16::from(b) - 128) << 8).collect(),
+        };
+        Some((pcm, self.sample_rate, self.channels.max(1)))
+    }
+
+    /// The sound chunks as a WAV file, as the header describes them.
     pub fn wav(&self) -> Vec<u8> {
         let block = u32::from(self.channels) * u32::from(self.bits / 8).max(1);
         let mut out = Vec::with_capacity(44 + self.sound.len());

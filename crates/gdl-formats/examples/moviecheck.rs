@@ -19,6 +19,22 @@ fn main() {
         movie.channels,
         movie.bits
     );
+    match movie.audio() {
+        Some((pcm, rate, channels)) => {
+            let x: Vec<f64> = pcm.iter().map(|&v| f64::from(v) / 32768.0).collect();
+            let rms = (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+            // Per channel: the step between a channel's neighbours.
+            let ch = usize::from(channels.max(1));
+            let steps: f64 = x.windows(ch + 1).map(|w| (w[ch] - w[0]).abs()).sum::<f64>() / (x.len().saturating_sub(ch)) as f64;
+            println!(
+                "audio: {} samples, {rate} Hz, {channels} ch, {:.2} s, rms {rms:.3}, roughness {:.3} (smooth audio is well under 0.5)",
+                pcm.len(),
+                pcm.len() as f64 / f64::from(rate) / ch as f64,
+                steps / rms.max(1e-9)
+            );
+        }
+        None => println!("audio: none"),
+    }
     let reference = args.next().map(|p| std::fs::read(p).expect("read raw"));
     let mut d = MvdvDecoder::new(movie.width, movie.height);
     let plane = movie.width * movie.height;

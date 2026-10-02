@@ -3008,6 +3008,8 @@ dependencies = [
  "gdl-formats",
  "gdl-install",
  "gdl-net",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "rfd",
  "ron",
  "serde",
