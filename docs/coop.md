@@ -153,10 +153,24 @@ input classifier (`FUN_80088170`); player records are `0x335c` bytes from
   attacks use ([chunk-files.md](chunk-files.md) "The heroes' attack
   records"; WAR's combo record 8: kind 4, damage 10, from frame 0, hint
   102).
-- Not traced: `FUN_80089114` (what kinds 2–4 hit and how far),
-  `FUN_80030094` (kind 10's areas), the carry node's bone (`+0x6DC`), how a
-  carried hero is placed each frame (`FUN_800747ac` / `FUN_80074644`).
-  `tools/hdamg.py <class>` dumps a class's records; `tools/mydol.py` reads
+- **Attack tracing completed**: [chunk-files.md](chunk-files.md) now maps
+  the hero record to an effect slot. Kind 2 is a missile, kind 3 a steady
+  area, and 4/6/7/9 growing blasts. Kind 10 uses the ordinary hero missile
+  spawner repeatedly, not area slots. The hero DAMG/SFXX parser is in;
+  runtime record attacks and combo pairing/carrying are still unported.
+- **Carry node and placement**: setup resolves `%sDUMMY` (`r2-0x5DA8`),
+  the class-prefixed DUMMY node, into `+0x6DC`. `FUN_800747ac` saves the
+  feet at `+0xDC/+0xE0/+0xE4`, reparents the model root under the supplied
+  carry node, and optionally sets its local position (a new root is at
+  local zero). It recomputes the matrix/offset through `FUN_8005a334` and
+  sets `+0x964 & 0x20`. The parent hierarchy supplies the visual pose;
+  `FUN_8007fb74` skips rebuilding the ordinary player matrix while this
+  bit is set. Carrying does not merely teleport the gameplay feet each
+  frame. `FUN_80074644(hero, 1)` restores the saved feet, puts the root
+  back under the world parent and clears the bit; argument 0 retains
+  the current gameplay feet for a throw. Use these distinct release
+  modes when porting the per-class combo phases.
+  `tools/hdamg.py <class>` dumps the records; `tools/mydol.py` reads
   the constants.
 
 ## Not yet

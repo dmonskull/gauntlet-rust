@@ -116,3 +116,130 @@ mod tests {
         assert_eq!(all["WAR"].power_throw_offset, [0.0, 0.5, 1.5]);
     }
 }
+
+/// A hero's attack tables. These are distinct from the critter tables:
+/// hero damage records are 88 bytes, and SFXX has two model selectors
+/// before its position and a packed colour at the end. See `docs/chunk-files.md`.
+#[derive(Debug, Clone)]
+pub struct HeroAttacks {
+    /// Close/low/medium power, 360, power throw, turbo B, both turbo C
+    /// records, combo 1, combo 3, the auxiliary action and victory.
+    pub indices: [i16; 12],
+    pub damage: Vec<HeroDamage>,
+    pub effects: Vec<HeroEffect>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HeroDamage {
+    pub kind: i16,
+    pub flags: u16,
+    pub blow: u32,
+    pub size: f32,
+    pub radius: f32,
+    pub unused: f32,
+    /// A blast's lifetime override; kind 10 uses it as shot spacing.
+    pub duration: f32,
+    /// A missile's lifetime override (zero uses the effect's duration).
+    pub missile_life: f32,
+    pub trail_scale: f32,
+    pub yaw: f32,
+    pub cone: f32,
+    pub pitch: f32,
+    pub offset: [f32; 3],
+    /// Negative values multiply the hero's strength by their absolute value.
+    pub damage: f32,
+    pub speed: [f32; 2],
+    pub gravity: f32,
+    /// Primary effect, hit effect, trail effect.
+    pub effects: [i16; 3],
+    pub next: i16,
+    pub start: i16,
+    pub end: i16,
+    pub hint: i16,
+}
+
+#[derive(Debug, Clone)]
+pub struct HeroEffect {
+    pub flags: u32,
+    pub next: i32,
+    pub effect: String,
+    pub sound: String,
+    pub model_selectors: [i16; 2],
+    pub offset: [f32; 3],
+    /// A model effect's lifetime; flags select other interpretations.
+    pub duration: f32,
+    pub parameters: [f32; 2],
+    /// Packed colour copied to the model, including its alpha.
+    pub color: u32,
+}
+
+impl HeroAttacks {
+    pub fn parse(data: &[u8]) -> Result<Option<Self>, ChunkError> {
+        let file = ChunkFile::parse(data)?;
+        let Some(pdat) = file.bytes("PDAT") else { return Ok(None) };
+        if pdat.len() < 0x24 { return Err(ChunkError::Truncated(0, 0x24)); }
+        let short = |r: &[u8], at: usize| i16::from_le_bytes(r[at..at + 2].try_into().unwrap());
+        let uint = |r: &[u8], at: usize| u32::from_le_bytes(r[at..at + 4].try_into().unwrap());
+        let float = |r: &[u8], at: usize| f32::from_le_bytes(r[at..at + 4].try_into().unwrap());
+        let vec3 = |r: &[u8], at: usize| std::array::from_fn(|i| float(r, at + 4 * i));
+        let name = |r: &[u8], at: usize| {
+            let bytes = &r[at..at + 16];
+            let end = bytes.iter().position(|&b| b == 0).unwrap_or(16);
+            if bytes.first().is_some_and(|&b| b < b' ') { String::new() }
+            else { String::from_utf8_lossy(&bytes[..end]).into_owned() }
+        };
+        let table = |tag: &str, size: usize| -> Result<Vec<&[u8]>, ChunkError> {
+            let Some(c) = file.get(tag) else { return Ok(Vec::new()) };
+            let needed = c.count as usize * size;
+            let bytes = file.bytes(tag).unwrap_or_default();
+            if bytes.len() < needed {
+                return Err(ChunkError::Truncated(c.offset as usize, c.offset as usize + needed));
+            }
+            Ok(bytes[..needed].chunks_exact(size).collect())
+        };
+        let damage = table("DAMG", 0x58)?.into_iter().map(|r| HeroDamage {
+            kind: short(r, 0), flags: short(r, 2) as u16, blow: uint(r, 4),
+            size: float(r, 8), radius: float(r, 0x0C), unused: float(r, 0x10),
+            duration: float(r, 0x14), missile_life: float(r, 0x18), trail_scale: float(r, 0x1C),
+            yaw: float(r, 0x20), cone: float(r, 0x24), pitch: float(r, 0x28), offset: vec3(r, 0x2C),
+            damage: float(r, 0x38), speed: [float(r, 0x3C), float(r, 0x40)], gravity: float(r, 0x44),
+            effects: std::array::from_fn(|i| short(r, 0x48 + 2 * i)), next: short(r, 0x4E),
+            start: short(r, 0x50), end: short(r, 0x52), hint: short(r, 0x54),
+        }).collect();
+        let effects = table("SFXX", 0x50)?.into_iter().map(|r| HeroEffect {
+            flags: uint(r, 0), next: uint(r, 4) as i32, effect: name(r, 0x10), sound: name(r, 0x20),
+            model_selectors: [short(r, 0x30), short(r, 0x32)], offset: vec3(r, 0x34), duration: float(r, 0x40),
+            parameters: [float(r, 0x44), float(r, 0x48)], color: uint(r, 0x4C),
+        }).collect();
+        Ok(Some(Self { indices: std::array::from_fn(|i| short(pdat, 0x0C + 2 * i)), damage, effects }))
+    }
+}
+
+#[cfg(test)]
+mod attack_tests {
+    use super::*;
+    #[test]
+    fn attack_tables_from_every_real_class_have_valid_links() {
+        let root = std::env::var("GAUNTLET_ASSET_ROOT").unwrap_or_else(|_| "/Users/dmonskull/Desktop/GauntletDarkLegacy/Gauntlet".into());
+        let Ok(entries) = std::fs::read_dir(std::path::Path::new(&root).join("PDATA")) else { return };
+        let mut count = 0;
+        for path in entries.flatten().map(|e| e.path()) {
+            let a = HeroAttacks::parse(&std::fs::read(&path).unwrap()).unwrap().unwrap();
+            let valid = |index: i16, n: usize| index == -1 || (index >= 0 && (index as usize) < n);
+            assert!(a.indices.iter().all(|&i| valid(i, a.damage.len())), "{path:?}");
+            for r in &a.damage {
+                assert!(valid(r.next, a.damage.len()), "{path:?}");
+                assert!(r.effects.iter().all(|&i| valid(i, a.effects.len())), "{path:?}");
+                assert!(r.damage.is_finite() && r.radius >= 0.0 && r.size >= 0.0);
+            }
+            assert!(a.effects.iter().all(|e| e.next == -1 || (e.next >= 0 && (e.next as usize) < a.effects.len())));
+            if path.file_stem().unwrap() == "VAL" {
+                let combo = &a.damage[a.indices[8] as usize];
+                assert_eq!((combo.kind, combo.radius, combo.damage, combo.start), (4, 15.0, 100.0, 1));
+                assert_eq!(a.effects[combo.effects[0] as usize].color, 0x7fff_ffff);
+            }
+            count += 1;
+        }
+        assert_eq!(count, 16);
+    }
+}

@@ -47,7 +47,7 @@ use crate::saves::SavedCharacter;
 
 /// The game's own lockstep revision, part of the build every machine must
 /// share: raise it whenever the game steps differently.
-const LOCKSTEP_REVISION: u32 = 1;
+const LOCKSTEP_REVISION: u32 = 2;
 
 /// Frames without level work before the next tick may run: a level change
 /// and its setup (systems that run as its population comes in, then as
@@ -576,6 +576,7 @@ pub(crate) fn drive(
     (mut virt, mut fixed): (ResMut<Time<Virtual>>, ResMut<Time<Fixed>>),
     mut inputs: ResMut<Inputs>,
     local: Res<LocalControls>,
+    mut mouse: ResMut<crate::first_person::MouseLook>,
     (boxes, shop): (Res<crate::message_box::MessageBox>, Res<crate::shop::ShopScreen>),
 ) {
     lock.ticked = false;
@@ -607,6 +608,9 @@ pub(crate) fn drive(
     if started && settled && lock.owed >= step {
         match online.session.ready_inputs(lock.tick) {
             Some(bundle) => {
+                // ready_inputs commits this sample for a future tick only
+                // when it hands out a bundle. Retries keep the mouse pixels.
+                mouse.take(step.as_secs_f32());
                 take_bundle(&mut lock, &mut inputs, &bundle);
                 lock.ticked = true;
                 lock.owed -= step;
@@ -782,7 +786,7 @@ fn checksum(
         (
             "heroes",
             sum(&mut heroes.iter().map(|p| {
-                hash(&|h| (p.slot, p.mover.position.map(f32::to_bits), p.mover.facing.to_bits()).hash(h))
+                hash(&|h| (p.slot, p.mover.position.map(f32::to_bits), p.mover.facing.to_bits(), p.look.on, p.look.yaw.to_bits(), p.look.pitch.to_bits()).hash(h))
             })),
         ),
         (

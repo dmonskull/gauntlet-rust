@@ -59,6 +59,9 @@ details and the full to-do list):
   settings, watching a teammate while down. Friends can join a game under
   way, heroes can be changed mid-game, and if the machines ever disagree
   the level simply starts again for everyone.
+- Optional **first-person view**, independently chosen by each player:
+  animated equipped weapons and hands, mouse/right-stick look, and local
+  split screens when needed.
 - Windows, macOS and Linux; any window size, widescreen included.
 - Keyboard and mouse with rebindable keys, or any pad — each player can
   switch between them at will.

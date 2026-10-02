@@ -127,6 +127,8 @@ pub struct Player {
     /// The playing clip and its frame at the last tick, to see a looping
     /// clip come round.
     last_clip: (usize, f32),
+    idle_ticks: u32,
+    pub look: crate::first_person::Look,
     /// Movement factor of the action the chaining last saw playing; it
     /// scales the next tick's step.
     move_factor: f32,
@@ -970,6 +972,8 @@ fn spawn_hero(
         actions: ActionState::default(),
         request: Action::READY,
         last_clip: (0, 0.0),
+        idle_ticks: 0,
+        look: crate::first_person::Look::new(facing),
         move_factor: 1.0,
         strength: hero.strength,
         armor: hero.armor,
@@ -1110,6 +1114,7 @@ fn button_script() -> Vec<(u32, Option<(u64, u64)>)> {
 /// Players online are filled from the network instead.
 fn gather_inputs(
     (keys, mouse, options): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>, Res<GameOptions>),
+    (mut motion, fixed): (ResMut<crate::first_person::MouseLook>, Res<Time<Fixed>>),
     pads: Query<(Entity, &Gamepad)>,
     party: Res<Party>,
     mut controls: ResMut<Controls>,
@@ -1128,7 +1133,10 @@ fn gather_inputs(
         if member.devices.remote {
             continue;
         }
-        let mut input = read_devices(member.devices, solo, slot, (&keys, &mouse, &options), &pads, &party);
+        let delta = if options.player(slot).first_person && (member.devices.keyboard || solo) {
+            motion.take(fixed.timestep().as_secs_f32())
+        } else { Vec2::ZERO };
+        let mut input = read_devices(member.devices, solo, slot, (&keys, &mouse, &options, delta), &pads, &party);
         if locals.first() == Some(&slot) {
             controls.apply_script(&mut input, controls.ticks);
         }
@@ -1150,7 +1158,7 @@ fn read_devices(
     devices: crate::party::Devices,
     solo: bool,
     settings: usize,
-    (keys, mouse, options): (&ButtonInput<KeyCode>, &ButtonInput<MouseButton>, &GameOptions),
+    (keys, mouse, options, look): (&ButtonInput<KeyCode>, &ButtonInput<MouseButton>, &GameOptions, Vec2),
     pads: &Query<(Entity, &Gamepad)>,
     party: &Party,
 ) -> SlotInput {
@@ -1181,6 +1189,12 @@ fn read_devices(
             input.held |= SlotInput::BACK;
         }
     }
+    if mine.first_person && (devices.keyboard || solo) {
+        input.held |= SlotInput::MOUSE_LOOK;
+        input.c_stick *= 2.4 / 12.0;
+        input.c_stick += look;
+        input.c_stick = input.c_stick.clamp(Vec2::splat(-1.0), Vec2::ONE);
+    }
     input.with_settings(mine)
 }
 
@@ -1191,6 +1205,7 @@ fn read_devices(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sample_online(
     (keys, mouse, options): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>, Res<GameOptions>),
+    (motion, fixed): (Res<crate::first_person::MouseLook>, Res<Time<Fixed>>),
     pads: Query<(Entity, &Gamepad)>,
     party: Res<Party>,
     controls: Res<Controls>,
@@ -1206,7 +1221,7 @@ pub(crate) fn sample_online(
         local.0 = SlotInput::default();
         return;
     };
-    let mut input = read_devices(member.devices, true, 0, (&keys, &mouse, &options), &pads, &party);
+    let mut input = read_devices(member.devices, true, 0, (&keys, &mouse, &options, motion.sample(fixed.timestep().as_secs_f32())), &pads, &party);
     if fe.is_some_and(|f| f.menu_open() || f.in_online_manage()) {
         input = SlotInput::default().with_settings(options.player(0));
     }
@@ -1299,7 +1314,7 @@ fn tick(
         }
         // The player's own settings ride with their controls (`party.rs`).
         let mine = inputs.slots.get(p.slot).copied().unwrap_or_default();
-        let input = if deaf { SlotInput::default() } else { mine };
+        let input = if deaf { SlotInput { held: mine.held & SlotInput::SETTINGS, ..default() } } else { mine };
         let (raw, held) = (input.stick, input.buttons());
         let buttons = Buttons::from_held(held, p.held);
         p.held = held;
@@ -1308,11 +1323,16 @@ fn tick(
         if let Some(pressed) = hero_pad.pressed.get_mut(p.slot) {
             *pressed |= buttons.pressed;
         }
-        let (forward, right) = axes(p.slot);
+        p.look.tick(input, p.mover.facing, dt);
+        let (forward, right) = if p.look.on && !deaf {
+            let yaw = p.look.yaw;
+            let forward = Vec3::new(yaw.dsin(), 0.0, yaw.dcos());
+            (forward, Vec3::new(forward.z, 0.0, -forward.x))
+        } else { axes(p.slot) };
         let dir = right * raw.x + forward * raw.y;
         let stick = Stick { heading: dir.x.datan2(dir.z), magnitude: raw.length().min(1.0) };
         // The Robotron style's right stick (the GameCube's C-stick).
-        let c_raw = if !mine.robotron() { Vec2::ZERO } else { input.c_stick };
+        let c_raw = if !mine.robotron() || p.look.on { Vec2::ZERO } else { input.c_stick };
         let c_dir = right * c_raw.x + forward * c_raw.y;
         let c_stick = Stick { heading: c_dir.x.datan2(c_dir.z), magnitude: c_raw.length().min(1.0) };
         p.previous = (p.mover.position, p.mover.facing);
@@ -1368,7 +1388,13 @@ fn tick(
         // throw's wind-up.
         let magic = p.magic.observe(held, current.0, FIELDS_PER_TICK);
         let unmagic = |b: u32| if magic.is_none() { b & !MAGIC_BUTTONS } else { b };
-        let magic_buttons = Buttons { held: unmagic(buttons.held), pressed: unmagic(buttons.pressed) };
+        let mut magic_buttons = Buttons { held: unmagic(buttons.held), pressed: unmagic(buttons.pressed) };
+        // Looking independently uses the existing side/back strafe actions;
+        // forward movement retains the normal walk/run speed and animations.
+        if p.look.on && stick.magnitude > 0.0
+            && (wrap(stick.heading - p.look.yaw).abs() > std::f32::consts::FRAC_PI_4
+                || held & (button::QUICK | button::POWER) != 0)
+        { magic_buttons.held |= button::STRAFE; }
         let mut intent = combat::classify(magic_buttons, stick.magnitude, wrap(stick.heading - facing), p.turbo);
         let has_potions = !state.potions.is_empty();
         if intent == Intent::Magic && !has_potions {
@@ -1396,7 +1422,7 @@ fn tick(
         p.actions.observe_buttons(buttons.held);
         let keeps_facing = intent.keeps_facing();
         let drive = if magnitude == 0.0 && !keeps_facing && actions::drifts_forward(current) { DRIFT } else { magnitude };
-        let wanted = if magnitude > 0.0 && !keeps_facing { stick.heading } else { facing };
+        let wanted = if p.look.on { p.look.yaw } else if magnitude > 0.0 && !keeps_facing { stick.heading } else { facing };
 
         // Blows taken: flinch, knockback or knockdown. A flinch only
         // interrupts standing and moving about; the rest override.
@@ -1552,7 +1578,7 @@ fn tick(
         let aim = match found {
             // The C-stick attacks where it points.
             _ if c_aim.is_some() => c_aim.unwrap_or(wanted),
-            _ if strafing || !mine.auto_aim() => wanted,
+            _ if p.look.on || strafing || !mine.auto_aim() => wanted,
             Some(f) => combat::heading_of(f.direction),
             None => facing,
         };
@@ -1604,6 +1630,13 @@ fn tick(
         }
         if requested == Action::ATTSTEP1 {
             p.actions.target_angle = wrap(wanted - facing);
+        }
+        if requested == Action::READY && matches!(current.0, 0..=3) && !deaf {
+            p.idle_ticks = p.idle_ticks.saturating_add(1);
+            if p.idle_ticks == 1800 { requested = Action::IDLE1; }
+            else if p.idle_ticks == 600 { requested = Action::IDLE2; }
+        } else if requested != Action::READY || deaf {
+            p.idle_ticks = 0;
         }
         p.request = requested;
 
@@ -1732,6 +1765,19 @@ fn tick(
                     f => f,
                 };
                 let aim = match found {
+                    f if p.look.on => {
+                        // Keep the real release height and target assistance.
+                        // The gaze supplies a distant aim point when nothing
+                        // is under the reticle; projectiles still originate
+                        // from the hero and use their normal speed/damage.
+                        let eye = position + Vec3::Y * state.head_height * p.model_scale;
+                        let from = position + Vec3::Y * projectiles::PLAYER_CENTRE;
+                        let ray = p.look.direction();
+                        let centre = f.map(|f| f.position + Vec3::Y * (0.5 * f.height))
+                            .filter(|&at| mine.auto_aim() && (at - eye).normalize_or(ray).dot(ray) >= 8f32.to_radians().cos())
+                            .unwrap_or(eye + ray * combat::BOSS_THROW_RANGE);
+                        (centre - from).normalize_or(ray)
+                    }
                     Some(f) if held & (button::DEFEND | button::STRAFE) == 0 => {
                         let from = position + Vec3::Y * projectiles::PLAYER_CENTRE;
                         let centre = f.position + Vec3::Y * (0.5 * f.height);
@@ -1761,10 +1807,10 @@ fn tick(
         // attacking in place turns toward the target.
         let category = p.actions.action.category().0;
         let drive = if stunned { 0.0 } else { drive };
-        let mut face = (magnitude > 0.0 && !keeps_facing && !stunned).then_some(stick.heading);
+        let mut face = if p.look.on && !deaf && !stunned { Some(p.look.yaw) } else { (magnitude > 0.0 && !keeps_facing && !stunned).then_some(stick.heading) };
         // The "attack aim" option (Auto Aim): attacking in place turns the
         // hero toward the target.
-        if mine.auto_aim() && (1..=10).contains(&category) && category != 7 && !strafing && drive == 0.0 {
+        if !p.look.on && mine.auto_aim() && (1..=10).contains(&category) && category != 7 && !strafing && drive == 0.0 {
             face = Some(aim);
         }
         if reaction_face.is_some() {
@@ -1840,7 +1886,7 @@ fn strike_blow(
     Some(Hit { target: found.entity, attacker, damage, kind, push, at, target_kind: found.kind, ranged: false })
 }
 
-fn interpolate(fixed: Res<Time<Fixed>>, mut players: Query<(&Player, &mut Transform)>, nodes: Query<&GlobalTransform, Without<Player>>) {
+pub(crate) fn interpolate(fixed: Res<Time<Fixed>>, mut players: Query<(&Player, &mut Transform)>, nodes: Query<&GlobalTransform, Without<Player>>) {
     let t = fixed.overstep_fraction();
     for (player, mut transform) in &mut players {
         // Held, it hangs from the critter's node (turning with it).

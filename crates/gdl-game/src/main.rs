@@ -24,6 +24,7 @@ mod fade;
 mod fake_pad;
 mod familiars;
 mod flash;
+mod first_person;
 mod font;
 mod footsteps;
 mod frame_rate;
@@ -196,7 +197,7 @@ fn main() {
         }
         app.insert_resource(game)
             .insert_resource(party)
-            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
+            .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, first_person::FirstPersonPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
             .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin, deaths::DeathsPlugin, flash::FlashPlugin, fade::FadePlugin, quest::QuestPlugin, scene_light::SceneLightPlugin, saves::SavesPlugin))
             .add_plugins((
                 player_state::PlayerStatePlugin,

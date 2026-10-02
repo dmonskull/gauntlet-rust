@@ -226,6 +226,17 @@ impl PlayCamera {
         }
     }
 
+    /// Personal render view; these presentation choices never alter the
+    /// cameras used for monster activation or the shared boss bounds.
+    pub fn view_for(&self, slot: usize, fraction: f32) -> ([f32; 3], [f32; 3]) {
+        let (now, before) = match self.own_of(slot) {
+            Some(o) if !self.shared() => (self.shaken((o.rig.eye(), o.rig.target)), o.previous),
+            _ => (self.view(), self.previous),
+        };
+        let lerp = |a: [f32; 3], b: [f32; 3]| Vec3::from(a).lerp(Vec3::from(b), fraction).to_array();
+        (lerp(before.0, now.0), lerp(before.1, now.1))
+    }
+
     /// The way the screen's camera faces (the positional sounds' ear).
     pub fn screen_yaw(&self) -> f32 {
         self.watching.map_or_else(|| self.yaw(), |s| self.yaw_of(s))
@@ -638,11 +649,11 @@ fn toggle(
     }
 }
 
-fn place(
+pub(crate) fn place(
     fixed: Res<Time<Fixed>>,
     free_look: Res<FreeLook>,
     play: Res<PlayCamera>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Query<&mut Transform, With<FlyCamera>>,
 ) {
     if free_look.0 {
         return;

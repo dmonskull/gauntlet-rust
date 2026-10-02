@@ -380,7 +380,7 @@ fn step_voices(
     mut voices: ResMut<VoiceQueues>,
     mut requests: MessageReader<QueueVoice>,
     mut hero_lines: MessageReader<QueueHeroLine>,
-    camera: Option<Res<PlayCamera>>,
+    (camera, listener): (Option<Res<PlayCamera>>, Res<crate::first_person::Listener>),
     mut effects: Effects,
 ) {
     // A new level opens the announcer's queue again.
@@ -389,7 +389,7 @@ fn step_voices(
     }
     let now = voices.now + if lock.on { 2.0 } else { real.delta_secs() * FIELDS_PER_SECOND };
     voices.now = now;
-    let ear = camera.as_deref().map(ear);
+    let ear = listener.0.or_else(|| camera.as_deref().map(ear));
     let mut asked: Vec<(VoiceQueue, Vec<String>, Option<f32>, LineLook)> = Vec::new();
     for QueueVoice { queue, lines, most_wait, gated } in requests.read() {
         if *gated && voices.closed {
@@ -815,7 +815,7 @@ fn play_sounds(mut requests: MessageReader<PlaySound>, mut effects: Effects) {
 fn play_sounds_at(
     mut requests: MessageReader<PlaySoundAt>,
     mut effects: Effects,
-    camera: Option<Res<PlayCamera>>,
+    (camera, listener): (Option<Res<PlayCamera>>, Res<crate::first_person::Listener>),
     heroes: Query<&Player>,
     party: Res<Party>,
     frontend: Option<Res<Frontend>>,
@@ -823,7 +823,7 @@ fn play_sounds_at(
     if requests.is_empty() {
         return;
     }
-    let ear = camera.as_deref().map(ear);
+    let ear = listener.0.or_else(|| camera.as_deref().map(ear));
     // The heroes in play (not dead, not out of the level): their feet.
     let feet: Vec<Vec3> = heroes
         .iter()
@@ -925,10 +925,10 @@ fn follow_loops(
     mut requests: MessageReader<LoopSoundAt>,
     mut effects: Effects,
     mut playing: Query<(Entity, &mut FollowingLoop)>,
-    camera: Option<Res<PlayCamera>>,
+    (camera, listener): (Option<Res<PlayCamera>>, Res<crate::first_person::Listener>),
     time: Res<Time<Virtual>>,
 ) {
-    let ear = camera.as_deref().map(ear);
+    let ear = listener.0.or_else(|| camera.as_deref().map(ear));
     let aim = |at: Option<Vec3>| match (at, ear) {
         (Some(at), Some((focus, right))) => pan(at, focus, right) as f32,
         _ => CENTRE_PAN as f32,

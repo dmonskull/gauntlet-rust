@@ -17,6 +17,7 @@ One file per system, written only once it's confirmed against the actual
 | [level-population.md](level-population.md) | Items, generators, monsters, exits and player starts in `WORLDS.PS2` |
 | [rendering.md](rendering.md) | How a level is drawn: diffuse × colour × lightmap |
 | [camera.md](camera.md) | The play camera: level camera points, per-level distance and bounds, smoothing |
+| [first-person.md](first-person.md) | Optional personal views, controls, equipped hands, local panes and interaction rules |
 | [player-movement.md](player-movement.md) | Stats → speed, stick → walk/run, per-tick movement and turning, footsteps |
 | [audio-format.md](audio-format.md) | DSP-ADPCM sound banks, sound catalog, music streams, level music, positional sounds |
 | [collision.md](collision.md) | Level collision triangles, grid, floor/wall queries, actor movement |

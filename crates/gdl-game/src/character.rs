@@ -306,6 +306,15 @@ impl Animator {
         self.tree.iter().position(|(n, _)| n == name)
     }
 
+    /// Forearms and hands, including anything equipped under their wrists.
+    /// The parent of each class's wrist is its forearm in the retail skeleton.
+    pub fn first_person_arms(&self, class: &str) -> Vec<(Entity, Entity)> {
+        let right = CLASS_HAND_BONES.iter().find(|(c, _)| *c == class).map_or("R_WRIST", |(_, b)| *b);
+        [right, crate::power_looks::left_wrist(class_index(class))].into_iter()
+            .filter_map(|name| self.node(name))
+            .filter_map(|wrist| Some((self.bone(self.tree[wrist].1.unwrap_or(wrist))?, self.bone(wrist)?))).collect()
+    }
+
     /// The first node under `node` in skeleton order (the game links a
     /// node's children in that order, so it's the node's first child).
     pub fn first_child(&self, node: usize) -> Option<usize> {

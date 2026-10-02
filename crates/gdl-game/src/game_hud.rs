@@ -283,6 +283,7 @@ fn draw(
     real: Res<Time<Real>>,
     game_time: Res<Time<Virtual>>,
     coins: Option<Res<SecretCoins>>,
+    (options, online, free): (Res<crate::options::GameOptions>, Option<Res<crate::online::Online>>, Res<crate::camera::FreeLook>),
 ) {
     // The key row starts as a level starts (not in the secret realm) and
     // when a new runestone is picked up; a new pickup count starts its 3 s
@@ -320,7 +321,15 @@ fn draw(
     let free_pads = crate::party::free_pads(&party, pads.iter());
     let next_free = (0..MAX_PLAYERS).find(|&s| party.get(s).is_none() && !frontend.as_deref().is_some_and(|f| f.waiting(s)));
     let mut p = Painter { draw: &mut draw, tex, images: &mut images };
+    let locals: Vec<_> = party.members().filter(|(_, m)| !m.devices.remote).map(|(s, _)| s).collect();
+    let personal = !free.0 && frontend.as_deref().is_none_or(Frontend::playing) && locals.iter().any(|&slot| options.player(if online.is_some() { 0 } else { slot }).first_person);
+    let split = personal && online.is_none() && locals.len() > 1;
     for slot in 0..MAX_PLAYERS {
+        // A personal screen keeps its own status at the foot of its pane.
+        // Empty panels would obscure the weapon without providing status.
+        if personal && !locals.contains(&slot) { continue }
+        let first_quad = p.draw.quads.len();
+        let first_text = p.draw.texts.len();
         let x = PANEL_X + PANEL_WIDTH * slot as f32;
         let Some(member) = party.get(slot) else {
             // A slot nobody plays: its panel waits, `S3` over `S4` in the
@@ -347,6 +356,20 @@ fn draw(
         let fields = (game_time.delta_secs(), real.delta_secs() * 60.0);
         let coin_need = coins.as_ref().map_or(0, |c| c.need);
         draw_panel(&mut p, &fonts, x, member, out, turbo, intro_start, &mut panels[slot], textures, fields, coin_need);
+        if personal {
+            let index = locals.iter().position(|&s| s == slot).unwrap_or(0);
+            let (at, extent) = crate::first_person::rect(index, if split { locals.len() } else { 1 });
+            let scale = if split && locals.len() > 2 { 0.75 } else { 1.0 };
+            let origin = at * Vec2::new(512.0, 384.0);
+            let area = extent * Vec2::new(512.0, 384.0);
+            let target = Vec2::new(if split { origin.x + (area.x - 128.0 * scale) * 0.5 } else { 0.0 }, origin.y + area.y - 384.0 * scale);
+            for q in p.draw.quads[first_quad..].iter_mut().chain(&mut p.draw.texts[first_text..]) {
+                match q {
+                    Quad::Image { pos, size, .. } => { *pos = (*pos - Vec2::new(x, 0.0)) * scale + target; *size *= scale; }
+                    Quad::Text { pos, size, .. } => { *pos = (*pos - Vec2::new(x, 0.0)) * scale + target; *size *= scale; }
+                }
+            }
+        }
     }
 }
 

@@ -18,6 +18,10 @@ use crate::bootstrap::artifacts_dir;
 use crate::controls::{self, Action, Bindings};
 use crate::party::MAX_PLAYERS;
 
+/// Six dB of output headroom for simultaneous effects and loud voice calls.
+/// Applied once to both new and already playing sounds, after the user mix.
+const OUTPUT_HEADROOM: f32 = 0.5;
+
 pub struct OptionsPlugin;
 
 impl Plugin for OptionsPlugin {
@@ -39,7 +43,7 @@ pub struct Mute(pub bool);
 impl Mute {
     /// The master volume sounds actually play at.
     pub fn master(self, options: &GameOptions) -> f32 {
-        if self.0 { 0.0 } else { options.master_volume }
+        if self.0 { 0.0 } else { options.master_volume * OUTPUT_HEADROOM }
     }
 }
 
@@ -111,11 +115,13 @@ pub struct PlayerOptions {
     pub rumble: bool,
     pub auto_aim: bool,
     pub auto_attack: bool,
+    /// This player alone uses an eye-level view. Online this is local to their machine.
+    pub first_person: bool,
 }
 
 impl Default for PlayerOptions {
     fn default() -> Self {
-        Self { scheme: 0, rumble: true, auto_aim: true, auto_attack: true }
+        Self { scheme: 0, rumble: true, auto_aim: true, auto_attack: true, first_person: false }
     }
 }
 
@@ -148,7 +154,7 @@ impl GameOptions {
 
     /// Reads one saved `key=value`.
     fn set(&mut self, k: &str, v: &str) {
-        let num = |v: &str| v.parse::<f32>().ok().map(|x| x.clamp(0.0, 1.0));
+        let num = |v: &str| v.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 1.0));
         let flag = |v: &str| match v {
             "1" | "on" | "true" => Some(true),
             "0" | "off" | "false" => Some(false),
@@ -177,6 +183,7 @@ impl GameOptions {
                         "rumble" => o.rumble = flag(v).unwrap_or(o.rumble),
                         "auto_aim" => o.auto_aim = flag(v).unwrap_or(o.auto_aim),
                         "auto_attack" => o.auto_attack = flag(v).unwrap_or(o.auto_attack),
+                        "first_person" => o.first_person = flag(v).unwrap_or(o.first_person),
                         _ => {}
                     }
                 } else if let Some(name) = k.strip_prefix("key.")
@@ -215,11 +222,12 @@ impl GameOptions {
         for (i, o) in self.players.iter().enumerate() {
             let n = i + 1;
             body += &format!(
-                "p{n}.scheme={}\np{n}.rumble={}\np{n}.auto_aim={}\np{n}.auto_attack={}\n",
+                "p{n}.scheme={}\np{n}.rumble={}\np{n}.auto_aim={}\np{n}.auto_attack={}\np{n}.first_person={}\n",
                 o.scheme,
                 flag(o.rumble),
                 flag(o.auto_aim),
-                flag(o.auto_attack)
+                flag(o.auto_attack),
+                flag(o.first_person)
             );
         }
         for (action, inputs) in &self.bindings.keys {
@@ -296,7 +304,7 @@ mod tests {
     #[test]
     fn options_read_back_what_they_write() {
         let mut o = GameOptions { fullscreen: true, ..GameOptions::default() };
-        o.players[2] = PlayerOptions { scheme: 1, rumble: false, ..PlayerOptions::default() };
+        o.players[2] = PlayerOptions { scheme: 1, rumble: false, first_person: true, ..PlayerOptions::default() };
         o.bindings.bind_key(Action::Magic, Input::Key(KeyCode::KeyK));
         o.bindings.bind_pad(Action::Combo, bevy::input::gamepad::GamepadButton::LeftTrigger);
         // What save writes, line by line, read into fresh options.
@@ -304,6 +312,7 @@ mod tests {
         let mut lines = vec![
             format!("p3.scheme={}", o.players[2].scheme),
             format!("p3.rumble={}", flag(o.players[2].rumble)),
+            format!("p3.first_person={}", flag(o.players[2].first_person)),
             format!("fullscreen={}", flag(o.fullscreen)),
             // An old file's player 1.
             "scheme=2".to_string(),
@@ -321,8 +330,21 @@ mod tests {
             back.set(k, v);
         }
         assert_eq!((back.players[2].scheme, back.players[2].rumble, back.fullscreen), (1, false, true));
+        assert!(back.players[2].first_person);
+        assert!(!back.players[0].first_person);
         assert_eq!(back.players[0].scheme, 2);
         assert_eq!(back.players[1], PlayerOptions::default());
         assert_eq!(back.bindings, o.bindings);
     }
+    #[test]
+    fn audio_headroom_and_mute_apply_without_changing_the_saved_mix() {
+        let mut o = GameOptions::default();
+        assert_eq!(Mute(false).master(&o), 0.125);
+        assert_eq!(Mute(true).master(&o), 0.0);
+        o.set("master_volume", "NaN");
+        assert_eq!(o.master_volume, 0.25);
+        o.set("effects_volume", "2");
+        assert_eq!(o.effects_volume, 1.0);
+    }
+
 }
