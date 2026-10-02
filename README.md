@@ -60,8 +60,8 @@ details and the full to-do list):
   way, heroes can be changed mid-game, and if the machines ever disagree
   the level simply starts again for everyone.
 - Optional **first-person view**, independently chosen by each player:
-  animated equipped weapons and hands, mouse/right-stick look, and local
-  split screens when needed.
+  animated equipped weapons and hands, mouse/right-stick look, throws that
+  go where you look, and local split screens when needed.
 - Windows, macOS and Linux; any window size, widescreen included.
 - Keyboard and mouse with rebindable keys, or any pad — each player can
   switch between them at will.
@@ -76,8 +76,11 @@ details and the full to-do list):
    each other.
 3. Bosses: missile lifetimes, the blast areas' hit guards, head stumps and
    look nodes (grabs, the lich's aura, the health meters and the key are in).
-4. Screens: options, the memory card screens, the attract mode (the shop,
-   inventory and after-level screens are in).
+4. Screens: the levels' loading screens (the realm map and its path) and
+   opening movies (the movie decoder is in, checked frame for frame
+   against FFmpeg; playback still to hook up), options, the memory card
+   screens, the attract mode (the shop, inventory and after-level screens
+   are in).
 5. Effects: texture wipes, effect lights, weapon and hand glows, exact
    particle maths.
 6. Audio: music switching and ducking.

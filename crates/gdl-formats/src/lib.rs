@@ -9,6 +9,7 @@ pub mod enemy;
 pub mod font;
 pub mod fst;
 pub mod model;
+pub mod movie;
 pub mod pdata;
 pub mod population;
 pub mod psys;
