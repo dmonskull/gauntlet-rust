@@ -27,6 +27,31 @@ Keyboard and mouse, or any game pad (plug in more pads for local co-op).
 Enter / Start pauses; the Settings menu has the controls and lets you
 rebind keys.
 
+## First-person view
+
+Start → **Settings → Controls → First Person View → On**. Choose Off to
+return to the overhead camera. This choice is saved for each player;
+online it is yours alone, including when the host chooses a shared camera.
+Local players open Settings with their own pad to change their own view.
+
+With this option Off, the original movement, aiming and control style apply.
+Movement and action bindings stay the same. With it On, the mouse or right stick looks
+around; sideways and backward movement use the game's strafe actions.
+The equipped weapon and hands follow the hero's actual attack, throw and
+defense animations. Throws aim toward the small centre marker, with target
+assistance when Auto Aim is on. Damage, attack timing, movement speeds,
+collision and power costs still come from the existing combat systems.
+Pickups, keyed doors, switches, powers and exits use the hero's normal body
+contact and inventory/quest checks; looking away does not prevent a pickup.
+
+When a local player chooses first person, two players get left/right panes;
+three or four get a grid. Each player can use either view, with their own
+status panel and weapon framing. Opening shots and camera cuts temporarily
+use the game's cameras. Menus release the mouse; closing them resumes play.
+
+The sound mix now has 6 dB of output headroom. **Settings → Audio** still
+controls master, music and effects; `-` / `=` adjust master volume.
+
 ## Local co-op (one machine)
 
 Title → Start → **Local Game**. Each player presses Start (or A) on their

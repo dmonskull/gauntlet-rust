@@ -69,7 +69,7 @@ impl Billboard {
 }
 
 fn face_camera(
-    camera: Query<&Transform, (With<Camera3d>, Without<Billboard>)>,
+    camera: Query<&Transform, (With<crate::camera::FlyCamera>, Without<Billboard>)>,
     parents: Query<&GlobalTransform>,
     mut billboards: Query<(&Billboard, &mut Transform, Option<&ChildOf>)>,
 ) {

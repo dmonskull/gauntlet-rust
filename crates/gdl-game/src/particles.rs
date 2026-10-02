@@ -366,10 +366,11 @@ fn empty_mesh() -> Mesh {
 
 /// Emits, moves and ages every particle, then rebuilds each emitter's
 /// camera-facing squares.
+#[allow(clippy::type_complexity)]
 fn simulate(
     mut commands: Commands,
     time: Res<Time<Virtual>>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), Or<(With<crate::camera::FlyCamera>, With<crate::first_person::PersonalCamera>)>>,
     mut emitters: Query<(Entity, &mut Emitter)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {

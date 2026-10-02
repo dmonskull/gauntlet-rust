@@ -198,8 +198,11 @@ impl SlotInput {
     /// shared co-op one on the tick it changes.
     pub const OWN_CAMERAS: u32 = 0x20;
     /// The settings' bits.
-    pub const SETTINGS: u32 = Self::AUTO_AIM | Self::AUTO_ATTACK | Self::ROBOTRON;
-    const EXTRAS: u32 = Self::SETTINGS | Self::BACK | Self::OPEN_SHOP | Self::OPEN_INVENTORY | Self::OWN_CAMERAS;
+    pub const FIRST_PERSON: u32 = 0x10;
+    /// Mouse look uses a wider angular range than a controller stick.
+    pub const MOUSE_LOOK: u32 = 0x08;
+    pub const SETTINGS: u32 = Self::AUTO_AIM | Self::AUTO_ATTACK | Self::ROBOTRON | Self::FIRST_PERSON;
+    const EXTRAS: u32 = Self::SETTINGS | Self::MOUSE_LOOK | Self::BACK | Self::OPEN_SHOP | Self::OPEN_INVENTORY | Self::OWN_CAMERAS;
 
     /// The game's buttons held, without the extras.
     pub fn buttons(&self) -> u32 {
@@ -220,12 +223,15 @@ impl SlotInput {
 
     /// These controls with a player's settings riding along.
     pub fn with_settings(mut self, o: crate::options::PlayerOptions) -> Self {
-        self.held &= !(Self::AUTO_AIM | Self::AUTO_ATTACK | Self::ROBOTRON);
+        self.held &= !(Self::SETTINGS);
         if o.auto_aim {
             self.held |= Self::AUTO_AIM;
         }
         if o.auto_attack {
             self.held |= Self::AUTO_ATTACK;
+        }
+        if o.first_person {
+            self.held |= Self::FIRST_PERSON;
         }
         if o.scheme == crate::controls::ROBOTRON {
             self.held |= Self::ROBOTRON;
@@ -303,5 +309,25 @@ mod tests {
         assert!(!party.all_out());
         party.state_mut(2).unwrap().alive = false;
         assert!(party.all_out());
+    }
+}
+
+#[cfg(test)]
+mod personal_view_tests {
+    use super::*;
+    #[test]
+    fn personal_view_bits_do_not_replace_classic_controls() {
+        let raw = SlotInput { held: crate::combat::button::QUICK | crate::combat::button::STRAFE,
+            stick: Vec2::new(0.3, 0.8), c_stick: Vec2::new(-0.4, 0.6) };
+        let options = crate::options::PlayerOptions { scheme: crate::controls::ROBOTRON, ..default() };
+        let classic = raw.with_settings(options);
+        assert_eq!(classic.buttons(), raw.held);
+        assert!(classic.robotron());
+        assert_eq!(classic.held & (SlotInput::FIRST_PERSON | SlotInput::MOUSE_LOOK), 0);
+        assert_eq!((classic.stick, classic.c_stick), (raw.stick, raw.c_stick));
+        let first = raw.with_settings(crate::options::PlayerOptions { first_person: true, ..options });
+        assert_ne!(first.held & SlotInput::FIRST_PERSON, 0);
+        assert_eq!(first.buttons(), classic.buttons());
+        assert_eq!((first.stick, first.c_stick), (classic.stick, classic.c_stick));
     }
 }

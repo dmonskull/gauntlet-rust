@@ -322,7 +322,18 @@ pub fn stick_keys(keys: &ButtonInput<KeyCode>, options: &GameOptions) -> Vec2 {
 /// A pad's left and right sticks (the right one the GameCube's C-stick,
 /// which the Robotron style attacks with), at most 1 long.
 pub fn pad_sticks(pad: &Gamepad) -> (Vec2, Vec2) {
-    (pad.left_stick().clamp_length_max(1.0), pad.right_stick().clamp_length_max(1.0))
+    (stick_dead_zone(pad.left_stick()), stick_dead_zone(pad.right_stick()))
+}
+
+/// A radial dead zone prevents a resting pad from selecting WALK forever.
+pub fn stick_dead_zone(stick: Vec2) -> Vec2 {
+    const DEAD_ZONE: f32 = 0.15;
+    let length = stick.length();
+    if !length.is_finite() || length <= DEAD_ZONE {
+        Vec2::ZERO
+    } else {
+        stick / length * ((length.min(1.0) - DEAD_ZONE) / (1.0 - DEAD_ZONE))
+    }
 }
 
 /// Keys the settings name and save (`KeyJ` ↔ "J").
@@ -519,4 +530,14 @@ mod tests {
         }
         assert_eq!(pad_from_name(pad_name(GamepadButton::RightTrigger2)), Some(GamepadButton::RightTrigger2));
     }
+    #[test]
+    fn resting_sticks_are_idle_and_full_travel_keeps_its_direction() {
+        assert_eq!(stick_dead_zone(Vec2::new(0.08, -0.08)), Vec2::ZERO);
+        assert_eq!(stick_dead_zone(Vec2::new(f32::NAN, 0.0)), Vec2::ZERO);
+        assert_eq!(stick_dead_zone(Vec2::Y), Vec2::Y);
+        let diagonal = stick_dead_zone(Vec2::ONE);
+        assert!((diagonal.length() - 1.0).abs() < 0.00001);
+        assert!((diagonal.x - diagonal.y).abs() < 0.00001);
+    }
+
 }

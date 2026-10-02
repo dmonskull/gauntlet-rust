@@ -118,7 +118,7 @@ the facing as is; kind 2 turned by `+0x20`, and with flag 8 by `+0x28`),
 gravity `+0x44` (`FUN_80093688`). With no damage only the hit effect is
 set. Field by field, as `FUN_80088b88` reads it — the rest isn't traced:
 `+0x00` i16 kind (0 and 5 nothing; 2, 3, 4 and others a hit through
-`FUN_80089114`, its third argument 0 for kind 2; 10 an area through
+`FUN_80089114`, its third argument 0 for kind 2; 10 repeated hero missiles through
 `FUN_80030094`, stepped `+0x14` apart along the facing out to `+0x20`,
 scaled by `+0x2C/+0x30/+0x34`, effects' damage × `+0x44`); `+0x02` flags
 (`0x2000`, `0x20`, `0x10`: a screen shake of three strengths,
@@ -128,6 +128,30 @@ the run; `0x1000` stops the slots it hits); `+0x38` f32 damage (WAR's turbo
 B 50, its combo 10) — a record with damage also pays the pending turbo cost
 (`+0x910`) as it lands; `+0x50` i16 start frame and `+0x52` end frame (−1:
 one frame); `+0x54` i16 a hint raised as it starts (`FUN_800a4268`).
+The slot flags give kind 2 a missile; kind 3 a steady area (`0x20`
+plus `0x10`); kinds 4/6/7/9 a growing blast (`0x20`). The non-versus
+`0x300` passes most items (`0x100`) and skips the missile plane checks
+(`0x200`). These slots hit monsters and objects, spare heroes, and retain
+the owner's identity for damage and credit. `+0x14` overrides a blast's
+life; `+0x18` overrides a missile's. Kind 10 calls the ordinary hero
+missile routine repeatedly; it is not a row of area slots.
+
+**Hero `SFXX` differs from critter `SFXX`.** The two model selectors are
+i16s at `+0x30/+0x32`, passed to the effect model loader. The three position
+floats start at `+0x34`, not `+0x30`. `+0x40` is a normal model effect's
+life (flags select particle/animation interpretations); `+0x44/+0x48` are
+two further float parameters. `+0x4C` is packed colour, not a size or node
+index: `FUN_8008991c` passes it to `FUN_800ba71c`, which sets the model's
+colour at `+0x64` recursively. The disc's usual value is `0x7FFFFFFF`.
+For particle effects the second name at `+0x20` is an attachment bone
+instead of a sound. `FUN_80089eb0` resolves both names at load time.
+
+`gdl-formats::pdata::HeroAttacks` now reads these records and the twelve
+PDAT indices. Its real-data test checks all **16 PDATA files**, the links,
+and the Valkyrie's combo record. `tools/hdamg.py` prints the named attack
+fields and the corrected effect offsets/colour. The runtime record blows
+are the next task; parsing the records does not apply them in combat.
+
 The ported turbo attacks still land as finishers (a stand-in: their real
 blows are these records).
 value derived from this stat; the derivation isn't traced yet.

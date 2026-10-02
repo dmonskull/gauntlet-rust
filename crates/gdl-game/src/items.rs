@@ -1726,7 +1726,7 @@ fn tick(
     mut party: ResMut<Party>,
     ground: Option<Res<LevelGround>>,
     mut players: Query<&mut Player>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<crate::camera::FlyCamera>>,
     mut commands: Commands,
     (mut sounds, mut loops): (MessageWriter<PlaySoundAt>, MessageWriter<LoopSoundAt>),
     mut voices: MessageWriter<QueueHeroLine>,
@@ -1738,7 +1738,11 @@ fn tick(
     (stop, camera, lock): (Res<TimeStop>, Option<Res<crate::play_camera::PlayCamera>>, Res<crate::online::Lockstep>),
     (mut go_out, mut coins, mut secret): (MessageReader<GoOut>, MessageWriter<CoinTaken>, MessageWriter<SecretExitTaken>),
 ) {
-    let views = lock.on.then(|| crate::monsters::game_view(camera.as_deref()));
+    // Eye-level presentation must not make a key at the hero's feet,
+    // a door behind them, or a transporter inactive. Keep the original
+    // gameplay bounds; equipment cameras never participate in touch tests.
+    let personal = players.iter().any(|p| p.look.on);
+    let views = (lock.on || personal).then(|| crate::monsters::game_view(camera.as_deref()));
     let drawn = cameras.iter().find(|(c, _)| c.is_active).map(|(c, t)| (c.clone(), *t));
     let cameras = Seen { camera: drawn, views };
     let dt = time.delta_secs();
@@ -1966,7 +1970,11 @@ fn run_hero(
         return None;
     }
 
-    let visible = |c: [f32; 3]| on_screen(cameras, c);
+    // A first-person hero can touch what is beside/under them without
+    // turning the camera at it. All ordinary shape, key, quest and power
+    // checks still apply; classic play retains the original screen test.
+    let personal = player.look.on;
+    let visible = |c: [f32; 3]| personal || on_screen(cameras, c);
     let (r, h) = (state.radius, state.half_height);
     let mut blocked: Option<Contact> = None;
     let mut picked = false;
@@ -2034,7 +2042,7 @@ fn run_hero(
     }
 
     if let Some(t) = on_transporter {
-        start_transport(items, slot, t, r, ground.map(|g| &*g.0), cameras, out);
+        start_transport(items, slot, t, r, ground.map(|g| &*g.0), (cameras, personal), out);
     } else if items.heroes[slot].transport_cooldown > 0 {
         items.heroes[slot].transport_cooldown -= 1;
     }
@@ -2056,7 +2064,7 @@ fn touchable(item: &Item) -> bool {
 }
 
 /// What the items' on-screen test looks through: the drawn camera; online
-/// the game's views, the same on every machine (`monsters::game_view`).
+/// and in personal views the game's original camera bounds (`monsters::game_view`).
 struct Seen {
     camera: Option<(Camera, GlobalTransform)>,
     views: Option<crate::monsters::Views>,
@@ -2798,7 +2806,7 @@ fn start_transport(
     t: usize,
     radius: f32,
     ground: Option<&LevelCollision>,
-    cameras: &Seen,
+    (cameras, personal): (&Seen, bool),
     out: &mut Out,
 ) {
     if items.heroes[slot].transport_cooldown > 0 {
@@ -2812,7 +2820,7 @@ fn start_transport(
         return;
     };
     let p = &items.items[partner];
-    if !on_screen(cameras, p.shape.centre) {
+    if !personal && !on_screen(cameras, p.shape.centre) {
         return;
     }
     let mut to = [p.shape.centre[0], p.shape.centre[1] - 1.0, p.shape.centre[2]];

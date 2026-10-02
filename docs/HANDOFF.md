@@ -7,24 +7,27 @@ in order.
 
 ## Pick up here
 
-**Next jobs, in order** (the user's list from 2026-10-01: online → co-op →
-settings → bosses; online and bosses are done):
+**Next jobs, in order** (the user's original queue). The online work and
+boss implementation are merged; the boss gameplay checks below remain.
+Complete the personal-view follow-up checks in this handoff first:
 
-1. **Co-op combos** — where the last session stopped (mid-decode, no code
-   yet). Decoded: [coop.md](coop.md) "Co-op combos" (partner test,
+1. **Co-op combos** — step 1 tracing and the step 2 parser are done.
+   **Pick up with the runtime hero record attacks**, then pairing/carrying.
+   Decoded: [coop.md](coop.md) "Co-op combos" (partner test,
    COMBOACT1/2/3, the partner's per-class actions, carrying, the throws,
    the state machine's cases, the hit moment and its effects) and
    [chunk-files.md](chunk-files.md) "The heroes' attack records" (the
    class's `DAMG` records the combo, power and turbo attacks hit with;
    `tools/hdamg.py WAR` dumps them). Steps:
-   1. Trace `FUN_80089114` (what a record of kind 2–4 hits, how far, with
-      what damage/kind; `FUN_80088b88` calls it) and `FUN_80030094` (kind
-      10's areas), and how a carried hero is placed each frame
-      (`FUN_800747ac` attaches, `FUN_80074644` lets go; the carry node
-      `+0x6DC`). Decompile: `~/ghidra-projects/exports/
+   1. **Done:** traced `FUN_80089114` (missile / steady area / growing
+      blast slots), `FUN_80030094` (kind 10's repeated ordinary hero
+      missiles), and carrying (`%sDUMMY`, model-root attachment and the
+      two detach modes). See the updated chunk/coop notes. Decompile: `~/ghidra-projects/exports/
       GauntletDarkLegacy-main.dol.c`; constants: `tools/mydol.py`.
-   2. Parse the hero `DAMG`/`SFXX` chunks in `gdl-formats/src/pdata.rs`
-      with the `PDAT +0x0C..+0x22` indices; port `FUN_80088b88` as the
+   2. **Parser done:** `HeroAttacks` in `gdl-formats/src/pdata.rs`, the
+      twelve `PDAT +0x0C..+0x22` indices and all 16 PDATA files checked.
+      Hero SFXX position starts +0x34; +0x4C is packed colour, not scale
+      or a node selector. **Next: port `FUN_80088b88`** as the
       heroes' record blows — which also replaces the turbo attacks'
       finisher stand-in (ATTPWRB/C) and gives the power attacks their
       records.
@@ -60,6 +63,117 @@ dumps a hero class's attack records; the decompile is
 through `tools/waitrun.sh` (muted, one at a time).
 
 ## State of `master`
+
+**2026-10-01 (personal views and idle/audio fixes), v0.2.0:**
+- User added: idle instead of walking in place, a quieter mix, and a
+  per-player first-person setting for solo/local/online play.
+  `first_person.rs` implements eye-level mouse/right-stick look, actual
+  equipped weapon/hand meshes posed by the existing Animator, an
+  independent transparent weapon render so walls do not cut through it,
+  a centre marker, and individual local panes with fitted status panels.
+  Online uses each machine's own settings; first-person/mouse-look bits
+  travel in the existing input buttons so movement/aim stays deterministic.
+  The state checksum includes the look state. The host's overhead choice
+  does not override another user's first-person preference.
+- Forward walk/run still uses the existing speeds, collision and action
+  factors; side/back movement uses existing strafe actions. Throws aim
+  toward the gaze with a small target assist if Auto Aim is on; damage,
+  release timing, projectile speed and power costs stay with normal combat.
+  Camera cuts/opening shots keep their original views. Mouse capture is
+  released for menus and when the window loses focus.
+- Walk/run return to READY immediately on release. A 15% radial pad dead
+  zone prevents drift from selecting WALK. READY breathes; after 20 s a
+  longer retail idle plays. The mix has 6 dB of headroom applied once to
+  new/live sounds, preserves the saved sliders, and rejects nonfinite
+  saved volume values. Positional audio follows the first-person view.
+- Hero DAMG/SFXX parsing and the resumed co-op decode are saved. **No
+  runtime co-op combo or hero record blows yet**; the remaining queue
+  below remains in the same order.
+- Final build, `cargo test -j4 --workspace` (**390 passed, 1 ignored**),
+  strict workspace clippy and `git diff --check` pass. The only build notice
+  is the existing upstream `block v0.1.6` future-incompatibility warning.
+- Actual muted runtime: mixed local WAR first-person / VAL classic panes
+  with separate HUDs; Settings → Controls toggled On and Off and saved each
+  choice; a neutral tower run logs READY → IDLE2 → IDLE2_LOOP.
+- Online host first-person / client classic passed **34 matching checks**
+  through tick 990, including scripted right-stick look. **This run predates
+  the final first-person contact exemption in `items.rs`; rerun online on
+  the checkpoint before calling that change verified online.** Revision 2
+  rejects older builds. Host/client preference directories are already
+  prepared for the reverse case: host classic with shared cameras, client
+  first-person. That reverse case has not been run.
+- First-person mechanics run on the final binary: KEYRING gives 2 keys;
+  GATEDS consumes one; TREAS_SILVER adds 100 gold; transporter reaches its
+  midpoint/arrival hint; trigger 393 activates and mover 1774 arrives at
+  −4; the normal A1 exit logs `levelA1 finished`, then the AfterLevel/Shop
+  screen opens in the tower. Scripted hops were used, **not a manual full
+  level or campaign clear**. The run ends via its 60 s timeout after Shop
+  pauses the fixed clock; no panic. Final first-person touches bypass only
+  the rendered-view activation gate, retaining all contact, key, quest,
+  capacity, collision and exit requirements. Transporter destinations need
+  not be in view for a first-person hero. Classic rules stay unchanged.
+- Full technical notes: [first-person.md](first-person.md). Tests verify
+  Off restores classic facing and retains original combat buttons and
+  Robotron sticks. Mouse pixels accumulate until a fixed tick / online
+  input commit consumes them; fast turns retain their remainder. Eye
+  height tracks growth. New/live audio has 6 dB of headroom; all test runs
+  were muted, so **no subjective volume/listening comparison** yet.
+
+### Immediate follow-up on the user's added requests
+
+The user asked to wrap up because usage was low. All code and notes are
+saved in this checkpoint. Finish these checks before returning to the
+numbered co-op queue above:
+
+1. **Rerun online after the final item contact change**, with the host in
+   classic/shared view and the client in first-person. The existing
+   `tools/online_test.sh` accepts `HOST_ARTIFACTS` / `CLIENT_ARTIFACTS` for
+   separate settings. Set `RUST_LOG=info` for checksum output. It already
+   calls `waitrun.sh`; invoke the helper directly. The harness now refuses
+   zero overlapping hash checks. The prepared directories and logs are
+   under `/Users/dmonskull/Documents/Codex/2026-10-01/con/work/`:
+   `net-host`, `net-client`, `net-proof/online`, `online-result.log`.
+   Example (muted via the helper):
+   ```sh
+   env HOST_ARTIFACTS=/Users/dmonskull/Documents/Codex/2026-10-01/con/work/net-host \
+     CLIENT_ARTIFACTS=/Users/dmonskull/Documents/Codex/2026-10-01/con/work/net-client \
+     GDL_TEST_OUT=/Users/dmonskull/Documents/Codex/2026-10-01/con/work/net-reverse \
+     GDL_ONLINE_LEVEL=levelA1 RUST_LOG=info GDL_SHOTS=2 GDL_SHOT_EVERY=999999 \
+     SHOT_AT=1800 tools/online_test.sh 55
+   ```
+   Multiple shots keep the first screenshot from exiting the host before
+   the client's screenshot. Verify nonzero matching checks and both views.
+2. **More equipment visual checks**: WAR hands/axe and two-player mixed
+   panes were checked in live first-person. The early WIZ screenshot was
+   during a scripted overhead sequence, so it does not prove staff framing.
+   Check WIZ, ARC and the other class/power weapons after the opening cut.
+   Use `GDL_STICK=0,0` to prevent live keyboard/pad activity moving the hero
+   during a neutral check. A tower shot at 240 ticks can still show a
+   scripted camera; use later ticks. Look for clipped equipment, attacking,
+   defending and throwing. Three/four pane rectangle geometry has tests,
+   but no three/four-player visual run yet. World billboards/particles use
+   a single world-view orientation; per-pane facing is still a visual lead.
+3. **Progression breadth**: real key/door/gold/transporter/switch/exit paths
+   pass; test potion use, powers menu/equipment swaps and boss completion
+   in first-person. A complete campaign remains unverified, and the
+   underlying rewrite's unfinished items in STATUS.md still apply. The
+   user explicitly wants first-person to be usable through the game.
+4. **Listening/feel**: the user should try mouse/pad sensitivity, narrow
+   panes and sound volume. Keep automated tests muted. Do not claim a
+   listening comparison or a complete campaign clear from these checks.
+
+Proof logs: `work/mechanics-final.log`, `pickup.log`, `idle-neutral.log`,
+`toggle-on.log`, `toggle-off.log`, `local-final.log`, `tests.log`,
+`clippy.log`, `build.log` in that same chat directory. The mechanics run
+used `GDL_HOPS` at 90 ticks with these A1 points (all real placements):
+`-22.38,-2.53,-4.25;39.06,-7.02,25.84;104.59,20.25,-20.79;`
+`-70.84,0.12,94.78;47.5,0.14,67.5;-20.62,20.38,113.72`,
+`GDL_STICK=0,0.15 GDL_IMMORTAL=1 GDL_SKIP_BOXES=1`.
+Screenshots in `/Users/dmonskull/Documents/Codex/2026-10-01/con/outputs/`:
+`first-person-single.png`, `first-person-local-coop.png`,
+`first-person-online-host.png`, `first-person-pickup.png`. Some other
+screenshots there show scripted cameras/message boxes/Game Over and are
+not first-person visual proof. No game assets are committed.
 
 **2026-10-01 (latest), v0.2.0:**
 - **Online, finished** ([online.md](online.md) "Starting again"): joining a

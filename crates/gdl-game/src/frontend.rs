@@ -332,6 +332,7 @@ enum Item {
     Rumble,
     AutoAim,
     AutoAttack,
+    FirstPerson,
     Choose(Setting, bool),
     /// PC Settings (not the game's): its pages, a switch on one, a binding
     /// to change, the defaults back.
@@ -363,6 +364,7 @@ enum Setting {
     Rumble,
     AutoAim,
     AutoAttack,
+    FirstPerson,
     Compass,
     Fullscreen,
     Vsync,
@@ -381,6 +383,7 @@ impl Setting {
             Self::Rumble => o.player(slot).rumble,
             Self::AutoAim => o.player(slot).auto_aim,
             Self::AutoAttack => o.player(slot).auto_attack,
+            Self::FirstPerson => o.player(slot).first_person,
             Self::Compass => o.compass,
             Self::Fullscreen => o.fullscreen,
             Self::Vsync => o.vsync,
@@ -397,6 +400,7 @@ impl Setting {
             Self::Rumble => o.players[slot].rumble = v,
             Self::AutoAim => o.players[slot].auto_aim = v,
             Self::AutoAttack => o.players[slot].auto_attack = v,
+            Self::FirstPerson => o.players[slot].first_person = v,
             Self::Compass => o.compass = v,
             Self::Fullscreen => o.fullscreen = v,
             Self::Vsync => o.vsync = v,
@@ -414,6 +418,7 @@ impl Setting {
             Self::Rumble => ("Rumble Feature", [("Off", false), ("On", true)]),
             Self::AutoAim => ("Auto Aim", [("On", true), ("Off", false)]),
             Self::AutoAttack => ("Auto Attack", [("On", true), ("Off", false)]),
+            Self::FirstPerson => ("First Person View", [("Off", false), ("On", true)]),
             Self::Compass => ("Compass", [("Hide", false), ("Show", true)]),
             Self::OnlineCameras => ("Online Camera", [("Each Player", true), ("Overhead", false)]),
             _ => ("", [("On", true), ("Off", false)]),
@@ -749,6 +754,7 @@ static CONTROLS_MENU: MenuDef = game_menu(
         e("Rumble Feature ", Item::Rumble),
         e("Auto Aim ", Item::AutoAim),
         e("Auto Attack ", Item::AutoAttack),
+        e("First Person View", Item::FirstPerson),
     ],
 );
 /// The game's On / Off menus (Rumble Feature, Auto Aim, Auto Attack) and
@@ -756,6 +762,7 @@ static CONTROLS_MENU: MenuDef = game_menu(
 static RUMBLE_MENU: MenuDef = game_menu("Rumble Feature", false, &[]);
 static AUTO_AIM_MENU: MenuDef = game_menu("Auto Aim", false, &[]);
 static AUTO_ATTACK_MENU: MenuDef = game_menu("Auto Attack", false, &[]);
+static FIRST_PERSON_MENU: MenuDef = game_menu("First Person View", false, &[]);
 static COMPASS_MENU: MenuDef = game_menu("Compass", true, &[]);
 /// The game's Control Style menu (`docs/frontend.md`): the style's name
 /// centred at y 265, left / right change it, Select keeps it; the
@@ -1362,7 +1369,7 @@ pub(crate) fn run(
     }
     // What the settings act on isn't the menus' to act on again.
     let players = player_lines(&party, &pads);
-    if settings(&mut fe, &p, &mut options, &players) {
+    if settings(&mut fe, &p, &mut options, &players, online.is_some()) {
         p.accept = false;
     }
 
@@ -1753,7 +1760,7 @@ fn open_submenu(menus: &mut Vec<Menu>, item: Item) {
 /// for a binding, left / right on the style and the pages' switches, and
 /// the choices that change options (which then remake the menus' lines).
 /// Whether it took this frame's accept.
-fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions, players: &[(String, bool)]) -> bool {
+fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions, players: &[(String, bool)], online: bool) -> bool {
     // The player whose controls the menus set (the game's per-pad ones).
     let slot = fe.menu_slot;
     let mut changed = false;
@@ -1797,7 +1804,7 @@ fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions, players: 
                 took = true;
             }
             Item::PlayerControls(i) => {
-                fe.menu_slot = i;
+                fe.menu_slot = if online { 0 } else { i };
                 fe.menus.push(Menu::new(&CONTROLS_MENU));
                 took = true;
             }
@@ -1813,11 +1820,12 @@ fn settings(fe: &mut Frontend, p: &Pressed, options: &mut GameOptions, players: 
                 changed = true;
                 took = true;
             }
-            Item::Rumble | Item::AutoAim | Item::AutoAttack | Item::Compass => {
+            Item::Rumble | Item::AutoAim | Item::AutoAttack | Item::FirstPerson | Item::Compass => {
                 let (def, setting) = match m.item(m.selected) {
                     Item::Rumble => (&RUMBLE_MENU, Setting::Rumble),
                     Item::AutoAim => (&AUTO_AIM_MENU, Setting::AutoAim),
                     Item::AutoAttack => (&AUTO_ATTACK_MENU, Setting::AutoAttack),
+                    Item::FirstPerson => (&FIRST_PERSON_MENU, Setting::FirstPerson),
                     _ => (&COMPASS_MENU, Setting::Compass),
                 };
                 let current = setting.get(options, slot);
@@ -1971,7 +1979,7 @@ fn player_lines(party: &Party, pads: &Query<Entity, With<Gamepad>>) -> Vec<(Stri
                 if m.devices.remote {
                     with.push("Online".to_string());
                 }
-                (format!("Player {}{VALUE}{} ({})", slot + 1, m.name.replace('_', " "), with.join(" + ")), true)
+                (format!("Player {}{VALUE}{} ({})", slot + 1, m.name.replace('_', " "), with.join(" + ")), !m.devices.remote)
             }
             None if free > 0 && !offered => {
                 offered = true;

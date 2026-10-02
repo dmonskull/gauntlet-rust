@@ -18,11 +18,11 @@ mkdir -p $OUT
 rm -f $OUT/invite.txt $OUT/host.log $OUT/client.log
 export GDL_NET_LOCAL=1 GDL_INVITE_FILE=$OUT/invite.txt GDL_SYNC_LOG=1 GDL_SKIP_BOXES=1 RUST_LOG=${RUST_LOG:-info}
 $ROOT/tools/waitrun.sh zsh -c "
-  GDL_MENU='${HOST_MENU:-}' GDL_ONLINE=host GDL_ONLINE_PLAYERS=${HOST_PLAYERS:-2} GDL_ONLINE_HERO=WAR GDL_STICK=0.3,1 GDL_BUTTONS=attack@200-900 \
+  GDL_ARTIFACTS='${HOST_ARTIFACTS:-$ROOT/target/debug/gdl-artifacts}' GDL_MENU='${HOST_MENU:-}' GDL_ONLINE=host GDL_ONLINE_PLAYERS=${HOST_PLAYERS:-2} GDL_ONLINE_HERO=WAR GDL_STICK=0.3,1 GDL_BUTTONS=attack@200-900 \
     GDL_SCREENSHOT=$OUT/host.png GDL_SHOT_AT=${SHOT_AT:-999999} \
     timeout $SECS $BIN $GAME > $OUT/host.log 2>&1 &
   for i in {1..60}; do [[ -s $OUT/invite.txt ]] && break; sleep 0.5; done
-  GDL_MENU='${CLIENT_MENU:-}' GDL_DESYNC_AT='${CLIENT_DESYNC_AT:-}' GDL_ONLINE=join GDL_ONLINE_HERO=VAL GDL_STICK=-0.3,1 GDL_BUTTONS=attack@300-1200 \
+  GDL_ARTIFACTS='${CLIENT_ARTIFACTS:-$ROOT/target/debug/gdl-artifacts}' GDL_MENU='${CLIENT_MENU:-}' GDL_DESYNC_AT='${CLIENT_DESYNC_AT:-}' GDL_ONLINE=join GDL_ONLINE_HERO=VAL GDL_STICK=-0.3,1 GDL_BUTTONS=attack@300-1200 \
     GDL_SCREENSHOT=$OUT/client.png GDL_SHOT_AT=${SHOT_AT:-999999} \
     timeout $SECS $BIN $GAME > $OUT/client.log 2>&1 &
   wait
@@ -48,7 +48,7 @@ if grep -q 'panicked' $OUT/host.log $OUT/client.log; then
 elif [[ -n $mismatch ]]; then
   echo "OUT OF SYNC (tick host client):"; echo $mismatch
   exit 1
-elif [[ ! -s $OUT/host.sync ]]; then
+elif [[ ! -s $OUT/host.sync || ! -s $OUT/client.sync ]] || [[ $(join $OUT/host.sync $OUT/client.sync | wc -l) -eq 0 ]]; then
   echo "NO TICKS"; tail -5 $OUT/host.log $OUT/client.log
   exit 1
 else

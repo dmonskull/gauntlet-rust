@@ -475,7 +475,7 @@ impl ActionState {
                 next = alternate(state, req, 0x0C);
             }
             0x11..=0x13 => {
-                if req.0 > 0x1A || req_cat != 0 {
+                if req == Action::READY || req.0 > 0x1A || req_cat != 0 {
                     switch = Switch::Now;
                 }
                 next = match state.0 {
@@ -486,7 +486,7 @@ impl ActionState {
                 };
             }
             0x14 => {
-                if req == Action::HITREACT || req_cat != 0 {
+                if req == Action::READY || req == Action::HITREACT || req_cat != 0 {
                     switch = Switch::Now;
                 }
                 if req == Action::RUN1 {
@@ -946,7 +946,7 @@ mod tests {
         assert_eq!(s.next(Action::WALK1, &env()).action, Action::WALK2);
         s.action = Action::RUN2;
         let stop = s.next(Action::READY, &env());
-        assert_eq!((stop.action, stop.switch), (Action::READY, Switch::AtEnd));
+        assert_eq!((stop.action, stop.switch), (Action::READY, Switch::Now));
         assert!(stop.blend > 0.0);
         s.action = Action::READY;
         let go = s.next(Action::WALK1, &env());
@@ -1166,4 +1166,13 @@ mod tests {
         assert_eq!(stick_scale(Action::DEFEND1), 0.0);
         assert_eq!(stick_scale(Action::ATTQUICK1), 1.0);
     }
+    #[test]
+    fn letting_go_stops_all_walk_and_run_strides_immediately() {
+        for action in [Action::WALK1, Action::WALK2, Action::RUN1, Action::RUN2] {
+            let mut s = state(action, 0);
+            let next = s.next(Action::READY, &env());
+            assert_eq!((next.action, next.switch), (Action::READY, Switch::Now));
+        }
+    }
+
 }
