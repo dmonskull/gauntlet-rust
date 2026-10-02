@@ -358,6 +358,9 @@ pub struct HeroShot {
     pub aim: Vec3,
     /// Whether the search found a target at all.
     pub targeted: bool,
+    /// A first-person throw: `aim` is the gaze (or the target it assists
+    /// onto), taken as it is rather than through the game's facing cone.
+    pub gaze: bool,
     /// The throw and strafe bits (`Strike::SHOT`, `Strike::POWER_THROW`).
     pub strike: Strike,
     /// Seconds since the attack began.
@@ -548,6 +551,14 @@ pub fn hero_aim(facing: f32, aim: Vec3, targeted: bool, elevation: f32, dwarf: b
     if a.y > AIM_CONE { f } else { a }
 }
 
+/// A first-person throw's aim: the gaze, kept off the vertical so the lob
+/// still travels (the dwarf's throws start 0.2 higher, as in [`hero_aim`]).
+pub fn gaze_aim(aim: Vec3, dwarf: bool) -> Vec3 {
+    let across = Vec2::new(aim.x, aim.z).normalize_or(Vec2::Y);
+    let rise = (aim.y / Vec2::new(aim.x, aim.z).length().max(0.001)).clamp(-1.0, 1.2) + if dwarf { 0.2 } else { 0.0 };
+    Vec3::new(across.x, rise, across.y).normalize()
+}
+
 /// A lob: a direction with unit horizontal part and the slope that, at
 /// `speed` along the ground, arrives `rise` above the start `across`
 /// horizontal units away (`to` gives the direction) under `gravity`.
@@ -657,7 +668,7 @@ fn wall(collision: &LevelCollision, from: Vec3, to: Vec3, radius: f32) -> Option
 /// counts as wound up, the missile's speed and gravity. A bolt (kind
 /// `0x100000`) isn't lobbed: it flies along the facing.
 pub fn hero_launch(shot: &HeroShot, class: usize, offset: Vec3, wound_up: f32, speed: f32, gravity: f32, bolt: bool) -> Launch {
-    let aim = hero_aim(shot.facing, shot.aim, shot.targeted, 0.0, class == 4, bolt);
+    let aim = if shot.gaze { gaze_aim(shot.aim, class == 4) } else { hero_aim(shot.facing, shot.aim, shot.targeted, 0.0, class == 4, bolt) };
     let hand = shot.feet + Vec3::Y * PLAYER_CENTRE + Quat::from_rotation_y(shot.facing) * offset;
     let dir = if bolt {
         aim
@@ -1755,7 +1766,7 @@ mod tests {
 
     fn shot(strike: u32, wound_up: f32) -> HeroShot {
         let hero = Entity::from_raw_u32(1).unwrap();
-        HeroShot { hero, feet: Vec3::ZERO, facing: 0.0, aim: Vec3::Z, targeted: false, strike: Strike(strike), wound_up }
+        HeroShot { hero, feet: Vec3::ZERO, facing: 0.0, aim: Vec3::Z, targeted: false, gaze: false, strike: Strike(strike), wound_up }
     }
 
     #[test]

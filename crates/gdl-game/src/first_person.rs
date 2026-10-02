@@ -277,7 +277,7 @@ fn draw(
                     RenderTarget::Image(image.clone().into()),
                     Hdr,
                     Tonemapping::None,
-                    projection_for(true),
+                    gear_projection(),
                     Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
                     RenderLayers::layer(10 + slot),
                 ))
@@ -328,7 +328,9 @@ fn draw(
         }
     }
     let watching = play.watching.or_else(|| locals.first().copied());
-    let in_scene = !play.settled() || free.0 || !fe.playing();
+    // Personal views give way to a cut's or the opening's shot, but return
+    // as soon as it ends rather than following the overhead glide back.
+    let in_scene = play.showing_shot() || free.0 || !fe.playing();
     let keyboard_look = window.focused
         && locals.iter().any(|&s| party.get(s).is_some_and(|m| m.devices.keyboard) && party.state(s).is_some_and(|s| s.alive) && enabled(s))
         && !in_scene
@@ -338,11 +340,12 @@ fn draw(
     let t = fixed.overstep_fraction();
     let view = |slot: usize| {
         let mine = players.iter().find(|(_, p, _, _)| p.slot == slot);
-        if let Some((_, p, body, _)) =
+        if let Some((_, p, body, animator)) =
             mine.filter(|(_, p, _, _)| enabled(slot) && p.look.on && party.state(slot).is_some_and(|s| s.alive) && !in_scene && p.going_out.is_none())
         {
             let head = party.state(slot).map_or(4.4, |s| s.head_height);
-            let eye = body.translation + Vec3::Y * head * body.scale.y;
+            // Levitation lifts the model, so the eyes rise with it.
+            let eye = body.translation + Vec3::Y * (head + animator.lift) * body.scale.y;
             (Transform::from_translation(eye).with_rotation(p.look.rotation(t)), true)
         } else {
             let (eye, target) = play.view_for(slot, t);
@@ -421,22 +424,30 @@ fn pose_gear(
         // Narrow local panes move the arms slightly further from the lens.
         let depth = 1.35 + (1.3 - aspect).max(0.0) * 1.6;
         let anchor = Mat4::from_scale(Vec3::splat(4.4 / head * 0.7))
-            * Mat4::from_translation(Vec3::new(0.0, -head + head * 0.14, depth * head / 4.4))
+            * Mat4::from_translation(Vec3::new(0.0, -head - animator.lift + head * 0.14, depth * head / 4.4))
             * root.to_matrix().inverse();
         for (side, (arm, wrist)) in animator.first_person_arms(&member.choice.class).into_iter().enumerate() {
             let hand: HashSet<_> = std::iter::once(wrist).chain(children.iter_descendants(wrist)).collect();
-            let sleeve = match (joints.get(arm), joints.get(wrist)) {
+            let (sleeve, shift) = match (joints.get(arm), joints.get(wrist)) {
                 (Ok(elbow), Ok(wrist)) => {
                     let from = anchor.transform_point3(elbow.translation());
                     let to = anchor.transform_point3(wrist.translation());
+                    // A swing that brings the hand up to the lens or across
+                    // the middle of the view would hide the world: the whole
+                    // hand and weapon move back out of the way together.
+                    // The swing is also calmed toward the hand's resting place
+                    // (the world animation reaches far for a whole hero seen
+                    // from above); its turns and timing are unchanged.
+                    let shoulder = Vec3::new(if side == 0 { 0.95 } else { -0.95 }, -1.5, 0.55);
+                    let rest = Vec3::new(shoulder.x * 0.6, -0.65, 1.6);
+                    let shift = keep_clear(rest + (to - rest) * SWING) - to;
                     // The world animation was made to show a whole hero.
                     // Extend only its forearm to a shoulder below the lens,
                     // so no severed elbow floats in the view. The hand and
                     // weapon keep the exact animated pose and hit timing.
-                    let shoulder = Vec3::new(if side == 0 { 0.85 } else { -0.85 }, -1.35, 0.12);
-                    connect_arm(from, to, shoulder)
+                    (connect_arm(from + shift, to + shift, shoulder) * Mat4::from_translation(shift), Mat4::from_translation(shift))
                 }
-                _ => Mat4::IDENTITY,
+                _ => (Mat4::IDENTITY, Mat4::IDENTITY),
             };
             for source in std::iter::once(arm).chain(children.iter_descendants(arm)) {
                 let Ok((mesh, material, pose, visible, tag)) = sources.get(source) else {
@@ -445,7 +456,7 @@ fn pose_gear(
                 let key = (p.slot, source);
                 present.insert(key);
                 let matrix = anchor * pose.to_matrix();
-                let matrix = if hand.contains(&source) { matrix } else { sleeve * matrix };
+                let matrix = if hand.contains(&source) { shift * matrix } else { sleeve * matrix };
                 let transform = Transform::from_matrix(matrix);
                 let visibility = if visible.get() { Visibility::Inherited } else { Visibility::Hidden };
                 let entity = match views.copies.get(&key).copied() {
@@ -480,6 +491,24 @@ fn pose_gear(
     });
 }
 
+/// Where a wrist may be in the equipment view (camera at the origin looking
+/// along +Z, the vertical half-view 0.7 across at depth 1): never nearer
+/// than [`NEAREST_HAND`], and lower toward the middle of the view, so a
+/// swing keeps to the sides and the bottom instead of covering the screen.
+fn keep_clear(wrist: Vec3) -> Vec3 {
+    let z = wrist.z.max(NEAREST_HAND);
+    let across = (wrist.x / z).abs();
+    let highest = (-0.3 + 0.8 * across.min(0.45)) * z;
+    Vec3::new(wrist.x, wrist.y.min(highest), z)
+}
+
+const NEAREST_HAND: f32 = 1.1;
+/// How much of the animation's reach the view's hands keep.
+const SWING: f32 = 0.65;
+/// The equipment camera's near plane: a weapon swung right up to the lens
+/// is cut there rather than filling the view.
+const GEAR_NEAR: f32 = 0.6;
+
 /// Map an arm's elbow to the off-screen shoulder and retain its wrist.
 /// Stretch along its length only; its width and the hand/weapon are unchanged.
 fn connect_arm(elbow: Vec3, wrist: Vec3, shoulder: Vec3) -> Mat4 {
@@ -495,6 +524,10 @@ fn connect_arm(elbow: Vec3, wrist: Vec3, shoulder: Vec3) -> Mat4 {
         * Mat4::from_quat(Quat::from_rotation_arc(direction, new.normalize()))
         * Mat4::from_mat3(stretch)
         * Mat4::from_translation(-elbow)
+}
+
+fn gear_projection() -> Projection {
+    Projection::custom(MirroredPerspective(PerspectiveProjection { fov: 70f32.to_radians(), near: GEAR_NEAR, ..default() }))
 }
 
 fn projection_for(first: bool) -> Projection {
@@ -565,6 +598,14 @@ mod tests {
         look.tick(SlotInput { held: SlotInput::FIRST_PERSON | SlotInput::MOUSE_LOOK, c_stick: Vec2::new(0.1, 0.05), ..default() }, 0.8, 1.0 / 30.0);
         assert!((look.yaw - 0.84).abs() < 0.00001);
         assert!((look.rotation(1.0) * Vec3::NEG_Z - look.direction()).length() < 0.00001);
+    }
+    #[test]
+    fn hands_stay_out_of_the_lens_and_the_middle() {
+        let near = keep_clear(Vec3::new(0.0, 0.0, 0.3));
+        assert_eq!(near.z, NEAREST_HAND);
+        assert!(near.y / near.z <= -0.3 + 1e-6, "lowered out of the middle");
+        let aside = Vec3::new(0.9, -0.2, 1.5);
+        assert_eq!(keep_clear(aside), aside, "a hand at the side and low stays put");
     }
     #[test]
     fn framing_the_sleeve_preserves_the_animated_wrist() {

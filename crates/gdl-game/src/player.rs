@@ -20,7 +20,7 @@
 //! | combo move (Z) | right bumper | G |
 //! | the power menu | D-pad | arrows |
 //!
-//! `GDL_WARP="x,y,z"` starts the hero there; `GDL_STICK="x,y"` holds the stick; `GDL_BUTTONS="attack@10-12,power"`
+//! `GDL_WARP="x,y,z[,degrees]"` starts the hero there (facing that way); `GDL_STICK="x,y"` holds the stick; `GDL_BUTTONS="attack@10-12,power"`
 //! holds buttons (`attack`, `power`, `turbo`, `magic`, `charge`, `strafe`,
 //! `combo`, `up`, `down`, `left`, `right`), each for the whole run or for a range of ticks since the hero
 //! appeared; `GDL_HOPS="x,y,z;x,y,z"` moves the hero onto each point in
@@ -787,13 +787,59 @@ impl Plugin for PlayerPlugin {
                     .before(crate::online::drive),
             )
             .add_systems(FixedUpdate, (apply_powers, show_body_looks).after(crate::player_state::PowersTick))
-            .add_systems(Update, level_stats)
+            .init_resource::<Resume>()
+            .add_systems(Update, (level_stats, remember_spots))
             .add_systems(
                 Update,
                 (spawn_player.run_if(resource_exists_and_changed::<LevelPopulation>).in_set(PlayerSpawn), interpolate)
                     .chain(),
             );
     }
+}
+
+/// Each player slot's feet and facing, if it has a hero.
+pub type Spots = [Option<([f32; 3], f32)>; MAX_PLAYERS];
+
+/// Where each hero stood when Manage Character opened over play: the tower
+/// it reloads into puts them back there instead of at its start.
+#[derive(Resource, Default)]
+pub struct Resume {
+    level: String,
+    spots: Spots,
+    /// The heroes have been put back (the camera may still look this frame).
+    used: bool,
+}
+
+impl Resume {
+    /// The heroes' spots on `level`, if they're coming back to it.
+    pub fn on(&self, level: &str) -> Option<&Spots> {
+        (self.level == level && self.spots.iter().any(Option::is_some)).then_some(&self.spots)
+    }
+}
+
+/// Notes the heroes' spots as play gives way to the select screen (not
+/// online, where a changed hero restarts everyone); anything else that
+/// leaves play forgets them.
+fn remember_spots(
+    fe: Res<crate::frontend::Frontend>,
+    lock: Res<crate::online::Lockstep>,
+    population: Option<Res<LevelPopulation>>,
+    players: Query<&Player>,
+    mut resume: ResMut<Resume>,
+    mut was_playing: Local<bool>,
+) {
+    if fe.selecting() && *was_playing && !lock.on {
+        *resume = Resume::default();
+        resume.level = population.map(|p| p.level.clone()).unwrap_or_default();
+        for p in &players {
+            if let Some(spot) = resume.spots.get_mut(p.slot) {
+                *spot = Some((p.mover.position, p.mover.facing));
+            }
+        }
+    } else if (!fe.selecting() && !fe.playing()) || (resume.used && fe.playing()) {
+        *resume = Resume::default();
+    }
+    *was_playing = fe.playing();
 }
 
 /// Loads each player's hero when its choice changes (none for an empty
@@ -895,23 +941,25 @@ fn spawn_player(
     mut materials: ResMut<Assets<LevelMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut warp_used: Local<bool>,
+    mut resume: ResMut<Resume>,
 ) {
     let Some(ground) = ground else { return };
     let collision = &ground.0;
-    let (mut feet, facing) = match population.player_start() {
+    let resumed = resume.on(&population.level).copied();
+    resume.used |= resumed.is_some();
+    let (mut feet, mut facing) = match population.player_start() {
         Some(s) => (s.position, s.yaw),
         None => {
             let [lo, hi] = collision.bounds;
             (std::array::from_fn(|i| (lo[i] + hi[i]) / 2.0), 0.0)
         }
     };
-    // `GDL_WARP="x,y,z"`: start somewhere else (testing) — on the first
-    // level only: a later level (after dying, an exit) starts at its own
-    // start.
-    let warped = std::env::var("GDL_WARP").ok().filter(|_| !std::mem::replace(&mut *warp_used, true)).and_then(|s| {
-        let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-        (v.len() == 3).then(|| [v[0], v[1], v[2]])
-    });
+    // `GDL_WARP="x,y,z[,degrees]"`: start somewhere else (testing),
+    // facing that way (0 is +Z, 90 is +X) — on the first level only: a
+    // later level (after dying, an exit) starts at its own start.
+    let warp = std::env::var("GDL_WARP").ok().filter(|_| !std::mem::replace(&mut *warp_used, true));
+    let warp: Vec<f32> = warp.iter().flat_map(|s| s.split(',')).filter_map(|x| x.trim().parse().ok()).collect();
+    let warped = (warp.len() >= 3).then(|| [warp[0], warp[1], warp[2]]);
     // Only onto a floor the player's own floor check stands on (the items'
     // probe also finds floors players fall through): with none under the
     // point the hero would fall out of the level, back to the point, for
@@ -925,6 +973,9 @@ fn spawn_player(
     });
     if let Some(at) = warped {
         feet = at;
+        if let Some(degrees) = warp.get(3) {
+            facing = degrees.to_radians();
+        }
     } else if let Some(y) = collision.floor_height(feet).or_else(|| collision.top_floor(feet[0], feet[2])) {
         // Stand on the floor under the start.
         feet[1] = y;
@@ -941,9 +992,13 @@ fn spawn_player(
     let mut first: Option<([f32; 3], f32, usize)> = None;
     for (slot, _) in party.members() {
         let Some((_, hero)) = models.slots.get(slot).and_then(Option::as_ref) else { continue };
-        let at = match first {
-            None => feet,
-            Some((at, radius, first_slot)) => start_spot(collision, at, radius, first_slot, slot, yaw),
+        // Back from Manage Character: where they stood (a newcomer by the
+        // first of them).
+        let back = resumed.and_then(|spots| spots[slot]);
+        let (at, facing) = match (back, first) {
+            (Some(spot), _) => spot,
+            (None, None) => (feet, facing),
+            (None, Some((at, radius, first_slot))) => (start_spot(collision, at, radius, first_slot, slot, yaw), facing),
         };
         first.get_or_insert((at, hero.radius, slot));
         spawn_hero(&mut commands, hero, slot, at, facing, (&mut meshes, &mut materials, &mut images));
@@ -1465,7 +1520,10 @@ fn tick(
         // The target the hero is heading for, and whether it walked into it
         // — or, with a fire wall or lightning shield, touched it with the
         // shield (not while a blow is making it react).
-        let found = combat::search(position, wanted, candidates());
+        // The game searches from the hero's collision centre (`+0x64`, the
+        // feet + 2.5), which its vertical tests measure from.
+        let centre = position + Vec3::Y * projectiles::PLAYER_CENTRE;
+        let found = combat::search(centre, wanted, candidates());
         let touching = found.filter(|f| reaction == 0 && f.distance < combat::WALK_INTO + p.radius);
         let shielded = touching.is_some() && p.armour_bits & (FIRE_WALL | LIGHTNING_SHIELD) != 0;
         let grown = p.special_bits & power::GROW != 0;
@@ -1761,22 +1819,23 @@ fn tick(
                 // to meet it.
                 // On a boss level a throw looks much further out.
                 let found = match found {
-                    None if boss_level => combat::search_within(position, wanted, combat::BOSS_THROW_RANGE, candidates()),
+                    None if boss_level => combat::search_within(centre, wanted, combat::BOSS_THROW_RANGE, candidates()),
                     f => f,
                 };
+                // A first-person throw goes where the hero looks, up or
+                // down too; with Auto Aim on, a target within 8° of the
+                // gaze draws it to its centre.
+                let gaze = p.look.on;
+                let assisted = found.as_ref().filter(|_| gaze && mine.auto_aim()).and_then(|f| {
+                    let eye = position + Vec3::Y * state.head_height * p.model_scale;
+                    let centre = f.position + Vec3::Y * (0.5 * f.height);
+                    let ray = p.look.direction();
+                    ((centre - eye).normalize_or(ray).dot(ray) >= 8f32.to_radians().cos()).then_some(centre)
+                });
                 let aim = match found {
-                    f if p.look.on => {
-                        // Keep the real release height and target assistance.
-                        // The gaze supplies a distant aim point when nothing
-                        // is under the reticle; projectiles still originate
-                        // from the hero and use their normal speed/damage.
-                        let eye = position + Vec3::Y * state.head_height * p.model_scale;
+                    _ if gaze => {
                         let from = position + Vec3::Y * projectiles::PLAYER_CENTRE;
-                        let ray = p.look.direction();
-                        let centre = f.map(|f| f.position + Vec3::Y * (0.5 * f.height))
-                            .filter(|&at| mine.auto_aim() && (at - eye).normalize_or(ray).dot(ray) >= 8f32.to_radians().cos())
-                            .unwrap_or(eye + ray * combat::BOSS_THROW_RANGE);
-                        (centre - from).normalize_or(ray)
+                        assisted.map_or(p.look.direction(), |centre| (centre - from).normalize_or(p.look.direction()))
                     }
                     Some(f) if held & (button::DEFEND | button::STRAFE) == 0 => {
                         let from = position + Vec3::Y * projectiles::PLAYER_CENTRE;
@@ -1787,8 +1846,9 @@ fn tick(
                 };
                 let wound_up = (time.elapsed_secs_f64() - p.attack_started) as f32;
                 debug!("{} releases a projectile after {wound_up:.2} s", current.name());
-                let targeted = found.is_some();
-                shots.write(HeroShot { hero: entity, feet: position, facing, aim, targeted, strike, wound_up });
+                let targeted = if gaze { assisted.is_some() } else { found.is_some() };
+                let facing = if gaze { p.look.yaw } else { facing };
+                shots.write(HeroShot { hero: entity, feet: position, facing, aim, targeted, gaze, strike, wound_up });
             }
         }
         p.last_clip = (animator.action, animator.frame);
@@ -1868,7 +1928,8 @@ fn strike_blow(
     targets: &Query<(Entity, &GlobalTransform, &Targetable)>,
     ground: Option<&LevelGround>,
 ) -> Option<Hit> {
-    let found = combat::search(position, facing, targets.iter().map(|(e, t, target)| (e, t.translation(), target)))?;
+    let centre = position + Vec3::Y * projectiles::PLAYER_CENTRE;
+    let found = combat::search(centre, facing, targets.iter().map(|(e, t, target)| (e, t.translation(), target)))?;
     if found.distance >= combat::REACH + p.radius {
         return None;
     }

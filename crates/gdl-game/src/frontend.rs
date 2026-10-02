@@ -1187,6 +1187,12 @@ impl Frontend {
         self.screen == Screen::Playing
     }
 
+    /// Whether the select screen (Manage Character) or the loading after
+    /// it is up.
+    pub fn selecting(&self) -> bool {
+        matches!(self.screen, Screen::Select | Screen::LoadingGame)
+    }
+
     /// Whether a menu is up.
     pub fn menu_open(&self) -> bool {
         !self.menus.is_empty()

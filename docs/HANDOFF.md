@@ -7,6 +7,31 @@ in order.
 
 ## Pick up here
 
+**2026-10-02 session: the user's bug list (do these first).** Done and
+checked in game (muted, scratch runs): first-person throws follow the gaze
+incl. pitch (A1 secret wall 5 broken from 9 units, chest revealed); hands
+kept out of the lens/middle (attack frame grid); secret walls break by
+throw and by melee; Manage Character keeps the heroes' places (tower
+(3.2,−15) kept — **a deliberate change from the original, the user chose
+it**, see frontend.md); G3's rising barrel breaks (`breakables::follow`:
+targets follow riding items); G4's hit switch is auto-aimed and hit (the
+search now starts at the hero's collision centre, feet + 2.5, as
+`FUN_800864b0`'s callers pass `+0x64`); generators leave their `GEN_<code>0`
+wreck (`FUN_8005ba08`). Online host-classic / client-first-person: 48
+matching checks. Changed but **not run-checked**: levitation raises the
+eye; after a cut / the opening the view returns straight to first person
+(`PlayCamera::showing_shot`); hint boxes in each first-person pane
+(`game_hud::PanelPlace`); G2's plank barrels (same `follow` path as G3,
+the plank moves by its animation matrix, node 1098; not triggered in a
+run). **Not reproduced:** "scroll message boxes sometimes don't appear in
+first person" — in A1 the box shows; all 133 placed scrolls have their
+text page (only levelL3/T2 lack groups); ask the user for the level/spot.
+**New request queued:** loading screens and the levels' intro cut scenes
+(look in frontend.md / the decompile for the loading screen and the
+level-start scenes before writing code). Disk: `target/` had grown to
+35 GB and filled the disk; keep one build (no helper worktree builds —
+the user doesn't want repeated full rebuilds).
+
 **Next jobs, in order** (the user's original queue). The online work and
 boss implementation are merged; the boss gameplay checks below remain.
 Complete the personal-view follow-up checks in this handoff first:
@@ -125,7 +150,7 @@ The user asked to wrap up because usage was low. All code and notes are
 saved in this checkpoint. Finish these checks before returning to the
 numbered co-op queue above:
 
-1. **Rerun online after the final item contact change**, with the host in
+1. **Done 2026-10-02 (48 matching checks, both views shot).** Rerun online after the final item contact change, with the host in
    classic/shared view and the client in first-person. The existing
    `tools/online_test.sh` accepts `HOST_ARTIFACTS` / `CLIENT_ARTIFACTS` for
    separate settings. Set `RUST_LOG=info` for checksum output. It already

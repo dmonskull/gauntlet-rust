@@ -709,7 +709,9 @@ while they animate (or a mover moves them).
 [`breakables.rs`](../crates/gdl-game/src/breakables.rs): each hittable
 item (armour byte ≠ −1; barrel containers 0x2B–0x2D before they break,
 obstacles but safe rocks, hit switches) gets a `TargetKind::Breakable`
-target at its touch centre. A blow takes damage − armour (at least 1,
+target at its touch centre, kept there as the item rides a moving floor
+(G2's dropping plank, G3's rising floor; `breakables::follow` — the game
+searches its items where they are). A blow takes damage − armour (at least 1,
 rounded) off its hit points (type `+0x44`), none for kind 0x800 blows. At
 0: containers flagged 0x200 break open (`USED`, the realm's
 `S_BARREL_WOOD<letter>` for barrels) and release their contents as a new

@@ -180,7 +180,13 @@ the fields elapsed while held.
 
 What the choices do (`FUN_80070c24`): Start → select; Options / Settings /
 sub-menu items → the sub-menu; Manage Character → back to the select
-screen at the character menu (`FUN_8008ffec(1)`); Shop / Inventory →
+screen at the character menu (`FUN_8008ffec(1)`: the heroes' objects are
+freed, `FUN_8007975c`; the tower stays loaded, `FUN_80053b9c`; `r13-0x72dc`
+= 0, so the level start after it, `FUN_80053530`, puts them back at the
+tower's start — only `r13-0x72dc` = 2 restores kept places,
+`DAT_80257030`). **The rewrite differs on purpose (the user's choice):**
+the heroes come back where they stood, with no opening shot
+(`player::Resume`); Shop / Inventory →
 `FUN_8009a140(1/2)`; Quit Game → Yes sets `r13-0x7004`, which switches to
 GAME OVER; Quit Level → Yes sets `r13-0x7008`, which takes every hero out
 of the level (`FUN_80078de8`: state `0xB`) so the level ends and the party

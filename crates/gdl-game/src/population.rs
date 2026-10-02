@@ -498,10 +498,19 @@ impl BuiltModel {
     }
 }
 
-/// A generator model's meshes for each strength level (index = level − 1),
-/// for stepping it down as it's damaged.
+/// A generator model's meshes for each strength level (index = level), for
+/// stepping it down as it's damaged. Level 0 is the wreck a destroyed
+/// generator leaves (`GEN_<code>0`, `GEN_SPECIAL0`); empty where the game
+/// has none, and then the generator goes ([`GeneratorLooks::broken`]).
 #[derive(Component)]
 pub struct GeneratorLooks(pub Vec<Vec<(Handle<Mesh>, Handle<LevelMaterial>)>>);
+
+impl GeneratorLooks {
+    /// The wreck's meshes, if the game has a broken model for it.
+    pub fn broken(&self) -> Option<&[(Handle<Mesh>, Handle<LevelMaterial>)]> {
+        self.0.first().map(Vec::as_slice).filter(|p| !p.is_empty())
+    }
+}
 
 /// Builds the model the game would draw for `name` (see `Sources::resolve`).
 #[allow(clippy::too_many_arguments)]
@@ -920,9 +929,10 @@ pub fn spawn(
         };
         let key = format!("{name}/{}", monster.unwrap_or(usize::MAX));
         // Generators draw one model per strength level (`GEN_<code><n>`)
-        // and step down as they're damaged: keep the lower levels' meshes.
+        // and step down as they're damaged: keep the lower levels' meshes,
+        // down to the wreck (level 0) a destroyed one leaves.
         let tier_looks = generator.map(|g| {
-            (1..=g.strength())
+            (0..=g.strength())
                 .map(|t| {
                     let n = g.name(t);
                     let k = format!("{n}/{}", monster.unwrap_or(usize::MAX));
@@ -1153,6 +1163,17 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_destroyed_generator_leaves_its_strength_0_model() {
+        // The game asks for `GEN_<code>0` (`GEN_SPECIAL0`) at strength 0.
+        assert_eq!(GeneratorLook::Monster("GRU", 3).name(0), "GEN_GRU0");
+        assert_eq!(GeneratorLook::Special(2).name(0), "GEN_SPECIAL0");
+        // Without that model the generator just goes.
+        let part = (Handle::<Mesh>::default(), Handle::<LevelMaterial>::default());
+        assert!(GeneratorLooks(vec![Vec::new(), vec![part.clone()]]).broken().is_none());
+        assert_eq!(GeneratorLooks(vec![vec![part.clone()], vec![part]]).broken().map(<[_]>::len), Some(1));
+    }
 
     #[test]
     fn item_glows_draw_but_hidden_and_contents_nodes_dont() {

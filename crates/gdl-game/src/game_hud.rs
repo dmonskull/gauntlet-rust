@@ -321,9 +321,9 @@ fn draw(
     let free_pads = crate::party::free_pads(&party, pads.iter());
     let next_free = (0..MAX_PLAYERS).find(|&s| party.get(s).is_none() && !frontend.as_deref().is_some_and(|f| f.waiting(s)));
     let mut p = Painter { draw: &mut draw, tex, images: &mut images };
-    let locals: Vec<_> = party.members().filter(|(_, m)| !m.devices.remote).map(|(s, _)| s).collect();
-    let personal = !free.0 && frontend.as_deref().is_none_or(Frontend::playing) && locals.iter().any(|&slot| options.player(if online.is_some() { 0 } else { slot }).first_person);
-    let split = personal && online.is_none() && locals.len() > 1;
+    let layout = personal_layout(&party, &options, online.is_some(), free.0, frontend.as_deref().is_none_or(Frontend::playing));
+    let personal = layout.is_some();
+    let locals = layout.as_ref().map(|(l, _)| l.clone()).unwrap_or_default();
     for slot in 0..MAX_PLAYERS {
         // A personal screen keeps its own status at the foot of its pane.
         // Empty panels would obscure the weapon without providing status.
@@ -356,17 +356,58 @@ fn draw(
         let fields = (game_time.delta_secs(), real.delta_secs() * 60.0);
         let coin_need = coins.as_ref().map_or(0, |c| c.need);
         draw_panel(&mut p, &fonts, x, member, out, turbo, intro_start, &mut panels[slot], textures, fields, coin_need);
-        if personal {
-            let index = locals.iter().position(|&s| s == slot).unwrap_or(0);
-            let (at, extent) = crate::first_person::rect(index, if split { locals.len() } else { 1 });
-            let scale = if split && locals.len() > 2 { 0.75 } else { 1.0 };
-            let origin = at * Vec2::new(512.0, 384.0);
-            let area = extent * Vec2::new(512.0, 384.0);
-            let target = Vec2::new(if split { origin.x + (area.x - 128.0 * scale) * 0.5 } else { 0.0 }, origin.y + area.y - 384.0 * scale);
-            for q in p.draw.quads[first_quad..].iter_mut().chain(&mut p.draw.texts[first_text..]) {
-                match q {
-                    Quad::Image { pos, size, .. } => { *pos = (*pos - Vec2::new(x, 0.0)) * scale + target; *size *= scale; }
-                    Quad::Text { pos, size, .. } => { *pos = (*pos - Vec2::new(x, 0.0)) * scale + target; *size *= scale; }
+        if let Some(place) = layout.as_ref().and_then(|(locals, split)| PanelPlace::of(slot, locals, *split)) {
+            place.apply(p.draw, first_quad, first_text);
+        }
+    }
+}
+
+/// First-person play's screens: the local players and whether they have
+/// panes of their own (local co-op), or None in classic play.
+pub(crate) fn personal_layout(party: &Party, options: &crate::options::GameOptions, online: bool, free: bool, playing: bool) -> Option<(Vec<usize>, bool)> {
+    let locals: Vec<_> = party.members().filter(|(_, m)| !m.devices.remote).map(|(s, _)| s).collect();
+    let personal = !free && playing && locals.iter().any(|&slot| options.player(if online { 0 } else { slot }).first_person);
+    personal.then(|| {
+        let split = !online && locals.len() > 1;
+        (locals, split)
+    })
+}
+
+/// Where a personal view puts a player's panel: at the foot of their own
+/// pane (smaller in a two-by-two grid). What's drawn for the panel at the
+/// classic layout's `PANEL_X + PANEL_WIDTH × slot` moves with it, and so
+/// does that player's hint box (`hints.rs`).
+pub(crate) struct PanelPlace {
+    from_x: f32,
+    scale: f32,
+    target: Vec2,
+    /// The pane's left edge and width, on the 512 × 384 screen.
+    pub pane: (f32, f32),
+}
+
+impl PanelPlace {
+    pub(crate) fn of(slot: usize, locals: &[usize], split: bool) -> Option<Self> {
+        let index = locals.iter().position(|&s| s == slot)?;
+        let (at, extent) = crate::first_person::rect(index, if split { locals.len() } else { 1 });
+        let scale = if split && locals.len() > 2 { 0.75 } else { 1.0 };
+        let origin = at * Vec2::new(512.0, 384.0);
+        let area = extent * Vec2::new(512.0, 384.0);
+        let target = Vec2::new(if split { origin.x + (area.x - PANEL_WIDTH * scale) * 0.5 } else { 0.0 }, origin.y + area.y - 384.0 * scale);
+        Some(Self { from_x: PANEL_X + PANEL_WIDTH * slot as f32, scale, target, pane: (origin.x, area.x) })
+    }
+
+    /// Moves the quads drawn since `first_quad` / `first_text`.
+    pub(crate) fn apply(&self, draw: &mut Draw2d, first_quad: usize, first_text: usize) {
+        let from = Vec2::new(self.from_x, 0.0);
+        for q in draw.quads[first_quad..].iter_mut().chain(&mut draw.texts[first_text..]) {
+            match q {
+                Quad::Image { pos, size, .. } => {
+                    *pos = (*pos - from) * self.scale + self.target;
+                    *size *= self.scale;
+                }
+                Quad::Text { pos, size, .. } => {
+                    *pos = (*pos - from) * self.scale + self.target;
+                    *size *= self.scale;
                 }
             }
         }
