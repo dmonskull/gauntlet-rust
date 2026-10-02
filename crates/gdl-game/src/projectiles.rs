@@ -924,7 +924,7 @@ fn hero_missile(
     let base = &["WAR", "VAL", "WIZ", "ARC", "DWF", "KNI", "SOR", "JES"][missile_class(class)];
     let model = WEAPONS.get(class).and_then(|(weapon, digits)| {
         let digit = digits[(level as usize / 10).min(9)] as char;
-        let own = format!("PLAYERS/{}/{}", choice.class, choice.variant);
+        let own = format!("PLAYERS/{}/{}", choice.class, crate::cheats::model_folder(&choice.variant));
         let effects = [format!("PLAYERS/{}/SFX{colour}", choice.class), format!("PLAYERS/{base}/SFX{colour}")];
         let data = if digit == '0' {
             load_atree(game, &own, &format!("{weapon}_THROW0"))

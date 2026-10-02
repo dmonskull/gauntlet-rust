@@ -28,6 +28,7 @@ One file per system, written only once it's confirmed against the actual
 | [items.md](items.md) | The hero's state (health, gold, keys, potions, powerups), item touch, pickups, doors, chests, exits, transporters, hints |
 | [powers.md](powers.md) | The armour and special power-ups: invulnerability, the shields, halo, gas mask, levitation, x-ray, invisibility, time stop, breaths, phoenix, growth, shrinking, the Pojo, Skorne's items, the shop's |
 | [frontend.md](frontend.md) | Fonts (`FONTS/*.FNT`, font slots), the 2D screen, title, character select, saving, the in-game menus, death, the loading screens and movies (`VQMOVIES`, MidiVid VQ), GAME OVER |
+| [cheats.md](cheats.md) | The name codes: secret characters (27, the models in the base classes' folders) and the gameplay cheats (`FUN_8007b4ec`), the developers' codes, the grant's slot pass |
 | [mechanics.md](mechanics.md) | Triggers and what they move (lifts, bridges, doors), rotators, carrying the hero, damage tiles, damaging walls, breakables — decoded; moving collision built, the rest not yet run |
 
 ## Confirmed and implemented

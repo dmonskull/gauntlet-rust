@@ -12,6 +12,7 @@ mod bootstrap;
 mod camera;
 mod camera_rig;
 mod character;
+mod cheats;
 mod collision_debug;
 mod combat;
 mod controls;
@@ -172,7 +173,7 @@ fn main() {
     } else {
         // The front end runs unless the command line picked a level or a
         // hero; a new game starts in the tower hub.
-        let skip_menus = args.level.is_some() || args.character.is_some();
+        let skip_menus = args.level.is_some() || args.character.is_some() || args.name.is_some();
         let first_level = args.level.as_deref().or((!skip_menus).then_some(frontend::TOWER));
         let mut game = match LoadedGame::load(install, first_level) {
             Ok(game) => game,
@@ -189,17 +190,27 @@ fn main() {
         // front end's select screen fills the party otherwise).
         let mut party = party::Party::default();
         if skip_menus {
-            let choice = player::PlayerChoice {
-                class: args.character.as_deref().unwrap_or("WAR").to_ascii_uppercase(),
-                variant: args.variant.as_deref().unwrap_or("BLU").to_ascii_uppercase(),
+            let name = args.name.as_deref().unwrap_or("LARRY");
+            // A secret character's code makes that character, as the
+            // select screen does (`cheats.rs`).
+            let choice = match cheats::secret_character(name) {
+                Some(secret) => player::PlayerChoice {
+                    class: ["WAR", "VAL", "WIZ", "ARC", "DWF", "KNI", "SOR", "JES"][secret.class].to_string(),
+                    variant: cheats::variant(secret),
+                },
+                None => player::PlayerChoice {
+                    class: args.character.as_deref().unwrap_or("WAR").to_ascii_uppercase(),
+                    variant: args.variant.as_deref().unwrap_or("BLU").to_ascii_uppercase(),
+                },
             };
             let devices = party::Devices { keyboard: true, ..default() };
-            party.join(0, player_state::new_member(&mut game.install, choice, "LARRY", None, devices));
+            party.join(0, player_state::new_member(&mut game.install, choice, name, None, devices));
         }
         app.insert_resource(game)
             .insert_resource(party)
             .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, first_person::FirstPersonPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
             .add_plugins(level_intro::LevelIntroPlugin)
+            .add_plugins(cheats::CheatsPlugin)
             .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin, deaths::DeathsPlugin, flash::FlashPlugin, fade::FadePlugin, quest::QuestPlugin, scene_light::SceneLightPlugin, saves::SavesPlugin))
             .add_plugins((
                 player_state::PlayerStatePlugin,

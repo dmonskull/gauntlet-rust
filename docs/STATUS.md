@@ -177,8 +177,8 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
   Controls changing what they list.
 - The attract loop (movies, scroll screens, credits, demo play) and the
   title's 30 s timeout.
-- The loading screens' narration and dash sound, and the ending movies
-  (the loading screens and level movies are in, `level_intro.rs`).
+- The ending movies (the loading screens, their narration, and the level
+  movies are in, `level_intro.rs`; the name codes too, `cheats.rs`).
 - Menu sounds, the spinning 3D arrow, border glows, inline icons, the menu
   fade.
 - The memory card screens; one record per class.
