@@ -491,14 +491,11 @@ fn start_sound(
     status: &AudioStatus,
     options: &GameOptions,
 ) -> Option<Entity> {
-    if movie.sound.is_empty() {
-        return None;
-    }
-    let pcm: Arc<[f32]> = match movie.bits {
-        16 => movie.sound.as_chunks::<2>().0.iter().map(|&s| f32::from(i16::from_le_bytes(s)) / 32768.0).collect(),
-        _ => movie.sound.iter().map(|&s| (f32::from(s) - 128.0) / 128.0).collect(),
-    };
-    let sound = MovieSound { pcm, rate: movie.sample_rate, channels: movie.channels.max(1) };
+    // The movies' sound is an ADS stream (DSP-ADPCM, stereo at 48 kHz),
+    // whatever the AVI's header says (`gdl_formats::movie`).
+    let (pcm, rate, channels) = movie.audio()?;
+    let pcm: Arc<[f32]> = pcm.iter().map(|&v| f32::from(v) / 32768.0).collect();
+    let sound = MovieSound { pcm, rate, channels: channels.max(1) };
     Some(
         commands
             .spawn((

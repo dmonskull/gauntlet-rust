@@ -147,20 +147,11 @@ pub fn resolve(args: &Args) -> Result<GameInstall, String> {
     let mut problem: Option<String> = None;
     loop {
         if let Some(why) = problem.take() {
-            rfd::MessageDialog::new()
-                .set_level(rfd::MessageLevel::Error)
-                .set_title("That isn't Gauntlet: Dark Legacy")
-                .set_description(&why)
-                .show();
+            tell_problem(&why);
         }
-        let picked = rfd::FileDialog::new()
-            .set_title("Select your Gauntlet: Dark Legacy (GameCube) disc image or main.dol")
-            .add_filter("GameCube disc image or main.dol", &["iso", "gcm", "dol", "rvz"])
-            .add_filter("All files", &["*"])
-            .pick_file()
-            .ok_or_else(|| {
-                format!("No game selected. You can also pass it on the command line.\n\n{USAGE}")
-            })?;
+        let picked = pick_game().ok_or_else(|| {
+            format!("No game selected. You can also pass it on the command line.\n\n{USAGE}")
+        })?;
         match GameInstall::locate(&picked) {
             Ok(install) => {
                 remember(&mut settings, &install);
@@ -171,10 +162,130 @@ pub fn resolve(args: &Args) -> Result<GameInstall, String> {
     }
 }
 
+/// Asks for the game: the system's file picker, or — when it can't be
+/// shown (macOS has refused to make the panel on a first launch) — a path
+/// typed or dragged into the terminal the program runs in.
+fn pick_game() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    macos::ready_for_dialogs();
+    let dialog = || {
+        rfd::FileDialog::new()
+            .set_title("Select your Gauntlet: Dark Legacy (GameCube) disc image or main.dol")
+            .add_filter("GameCube disc image or main.dol", &["iso", "gcm", "dol", "rvz"])
+            .add_filter("All files", &["*"])
+            .pick_file()
+    };
+    match quietly(dialog) {
+        Some(picked) => picked,
+        None => ask_in_terminal(),
+    }
+}
+
+/// Says what was wrong with the game picked: a message box, else the
+/// terminal.
+fn tell_problem(why: &str) {
+    let shown = quietly(|| {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("That isn't Gauntlet: Dark Legacy")
+            .set_description(why)
+            .show();
+    });
+    if shown.is_none() {
+        eprintln!("That isn't Gauntlet: Dark Legacy: {why}");
+    }
+}
+
+/// Runs a dialog, `None` if it failed (the dialog library panics when the
+/// system won't make its window), without the panic's message.
+fn quietly<R>(dialog: impl FnOnce() -> R + std::panic::UnwindSafe) -> Option<R> {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(dialog);
+    std::panic::set_hook(hook);
+    result.ok()
+}
+
+/// The path to the game, typed or dragged into the terminal (dragging
+/// escapes spaces with `\` or quotes the path).
+fn ask_in_terminal() -> Option<PathBuf> {
+    use std::io::{BufRead, Write};
+    eprintln!("The file picker couldn't open.");
+    eprint!("Drag your Gauntlet: Dark Legacy disc image (or its folder) here and press Enter: ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).ok()?;
+    let path = unescape_dragged(line.trim());
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// A path as a terminal pastes a dragged file: quoted, or with spaces and
+/// other characters escaped by a backslash.
+fn unescape_dragged(text: &str) -> String {
+    let text = text.trim();
+    for q in ['\'', '"'] {
+        if text.len() >= 2 && text.starts_with(q) && text.ends_with(q) {
+            return text[1..text.len() - 1].to_string();
+        }
+    }
+    // Windows' paths are made of backslashes: only quotes there.
+    if cfg!(windows) {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match (c, chars.clone().next()) {
+            ('\\', Some(next)) => {
+                out.push(next);
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+    /// A program started from a file (not an app bundle) has no running
+    /// application yet: make it a regular one, in front, so the system's
+    /// file picker can open.
+    pub fn ready_for_dialogs() {
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        let app = NSApplication::sharedApplication(mtm);
+        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        #[allow(deprecated)]
+        app.activateIgnoringOtherApps(true);
+    }
+}
+
 fn remember(settings: &mut Settings, install: &GameInstall) {
     let origin = std::fs::canonicalize(&install.origin).unwrap_or_else(|_| install.origin.clone());
     if settings.game.as_ref() != Some(&origin) {
         settings.game = Some(origin);
         settings.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dialog_that_fails_is_caught_not_a_crash() {
+        assert_eq!(quietly(|| -> u8 { panic!("unexpected NULL returned from +[NSOpenPanel openPanel]") }), None);
+        assert_eq!(quietly(|| 7), Some(7));
+    }
+
+    #[test]
+    fn dragged_paths_lose_their_escapes_and_quotes() {
+        #[cfg(not(windows))]
+        assert_eq!(unescape_dragged("/Users/me/Gauntlet\\ -\\ Dark\\ Legacy.iso "), "/Users/me/Gauntlet - Dark Legacy.iso");
+        assert_eq!(unescape_dragged("'/Users/me/My Games/gdl.iso'"), "/Users/me/My Games/gdl.iso");
+        assert_eq!(unescape_dragged("\"C:\\Games\\gdl.iso\""), "C:\\Games\\gdl.iso");
     }
 }
