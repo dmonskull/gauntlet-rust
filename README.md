@@ -23,6 +23,23 @@ Ready-to-run builds for Windows, macOS and Linux are on the
 [Releases page](https://github.com/dmonskull/gauntlet-rust/releases):
 unzip, run `gdl-game`, and pick your own copy of the game when it asks.
 
+### Which copy of the game you need
+
+The **original USA GameCube release, Rev 0**: game ID `GUNE5D`, disc
+revision 0 ([Redump #7032](http://redump.org/disc/7032/)). Everything here
+is checked against it. A full disc image of it matches:
+
+| Size | CRC-32 | MD5 | SHA-1 |
+| --- | --- | --- | --- |
+| 1,459,978,240 bytes | `5bd30dd8` | `308cab2e7a82f72a5aed2209d766f65a` | `8046ffb66a16a612277df12246390ed21b6db4ad` |
+
+The later USA **Rev 1** ([Redump #70030](http://redump.org/disc/70030/),
+also `GUNE5D`) and the European release (`DL-DOL-GUNP-EUR`,
+[Redump #16413](http://redump.org/disc/16413/)) haven't been tested: they
+load with a warning. Online, every player needs the same game ID and
+revision. To check yours in Dolphin: View → List Columns → Revision shows
+the revision, and right-click → Properties → Verify computes the hashes.
+
 ## Progress
 
 How close the rewrite is to the original GameCube game, judged area by area

@@ -26,18 +26,32 @@ the plank moves by its animation matrix, node 1098; not triggered in a
 run). **Not reproduced:** "scroll message boxes sometimes don't appear in
 first person" — in A1 the box shows; all 133 placed scrolls have their
 text page (only levelL3/T2 lack groups); ask the user for the level/spot.
-**Loading screens and level movies: done (2026-10-02).** `level_intro.rs`
-(the screen and movie), `gdl_formats::movie` (MVDV decoder, checked
-against FFmpeg), `LEVL +0x34` / `+0x5C` → `MAPS` in `world_data.rs`; all
-in docs/frontend.md, "Loading screens and movies". Checked in game: the
-tower's A1 portal → the Castle map (Courtyard pulsing) → the courtyard
-picture with "Loading..." (6.55 s, the game's 390 fields) → movieA1 (5.1
-s) → play with the opening shot; Start skips the movie (39/153 frames);
-E1 → E2 draws the temple path's 6 dashes one by one, no movie; first
-person shows nothing over it. `GDL_SKIP_INTRO=1` skips it (smoke.sh sets
-it). Left: the narration (two announcer lines, `FUN_8009f5bc`), the dash
-sound (`FUN_8009f570`), the sound bank step, the ending movies
-(`victory`, `garm`), and online (every machine would have to wait).
+**Loading screens and level movies: done (2026-10-02), offline and
+online.** `level_intro.rs` (screen, narration, dash sounds, movie),
+`gdl_formats::movie` (MVDV decoder, checked against FFmpeg), `LEVL +0x04`
+/ `+0x34` / `+0x5C` → `MAPS`, `AUDS +0x10` → `SNDS` in `world_data.rs`;
+all in docs/frontend.md, "Loading screens and movies". Checked in game:
+the tower's A1 portal → the Castle map → the courtyard picture with
+"Loading..." (6.55 s, the game's 390 fields) → movieA1 (5.1 s) → play with
+the opening shot; any button skips the movie; E1 → E2 draws the temple
+path's 6 dashes; first person shows nothing over it. Online (scratch
+`online_intro.zsh`: two games over loopback, `GDL_HOPS` onto the portal —
+hops now count lockstep ticks online): both machines go through it on the
+same tick and stay in sync (70 checks); the host's press skips the movie
+for both. `GDL_SKIP_INTRO=1` skips it (smoke.sh sets it). Intros only
+come with `ChangeLevelTo::finishing` (not a game starting on a level).
+Left: the sound bank step, the ending movies (`victory`, `garm`).
+
+**Online leaving (2026-10-02).** Leaving or quitting never holds the host
+(measured); a silent machine is dropped after 4 s (`SILENT_LEAVES`, was
+10); Leave Game before the tower warns that the level's progress for that
+character is lost (`LEAVE_LEVEL`, `Menu::with_note`). The disc header's
+maker/disc/revision bytes were read from the wrong offsets (fixed: 4–5,
+6, 7); the install now has `revision` and warns on anything but Rev 0,
+and the online build string carries it. The user's disc is the original
+USA release, Rev 0 (Redump #7032; README "Which copy of the game you
+need").
+
 Disk: `target/` had grown to
 35 GB and filled the disk; keep one build (no helper worktree builds —
 the user doesn't want repeated full rebuilds).

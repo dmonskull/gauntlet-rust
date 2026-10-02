@@ -43,10 +43,12 @@ impl DiscHeader {
             }
         })?;
 
+        // The game code and maker (`GUNE` + `5D`), the disc number, then
+        // the disc's revision (0 for the first release).
         let game_id = ascii_str(&header[0..6]);
-        let maker_code = ascii_str(&header[6..8]);
-        let disc_number = header[0x18];
-        let disc_version = header[0x19];
+        let maker_code = ascii_str(&header[4..6]);
+        let disc_number = header[6];
+        let disc_version = header[7];
         let title = cstr(&header[0x20..0x60]);
         let dol_offset = be_u32(&header[0x420..0x424]);
         let fst_offset = be_u32(&header[0x424..0x428]);
@@ -221,10 +223,21 @@ mod tests {
         let mut cursor = Cursor::new(data);
         let header = DiscHeader::read_from(&mut cursor).unwrap();
         assert_eq!(header.game_id, "GUNE5D");
+        assert_eq!(header.maker_code, "5D");
+        assert_eq!((header.disc_number, header.disc_version), (0, 0));
         assert_eq!(header.title, "Gauntlet");
         assert_eq!(header.dol_offset, 0x1DA00);
         assert_eq!(header.fst_offset, 0x25B200);
         assert_eq!(header.fst_size, 0x11872);
+    }
+
+    #[test]
+    fn reads_the_disc_number_and_revision() {
+        let mut data = make_header(0x1DA00);
+        data[6] = 1;
+        data[7] = 1;
+        let header = DiscHeader::read_from(&mut Cursor::new(data)).unwrap();
+        assert_eq!((header.disc_number, header.disc_version), (1, 1));
     }
 
     #[test]

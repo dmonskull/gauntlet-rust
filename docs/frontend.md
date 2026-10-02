@@ -698,19 +698,38 @@ Level movies: A1 `movieA1`, A2 `iceaxe`, A3 `movieA3`, B1 `movieB1`, B4
 `lamp`, J1 `movieJ1`, J2 `lantern`, J3 `movieJ3`, K2 `movieK1`, K3
 `movieK3`, K4 `goodbook`.
 
-**Here** (`level_intro.rs`): `exits::change_level_to` hands a change to
-any level but the tower to the intro (not online — every machine would
-have to wait for the others — nor with `GDL_SKIP_INTRO=1`). The front end
-shows its `Intro` screen (play frozen, the HUD hidden); the world's change
-is made two frames later, so the screen is up before the load stalls;
-the map is drawn and timed as above (fields from real time, at most 4 a
-frame so a stall doesn't skip dashes); then the movie plays from real
-time with its sound (`MovieSound`, at the music volume) — Start or A
-skips it — and play starts, the level's music held until then
-(`audio.rs` `hold_music`). The way back from the secret realm
-(`SecretReturn::coming_back_to`) gets the transition screen and no movie.
-Not done: the narration, the dash sound, the sound bank step and the
-ending movies.
+**Skipping.** The player (`FUN_800da290`) reads all four pads each frame:
+a button newly pressed on any connected pad starts its exit, two frames
+later. The map screen reads no buttons — it runs its time. (The level's
+opening shot is skipped separately: [camera.md](camera.md), "Level start".)
+
+**Here** (`level_intro.rs`): `exits::change_level_to` hands a level
+change made by the heroes leaving (`finishing`: an exit, a boss level's
+end) for any level but the tower to the intro (not with
+`GDL_SKIP_INTRO=1`; a game starting or starting again on a level has
+none). The front end shows its `Intro` screen (play frozen, the HUD
+hidden); the world's change is made two frames later, so the screen is up
+before the load stalls; the map is drawn and timed as above (fields from
+real time, at most 4 a frame so a stall doesn't skip dashes), each dash
+with the realm's `S_MAPDOT<letter>` (the `0x80122BE4` ids), and the
+narration — `SNDS[AUDS +0x10]` (`S_ENTERING1A`, `…2A` on boss levels) then
+`S_<level>NAME` (the loader resolves it for levels with `LEVL +0x04` set,
+not in the secret realm) — said a line after the other from their catalog
+lengths, the screen waiting for them. Then the movie plays from real time
+with its sound (`MovieSound`, at the music volume): any button skips it,
+and play starts, the level's music held until then (`audio.rs`
+`hold_music`). The way back from the secret realm
+(`SecretReturn::coming_back_to`) gets the transition screen, no
+narration, no movie.
+
+Online every machine starts the intro after the same tick (the change
+comes from a tick), and while any machine is in it the lockstep's level
+work holds every tick (`Lockstep::level_work`), so play starts again
+together on the same tick. Only the host's presses skip the movie; its
+skip goes to everyone (`Message::SkipMovie`, kept by a machine still on
+its map, which then plays no movie). The narration is played by each
+machine itself (the voice queues run on ticks online). Not done: the
+sound bank step and the ending movies.
 
 ## GAME OVER (`0x4014`)
 

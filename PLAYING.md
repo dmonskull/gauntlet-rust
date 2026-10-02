@@ -5,9 +5,13 @@
 - This program for your system (`gdl-game`, or `gdl-game.exe` on Windows),
   from the [Releases page](https://github.com/dmonskull/gauntlet-rust/releases).
   On Linux it needs the usual desktop libraries (ALSA, udev, GTK 3).
-- **Your own copy of Gauntlet: Dark Legacy for the GameCube** (USA,
-  `GUNE5D`): the disc image (`.iso`, `.gcm` or Dolphin's `.rvz`), or an
-  extracted disc folder. The program ships no game data.
+- **Your own copy of Gauntlet: Dark Legacy for the GameCube**: the
+  original USA release, **Rev 0** (`GUNE5D`, revision 0 — the
+  [README](README.md#which-copy-of-the-game-you-need) has its hashes):
+  the disc image (`.iso`, `.gcm` or Dolphin's `.rvz`), or an extracted
+  disc folder. Rev 1 and the European release load with a warning but
+  aren't tested; online, everyone needs the same revision. The program
+  ships no game data.
 
 ## Start
 

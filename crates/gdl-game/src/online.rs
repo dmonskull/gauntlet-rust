@@ -342,8 +342,10 @@ pub struct OnlineFailed(pub String);
 /// The build every machine must share: the game's version, its lockstep
 /// revision and the game disc's id.
 fn game_version(game: &LoadedGame) -> String {
+    // The revision too: a disc whose files differ would part the games.
     let disc = game.install.game_id.as_deref().unwrap_or("unknown");
-    format!("gdl-game {} lockstep {LOCKSTEP_REVISION} disc {disc}", env!("CARGO_PKG_VERSION"))
+    let revision = game.install.revision.map_or_else(|| "?".to_string(), |r| r.to_string());
+    format!("gdl-game {} lockstep {LOCKSTEP_REVISION} disc {disc} rev {revision}", env!("CARGO_PKG_VERSION"))
 }
 
 /// The session's settings. `GDL_NET_LOCAL=1` (testing: two games on one
