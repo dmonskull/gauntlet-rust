@@ -95,7 +95,8 @@ Note that attacking is on the *held* word: holding A keeps attacking.
 
 ### Search (`FUN_800864b0`)
 
-From the hero's position after this tick's move, in a heading, up to 30
+From the hero's collision centre (`+0x64`, the feet + 2.5; `FUN_80080d3c`
+passes it, moved by this tick's step), in a heading, up to 30
 units (`r2-0x5b28`; 200 in some special mode). Nothing hit last tick is
 tried first (the monster bumped into while moving, within a 60° cone, and
 the last generator, within 45°); otherwise the nearest of:

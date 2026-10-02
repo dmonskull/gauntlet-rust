@@ -243,8 +243,12 @@ byte; -1 = none) comes off, at least 1 left, and the result, rounded half
 away from zero (`FUN_800bec14`), comes off the i16 hit points `+0xD0`.
 The strength `+0xE2` is recomputed from the type's hit points × level
 `+0xCC` (`per`): 3 above 2 × per, 2 above per, else 1, 0 at none; a change
-swaps the model (`GEN_%s%d`, `GEN_SPECIAL%d`), and at 0 the generator is
-freed and its monsters forget it. Experience: `docs/items.md`.
+swaps the model (`GEN_%s%d`, `GEN_SPECIAL%d`) — at 0 too, to the wreck
+`GEN_<code>0`: when that model exists it stays, flag 1 cleared and armour
+`0xFF` (no more blows); only without one is the item freed (`FUN_8005ba08`
+around the `GEN_%s%d` lookups: `FUN_800674e0`, then `FUN_800b8684` and two
+fallbacks) — and its monsters forget it. Here: `damage.rs`
+(`GeneratorLooks::broken`). Experience: `docs/items.md`.
 
 Sounds, by the realm id `r13-0x7220` (the level id >> 8: A–K = 1–11, S 12,
 L 13, T 0): `FUN_8009bfac` plays the hit sound from `0x80123910[realm]`,

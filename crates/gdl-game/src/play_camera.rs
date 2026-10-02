@@ -304,6 +304,13 @@ impl PlayCamera {
         self.cut.is_none() && self.intro.is_none()
     }
 
+    /// Whether a fixed shot has the view: a cut showing its point, or the
+    /// level-start shot's hold (not the glide back, which a personal view
+    /// skips).
+    pub fn showing_shot(&self) -> bool {
+        self.cut.is_some_and(|c| c.delay <= 0.0) || self.intro.is_some_and(|i| i.fields_left >= 2.0)
+    }
+
     /// Whether the level-start shot is still showing.
     pub fn opening(&self) -> bool {
         self.opening
@@ -397,9 +404,12 @@ fn start(
     cameras: Option<Res<LevelCameras>>,
     party: Res<Party>,
     mut scene_light: ResMut<SceneLight>,
-    old: Option<Res<PlayCamera>>,
+    (old, resume): (Option<Res<PlayCamera>>, Res<crate::player::Resume>),
 ) {
     let Some(ground) = ground else { return };
+    // Back from Manage Character: no opening shot, the camera on the heroes
+    // where they stood.
+    let resumed = resume.on(&population.level).and_then(|spots| spots.iter().flatten().next().map(|(at, _)| *at));
     let records = cameras.and_then(|c| c.0.get(&population.level.to_ascii_lowercase()).cloned());
     // The level's light lights everything that isn't prelit.
     *scene_light = records.as_ref().map_or_else(SceneLight::default, |(_, light, _)| SceneLight::new(light));
@@ -418,7 +428,7 @@ fn start(
         .collect();
     let [lo, hi] = ground.0.bounds;
     let bounds = record.target_bounds(lo, hi);
-    let feet = population.player_start().map_or([0.0; 3], |s| s.position);
+    let feet = resumed.or_else(|| population.player_start().map(|s| s.position)).unwrap_or([0.0; 3]);
     let head = party.states().next().map_or(DEFAULT_HEAD, |(_, s)| s.head_height);
     let rig = CameraRig::new(points, bounds, record.near, top_point(feet, head), feet).with_far(record.far, record.pitch_limit);
     // A boss level with a boss camera opens with it instead of the
@@ -427,7 +437,7 @@ fn start(
     let boss = boss_record.filter(|_| has_boss).map(BossCam::new);
     let start_point = starting_locator(&population.population, population.entry)
         .map(|l| CameraPoint { position: l.position, yaw: l.rotation[1], pitch: l.rotation[0], param: l.param });
-    let intro = if boss.is_some() { None } else { intro_shot(&population.population, population.entry, feet) };
+    let intro = if boss.is_some() || resumed.is_some() { None } else { intro_shot(&population.population, population.entry, feet) };
     let previous = intro.map_or((rig.eye(), rig.target), |i| (i.eye, i.target));
     // Online each hero's own camera comes with the host's choice (`tick`).
     let own = std::array::from_fn(|_| None);

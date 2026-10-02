@@ -24,6 +24,12 @@ look angles. Lockstep revision 2 excludes older builds with different
 movement rules. Controller look is 2.4 radians/s; mouse sensitivity is
 0.003 radians/pixel. The gaze is interpolated for rendering.
 
+Throws go where the hero looks, up or down as well (`projectiles::gaze_aim`,
+the slope kept within −1…1.2 so the lob still travels); with Auto Aim a
+target within 8° of the gaze draws the throw onto its centre. The game's
+facing cone and its flattening of untargeted throws apply to classic
+throws only.
+
 ## Equipment and screens
 
 The view draws the hero's own live forearm, hand and equipped weapon
@@ -34,14 +40,23 @@ from off-screen shoulders to their animated wrists; the full transform
 is retained so its stretch does not lose shear. This is presentation
 only, with no collision or combat entities. A small central marker shows
 the throw direction. The camera stays steady; the original arm poses
-supply the movement. Eye height follows the hero's class and growth.
+supply the movement, calmed to 65 % of their reach about a resting hand
+place, and each wrist is kept at least 1.1 from the lens and below the
+middle of the view (lower the nearer the centre), so a standing swing no
+longer covers the screen; the equipment camera's near plane (0.6) cuts a
+weapon swung right at the lens. Eye height follows the hero's class,
+growth and levitation's lift.
 
 Solo and online views use the full window. If any local co-op player
 chooses first-person, two local heroes use left/right panes and three or
 four use a grid. Each pane may be first-person or classic. Equipment
 moves further from the lens in narrow panes, and status panels fit their
 own panes. Opening shots, cut scenes, going out and menus keep the
-original presentation. Menus and window focus loss release mouse capture.
+original presentation, but only while their shot holds: the glide back to
+the play camera after a cut or the opening is skipped, so the view returns
+straight to the eyes. Hint boxes go with their player's panel into that
+player's pane and stay inside it (`game_hud::PanelPlace`). Menus and
+window focus loss release mouse capture.
 
 ## Pickups and progression
 

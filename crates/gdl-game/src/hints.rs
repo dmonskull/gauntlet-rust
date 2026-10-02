@@ -22,7 +22,7 @@ use gdl_formats::text::TextRom;
 
 use crate::audio::QueueVoice;
 use crate::character;
-use crate::font::{Draw2d, Flush2d, GameFonts, TextStyle, UiTextures};
+use crate::font::{Draw2d, Flush2d, GameFonts, Quad, TextStyle, UiTextures};
 use crate::frontend::Frontend;
 use crate::level::LoadedGame;
 use crate::message_box::{DrawBox, MessageBox};
@@ -562,14 +562,16 @@ fn draw_hint(
     mut tex: Option<ResMut<UiTextures>>,
     mut images: ResMut<Assets<Image>>,
     mut draw: ResMut<Draw2d>,
+    (party, options, online, free): (Res<Party>, Res<crate::options::GameOptions>, Option<Res<crate::online::Online>>, Res<crate::camera::FreeLook>),
 ) {
     let (Some(up), Some(fonts), Some(tex)) = (hints.up.as_ref(), fonts, tex.as_deref_mut()) else { return };
-    if frontend.is_some_and(|f| !f.playing() || f.menu_open()) || boxes.is_open() || camera.is_some_and(|c| c.in_cut()) {
+    if frontend.as_deref().is_some_and(|f| !f.playing() || f.menu_open()) || boxes.is_open() || camera.is_some_and(|c| c.in_cut()) {
         return;
     }
     let widest = up.lines.iter().map(|l| fonts.width(up.slot, up.scale, l)).fold(0.0, f32::max);
     let height = fonts.line_height(up.slot, up.scale).trunc();
     let ((x, y), (w, h), (cx, cy)) = place_box(up.player, widest, up.lines.len() as f32 * (height + MEASURE_GAP));
+    let (first_quad, first_text) = (draw.quads.len(), draw.texts.len());
     if let Some(panel) = tex.get(PANEL, &mut images) {
         draw.image(&panel, x, y, w, h, Color::srgba(1.0, 1.0, 1.0, PANEL_ALPHA));
     }
@@ -581,6 +583,28 @@ fn draw_hint(
     for l in &up.lines {
         draw.text(&fonts, &ink, -cx, line_y, l);
         line_y += step;
+    }
+    // First person: a player's box goes with their panel, into their own
+    // pane, and stays inside it.
+    let playing = frontend.as_deref().is_none_or(Frontend::playing);
+    if let Some((locals, split)) = crate::game_hud::personal_layout(&party, &options, online.is_some(), free.0, playing)
+        && let Some(place) = crate::game_hud::PanelPlace::of(up.player, &locals, split)
+    {
+        place.apply(&mut draw, first_quad, first_text);
+        let (left, width) = place.pane;
+        let (lo, hi) = draw.quads[first_quad..].iter().fold((f32::MAX, f32::MIN), |(lo, hi), q| match q {
+            Quad::Image { pos, size, .. } => (lo.min(pos.x), hi.max(pos.x + size.x)),
+            Quad::Text { .. } => (lo, hi),
+        });
+        let shift = if lo < left { left - lo } else if hi > left + width { (left + width - hi).max(left - lo) } else { 0.0 };
+        if shift != 0.0 {
+            let draw = &mut *draw;
+            for q in draw.quads[first_quad..].iter_mut().chain(&mut draw.texts[first_text..]) {
+                match q {
+                    Quad::Image { pos, .. } | Quad::Text { pos, .. } => pos.x += shift,
+                }
+            }
+        }
     }
 }
 

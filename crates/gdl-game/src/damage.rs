@@ -8,7 +8,8 @@
 //! whole hit points (the blow scaled by the hero's level against the
 //! level's, less their armour, at least 1: `enemy::item_damage`), lose a
 //! strength level for each item-type's worth (their monsters come out
-//! weaker) and are gone at 0 with their model. Blows on them earn five
+//! weaker) and at 0 leave their broken model (`GEN_<code>0`) where the
+//! game has one, else are gone with their model. Blows on them earn five
 //! times a blow on one of their monsters.
 //!
 //! Monster blows (`MonsterHit`) hurt the hero through `HurtHero`, voiced
@@ -200,15 +201,25 @@ pub(crate) fn apply_hits(
                     }
                 }
                 if g.hit_points <= 0.0 {
-                    for (e, model, _, _) in &models {
-                        if model.0 == g.placement {
-                            commands.entity(e).try_despawn();
+                    // Strength 0: the game swaps in its broken model
+                    // (`GEN_<code>0`) where it has one — the wreck stays,
+                    // still in the way, but makes nothing and takes no
+                    // more blows — and frees the item where it hasn't.
+                    let mut wrecked = false;
+                    for (e, model, looks, children) in &models {
+                        if model.0 != g.placement {
+                            continue;
+                        }
+                        match looks.and_then(GeneratorLooks::broken) {
+                            Some(parts) => {
+                                show_look(e, parts, children, &mut commands);
+                                wrecked = true;
+                            }
+                            None => commands.entity(e).try_despawn(),
                         }
                     }
                     commands.entity(hit.target).try_despawn();
-                    // The game frees its item: nothing of it is left to
-                    // walk into.
-                    if let Some(items) = items.as_deref_mut() {
+                    if !wrecked && let Some(items) = items.as_deref_mut() {
                         items.free(g.placement, &mut commands);
                     }
                     if by_hero && let Some(state) = state.as_mut() {
@@ -222,13 +233,8 @@ pub(crate) fn apply_hits(
                         // Its model steps down with it.
                         for (e, model, looks, children) in &models {
                             let (true, Some(looks)) = (model.0 == g.placement, looks) else { continue };
-                            let Some(parts) = looks.0.get(tier as usize - 1) else { continue };
-                            for c in children.into_iter().flatten() {
-                                commands.entity(*c).try_despawn();
-                            }
-                            for (mesh, material) in parts {
-                                commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), ChildOf(e)));
-                            }
+                            let Some(parts) = looks.0.get(tier as usize) else { continue };
+                            show_look(e, parts, children, &mut commands);
                         }
                         debug!("generator {} drops to strength {tier}", g.placement);
                     }
@@ -279,6 +285,21 @@ pub mod resists {
     pub const STEADY: u32 = 0x4_0000;
     /// Magic is resisted.
     pub const MAGIC_RESIST: u32 = 0x10;
+}
+
+/// Swaps a generator model's meshes for one strength level's look.
+fn show_look(
+    model: Entity,
+    parts: &[(Handle<Mesh>, Handle<crate::level_material::LevelMaterial>)],
+    children: Option<&Children>,
+    commands: &mut Commands,
+) {
+    for c in children.into_iter().flatten() {
+        commands.entity(*c).try_despawn();
+    }
+    for (mesh, material) in parts {
+        commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), ChildOf(model)));
+    }
 }
 
 /// By a blow's element (fire, lightning, light, acid: its kind's low four

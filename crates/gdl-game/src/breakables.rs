@@ -67,6 +67,7 @@ impl Plugin for BreakablesPlugin {
             .add_systems(
                 FixedUpdate,
                 (
+                    follow.before(crate::player::PlayerTick),
                     hits.after(crate::player::PlayerTick).before(crate::damage::apply_hits),
                     flash_obstacles.after(hits),
                     // A chest set off explodes on the next tick.
@@ -165,6 +166,7 @@ fn barrel_sound(kind: &str, realm: usize) -> Option<String> {
 
 fn setup(mut commands: Commands, items: Res<LevelItems>) {
     let mut count = 0;
+    let riders = items.riders();
     for view in items.views() {
         let class = view.ty.class;
         let subtype = view.ty.subtype;
@@ -180,6 +182,9 @@ fn setup(mut commands: Commands, items: Res<LevelItems>) {
             continue;
         }
         let at = Vec3::from(view.shape.centre);
+        if let Some((_, node)) = riders.iter().find(|(p, _)| *p == view.placement) {
+            debug!("breakable {} rides moving node {node}", view.placement);
+        }
         debug!(
             "breakable {} {} ({class:?} {subtype:#x}) at {at}, {} hp, armour {}, holds {:?}",
             view.placement,
@@ -197,6 +202,21 @@ fn setup(mut commands: Commands, items: Res<LevelItems>) {
         count += 1;
     }
     info!("breakables: {count}");
+}
+
+/// Keeps each breakable's target on its item, which may have moved since
+/// the level was built: barrels riding a moving floor (G2's planks that
+/// drop, G3's rising floor) or falling. The game searches the items where
+/// they are (`docs/mechanics.md`, "The hit search").
+fn follow(items: Option<Res<LevelItems>>, mut breakables: Query<(&Breakable, &mut Transform)>) {
+    let Some(items) = items else { return };
+    for (b, mut transform) in &mut breakables {
+        let Some(view) = items.view(b.placement) else { continue };
+        let at = Vec3::from(view.shape.centre);
+        if transform.translation != at {
+            transform.translation = at;
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
