@@ -26,42 +26,18 @@ the plank moves by its animation matrix, node 1098; not triggered in a
 run). **Not reproduced:** "scroll message boxes sometimes don't appear in
 first person" — in A1 the box shows; all 133 placed scrolls have their
 text page (only levelL3/T2 lack groups); ask the user for the level/spot.
-**Loading screens and level movies (user's request; in progress — do this
-first).** Decoded so far, all from the decompile and the files:
-- Movies: `VQMOVIES/*.avi`, MidiVid VQ (`MVDV`) 512 × 384 at 30 fps plus
-  unsigned 8-bit mono PCM (~55 kHz, the rate in the AVI). The level record
-  `LEVL +0x34` names the movie (A1 `movieA1`, A2 `iceaxe`, A3 `movieA3`,
-  B1, B4, B5 `javelin`, C1, C3 `bellows`, C4, D1, D3, D4 `scimitar`, E1
-  `soulsave`, G1, G3 `fscroll`, G4, H1, I1, I3, I4 `lamp`, J1, J2
-  `lantern`, J3, K2 `movieK1`, K3, K4 `goodbook`); `+0x44` 0x2C/0x2B are
-  the endings (`victory`, `garm`). Decoder **done**:
-  `gdl_formats::movie` (`Movie::parse`, `MvdvDecoder`, `Movie::wav`);
-  `examples/moviecheck.rs` matches FFmpeg sample for sample (MovieA1 153,
-  MovieG4 367 frames; these are all key frames, so the delta path is
-  untested). **Playback not hooked up yet.**
-- When (play loop `FUN_80054244`): a level ending with the next level not
-  the tower → `FUN_80058074(next)`, `FUN_8001a630(0x78, secret)` (the
-  loading screen, mode `0x400F`); each frame `FUN_8001a220` steps it
-  (0: narration `FUN_8009f5bc` unless secret; 1: wait for the load; 2:
-  voices; 3: sound `+0x64`; 4: `FUN_80017acc(10)`; then done), then
-  `FUN_80019c80(…)` plays the record's movie (only with `r13-0x7154` = 0,
-  mode flag `0x10` clear and exit kind `r13-0x72dc` = 0; mode `0x400E`;
-  Start, button `0x2000000`, skips a level movie, `FUN_80019bec`) and
-  `FUN_80053530` starts the level. The tower → level path (`FUN_80054d18`)
-  does the same.
-- Loading screen (`FUN_8001a630`): with the record's map points (`+0x68`,
-  a pointer filled at run time — not traced) it loads `MAPS/level<code>`
-  and draws `MAP_<code>_00..03` (256×256, 256×256, 256×128, 256×128 at
-  (0,0), (256,0), (0,256), (256,256)) with `LDMAP_<code>_00..03` over them;
-  `FUN_8001a220` adds `DASH_<code>_<n>` one per 30 fields at the points,
-  then fades `LDMAP` out and `MAP_<code>GLOW` in, then shimmers
-  "Loading..." at (340, 320), scale 1. Without a map: `TRANSITION_SCREEN`
-  (512 × 320). 52 levels have `MAPS/` folders (not the tower).
-- **Next:** a `movies.rs` that plays the record's movie after the level
-  loads (freeze play like the message box; Start skips; skip online until
-  every machine can wait for it), audio through `Movie::wav`; the loading
-  screen drawn while `exits::change_level_to` loads a realm level (map
-  tiles + "Loading..."; find the dash points to animate the path).
+**Loading screens and level movies: done (2026-10-02).** `level_intro.rs`
+(the screen and movie), `gdl_formats::movie` (MVDV decoder, checked
+against FFmpeg), `LEVL +0x34` / `+0x5C` → `MAPS` in `world_data.rs`; all
+in docs/frontend.md, "Loading screens and movies". Checked in game: the
+tower's A1 portal → the Castle map (Courtyard pulsing) → the courtyard
+picture with "Loading..." (6.55 s, the game's 390 fields) → movieA1 (5.1
+s) → play with the opening shot; Start skips the movie (39/153 frames);
+E1 → E2 draws the temple path's 6 dashes one by one, no movie; first
+person shows nothing over it. `GDL_SKIP_INTRO=1` skips it (smoke.sh sets
+it). Left: the narration (two announcer lines, `FUN_8009f5bc`), the dash
+sound (`FUN_8009f570`), the sound bank step, the ending movies
+(`victory`, `garm`), and online (every machine would have to wait).
 Disk: `target/` had grown to
 35 GB and filled the disk; keep one build (no helper worktree builds —
 the user doesn't want repeated full rebuilds).

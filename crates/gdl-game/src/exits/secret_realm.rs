@@ -453,8 +453,8 @@ impl SecretReturn {
 
     /// Whether the party is coming back to `level` from the secret realm:
     /// its start makes no save and has no opening shot in the game (for
-    /// `frontend.rs` and `play_camera.rs`, which are yet to ask).
-    #[allow(dead_code)]
+    /// `frontend.rs` and `play_camera.rs`, which are yet to ask), and its
+    /// loading screen no map and no movie (`level_intro.rs`).
     pub fn coming_back_to(&self, level: &str) -> bool {
         self.restoring(level).is_some() || self.back_in.as_ref().is_some_and(|l| l.eq_ignore_ascii_case(level))
     }

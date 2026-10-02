@@ -33,7 +33,7 @@ leaves co-op out.
 | What each level places and hides | 5 | 90 % | every level audited statically (the last round: A5, A6, J, K, L, S, T, DEMO1); random item types take the first choice; the stray objects likely the debug markers (now off) |
 | Every level checked start to exit | 5 | 35 % | only A1's exit checked start to exit; the trigger tour has run on every level (A1–T3) |
 | Quest, tower, saving | 5 | 92 % | the unlocked secret characters on the select screen, per-class records, memory card screens |
-| Front end, menus, HUD, hints | 7 | 85 % | options, the attract loop, the hints' plates, the memory card screens |
+| Front end, menus, HUD, hints | 7 | 88 % | options, the attract loop, the hints' plates, the memory card screens |
 | Audio | 5 | 85 % | music switching and ducking, menu sounds, footstep pan |
 | Co-op (2–4 players) | 6 | 72 % | co-op combos (decoded: [coop.md](coop.md)), the monsters' crowd penalty |
 | Speed and stability | 2 | 85 % | the animated objects' cost unmeasured; warm-up hitches |
@@ -177,6 +177,8 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
   Controls changing what they list.
 - The attract loop (movies, scroll screens, credits, demo play) and the
   title's 30 s timeout.
+- The loading screens' narration and dash sound, and the ending movies
+  (the loading screens and level movies are in, `level_intro.rs`).
 - Menu sounds, the spinning 3D arrow, border glows, inline icons, the menu
   fade.
 - The memory card screens; one record per class.

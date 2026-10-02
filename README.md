@@ -47,7 +47,7 @@ details and the full to-do list):
 | What each level places and hides | `█████████░` 90 % |
 | Every level played start to exit | `████░░░░░░` 35 % |
 | Quest, tower, saving | `█████████░` 90 % |
-| Front end, menus, HUD, hints | `█████████░` 85 % |
+| Front end, menus, HUD, hints | `█████████░` 88 % |
 | Audio | `█████████░` 85 % |
 | Local co-op (2–4 players) | `███████░░░` 72 % |
 | Speed and stability | `█████████░` 85 % |
@@ -76,11 +76,9 @@ details and the full to-do list):
    each other.
 3. Bosses: missile lifetimes, the blast areas' hit guards, head stumps and
    look nodes (grabs, the lich's aura, the health meters and the key are in).
-4. Screens: the levels' loading screens (the realm map and its path) and
-   opening movies (the movie decoder is in, checked frame for frame
-   against FFmpeg; playback still to hook up), options, the memory card
-   screens, the attract mode (the shop, inventory and after-level screens
-   are in).
+4. Screens: options, the memory card screens, the attract mode and the
+   ending movies (the shop, inventory, after-level screens, the levels'
+   loading maps and opening movies are in).
 5. Effects: texture wipes, effect lights, weapon and hand glows, exact
    particle maths.
 6. Audio: music switching and ducking.

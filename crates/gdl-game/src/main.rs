@@ -38,6 +38,7 @@ mod hints;
 mod hud;
 mod items;
 mod level;
+mod level_intro;
 mod level_material;
 mod levelup;
 mod locomotion;
@@ -198,6 +199,7 @@ fn main() {
         app.insert_resource(game)
             .insert_resource(party)
             .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, first_person::FirstPersonPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
+            .add_plugins(level_intro::LevelIntroPlugin)
             .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin, deaths::DeathsPlugin, flash::FlashPlugin, fade::FadePlugin, quest::QuestPlugin, scene_light::SceneLightPlugin, saves::SavesPlugin))
             .add_plugins((
                 player_state::PlayerStatePlugin,
