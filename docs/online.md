@@ -85,7 +85,8 @@ Ticks run at 30 Hz; every machine simulates tick `T` with the same
   waits for (the machines whose inputs the host lacks, or the host when the
   bundles are what's slow).
 - **Leaving**: a machine that leaves (`leave()`, dropping the session) or
-  goes silent for `timeout` (10 s) is dropped by the host; its slots are
+  goes silent for `timeout` (10 s by default; the game sets 4 s) is
+  dropped by the host; its slots are
   `None` from the first tick the host hadn't closed, and everyone gets
   `PeerLeft { peer, from_tick }`. When the host leaves, clients get
   `PeerLeft { peer: 0 }` and `Disconnected`.
@@ -246,6 +247,25 @@ in the tower Shop, Inventory and Manage Character too; play goes on
 underneath. Dead heroes are out until the level ends, as the original's (their
 gold from the level goes with the restored record). The screen says who the
 game waits for after half a second and notices who left.
+
+**Leaving.** Leave Game outside the tower asks with a warning: "Leaving
+before reaching the tower will make you lose all progress in this level
+for this character." A player who leaves — or quits the game, which drops
+the session — says goodbye, and the host's ticks go straight on: checked
+over loopback, 30 a second through the departure (the leaver's slot is
+empty from the tick the host had reached). A machine that goes silent
+(crashed, killed, its network gone) holds the others under "Waiting for
+Player N..." until the session's timeout drops it; the game sets that to
+4 s (`SILENT_LEAVES`), down from 10 — the network thread pings every
+250 ms however busy the game is, so only a dead machine is that quiet.
+Measured: a killed client held the host 4.8 s.
+
+**Level intros.** The loading screens and movies play online too
+([frontend.md](frontend.md), "Loading screens and movies"): no tick runs
+while any machine is in one, and only the host skips a movie, for
+everyone (`Message::SkipMovie`). The build string the machines compare
+(`game_version`) carries the disc's game ID and revision, so a Rev 0 and
+a Rev 1 copy don't play together.
 
 **Shops.** A player's Shop or Inventory opens the screen for everyone: the
 command rides with their controls for a few frames (`SlotInput::OPEN_SHOP`,

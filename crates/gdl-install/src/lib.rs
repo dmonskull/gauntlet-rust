@@ -19,6 +19,9 @@ use thiserror::Error;
 /// releases are likely compatible but unverified, so they load with a warning
 /// rather than being refused.
 pub const VERIFIED_GAME_IDS: [&str; 1] = ["GUNE5D"];
+/// The disc revision verified: the original USA release (Rev 0; Redump
+/// #7032). Rev 1 shares the game ID; it loads with a warning.
+pub const VERIFIED_REVISION: u8 = 0;
 
 #[derive(Debug, Error)]
 pub enum InstallError {
@@ -55,6 +58,8 @@ pub struct GameInstall {
     pub origin: PathBuf,
     /// `GUNE5D` etc., when the source carries a boot header.
     pub game_id: Option<String>,
+    /// The disc's revision (0: the first release), with the game ID.
+    pub revision: Option<u8>,
     pub title: Option<String>,
     /// Level folder names under `LEVELS/` that have model data, sorted.
     pub levels: Vec<String>,
@@ -135,11 +140,12 @@ impl GameInstall {
             .iter()
             .filter_map(|p| p.strip_prefix(prefix.as_str()).map(str::to_string))
             .collect::<Vec<_>>();
-        let (game_id, title, warning) = identify(&disc.header);
+        let (game_id, revision, title, warning) = identify(&disc.header);
 
         Ok(Self {
             origin: path.to_path_buf(),
             game_id: Some(game_id),
+            revision: Some(revision),
             title: Some(title),
             levels: levels_in(&files),
             warning,
@@ -181,17 +187,18 @@ impl GameInstall {
             .find(|p| p.is_file())
             .and_then(|p| std::fs::File::open(p).ok())
             .and_then(|mut f| DiscHeader::read_from(&mut f).ok());
-        let (game_id, title, warning) = match boot {
+        let (game_id, revision, title, warning) = match boot {
             Some(header) => {
-                let (id, title, warning) = identify(&header);
-                (Some(id), Some(title), warning)
+                let (id, revision, title, warning) = identify(&header);
+                (Some(id), Some(revision), Some(title), warning)
             }
-            None => (None, None, None),
+            None => (None, None, None, None),
         };
 
         Ok(Self {
             origin: origin.to_path_buf(),
             game_id,
+            revision,
             title,
             levels,
             warning,
@@ -269,15 +276,19 @@ fn levels_in(files: &[String]) -> Vec<String> {
     levels
 }
 
-fn identify(header: &DiscHeader) -> (String, String, Option<String>) {
+fn identify(header: &DiscHeader) -> (String, u8, String, Option<String>) {
     let id = header.game_id.clone();
-    let warning = (!VERIFIED_GAME_IDS.contains(&id.as_str())).then(|| {
-        format!(
-            "game ID {id} hasn't been tested (verified: {}); loading anyway",
-            VERIFIED_GAME_IDS.join(", ")
-        )
-    });
-    (id, header.title.clone(), warning)
+    let revision = header.disc_version;
+    let warning = if !VERIFIED_GAME_IDS.contains(&id.as_str()) {
+        Some(format!("game ID {id} hasn't been tested (verified: {}); loading anyway", VERIFIED_GAME_IDS.join(", ")))
+    } else if revision != VERIFIED_REVISION {
+        Some(format!(
+            "{id} Rev {revision} hasn't been tested (verified: Rev {VERIFIED_REVISION}, the first release); loading anyway"
+        ))
+    } else {
+        None
+    };
+    (id, revision, header.title.clone(), warning)
 }
 
 fn child_ci(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -428,6 +439,7 @@ mod tests {
         };
         let mut disc = GameInstall::locate(&iso).unwrap();
         assert_eq!(disc.game_id.as_deref(), Some("GUNE5D"));
+        assert_eq!(disc.revision, Some(VERIFIED_REVISION), "the first release");
         assert!(disc.warning.is_none());
         assert!(disc.levels.len() > 60, "{} levels", disc.levels.len());
         eprintln!("{disc:?}");
