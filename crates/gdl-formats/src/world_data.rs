@@ -11,7 +11,8 @@
 //! 0x00  u32 directory offset, u32 chunk count
 //! dir   16 bytes per chunk: u32 tag ('WRLD', 'LEVL', 'AUDS', …),
 //!       u32 offset, u32 record count, u32
-//! LEVL  0x10C bytes per level: +0x00 u32 flags (4 timed), +0x08 name
+//! LEVL  0x10C bytes per level: +0x00 u32 flags (4 timed), +0x04 i16
+//!       non-zero: the level's name is spoken (`S_<name>NAME`), +0x08 name
 //!       ("A1" → LEVELS/levelA1), +0x0C i16 a timed level's seconds,
 //!       +0x34 movie name[16] (VQMOVIES/<name>.avi, played as the level
 //!       starts), +0x4C 6 × i16 ENMY indices, +0x58 i16 camera record,
@@ -26,8 +27,10 @@
 //!       +0x2C/+0x30 f32 near/far distance
 //! ENMY  0x18 bytes per record: +0x00 i32 enemy type, +0x04 i32 subtype,
 //!       +0x08 name[16]
-//! AUDS  0x3C bytes per record: +0x00 bank name[16], +0x18 stream name[16],
+//! AUDS  0x3C bytes per record: +0x00 bank name[16], +0x10 i16 SNDS record
+//!       (the "entering" line), +0x18 stream name[16],
 //!       +0x28 i16 track count, +0x2C 8 × i16 parts per track
+//! SNDS  0x18 bytes per record: +0x00 sound name[16]
 //! MAPS  0x48 bytes per record: the loading screen's realm map — f32 x, y
 //!       of the level's glow, then up to 8 × (x, y) dashes of the path to
 //!       it (x < 0 ends them)
@@ -43,6 +46,7 @@ const CAMERA_LEN: usize = 0x6C;
 const ENEMY_LEN: usize = 0x18;
 const BOSS_CAMERA_LEN: usize = 0x54;
 const MAP_LEN: usize = 0x48;
+const SOUND_LEN: usize = 0x18;
 const MAX_TRACKS: usize = 8;
 
 #[derive(Debug, Error)]
@@ -87,6 +91,11 @@ pub struct WorldLevel {
     pub movie: Option<String>,
     /// `+0x5C`: the loading screen's map (`MAPS`), if the level has one.
     pub map: Option<LevelMap>,
+    /// The loading screen's first announcer line (`S_ENTERING1A`…): the
+    /// `SNDS` name its audio record's `+0x10` picks.
+    pub entering: Option<String>,
+    /// `+0x04`: the level's name is spoken after it (`S_<name>NAME`).
+    pub named: bool,
 }
 
 /// Where a level lies on its realm's loading-screen map (`MAPS`, `0x48`
@@ -470,6 +479,14 @@ impl WorldData {
             None => Vec::new(),
         };
 
+        let sounds: Vec<String> = match chunks.get("SNDS") {
+            Some(_) => records("SNDS", SOUND_LEN)?.map(|r| cstr(&r[0x00..0x10])).collect(),
+            None => Vec::new(),
+        };
+        let entering_of: Vec<Option<String>> = records("AUDS", AUDIO_LEN)?
+            .map(|a| usize::try_from(le_u16(a, 0x10) as i16).ok().and_then(|i| sounds.get(i).cloned()))
+            .collect();
+
         let levels = records("LEVL", LEVEL_LEN)?
             .map(|l| {
                 let name = cstr(&l[0x08..0x18]);
@@ -506,6 +523,8 @@ impl WorldData {
                     boss_camera,
                     movie: Some(cstr(&l[0x34..0x44])).filter(|m| !m.is_empty()),
                     map: usize::try_from(le_u16(l, 0x5C) as i16).ok().and_then(|i| maps.get(i).cloned()),
+                    entering: entering_of.get(audio_index).cloned().flatten(),
+                    named: le_u16(l, 0x04) != 0,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;

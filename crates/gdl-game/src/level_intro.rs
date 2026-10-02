@@ -15,13 +15,16 @@
 //!
 //! The world's level change waits two frames, as the game's load step
 //! does (`r13-0x77d8`), so the screen is up before the load stalls.
-//! Online every machine would have to wait for the others' screens: the
-//! level changes there as before (stand-in). `GDL_SKIP_INTRO=1` (testing)
-//! changes levels at once.
+//! The game's player ends a movie on any pad's new press; online the
+//! host's presses skip it, for everyone (`Message::SkipMovie`). Online
+//! every machine starts its intro after the same tick and no tick runs
+//! until every machine is through it, so play starts again together.
+//! `GDL_SKIP_INTRO=1` (testing) changes levels at once.
 //!
-//! Not done: the narration the screen queues (two announcer lines from
-//! the level's audio record), the dash sound (by realm) and the level's
-//! sound bank loading at the screen's step 3.
+//! As it comes up the announcer says where the party is going ("entering
+//! …" and the level's name), and each dash of the path is drawn with the
+//! realm's dot sound. Not done: the level's sound bank loading at the
+//! screen's step 3 (the runtime reads banks as it needs them).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,10 +40,11 @@ use gdl_formats::LevelMap;
 use gdl_formats::font::FONT32;
 use gdl_formats::movie::{Movie, MvdvDecoder};
 
-use crate::audio::{AudioStatus, VoiceQueues};
+use crate::audio::{ANNOUNCER_VOLUME, AudioStatus, PlaySoundAt, SoundLengths, VoiceQueues};
 use crate::font::{Draw2d, Flush2d, GameFonts, UiImage, UiTextures};
 use crate::frontend::Frontend;
 use crate::level::LoadedGame;
+use crate::online::{Lockstep, Message, Online};
 use crate::options::{GameOptions, SoundKind};
 use crate::population::LevelPopulation;
 use crate::world::ChangeLevel;
@@ -69,6 +73,8 @@ const TILES: [(f32, f32); 4] = [(0.0, 0.0), (256.0, 0.0), (0.0, 256.0), (256.0, 
 const LOADING_AT: (f32, f32) = (340.0, 320.0);
 /// The transition screen's size (`0x200` × `0x140`).
 const TRANSITION_SIZE: (f32, f32) = (512.0, 320.0);
+/// The dash sound's requested volume.
+const DASH_VOLUME: u8 = 0xE0;
 /// A loading stall shouldn't skip the map's dashes.
 const MOST_FIELDS: f32 = 4.0;
 
@@ -95,6 +101,25 @@ pub struct IntroInfo {
     pub code: String,
     pub map: Option<LevelMap>,
     pub movie: Option<String>,
+    /// The announcer's lines as the screen comes up (`S_ENTERING1A`,
+    /// `S_A1NAME`).
+    pub narration: Vec<String>,
+    /// The realm's sound for each dash of the path (`S_MAPDOTA`).
+    pub dash: Option<String>,
+}
+
+impl IntroInfo {
+    /// A level's, from its realm WAD's record: the realms A–K have a map
+    /// sound, and every level but the secret realm's has its name spoken.
+    pub fn of(level: &gdl_formats::WorldLevel) -> Self {
+        let letter = level.name.chars().next().map(|c| c.to_ascii_uppercase());
+        let realm = letter.filter(|c| ('A'..='K').contains(c));
+        let narration = match (&level.entering, level.named && letter != Some('S')) {
+            (Some(entering), true) => vec![entering.clone(), format!("S_{}NAME", level.name.to_ascii_uppercase())],
+            _ => Vec::new(),
+        };
+        Self { code: level.name.clone(), map: level.map.clone(), movie: level.movie.clone(), narration, dash: realm.map(|c| format!("S_MAPDOT{c}")) }
+    }
 }
 
 /// The loading screen or movie under way.
@@ -122,7 +147,7 @@ impl LevelIntro {
     /// its screen, then its movie — none of it on the way back from the
     /// secret realm but the plain screen.
     pub fn begin(&mut self, level: &str, info: Option<&IntroInfo>, change: isize, coming_back: bool) {
-        let info = info.cloned().unwrap_or(IntroInfo { code: String::new(), map: None, movie: None });
+        let info = info.cloned().unwrap_or(IntroInfo { code: String::new(), map: None, movie: None, narration: Vec::new(), dash: None });
         info!(
             "loading screen for {level}: {}, movie {}",
             if coming_back || info.map.is_none() { "the transition screen".to_string() } else { format!("map {}", info.code) },
@@ -134,6 +159,9 @@ impl LevelIntro {
             wait: LOAD_WAIT,
             map: info.map.filter(|_| !coming_back),
             movie: info.movie.filter(|_| !coming_back),
+            narration: if coming_back { Default::default() } else { info.narration.into() },
+            speaking: 0.0,
+            dash: info.dash,
             code: info.code,
             textures: None,
             fields: 0.0,
@@ -165,6 +193,11 @@ struct Loading {
     /// None: the transition screen.
     map: Option<LevelMap>,
     movie: Option<String>,
+    /// The announcer's lines still to say, and the seconds left of the
+    /// one being said.
+    narration: std::collections::VecDeque<String>,
+    speaking: f32,
+    dash: Option<String>,
     /// `MAPS/level<code>`, read as the screen first draws.
     textures: Option<UiTextures>,
     /// Fields since the screen began (`r13-0x77DC`).
@@ -189,18 +222,21 @@ struct Loading {
 }
 
 impl Loading {
-    /// One frame of the map (after the screen's step).
-    fn animate(&mut self, fields: f32) {
+    /// One frame of the map (after the screen's step): how many dashes
+    /// came out.
+    fn animate(&mut self, fields: f32) -> usize {
         self.fields += fields;
         self.t += fields;
-        let Some(map) = &self.map else { return };
+        let Some(map) = &self.map else { return 0 };
         // A dash every 30 fields from the first frame.
+        let before = self.dashes;
         while self.dashes < map.dashes.len() && self.fields > DASH_FIELDS * self.dashes as f32 {
             self.dashes += 1;
         }
+        let new = self.dashes - before;
         if map.glow.is_none() || self.dashes < map.dashes.len() {
             self.hold = AGAIN;
-            return;
+            return new;
         }
         self.since_path += fields;
         if self.since_path > PULSE_FIELDS {
@@ -218,12 +254,14 @@ impl Loading {
             self.glow = 255.0 - pulse(self.since_path);
             self.hold = AGAIN;
         }
+        new
     }
 
-    /// The screen is done: the level in, the voices quiet, the map's time
-    /// over (what the screen's update returns).
+    /// The screen is done: the level in, the voices quiet (its narration
+    /// said), the map's time over (what the screen's update returns).
     fn done(&self, voices_busy: bool) -> bool {
-        self.loaded && !voices_busy && self.map_done && self.hold < 1.0
+        let narrating = self.speaking > 0.0 || !self.narration.is_empty();
+        self.loaded && !voices_busy && !narrating && self.map_done && self.hold < 1.0
     }
 }
 
@@ -248,6 +286,8 @@ fn alpha(transparency: f32) -> f32 {
 
 /// A movie playing.
 struct Playing {
+    /// The level it opens (the host's skip names it).
+    level: String,
     movie: Movie,
     decoder: MvdvDecoder,
     image: UiImage,
@@ -269,6 +309,32 @@ struct MovieParts<'w> {
     options: Res<'w, GameOptions>,
 }
 
+/// Online: the lockstep the intro holds, and the host's skip.
+#[derive(SystemParam)]
+struct Net<'w> {
+    lock: ResMut<'w, Lockstep>,
+    online: Option<ResMut<'w, Online>>,
+}
+
+impl Net<'_> {
+    /// Whether this machine's presses skip a movie: offline any player's,
+    /// online the host's (it ends the movie everywhere).
+    fn may_skip(&self) -> bool {
+        self.online.as_ref().is_none_or(|o| o.host)
+    }
+
+    /// The host skipped `level`'s movie (taken once seen).
+    fn host_skipped(&mut self, level: &str) -> bool {
+        let Some(o) = self.online.as_mut() else { return false };
+        let skipped = o.skip_movie.as_deref().is_some_and(|l| l.eq_ignore_ascii_case(level));
+        if skipped {
+            o.skip_movie = None;
+            info!("the host skipped {level}'s movie");
+        }
+        skipped
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn step(
     mut commands: Commands,
@@ -277,15 +343,37 @@ fn step(
     real: Res<Time<Real>>,
     mut change: MessageWriter<ChangeLevel>,
     population: Option<Res<LevelPopulation>>,
-    voices: Res<VoiceQueues>,
+    (voices, lengths, mut sound): (Res<VoiceQueues>, SoundLengths, MessageWriter<PlaySoundAt>),
     mut parts: MovieParts,
+    mut net: Net,
 ) {
     let MovieParts { game, images, sounds, status, options } = &mut parts;
-    let fields = real.delta_secs() * 60.0;
+    if !intro.active() {
+        return;
+    }
+    // Online no tick runs while any machine is in it: all start play again
+    // together, on the same tick.
+    net.lock.level_work = true;
+    let seconds = real.delta_secs();
+    let fields = (seconds * 60.0).min(MOST_FIELDS);
     let next = match &mut intro.phase {
         Phase::Idle => return,
         Phase::Loading(l) => {
-            fe.show_intro();
+            if fe.show_intro() {
+                // A skip the host sent for an earlier visit is stale.
+                if let Some(o) = net.online.as_mut() {
+                    o.skip_movie = None;
+                }
+            }
+            // The announcer says where the party goes, a line after the
+            // other (the screen waits for them).
+            l.speaking -= seconds;
+            if l.speaking <= 0.0
+                && let Some(line) = l.narration.pop_front()
+            {
+                l.speaking = lengths.seconds(&line);
+                sound.write(PlaySoundAt::centred(line, ANNOUNCER_VOLUME));
+            }
             if l.wait > 0 {
                 l.wait -= 1;
             } else if let Some(delta) = l.change.take() {
@@ -294,13 +382,19 @@ fn step(
             if l.change.is_none() && population.as_ref().is_some_and(|p| p.level.eq_ignore_ascii_case(&l.level)) {
                 l.loaded = true;
             }
-            l.animate(fields.min(MOST_FIELDS));
-            l.hold -= fields.min(MOST_FIELDS);
+            if l.animate(fields) > 0
+                && let Some(dash) = l.dash.as_deref()
+            {
+                sound.write(PlaySoundAt::centred(dash, DASH_VOLUME));
+            }
+            l.hold -= fields;
             if !l.done(voices.busy()) {
                 return;
             }
-            match l.movie.as_deref().and_then(|name| open_movie(name, game, images)) {
+            let skipped = net.host_skipped(&l.level);
+            match l.movie.as_deref().filter(|_| !skipped).and_then(|name| open_movie(name, game, images)) {
                 Some(mut playing) => {
+                    playing.level = l.level.clone();
                     playing.audio = start_sound(&mut commands, &playing.movie, sounds, status, options);
                     Phase::Movie(Box::new(playing))
                 }
@@ -308,7 +402,7 @@ fn step(
             }
         }
         Phase::Movie(m) => {
-            m.seconds += real.delta_secs();
+            m.seconds += seconds;
             let want = ((m.seconds * m.movie.rate) as usize).min(m.movie.frame_count());
             // Frames depend on the ones before: decode each in turn (a few
             // at most a frame), showing the last.
@@ -331,13 +425,18 @@ fn step(
                     image.data = Some(m.rgba.clone());
                 }
             }
-            if !(fe.skip_pressed() || m.decoded >= m.movie.frame_count()) {
+            let pressed = net.may_skip() && fe.any_pressed();
+            if pressed && let Some(o) = net.online.as_ref() {
+                o.send(&Message::SkipMovie { level: m.level.clone() });
+            }
+            let skipped = pressed || net.host_skipped(&m.level);
+            if !(skipped || m.decoded >= m.movie.frame_count()) {
                 return;
             }
             if let Some(e) = m.audio.take() {
                 commands.entity(e).try_despawn();
             }
-            info!("movie over ({} of {} frames)", m.decoded, m.movie.frame_count());
+            info!("movie over ({} of {} frames{})", m.decoded, m.movie.frame_count(), if skipped { ", skipped" } else { "" });
             Phase::Idle
         }
     };
@@ -373,6 +472,7 @@ fn open_movie(name: &str, game: &mut LoadedGame, images: &mut Assets<Image>) -> 
     });
     let image = UiImage { handle: images.add(image), size: Vec2::new(w as f32, h as f32) };
     Some(Playing {
+        level: String::new(),
         decoder: MvdvDecoder::new(movie.width, movie.height),
         movie,
         image,
@@ -521,7 +621,8 @@ mod tests {
     fn screen(dashes: usize) -> Loading {
         let mut intro = LevelIntro::default();
         let map = LevelMap { glow: Some([10.0, 20.0]), dashes: vec![[1.0, 1.0]; dashes] };
-        intro.begin("levelX1", Some(&IntroInfo { code: "X1".into(), map: Some(map), movie: None }), 1, false);
+        let info = IntroInfo { code: "X1".into(), map: Some(map), movie: None, narration: Vec::new(), dash: None };
+        intro.begin("levelX1", Some(&info), 1, false);
         match intro.phase {
             Phase::Loading(l) => *l,
             _ => unreachable!(),
@@ -584,10 +685,16 @@ mod tests {
     #[test]
     fn the_way_back_from_the_secret_realm_has_no_map_or_movie() {
         let mut intro = LevelIntro::default();
-        let info = IntroInfo { code: "C2".into(), map: Some(LevelMap { glow: Some([1.0, 1.0]), dashes: vec![] }), movie: Some("movieC2".into()) };
+        let info = IntroInfo {
+            code: "C2".into(),
+            map: Some(LevelMap { glow: Some([1.0, 1.0]), dashes: vec![] }),
+            movie: Some("movieC2".into()),
+            narration: vec!["S_ENTERING1C".into(), "S_C2NAME".into()],
+            dash: Some("S_MAPDOTC".into()),
+        };
         intro.begin("levelC2", Some(&info), 1, true);
         let Phase::Loading(l) = intro.phase else { unreachable!() };
-        assert!(l.map.is_none() && l.movie.is_none());
+        assert!(l.map.is_none() && l.movie.is_none() && l.narration.is_empty());
     }
 
     #[test]

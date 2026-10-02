@@ -1197,12 +1197,14 @@ impl Frontend {
     }
 
     /// A level's loading screen or movie comes up over play
-    /// (`level_intro.rs`).
-    pub fn show_intro(&mut self) {
-        if self.screen != Screen::Intro {
+    /// (`level_intro.rs`); whether it just did.
+    pub fn show_intro(&mut self) -> bool {
+        let fresh = self.screen != Screen::Intro;
+        if fresh {
             self.menus.clear();
             self.go(Screen::Intro);
         }
+        fresh
     }
 
     /// The loading screen and movie are over: the level starts.
@@ -1212,9 +1214,11 @@ impl Frontend {
         }
     }
 
-    /// Start or A this frame (skips a movie).
-    pub fn skip_pressed(&self) -> bool {
-        self.input.start || self.input.accept
+    /// Any button pressed this frame, on any device (what skips a movie:
+    /// the game's player ends it on any pad's new press).
+    pub fn any_pressed(&self) -> bool {
+        let p = &self.input;
+        p.up || p.down || p.left || p.right || p.accept || p.back || p.start || p.l || p.r || p.x
     }
 
     /// Whether a menu is up.

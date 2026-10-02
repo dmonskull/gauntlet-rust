@@ -592,7 +592,7 @@ pub struct AudioStatus {
 
 /// The catalog and each level's audio record, read once at startup.
 #[derive(Resource, Default)]
-struct AudioTables {
+pub(crate) struct AudioTables {
     catalog: Option<AudioCatalog>,
     /// Lower-case level folder (`levela1`) → its audio record.
     levels: HashMap<String, LevelAudio>,
@@ -605,6 +605,21 @@ struct AudioTables {
 
 #[derive(Component)]
 struct LevelMusic;
+
+/// How long catalog sounds last: a voice line's turn (`step_voices`), the
+/// loading screen's narration (`level_intro.rs`).
+#[derive(SystemParam)]
+pub(crate) struct SoundLengths<'w> {
+    tables: Option<Res<'w, AudioTables>>,
+}
+
+impl SoundLengths<'_> {
+    /// Seconds; none for a sound the catalog doesn't have (or a loop).
+    pub(crate) fn seconds(&self, name: &str) -> f32 {
+        let catalog = self.tables.as_deref().and_then(|t| t.catalog.as_ref());
+        catalog.and_then(|c| c.find_sound(name)).map_or(0.0, |s| s.length.max(0.0))
+    }
+}
 
 fn load_audio_tables(mut commands: Commands, mut game: ResMut<LoadedGame>) {
     let mut tables = AudioTables::default();
