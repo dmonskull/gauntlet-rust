@@ -95,8 +95,8 @@ UI image nodes. UI textures are sRGB, clamped, bilinear.
 (`FUN_80014ac0` steps through the table at `0x80117bd8`: movies
 `0x8001/2`, scroll screens `0x8004`, demo play `0x8003/6/8`, credits
 `0x8000`, title `0x8009`), `0x400B` character select, `0x400C` → `0x4010`
-play, `0x4014` GAME OVER, `0x4016` final stats, dispatched every frame by
-`FUN_80054244`.
+play, `0x400F` a level's loading screen, `0x400E` a movie, `0x4014` GAME
+OVER, `0x4016` final stats, dispatched every frame by `FUN_80054244`.
 
 ## Title (`0x8009`)
 
@@ -629,6 +629,88 @@ The save (`FUN_8007a670(p, 1)`, from `FUN_80053530`) happens when a level
 outside the tower starts, except in the secret realm (12) and in `levelE2`
 and `levelF2` (realm 5 and 6, level 1). There are no lives or continues on
 the GameCube.
+
+## Loading screens and movies (`0x400F`, `0x400E`)
+
+**When.** The play loop (`FUN_80054244`, mode `0x4010`) ends a level once
+the voices are quiet. Unless the next level is the tower (that way passes
+the after-level screen, [shop.md](shop.md)), it picks the next level
+(`FUN_80058074`) and starts its loading screen, `FUN_8001a630(0x78,
+secret)` with `secret` = 1 only for the way back from the secret realm
+(`r13-0x72dc` in 13…`0xFFFF`). The tower's portals go the same way
+(`FUN_80054d18` picks the destination, `FUN_8001a630(0x78, 0)`). Each
+frame of mode `0x400F` runs `FUN_8001a220(secret)`; when it returns 1 the
+level is selected again and `FUN_80019c80` plays its movie, then
+`FUN_80053530` starts the level (the hero placement, the camera's opening
+shot, the music: `FUN_800a097c`).
+
+**Setting up** (`FUN_8001a630`): mode `0x400F`; the level record
+(`r13-0x72bc`) is selected. Its `+0x68` points at its `MAPS` record (the
+realm WAD's `MAPS` chunk, `0x48` bytes, chosen by `LEVL +0x5C`, i16, −1
+none: the world-data loader `FUN_8005a094` turns it into the pointer; the
+secret realm, the tower and the test levels have none). With a map and
+not `secret`, `"maps/level%s"` (`MAPS/level<code>`) is loaded (`FUN_8005a25c`)
+and drawn as four pictures at `0x80117C90` — (0,0), (256,0), (0,256),
+(256,256), as the title's: `MAP_<code>_00..03` (256×256, 256×256,
+256×128, 256×128) at depth 64100 and `LDMAP_<code>_00..03` over them at
+63950, transparent (`FUN_800b20cc(0xFF)`; transparency `t` draws at
+alpha `0x80 − t/2` of `0x80`). The record's first (x, y), when x ≥ 0,
+places `"map_%s" + "glow"` (`MAP_<code>GLOW`, 128×128) at depth 64080,
+glow flag on, transparent. Otherwise `TRANSITION_SCREEN`, 512 × 320, at
+(0, 0). The screen stands at least `0x78` fields (`r13-0x77e0`).
+
+**Each frame** (`FUN_8001a220`): a step (`r13-0x77d4`): 0 queues the
+narration unless `secret` (`FUN_8009f5bc`: two announcer lines, the
+`SNDS` record named by the level's audio record `+0x10` and the sound
+`+0x14`, at `0xE0`, while fewer than 3 wait); 1 waits 2 frames
+(`r13-0x77d8`), then loads the level (`FUN_80055f68(1, 0)`) until it's
+in; 2 waits for the voices (`FUN_8001538c(10)`); 3 loads the level's sound
+bank (`FUN_800a0a18`, the audio record); 4 `FUN_80017acc(10)`; then 99.
+With the map, `r13-0x77dc` counts fields: dash `n` (`"dash_%s_%d"`,
+`DASH_<code>_<n+1>`, at the record's next (x, y)s, depth 64060, an x below
+0 ending them) appears once it passes 30 × n, with a sound
+(`FUN_8009f570`: by realm from `0x80122BE4`, at `0xE0`). Once every dash
+is out, `r13-0x77d0` counts fields: up to 210 (`r13-0x7FA8`) the glow
+pulses — transparency 255 − v, v a triangle up over 60 fields
+(`r13-0x7FB0`), down over 60, 10 at rest (`r13-0x7FAC`), as (60 + x × 255
+− 1) / 60 kept within 4…250, glow flag off; past 210, `k` = the excess,
+the glow's transparency is 4k and the `LDMAP` pictures' 255 − 4k (within
+0…255), and with the pictures solid "Loading..." shimmers at (340, 320),
+scale 1 (`FUN_8001eb80`). Until then (and while the path is still drawn,
+or without a glow) `r13-0x77e0` is set back to 60. The screen is done
+when no message box is up, the step is 99, `k` ≥ 180 (`r13-0x7FA4`;
+always so without a map) and `r13-0x77e0` (less the frame's fields) is
+below 1 — so a map screen stands 390 fields past its path.
+
+**The movie** (`FUN_80019c80`, mode `0x400E`): the music stops
+(`FUN_800a0944`), the HUD's sprites go (`FUN_80019d74`); with
+`r13-0x7154` = 0, mode flag `r13-0x7534 & 0x10` clear and the exit kind
+`r13-0x72dc` = 0, the level record's `+0x34` name plays
+(`FUN_800da290`, which returns when it's over), or `victory` / `garm` for
+the endings (`0x2C`, `0x2B`, [items.md](items.md) "Exits"). The movies are
+`VQMOVIES/<name>.avi`: MidiVid VQ (`MVDV`) 512 × 384 at 30 frames a second
+with unsigned 8-bit mono PCM (about 55 kHz); `gdl_formats::movie` decodes
+them (`examples/moviecheck.rs` matches FFmpeg's decode sample for sample).
+Level movies: A1 `movieA1`, A2 `iceaxe`, A3 `movieA3`, B1 `movieB1`, B4
+`movieB4`, B5 `javelin`, C1 `movieC1`, C3 `bellows`, C4 `movieC4`, D1
+`movieD1`, D3 `movieD3`, D4 `scimitar`, E1 `soulsave`, G1 `movieG1`, G3
+`fscroll`, G4 `movieG4`, H1 `movieH1`, I1 `movieI1`, I3 `movieI3`, I4
+`lamp`, J1 `movieJ1`, J2 `lantern`, J3 `movieJ3`, K2 `movieK1`, K3
+`movieK3`, K4 `goodbook`.
+
+**Here** (`level_intro.rs`): `exits::change_level_to` hands a change to
+any level but the tower to the intro (not online — every machine would
+have to wait for the others — nor with `GDL_SKIP_INTRO=1`). The front end
+shows its `Intro` screen (play frozen, the HUD hidden); the world's change
+is made two frames later, so the screen is up before the load stalls;
+the map is drawn and timed as above (fields from real time, at most 4 a
+frame so a stall doesn't skip dashes); then the movie plays from real
+time with its sound (`MovieSound`, at the music volume) — Start or A
+skips it — and play starts, the level's music held until then
+(`audio.rs` `hold_music`). The way back from the secret realm
+(`SecretReturn::coming_back_to`) gets the transition screen and no movie.
+Not done: the narration, the dash sound, the sound bank step and the
+ending movies.
 
 ## GAME OVER (`0x4014`)
 

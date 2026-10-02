@@ -969,6 +969,9 @@ enum Screen {
     /// (`shop.rs`).
     Shop,
     GameOver,
+    /// Between levels: the loading screen and the level's movie
+    /// (`level_intro.rs`).
+    Intro,
 }
 
 /// Where the player is on the select screen (the game's per-player select
@@ -1161,7 +1164,7 @@ impl Frontend {
     /// art ends at y 320 and the tower loaded behind it shows below, and
     /// GAME OVER is drawn over the level.
     fn full_screen(&self) -> bool {
-        matches!(self.screen, Screen::Title | Screen::Connecting | Screen::LoadingSelect | Screen::LoadingGame | Screen::Shop)
+        matches!(self.screen, Screen::Title | Screen::Connecting | Screen::LoadingSelect | Screen::LoadingGame | Screen::Shop | Screen::Intro)
     }
 
     /// Whether a 2D screen covers play: the title, loading, the select
@@ -1191,6 +1194,27 @@ impl Frontend {
     /// it is up.
     pub fn selecting(&self) -> bool {
         matches!(self.screen, Screen::Select | Screen::LoadingGame)
+    }
+
+    /// A level's loading screen or movie comes up over play
+    /// (`level_intro.rs`).
+    pub fn show_intro(&mut self) {
+        if self.screen != Screen::Intro {
+            self.menus.clear();
+            self.go(Screen::Intro);
+        }
+    }
+
+    /// The loading screen and movie are over: the level starts.
+    pub fn end_intro(&mut self) {
+        if self.screen == Screen::Intro {
+            self.go(Screen::Playing);
+        }
+    }
+
+    /// Start or A this frame (skips a movie).
+    pub fn skip_pressed(&self) -> bool {
+        self.input.start || self.input.accept
     }
 
     /// Whether a menu is up.
@@ -1639,6 +1663,8 @@ pub(crate) fn run(
                 }
             }
         }
+        // `level_intro.rs` runs the loading screen and movie.
+        Screen::Intro => {}
         Screen::GameOver => {
             // 240 fields, then the game goes back to its attract loop; here,
             // to the title.
@@ -2951,7 +2977,7 @@ fn draw(
             }
         }
         // The shop screen draws itself (`shop.rs`).
-        Screen::Shop => {}
+        Screen::Shop | Screen::Intro => {}
         Screen::Playing => {
             if let Some(o) = online.as_deref() {
                 if lock.waited > crate::online::WAIT_SHOWN {

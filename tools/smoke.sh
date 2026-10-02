@@ -10,6 +10,8 @@ cd $ROOT
 GAME=${GDL_GAME:-$HOME/Desktop/GauntletDarkLegacy}
 BIN=${GDL_BIN:-./target/debug/gdl-game}
 export GDL_MUTE=${GDL_MUTE:-1}
+# Loading screens and movies would only slow the runs.
+export GDL_SKIP_INTRO=${GDL_SKIP_INTRO:-1}
 OUT=${GDL_TEST_OUT:-${TMPDIR:-/tmp}/gdl-tests}/smoke
 mkdir -p $OUT
 start=${1:-}

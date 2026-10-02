@@ -27,7 +27,7 @@ One file per system, written only once it's confirmed against the actual
 | [projectiles.md](projectiles.md) | Thrown weapons and monster missiles: release, aim, lob, flight, collision, blasts, the throwing AIs |
 | [items.md](items.md) | The hero's state (health, gold, keys, potions, powerups), item touch, pickups, doors, chests, exits, transporters, hints |
 | [powers.md](powers.md) | The armour and special power-ups: invulnerability, the shields, halo, gas mask, levitation, x-ray, invisibility, time stop, breaths, phoenix, growth, shrinking, the Pojo, Skorne's items, the shop's |
-| [frontend.md](frontend.md) | Fonts (`FONTS/*.FNT`, font slots), the 2D screen, title, character select, saving, the in-game menus, death and GAME OVER |
+| [frontend.md](frontend.md) | Fonts (`FONTS/*.FNT`, font slots), the 2D screen, title, character select, saving, the in-game menus, death, the loading screens and movies (`VQMOVIES`, MidiVid VQ), GAME OVER |
 | [mechanics.md](mechanics.md) | Triggers and what they move (lifts, bridges, doors), rotators, carrying the hero, damage tiles, damaging walls, breakables — decoded; moving collision built, the rest not yet run |
 
 ## Confirmed and implemented

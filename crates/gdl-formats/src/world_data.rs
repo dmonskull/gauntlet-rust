@@ -13,8 +13,9 @@
 //!       u32 offset, u32 record count, u32
 //! LEVL  0x10C bytes per level: +0x00 u32 flags (4 timed), +0x08 name
 //!       ("A1" → LEVELS/levelA1), +0x0C i16 a timed level's seconds,
-//!       +0x4C 6 × i16 ENMY indices, +0x58 i16 camera record,
-//!       +0x5A i16 audio record,
+//!       +0x34 movie name[16] (VQMOVIES/<name>.avi, played as the level
+//!       starts), +0x4C 6 × i16 ENMY indices, +0x58 i16 camera record,
+//!       +0x5A i16 audio record, +0x5C i16 MAPS record (−1 none),
 //!       +0x8E i16 monster slots, +0xAC..+0xD4 f32 monster and generator
 //!       scales (see [`LevelTuning`] and docs/monsters.md), +0x9C/+0xA0
 //!       experience level and scale, +0xEC ambient,
@@ -27,6 +28,9 @@
 //!       +0x08 name[16]
 //! AUDS  0x3C bytes per record: +0x00 bank name[16], +0x18 stream name[16],
 //!       +0x28 i16 track count, +0x2C 8 × i16 parts per track
+//! MAPS  0x48 bytes per record: the loading screen's realm map — f32 x, y
+//!       of the level's glow, then up to 8 × (x, y) dashes of the path to
+//!       it (x < 0 ends them)
 //! ```
 
 use thiserror::Error;
@@ -38,6 +42,7 @@ const AUDIO_LEN: usize = 0x3C;
 const CAMERA_LEN: usize = 0x6C;
 const ENEMY_LEN: usize = 0x18;
 const BOSS_CAMERA_LEN: usize = 0x54;
+const MAP_LEN: usize = 0x48;
 const MAX_TRACKS: usize = 8;
 
 #[derive(Debug, Error)]
@@ -77,6 +82,31 @@ pub struct WorldLevel {
     /// `+0x4C`: up to six indices into [`WorldData::enemies`] — the enemy
     /// types this level loads.
     pub enemies: Vec<usize>,
+    /// `+0x34`: the movie played as the level starts (`VQMOVIES/<name>.avi`;
+    /// `docs/frontend.md`, "Loading screens and movies").
+    pub movie: Option<String>,
+    /// `+0x5C`: the loading screen's map (`MAPS`), if the level has one.
+    pub map: Option<LevelMap>,
+}
+
+/// Where a level lies on its realm's loading-screen map (`MAPS`, `0x48`
+/// bytes; `docs/frontend.md`, "Loading screens and movies"), in the
+/// 512 × 384 screen's pixels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LevelMap {
+    /// Where `MAP_<code>GLOW` goes (none when x < 0).
+    pub glow: Option<[f32; 2]>,
+    /// The path's dashes (`DASH_<code>_<n>`, n from 1), drawn one by one.
+    pub dashes: Vec<[f32; 2]>,
+}
+
+impl LevelMap {
+    fn parse(r: &[u8]) -> Self {
+        let point = |i: usize| [le_f32(r, i * 8), le_f32(r, i * 8 + 4)];
+        let glow = Some(point(0)).filter(|p| p[0] >= 0.0);
+        let dashes = (1..9).map(point).take_while(|p| p[0] >= 0.0).collect();
+        Self { glow, dashes }
+    }
 }
 
 /// A boss level's camera record (`BCAM`, `0x54` bytes, the level's `LEVL
@@ -434,6 +464,12 @@ impl WorldData {
             None => Vec::new(),
         };
 
+        // Realms without maps have none (or no chunk: test files).
+        let maps: Vec<LevelMap> = match chunks.get("MAPS") {
+            Some(_) => records("MAPS", MAP_LEN)?.map(LevelMap::parse).collect(),
+            None => Vec::new(),
+        };
+
         let levels = records("LEVL", LEVEL_LEN)?
             .map(|l| {
                 let name = cstr(&l[0x08..0x18]);
@@ -468,6 +504,8 @@ impl WorldData {
                     tuning: LevelTuning::parse(l),
                     enemies,
                     boss_camera,
+                    movie: Some(cstr(&l[0x34..0x44])).filter(|m| !m.is_empty()),
+                    map: usize::try_from(le_u16(l, 0x5C) as i16).ok().and_then(|i| maps.get(i).cloned()),
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -510,6 +548,24 @@ mod tests {
         let mut p = [1u16; MAX_TRACKS];
         p[..parts.len()].copy_from_slice(parts);
         LevelAudio { bank: "CASTLE".into(), stream: stream.into(), tracks, parts: p }
+    }
+
+    #[test]
+    fn a_map_record_holds_the_glow_then_dashes_until_x_below_0() {
+        let mut r = vec![0u8; MAP_LEN];
+        let mut put = |i: usize, x: f32, y: f32| {
+            r[i * 8..i * 8 + 4].copy_from_slice(&x.to_le_bytes());
+            r[i * 8 + 4..i * 8 + 8].copy_from_slice(&y.to_le_bytes());
+        };
+        put(0, 302.0, 17.0);
+        put(1, 289.0, 187.0);
+        put(2, 321.0, 149.0);
+        for i in 3..9 {
+            put(i, -1.0, -1.0);
+        }
+        let map = LevelMap::parse(&r);
+        assert_eq!(map.glow, Some([302.0, 17.0]));
+        assert_eq!(map.dashes, vec![[289.0, 187.0], [321.0, 149.0]]);
     }
 
     #[test]

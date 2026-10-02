@@ -28,7 +28,9 @@ use bevy::prelude::*;
 use gdl_formats::{LevelOrder, WorldData};
 
 use crate::audio::VoiceQueues;
+use crate::frontend::Frontend;
 use crate::level::LoadedGame;
+use crate::level_intro::{IntroInfo, LevelIntro, LevelIntros};
 use crate::party::Party;
 use crate::quest;
 use crate::tower::LevelTrail;
@@ -84,6 +86,7 @@ impl Plugin for ExitsPlugin {
 fn load_level_ids(mut commands: Commands, mut game: ResMut<LoadedGame>) {
     let mut order = LevelOrder::default();
     let mut clocks = secret_realm::LevelClocks::default();
+    let mut intros = LevelIntros::default();
     let wads: Vec<String> = game
         .install
         .files()
@@ -102,6 +105,8 @@ fn load_level_ids(mut commands: Commands, mut game: ResMut<LoadedGame>) {
                     if let Some(seconds) = level.timed() {
                         clocks.0.insert(level.folder().to_ascii_lowercase(), seconds);
                     }
+                    let info = IntroInfo { code: level.name.clone(), map: level.map.clone(), movie: level.movie.clone() };
+                    intros.0.insert(level.folder().to_ascii_lowercase(), info);
                 }
             }
             Err(why) => warn!("{path}: {why}"),
@@ -109,6 +114,7 @@ fn load_level_ids(mut commands: Commands, mut game: ResMut<LoadedGame>) {
     }
     commands.insert_resource(LevelIds(order));
     commands.insert_resource(clocks);
+    commands.insert_resource(intros);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -122,6 +128,7 @@ pub(crate) fn change_level_to(
     mut change: MessageWriter<ChangeLevel>,
     mut lock: ResMut<crate::online::Lockstep>,
     ids: Option<Res<LevelIds>>,
+    (mut intro, intros, fe, back): (ResMut<LevelIntro>, Res<LevelIntros>, Res<Frontend>, Res<secret_realm::SecretReturn>),
 ) {
     // Several at once: the last one wins.
     if let Some(request) = requests.read().last() {
@@ -155,7 +162,17 @@ pub(crate) fn change_level_to(
         }
         trail.finished = Some(leaving.clone());
     }
-    change.write(ChangeLevel(to as isize - game.current as isize));
+    let delta = to as isize - game.current as isize;
+    // Any level but the tower comes after its loading screen and movie,
+    // which make the change once the screen is up (`level_intro.rs`) —
+    // not online (every machine would have to wait for the others').
+    let going_to = &game.levels[to].name;
+    if !lock.on && fe.playing() && !going_to.eq_ignore_ascii_case(crate::frontend::TOWER) && !crate::level_intro::skipped() {
+        let info = intros.0.get(&going_to.to_ascii_lowercase());
+        intro.begin(going_to, info, delta, back.coming_back_to(going_to));
+        return;
+    }
+    change.write(ChangeLevel(delta));
     // Online the next tick waits for the level to settle (`online.rs`).
     lock.level_work = true;
 }

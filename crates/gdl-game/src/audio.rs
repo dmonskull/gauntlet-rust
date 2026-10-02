@@ -58,6 +58,7 @@ impl Plugin for GameAudioPlugin {
                 Update,
                 (
                     level_music,
+                    hold_music,
                     audio_keys,
                     step_voices.run_if(crate::online::lockstep_off),
                     play_sounds,
@@ -71,6 +72,21 @@ impl Plugin for GameAudioPlugin {
             // Online the queues run on the network's ticks (two fields
             // each): a level change waits on them alike everywhere.
             .add_systems(crate::online::NetTick, step_voices.in_set(NetVoices));
+    }
+}
+
+/// The level's music waits for its loading screen and movie
+/// (`level_intro.rs`): the game stops it for a movie and starts it with
+/// the level, after them (`docs/frontend.md`, "Loading screens and
+/// movies").
+fn hold_music(intro: Res<crate::level_intro::LevelIntro>, sinks: Query<&AudioSink, With<LevelMusic>>) {
+    let hold = intro.active();
+    for sink in &sinks {
+        if hold && !sink.is_paused() {
+            sink.pause();
+        } else if !hold && sink.is_paused() {
+            sink.play();
+        }
     }
 }
 
@@ -636,6 +652,7 @@ fn level_music(
     mut tracks: ResMut<Assets<MusicTrack>>,
     playing: Query<Entity, With<LevelMusic>>,
     options: Res<GameOptions>,
+    intro: Res<crate::level_intro::LevelIntro>,
 ) {
     let Some(stats) = stats else { return };
     if !stats.is_changed() {
@@ -656,6 +673,9 @@ fn level_music(
                     PlaybackSettings {
                         muted: status.muted,
                         volume: options.category(SoundKind::Music),
+                        // Held while the level's loading screen and movie
+                        // are up (`hold_music`).
+                        paused: intro.active(),
                         ..PlaybackSettings::DESPAWN
                     },
                 ));
