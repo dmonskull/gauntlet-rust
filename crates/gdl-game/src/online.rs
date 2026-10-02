@@ -47,7 +47,7 @@ use crate::saves::SavedCharacter;
 
 /// The game's own lockstep revision, part of the build every machine must
 /// share: raise it whenever the game steps differently.
-const LOCKSTEP_REVISION: u32 = 2;
+const LOCKSTEP_REVISION: u32 = 3;
 
 /// Frames without level work before the next tick may run: a level change
 /// and its setup (systems that run as its population comes in, then as
@@ -165,6 +165,9 @@ pub enum Message {
     /// level under way after the machines went out of sync). Lockstep
     /// restarts right after.
     Resync { heroes: Vec<(u8, Hero)>, level: String },
+    /// The host skipped `level`'s opening movie: it ends everywhere
+    /// (`level_intro.rs`).
+    SkipMovie { level: String },
 }
 
 /// A hero a player brings: a new one, or one saved on their machine (its
@@ -248,6 +251,9 @@ pub struct Online {
     /// The host: players who joined late and are ready, waiting for the
     /// tower.
     pub joiners: Vec<(usize, Hero)>,
+    /// The level whose opening movie the host skipped (`level_intro.rs`
+    /// takes it).
+    pub skip_movie: Option<String>,
 }
 
 impl Online {
@@ -268,6 +274,7 @@ impl Online {
             late: false,
             awaiting_restart: false,
             joiners: Vec::new(),
+            skip_movie: None,
         }
     }
 
@@ -537,6 +544,7 @@ fn poll(mut commands: Commands, opening: Option<Res<Opening>>, online: Option<Re
                         online.awaiting_restart = true;
                         online.inbox.push(Lobby::Resync(heroes.into_iter().map(|(s, h)| (s as usize, h)).collect(), level));
                     }
+                    Some(Message::SkipMovie { level }) => online.skip_movie = Some(level),
                     None => warn!("online: machine {from} sent something this build doesn't read"),
                 }
             }
@@ -892,6 +900,7 @@ mod tests {
             Message::Hero { slot: 1, hero: Some(hero.clone()) },
             Message::Hero { slot: 1, hero: None },
             Message::Begin { heroes: vec![(0, hero.clone()), (3, hero)] },
+            Message::SkipMovie { level: "levelA1".into() },
         ] {
             let text = ron::to_string(&m).unwrap();
             assert_eq!(ron::from_str::<Message>(&text).unwrap(), m);

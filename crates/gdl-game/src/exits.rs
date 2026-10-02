@@ -105,8 +105,7 @@ fn load_level_ids(mut commands: Commands, mut game: ResMut<LoadedGame>) {
                     if let Some(seconds) = level.timed() {
                         clocks.0.insert(level.folder().to_ascii_lowercase(), seconds);
                     }
-                    let info = IntroInfo { code: level.name.clone(), map: level.map.clone(), movie: level.movie.clone() };
-                    intros.0.insert(level.folder().to_ascii_lowercase(), info);
+                    intros.0.insert(level.folder().to_ascii_lowercase(), IntroInfo::of(level));
                 }
             }
             Err(why) => warn!("{path}: {why}"),
@@ -164,12 +163,14 @@ pub(crate) fn change_level_to(
     }
     let delta = to as isize - game.current as isize;
     // Any level but the tower comes after its loading screen and movie,
-    // which make the change once the screen is up (`level_intro.rs`) —
-    // not online (every machine would have to wait for the others').
+    // which make the change once the screen is up (`level_intro.rs`).
+    // Online every machine starts it after this same tick, and no tick
+    // runs until every machine is through it.
     let going_to = &game.levels[to].name;
-    if !lock.on && fe.playing() && !going_to.eq_ignore_ascii_case(crate::frontend::TOWER) && !crate::level_intro::skipped() {
+    if fe.playing() && !going_to.eq_ignore_ascii_case(crate::frontend::TOWER) && !crate::level_intro::skipped() {
         let info = intros.0.get(&going_to.to_ascii_lowercase());
         intro.begin(going_to, info, delta, back.coming_back_to(going_to));
+        lock.level_work = true;
         return;
     }
     change.write(ChangeLevel(delta));

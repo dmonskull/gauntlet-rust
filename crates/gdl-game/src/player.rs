@@ -23,8 +23,9 @@
 //! `GDL_WARP="x,y,z[,degrees]"` starts the hero there (facing that way); `GDL_STICK="x,y"` holds the stick; `GDL_BUTTONS="attack@10-12,power"`
 //! holds buttons (`attack`, `power`, `turbo`, `magic`, `charge`, `strafe`,
 //! `combo`, `up`, `down`, `left`, `right`), each for the whole run or for a range of ticks since the hero
-//! appeared; `GDL_HOPS="x,y,z;x,y,z"` moves the hero onto each point in
-//! turn, every `GDL_HOP_TICKS` ticks (default 120), on the first level.
+//! appeared; `GDL_HOPS="x,y,z;x,y,z"` moves the heroes onto each point in
+//! turn, every `GDL_HOP_TICKS` ticks (default 120; online the lockstep's),
+//! on the first level.
 
 use gdl_formats::detmath::Det;
 use bevy::mesh::MeshTag;
@@ -1076,6 +1077,7 @@ type Hops = (Vec<[f32; 3]>, u64, String, usize);
 fn hop(
     mut hops: Local<Option<Hops>>,
     controls: Res<Controls>,
+    lock: Res<crate::online::Lockstep>,
     population: Option<Res<LevelPopulation>>,
     ground: Option<Res<LevelGround>>,
     mut players: Query<&mut Player>,
@@ -1093,7 +1095,9 @@ fn hop(
         let every = env("GDL_HOP_TICKS").parse().ok().filter(|&n| n > 0).unwrap_or(120);
         (points, every, population.level.clone(), 0)
     });
-    if population.level != *level || controls.ticks < *every * (*next as u64 + 1) {
+    // Online the ticks are the lockstep's, alike on every machine.
+    let ticks = if lock.on { u64::from(lock.tick) } else { controls.ticks };
+    if population.level != *level || ticks < *every * (*next as u64 + 1) {
         return;
     }
     let Some(&at) = points.get(*next) else { return };
