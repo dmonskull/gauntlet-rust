@@ -26,6 +26,23 @@ the plank moves by its animation matrix, node 1098; not triggered in a
 run). **Not reproduced:** "scroll message boxes sometimes don't appear in
 first person" — in A1 the box shows; all 133 placed scrolls have their
 text page (only levelL3/T2 lack groups); ask the user for the level/spot.
+**Cheat codes: done (2026-10-02).** `cheats.rs`, docs/cheats.md: 26
+secret characters (models in the base classes' folders, variant = colour
++ model, e.g. `GREDCY`), 16 gameplay codes (permanent held powers via the
+power menu, ALLFUL / 10000K counts), the developers' MNTHRX / ARIENT /
+ADMBLY; re-granted every level start; online alike (`GDL_ONLINE_HERO=
+<class>:<name>`); `--name` for skip mode. `grant_power` now takes the
+game's exact slot pass. Not ported: the developers' button-combo debug
+flags.
+
+**User's open reports (do next):** (1) on Windows the audio while
+loading into a level is "bugged out and staticy" — suspects: the movie's
+8-bit PCM at ~55 kHz resampled by rodio, the level's sounds starting
+behind the loading screen, the map bank's narration lines (check with
+`audio_dump` roughness); (2) other classes' throwing (and other) attacks
+play the wrong animations — check each class's action table against the
+original.
+
 **Loading screens and level movies: done (2026-10-02), offline and
 online.** `level_intro.rs` (screen, narration, dash sounds, movie),
 `gdl_formats::movie` (MVDV decoder, checked against FFmpeg), `LEVL +0x04`

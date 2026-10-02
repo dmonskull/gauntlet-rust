@@ -8,12 +8,14 @@ use std::path::{Path, PathBuf};
 use gdl_install::GameInstall;
 
 const USAGE: &str = "\
-usage: gdl-game [GAME] [--level NAME] [--forget]
+usage: gdl-game [GAME] [--level NAME] [--name NAME] [--forget]
        gdl-game [GAME] --viewer [--character CLASS | --monster NAME] [--variant V] [--action NAME]
 
   GAME             your Gauntlet: Dark Legacy disc image (.iso/.gcm), extracted
                    disc folder, or its main.dol. Remembered for next time.
   --level NAME     level to load (e.g. levelA1). Defaults to the first level.
+  --name NAME      the hero's name there (default LARRY); a code name works
+                   as on the select screen (a secret character, a cheat).
   --forget         forget the remembered game path and ask again.
   --viewer         character viewer instead of the levels.
   --character CLS  player class to show (e.g. ARC, KNI, WIZ).
@@ -32,6 +34,7 @@ pub struct Args {
     pub monster: Option<String>,
     pub variant: Option<String>,
     pub action: Option<String>,
+    pub name: Option<String>,
 }
 
 impl Args {
@@ -45,6 +48,7 @@ impl Args {
             monster: None,
             variant: None,
             action: None,
+            name: None,
         };
         let mut it = std::env::args().skip(1);
         while let Some(arg) = it.next() {
@@ -57,6 +61,7 @@ impl Args {
                 "--monster" => args.monster = Some(it.next().ok_or("--monster needs a name")?),
                 "--variant" => args.variant = Some(it.next().ok_or("--variant needs a folder name")?),
                 "--action" => args.action = Some(it.next().ok_or("--action needs an action name")?),
+                "--name" => args.name = Some(it.next().ok_or("--name needs a name")?.to_ascii_uppercase()),
                 flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n\n{USAGE}")),
                 path if args.game.is_none() => args.game = Some(PathBuf::from(path)),
                 extra => return Err(format!("unexpected argument {extra}\n\n{USAGE}")),

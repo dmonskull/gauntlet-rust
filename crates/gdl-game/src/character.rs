@@ -98,7 +98,8 @@ pub fn player_classes(install: &GameInstall) -> Vec<String> {
 
 pub fn load_player(install: &mut GameInstall, class: &str, variant: &str) -> Result<CharacterData, String> {
     let read = |install: &mut GameInstall, path: String| install.read(&path).map_err(|e| format!("{path}: {e}"));
-    let dir = format!("PLAYERS/{class}/{variant}");
+    // A secret character's model is a folder of its own (`cheats.rs`).
+    let dir = format!("PLAYERS/{class}/{}", crate::cheats::model_folder(variant));
     let model = ModelFile::parse(&read(install, format!("{dir}/objects.ngc"))?).map_err(|e| format!("{dir}/objects.ngc: {e}"))?;
     let textures = read(install, format!("{dir}/textures.ngc"))?;
     let skeleton = first_atree(&read(install, format!("{dir}/ANIM.PS2"))?).map_err(|e| format!("{dir}/ANIM.PS2: {e}"))?;

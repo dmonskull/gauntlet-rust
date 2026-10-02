@@ -174,6 +174,31 @@ impl Power {
     }
 }
 
+/// The slot a new power takes (the grant's pass over the eleven): a slot
+/// held for good counts −1 if it's of the same subtype, −2 if not; the
+/// first slot is taken, then a later one while the pick so far is −2, or
+/// it's free (0), or it runs out sooner (0 ≤ time < the pick's); a free
+/// slot ends the pass.
+fn grant_slot(powers: &[Power], subtype: i32) -> usize {
+    let mut best = -2.0f32;
+    let mut slot = 0;
+    for (i, p) in powers.iter().enumerate().take(POWER_SLOTS) {
+        let t = if p.time < 0.0 {
+            if p.subtype == subtype { -1.0 } else { -2.0 }
+        } else {
+            p.time
+        };
+        if best == -2.0 || t == 0.0 || (0.0..best).contains(&t) {
+            slot = i;
+            best = t;
+        }
+        if best == 0.0 {
+            break;
+        }
+    }
+    slot
+}
+
 /// What healing did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Heal {
@@ -525,12 +550,10 @@ impl PlayerState {
             }
             return Some(i);
         }
-        // A free slot, else the one nearest to running out.
-        let slot = self.powers.iter().position(|p| !p.live()).or_else(|| {
-            (0..POWER_SLOTS)
-                .filter(|&i| self.powers[i].time >= 0.0)
-                .min_by(|&a, &b| self.powers[a].time.total_cmp(&self.powers[b].time))
-        })?;
+        // A free slot, else the one nearest to running out; with every slot
+        // held for good (time below 0), the game's pass still picks one
+        // (`docs/cheats.md`, "The grant's slot").
+        let slot = grant_slot(&self.powers, subtype);
         self.powers[slot] = Power { subtype, value, amount, time, state: SlotState::Held };
         Some(slot)
     }
@@ -1116,6 +1139,41 @@ fn powers_and_warning(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_every_slot_held_for_good_a_new_power_takes_the_games_pick() {
+        let mut s = PlayerState { powerup_time: 1.0, ..PlayerState::default() };
+        // The developers' code's first eleven powers fill the slots for good.
+        let first: [(i32, u32); 11] = [
+            (6, 0x10000),
+            (5, 0x100000),
+            (9, 0x400),
+            (9, 0x1),
+            (6, 0x80000),
+            (9, 0x300),
+            (9, 0x4),
+            (9, 0x2),
+            (9, 0x80000),
+            (9, 0x10000),
+            (5, 0x20000000),
+        ];
+        for (i, (subtype, bits)) in first.iter().enumerate() {
+            assert_eq!(s.grant_power(*subtype, *bits, 0.0, -1.0), Some(i));
+        }
+        // A twelfth (the three-way shot): the pass takes slot 0 (−2), then
+        // slot 1, a weapon held for good (−1), and stops looking.
+        assert_eq!(s.grant_power(5, 0x80000, 0.0, -1.0), Some(1));
+        // A special: slot 0, slot 1 (now a weapon, −2), then slot 2's special.
+        assert_eq!(s.grant_power(9, 0x8, 0.0, -1.0), Some(2));
+        // The game's order matters: once the pass holds a slot for good of
+        // the same subtype (−1), no timed slot later replaces it.
+        s.powers[7] = Power { subtype: 9, value: 0x2, amount: 0.0, time: 5.0, state: SlotState::On };
+        s.powers[8] = Power { subtype: 9, value: 0x80000, amount: 0.0, time: 3.0, state: SlotState::On };
+        assert_eq!(s.grant_power(9, 0x20, 0.0, 10.0), Some(2));
+        // From a timed first slot, the timed slot nearest to running out.
+        s.powers[0] = Power { subtype: 6, value: 0x10000, amount: 0.0, time: 8.0, state: SlotState::On };
+        assert_eq!(s.grant_power(6, 0x20000, 0.0, 10.0), Some(8));
+    }
 
     const WAR: Hero = Hero { class: "WAR", pojo: false, invulnerable: false };
 

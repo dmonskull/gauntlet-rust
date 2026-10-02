@@ -1029,6 +1029,8 @@ impl Column {
                 menu: new_load_menu(has_saves),
                 t: 0.0,
                 loaded: None,
+                special: None,
+                auto_pick: false,
             },
             ready: false,
         }
@@ -1043,6 +1045,7 @@ impl Column {
         s.name = name.to_string();
         s.class = CLASSES.iter().position(|k| *k == choice.class).unwrap_or(6);
         s.colour = COLOURS.iter().position(|k| choice.variant.starts_with(k)).unwrap_or(0);
+        s.special = special_model(&choice.variant);
         c.ready = ready;
         c
     }
@@ -1061,6 +1064,23 @@ struct Select {
     t: f32,
     /// The saved character loaded (online it goes to the others).
     loaded: Option<SavedCharacter>,
+    /// A secret character's model (its name's code, `cheats.rs`): the
+    /// variant is the colour's folder then this.
+    special: Option<String>,
+    /// The class card takes the pick at once (a secret character).
+    auto_pick: bool,
+}
+
+impl Select {
+    /// The hero's variant: the colour's folder, a secret character's model
+    /// after it.
+    fn variant(&self) -> String {
+        let colour = COLOURS[self.colour % COLOURS.len()];
+        match &self.special {
+            Some(model) => format!("{colour}{model}"),
+            None => colour.to_string(),
+        }
+    }
 }
 
 /// The front end's state.
@@ -2225,7 +2245,8 @@ fn select_column(
             Some(Item::Character(i)) => {
                 if let Some(c) = saves.file.characters.get(i).cloned() {
                     s.class = CLASSES.iter().position(|k| *k == c.class).unwrap_or(s.class);
-                    s.colour = COLOURS.iter().position(|k| *k == c.variant).unwrap_or(s.colour);
+                    s.colour = COLOURS.iter().position(|k| c.variant.starts_with(k)).unwrap_or(s.colour);
+                    s.special = special_model(&c.variant);
                     s.name = c.name.clone();
                     // Even the same class and colour: a new record, the
                     // saved one laid on it (`player_state::new_member`).
@@ -2295,6 +2316,7 @@ fn select_column(
                         let pick = (frame as usize + slot) % NAMES.len();
                         s.name = NAMES[pick].to_string();
                     }
+                    s.special = None;
                     s.t = 0.0;
                 }
             } else if p.back {
@@ -2310,18 +2332,22 @@ fn select_column(
             // when unlocked, never here); up/down change colour.
             if p.left || p.l {
                 s.class = (s.class + 15) % 16;
+                s.special = None;
             }
             if p.right || p.r {
                 s.class = (s.class + 1) % 16;
+                s.special = None;
             }
             if p.up {
                 s.colour = (s.colour + 1) % 4;
+                s.special = None;
             }
             if p.down {
                 s.colour = (s.colour + 3) % 4;
+                s.special = None;
             }
-            if p.accept && s.class < OPEN_CLASSES {
-                let picked = PlayerChoice { class: CLASSES[s.class].to_string(), variant: COLOURS[s.colour].to_string() };
+            if (p.accept || std::mem::take(&mut s.auto_pick)) && s.class < OPEN_CLASSES {
+                let picked = PlayerChoice { class: CLASSES[s.class].to_string(), variant: s.variant() };
                 // Another class or colour, or a new game even with the same
                 // hero: a fresh record.
                 let fresh = member.map(|m| &m.choice) != Some(&picked) || !s.from_character_menu;
@@ -2403,17 +2429,24 @@ fn online_lobby(
             _ => {}
         }
     }
-    // `GDL_ONLINE_HERO=<class>` (testing): this machine's player picks a
-    // new hero of that class at once.
-    if let Ok(class) = std::env::var("GDL_ONLINE_HERO")
+    // `GDL_ONLINE_HERO=<class>[:<name>]` (testing): this machine's player
+    // picks a new hero of that class at once (a code name works as on the
+    // select screen, `cheats.rs`).
+    if let Ok(spec) = std::env::var("GDL_ONLINE_HERO")
         && fe.t > 30.0
         && let Some(c) = fe.columns[me].as_mut()
         && !c.ready
         && c.select.step == Step::NewOrLoad
     {
-        c.select.class = CLASSES.iter().position(|k| k.eq_ignore_ascii_case(&class)).unwrap_or(0);
+        let (class, name) = spec.split_once(':').unwrap_or((spec.as_str(), ""));
+        c.select.class = CLASSES.iter().position(|k| k.eq_ignore_ascii_case(class)).unwrap_or(0);
         c.select.colour = me % COLOURS.len();
-        c.select.name = format!("NET{}", me + 1);
+        c.select.name = if name.is_empty() { format!("NET{}", me + 1) } else { name.to_ascii_uppercase() };
+        if let Some(secret) = crate::cheats::secret_character(&c.select.name) {
+            c.select.class = secret.class;
+            c.select.colour = secret.colour;
+            c.select.special = Some(secret.model.to_string());
+        }
         c.select.step = Step::Class;
         c.ready = true;
     }
@@ -2693,10 +2726,16 @@ fn hero_of(c: &Column) -> Hero {
     let s = &c.select;
     Hero {
         class: CLASSES[s.class.min(CLASSES.len() - 1)].to_string(),
-        variant: COLOURS[s.colour % COLOURS.len()].to_string(),
+        variant: s.variant(),
         name: s.name.clone(),
         saved: s.loaded.clone(),
     }
+}
+
+/// A secret character's model, from its variant (`BLUGEC` → `GEC`).
+fn special_model(variant: &str) -> Option<String> {
+    let model = crate::cheats::model_folder(variant);
+    (model != variant).then(|| model.to_string())
 }
 
 /// A player quitting their character: out of the game, or with nobody else
@@ -2709,9 +2748,19 @@ fn quit_event(party: &Party, slot: usize) -> ColumnEvent {
 /// the class.
 fn select_tick(fe: &mut Frontend) {
     for c in fe.columns.iter_mut().flatten() {
-        if c.select.step == Step::NameShown && c.select.t >= 60.0 {
-            c.select.step = Step::Class;
-            c.select.from_character_menu = false;
+        let s = &mut c.select;
+        if s.step == Step::NameShown && s.t >= 60.0 {
+            s.step = Step::Class;
+            s.from_character_menu = false;
+            // A secret character's code: that character, picked at once
+            // (the game readies the player without the class card).
+            if let Some(secret) = crate::cheats::secret_character(&s.name) {
+                info!("{} is a secret character: {} {}", s.name, CLASSES[secret.class], crate::cheats::variant(secret));
+                s.class = secret.class;
+                s.colour = secret.colour;
+                s.special = Some(secret.model.to_string());
+                s.auto_pick = true;
+            }
         }
     }
 }

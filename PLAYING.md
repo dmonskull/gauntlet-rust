@@ -31,6 +31,29 @@ Keyboard and mouse, or any game pad (plug in more pads for local co-op).
 Enter / Start pauses; the Settings menu has the controls and lets you
 rebind keys.
 
+## Cheat codes
+
+As in the original, a hero's name can be a code: type it on the name
+screen (or start a level with `--level levelA1 --name INVULN`).
+
+- **Secret characters** — the hero is that character at once, in its own
+  colour: ICE600, NUD069 (dwarves); STX222, KJH105, PNK666 (jesters);
+  BAT900, TAK118, STG333, KAO292, CSS222, RIZ721, ARV984, DIB626, SJB964,
+  DARTHC (knights); TWN300, AYA555, CEL721 (valkyries); CAS400, MTN200,
+  RAT333 (warriors); GARM99, GARM00, DES700, SKY100, SUM224 (wizards).
+- **Powers that never run out**, given again at every level: INVULN
+  (invulnerable), SSHOTS (super shots), EGG911 (the Pojo), 1ANGEL
+  (levitation and the halo), DELTA1 (growth, enemies shrunk), 000000
+  (invisible), PEEKIN (x-ray), PURPLE (full turbo), XSPEED (speed),
+  QCKSHT (rapid fire), MENAGE (three-way shot), REFLEX (reflecting shots),
+  NOVATO (time stopped), MEBERT (the phoenix). Like a power-up you pick
+  up, the power waits in your power menu: press **D-pad Up** to open it
+  and **Up** again to turn the power on (Left / Right pick another).
+- **ALLFUL**: nine keys and nine potions at every level. **10000K**: your
+  gold is 10,000 at every level.
+- The developers' own: **MNTHRX** or **ARIENT** (every code above at
+  once), **ADMBLY** (a random few each level).
+
 ## First-person view
 
 Start → **Settings → Controls → First Person View → On**. Choose Off to
