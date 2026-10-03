@@ -2992,7 +2992,7 @@ dependencies = [
 
 [[package]]
 name = "gdl-formats"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "libm",
  "ruzstd",
@@ -3001,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "gdl-game"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "arboard",
  "bevy",
@@ -3017,7 +3017,7 @@ dependencies = [
 
 [[package]]
 name = "gdl-install"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "gdl-formats",
  "thiserror 2.0.21",
@@ -3025,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "gdl-net"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bytes",
  "iroh",

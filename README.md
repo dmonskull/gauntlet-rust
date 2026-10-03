@@ -75,7 +75,8 @@ details and the full to-do list):
   no port forwarding, each player with their own screen, camera and
   settings, watching a teammate while down. Friends can join a game under
   way, heroes can be changed mid-game, and if the machines ever disagree
-  the level simply starts again for everyone.
+  their games are put back together where they stand — no level starts
+  again, and nobody loses their place or what they picked up.
 - Optional **first-person view**, independently chosen by each player:
   animated equipped weapons and hands, mouse/right-stick look, throws that
   go where you look, and local split screens when needed.

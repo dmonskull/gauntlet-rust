@@ -112,7 +112,20 @@ the tower it also has **Shop** and **Inventory** (they open for everyone)
 and **Manage Character**: change or load your hero (everyone starts again
 in the tower with it), or **Save** it on your machine.
 
+- **Quit Level** (the host's) takes everyone back to the tower.
+- **Leave Game** takes you out of the online game: you play on alone in
+  your own tower. Leaving in the middle of a level, your hero keeps
+  nothing it got on that level (finish the level first to keep it). The
+  same if the host ends the game or your connection drops.
+- Runestones, crystals and the gargoyle's pieces go to every hero in the
+  level when one picks them up, each on their own record — so a party
+  never comes up short, and each hero keeps theirs for other games.
+
+A small **gold medallion with a red gem** in the top right corner means
+the game is waiting on the network. It's the only sign of it: the game
+waits, or quietly puts the machines' games back together (each player
+keeps their own hero's place and what they picked up), and plays on. No
+level starts again.
+
 Everyone must run **the same version** of the program and the same game
-(USA disc); Windows, Mac and Linux players can play together. If the
-machines ever disagree, the level starts again for everyone, each hero with
-what they had.
+(USA disc); Windows, Mac and Linux players can play together.
