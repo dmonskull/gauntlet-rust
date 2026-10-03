@@ -963,6 +963,19 @@ impl Menu {
 // ---------------------------------------------------------------------------
 // State
 
+/// What a screen does with the sounds (`audio.rs` `front_end_sounds`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenSounds {
+    /// The level's own.
+    Play,
+    /// The title and the select screen: the menus' music.
+    Menus,
+    /// The after-level and shop screens: a realm's shop music (its letter).
+    Shop(char),
+    /// GAME OVER: nothing.
+    Over,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
     Title,
@@ -1208,6 +1221,29 @@ impl Frontend {
     /// here until the host's resync).
     pub fn in_online_manage(&self) -> bool {
         self.online_manage && self.screen == Screen::Select
+    }
+
+    /// What the screen does with the sounds (`audio.rs` `front_end_sounds`).
+    pub fn screen_sounds(&self) -> ScreenSounds {
+        match self.screen {
+            Screen::Playing | Screen::Intro => ScreenSounds::Play,
+            // Online the game goes on under a player's character menu.
+            Screen::Select if self.online_manage => ScreenSounds::Play,
+            Screen::Title | Screen::Connecting | Screen::LoadingSelect | Screen::Select | Screen::LoadingGame => ScreenSounds::Menus,
+            // The after-level screen: the finished level's realm; the Tower
+            // Menu's shop: the tower's ('L', past 'K': 'A'). The test realm
+            // plays the town's.
+            Screen::Shop => {
+                let level = self.after_level_for.as_deref().filter(|_| self.shop_kind == Some(ShopKind::AfterLevel));
+                let letter = level.and_then(|l| l.strip_prefix("level")).and_then(|r| r.chars().next()).map(|c| c.to_ascii_uppercase());
+                ScreenSounds::Shop(match letter {
+                    Some('T') => 'G',
+                    Some(c @ 'A'..='K') => c,
+                    _ => 'A',
+                })
+            }
+            Screen::GameOver => ScreenSounds::Over,
+        }
     }
 
     /// Whether the shop screen is up (`shop.rs`).
