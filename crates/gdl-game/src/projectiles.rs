@@ -328,7 +328,11 @@ pub fn monster_missile(enemy: i32, kind: MissileKind) -> Option<MissileType> {
 /// The hero's thrown weapon for a class index: its name in the weapon
 /// table and, by player level ÷ 10, which of its models it uses (0: the
 /// class's own `…_THROW0`; otherwise `…_THROW<n>` among its effects).
-const WEAPONS: [(&str, &[u8; 10]); 10] = [
+/// Sixteen classes: of the alternate characters the minotaur, falconess,
+/// ogre and unicorn throw weapons of their own, the jackal the wizard's
+/// staff bolts, the tigress the archer's arrows, the medusa the
+/// sorceress's wand bolts and the hyena the jester's bombs.
+const WEAPONS: [(&str, &[u8; 10]); 16] = [
     ("AXE", b"0000000000"),
     ("SWD", b"0000000000"),
     ("STF", b"1112223333"),
@@ -339,6 +343,12 @@ const WEAPONS: [(&str, &[u8; 10]); 10] = [
     ("BOM", b"1111112233"),
     ("MIN", b"1111111111"),
     ("FAL", b"1111111111"),
+    ("STF", b"1112223333"),
+    ("BOW", b"1112223333"),
+    ("OGR", b"1111111111"),
+    ("UNI", b"1111111111"),
+    ("WND", b"1112223333"),
+    ("BOM", b"1111112233"),
 ];
 
 /// Missile type index for a class: the secret classes (8 and up) share the

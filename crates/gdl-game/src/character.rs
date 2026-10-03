@@ -60,6 +60,20 @@ pub fn class_index(class: &str) -> Option<usize> {
     CLASS_HAND_BONES.iter().position(|(c, _)| c.eq_ignore_ascii_case(class))
 }
 
+/// The class whose animations a class plays (`PLAYERS/<class>/ANIM`): its
+/// own, or — for the alternate characters, from the ninth class on, which
+/// have none — the class eight before it: the minotaur moves as the
+/// warrior, the falconess as the valkyrie, the jackal as the wizard, the
+/// tigress as the archer, the ogre as the dwarf, the unicorn as the
+/// knight, the medusa as the sorceress, the hyena as the jester (the
+/// game's loader, `docs/animation-format.md`).
+pub fn animation_class(class: &str) -> String {
+    match class_index(class) {
+        Some(i) if (8..16).contains(&i) => CLASS_HAND_BONES[i - 8].0.to_string(),
+        _ => class.to_ascii_uppercase(),
+    }
+}
+
 /// Everything needed to spawn one player class in one colour/armour.
 pub struct CharacterData {
     /// e.g. `ARC/BLU`.
@@ -103,7 +117,7 @@ pub fn load_player(install: &mut GameInstall, class: &str, variant: &str) -> Res
     let model = ModelFile::parse(&read(install, format!("{dir}/objects.ngc"))?).map_err(|e| format!("{dir}/objects.ngc: {e}"))?;
     let textures = read(install, format!("{dir}/textures.ngc"))?;
     let skeleton = first_atree(&read(install, format!("{dir}/ANIM.PS2"))?).map_err(|e| format!("{dir}/ANIM.PS2: {e}"))?;
-    let clips_path = format!("PLAYERS/{class}/ANIM/ANIM.PS2");
+    let clips_path = format!("PLAYERS/{}/ANIM/ANIM.PS2", animation_class(class));
     let clips = first_atree(&read(install, clips_path.clone())?).map_err(|e| format!("{clips_path}: {e}"))?;
     if clips.clips.is_none() {
         return Err(format!("{clips_path} has no animation clips"));
