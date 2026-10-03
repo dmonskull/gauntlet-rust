@@ -37,6 +37,7 @@ use std::time::Duration;
 use bevy::app::{RunFixedMainLoop, RunFixedMainLoopSystems};
 use bevy::ecs::schedule::{ExecutorKind, ScheduleLabel};
 use bevy::prelude::*;
+use gdl_formats::detmath::sync_bits;
 use gdl_net::{Bundle, NetConfig, NetEvent, NetSession, PlayerInput, Relays, Target, Tick};
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +48,7 @@ use crate::saves::SavedCharacter;
 
 /// The game's own lockstep revision, part of the build every machine must
 /// share: raise it whenever the game steps differently.
-const LOCKSTEP_REVISION: u32 = 3;
+const LOCKSTEP_REVISION: u32 = 4;
 
 /// Frames without level work before the next tick may run: a level change
 /// and its setup (systems that run as its population comes in, then as
@@ -809,24 +810,24 @@ fn checksum(
         (
             "heroes",
             sum(&mut heroes.iter().map(|p| {
-                hash(&|h| (p.slot, p.mover.position.map(f32::to_bits), p.mover.facing.to_bits(), p.look.on, p.look.yaw.to_bits(), p.look.pitch.to_bits()).hash(h))
+                hash(&|h| (p.slot, p.mover.position.map(sync_bits), sync_bits(p.mover.facing), p.look.on, sync_bits(p.look.yaw), sync_bits(p.look.pitch)).hash(h))
             })),
         ),
         (
             "monsters",
             sum(&mut monsters.iter().map(|m| {
-                hash(&|h| (m.enemy, m.position.map(f32::to_bits), m.facing.to_bits(), m.hit_points.to_bits()).hash(h))
+                hash(&|h| (m.enemy, m.position.map(sync_bits), sync_bits(m.facing), sync_bits(m.hit_points)).hash(h))
             })),
         ),
         (
             "critters",
             sum(&mut critters.iter().map(|c| {
-                hash(&|h| (c.position.map(f32::to_bits), c.yaw.to_bits(), c.hit_points.to_bits()).hash(h))
+                hash(&|h| (c.position.map(sync_bits), sync_bits(c.yaw), sync_bits(c.hit_points)).hash(h))
             })),
         ),
         (
             "projectiles",
-            sum(&mut projectiles.iter().map(|p| hash(&|h| p.position.to_array().map(f32::to_bits).hash(h)))),
+            sum(&mut projectiles.iter().map(|p| hash(&|h| p.position.to_array().map(sync_bits).hash(h)))),
         ),
         ("monster level", monster_level.map_or(0, |l| l.sync_hash())),
         ("critter level", critter_level.map_or(0, |l| l.sync_hash())),

@@ -1131,7 +1131,7 @@ pub fn spawn(
         if category == Category::PlayerStart {
             // Cone tip along the start's facing (+Z turned by its yaw).
             let forward = game_rotation([0.0, locator.rotation[1], 0.0]) * Vec3::Z;
-            t.rotation = Quat::from_rotation_arc(Vec3::Y, forward);
+            t.rotation = crate::rotations::arc(Vec3::Y, forward);
         }
         marker(category, t, commands, meshes);
         out.markers += 1;

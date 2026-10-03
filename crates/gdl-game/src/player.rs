@@ -48,6 +48,7 @@ use crate::player_state::{Cry, HurtHero, PlayerState, SpendPower, power};
 use crate::options::GameOptions;
 use crate::party::{Inputs, MAX_PLAYERS, Party, SlotInput};
 use crate::population::LevelPopulation;
+use crate::tick_places::{Between, TickPlaces};
 use crate::effects::{BreathAt, ChopAt, EffectAt, EffectOn, MAGIC_BUTTONS, MagicIntent, MagicState, UsePotion};
 use crate::flash::{self, Flash, FlashColours};
 use crate::fade::BodyLook;
@@ -794,7 +795,8 @@ impl Plugin for PlayerPlugin {
                 Update,
                 (spawn_player.run_if(resource_exists_and_changed::<LevelPopulation>).in_set(PlayerSpawn), interpolate)
                     .chain(),
-            );
+            )
+            .add_systems(FixedPreUpdate, interpolate.in_set(TickPlaces::Riders));
     }
 }
 
@@ -1834,7 +1836,7 @@ fn tick(
                     let eye = position + Vec3::Y * state.head_height * p.model_scale;
                     let centre = f.position + Vec3::Y * (0.5 * f.height);
                     let ray = p.look.direction();
-                    ((centre - eye).normalize_or(ray).dot(ray) >= 8f32.to_radians().cos()).then_some(centre)
+                    ((centre - eye).normalize_or(ray).dot(ray) >= 8f32.to_radians().dcos()).then_some(centre)
                 });
                 let aim = match found {
                     _ if gaze => {
@@ -1951,8 +1953,10 @@ fn strike_blow(
     Some(Hit { target: found.entity, attacker, damage, kind, push, at, target_kind: found.kind, ranged: false })
 }
 
-pub(crate) fn interpolate(fixed: Res<Time<Fixed>>, mut players: Query<(&Player, &mut Transform)>, nodes: Query<&GlobalTransform, Without<Player>>) {
-    let t = fixed.overstep_fraction();
+/// Places the heroes between the last two ticks ([`Between`]): for
+/// drawing, and as a tick starts where the game has them.
+pub(crate) fn interpolate(between: Res<Between>, mut players: Query<(&Player, &mut Transform)>, nodes: Query<&GlobalTransform, Without<Player>>) {
+    let t = between.0;
     for (player, mut transform) in &mut players {
         // Held, it hangs from the critter's node (turning with it).
         if let Some((node, offset, at)) = player.grabbed {

@@ -300,11 +300,58 @@ tick. `GDL_ONLINE_LEVEL=levelA1` starts the game on a level; `HOST_PLAYERS=1`
 starts the host alone, so the client joins the game under way;
 `CLIENT_MENU` scripts the client's menus (Manage Character);
 `CLIENT_DESYNC_AT=<tick>` puts the client's game out of sync then
-(`GDL_DESYNC_AT`), and the run after the restart must agree.
+(`GDL_DESYNC_AT`), and the run after the restart must agree. `FIGHT=1`
+hops the heroes among levelA1's grunts (`HOPS`) and has them throw every 9
+ticks; `HOST_PREFIX` / `CLIENT_PREFIX` put a command before a side's game
+(`taskpolicy -b`: slowed down).
 
-**Machines of different kinds.** Lockstep needs the same floating-point
-results everywhere. The game's sines, cosines, arctangents and powers come
-from `libm` (`gdl_formats::detmath::Det`: `x.dsin()` …) and Bevy's maths
-from its `libm` feature, so a Mac and a Windows PC compute them alike; if
-anything else differed, the hash check would catch it and the level would
-start again.
+**What a tick may read.** Only the game's own state, never where
+something was last drawn. Between ticks everything the game moves is drawn
+part-way from the tick before's state to the last one's
+(`tick_places::Between`, the part of a tick gone by when the frame is
+drawn), and that part depends on when each machine draws: two machines
+never have the same. The tick's systems read transforms — a hero's aim and
+blows find monsters by theirs (`combat::search`), a boss's blows and
+missiles start from its bones, a held missile sits on its node — so as
+each tick starts (`FixedPreUpdate`, `TickPlaces`) the same systems that
+place things for drawing place them with `Between` at 1, where the last
+tick left them, and Bevy's transform propagation runs then too, down to
+the bones; the frame's own placing and propagation follow as before. The
+clips' frames and a blend into a clip move on with the ticks online
+(`character::advance_clips`), so the bones' own poses are the tick's too.
+
+Before this the aim read the drawn places: in a fight the machines
+disagreed within seconds (a throw aimed a hair apart) and the level
+started again, over and over. `FIGHT=1 tools/online_test.sh` is that
+fight, and `CLIENT_PREFIX="taskpolicy -b"` slows one side down (macOS) so
+the two draw unevenly.
+
+**The same maths everywhere.** Lockstep needs the same floating-point
+results on every machine, a Mac's ARM processor and a PC's Intel one
+alike:
+
+- The game's sines, cosines, arctangents and powers come from `libm`
+  (`gdl_formats::detmath::Det`: `x.dsin()` …) and glam's from Bevy's
+  `libm` feature: the systems' own maths libraries round differently.
+- glam works on four numbers at a time with the processor's own
+  instructions, written apart for Intel and ARM. Read side by side (glam
+  0.30.10, `f32/sse2` and `f32/neon`): products and sums of vectors,
+  matrices and quaternions, cross products, the three-number dot product
+  and length, and a rotation applied to a vector do the same steps in the
+  same order on both — so do Bevy's transforms, which use only those. But
+  the four-number dot product sums in a different order (a quaternion's
+  or `Vec4`'s length, `normalize`, `Quat::lerp`, `from_rotation_arc`, a
+  frustum's sphere test), `Vec3A::normalize` divides on one and multiplies
+  by the reciprocal on the other, and the Intel `Quat::slerp` takes its
+  sines from its own approximation. The game's `rotations.rs` has `slerp`
+  and `arc` a number at a time, and `monsters::on_screen` is the frustum
+  test; `Vec3` and `Vec2` are plain numbers everywhere.
+- `f32::max` and `min` may return either of two equal inputs, and the
+  processors differ on `-0.0` against `0.0`: the state hash takes every
+  float through `detmath::sync_bits` (the zeros alike, every NaN alike),
+  and `datan2` ignores a zero's sign.
+- `crates/gdl-formats/tests/no_platform_maths.rs` keeps the platform's
+  functions and those of glam's out of `crates/`.
+
+(glam's `scalar-math` feature would make all of it plain numbers, but
+Bevy 0.18's reflection doesn't build with it.)

@@ -904,7 +904,8 @@ mod tests {
                 statues += 1;
                 let radius = 0.5 * ty.extent[0].max(ty.extent[1]);
                 let near = wakes.iter().any(|w| {
-                    ((w[0] - p.position[0]).powi(2) + (w[2] - p.position[2]).powi(2)).sqrt() - radius < 10.0
+                    let (dx, dz) = (w[0] - p.position[0], w[2] - p.position[2]);
+                    (dx * dx + dz * dz).sqrt() - radius < 10.0
                 });
                 if near {
                     woken += 1;

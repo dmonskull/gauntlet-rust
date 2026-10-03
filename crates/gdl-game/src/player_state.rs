@@ -366,7 +366,7 @@ impl PlayerState {
     pub fn sync_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (self.health.to_bits(), self.level, self.experience, self.gold, self.keys, &self.potions, &self.runestones).hash(&mut h);
+        (gdl_formats::detmath::sync_bits(self.health), self.level, self.experience, self.gold, self.keys, &self.potions, &self.runestones).hash(&mut h);
         (self.realms_beaten, self.alive, self.warning_timer, self.kills, self.generators, self.gold_found).hash(&mut h);
         format!("{:?} {:?} {:?} {:?}", self.powers, self.quest, self.bits, self.bought).hash(&mut h);
         h.finish()

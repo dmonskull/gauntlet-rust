@@ -521,7 +521,7 @@ fn connect_arm(elbow: Vec3, wrist: Vec3, shoulder: Vec3) -> Mat4 {
     let extension = new.length() / old.length() - 1.0;
     let stretch = Mat3::IDENTITY + Mat3::from_cols(direction * direction.x, direction * direction.y, direction * direction.z) * extension;
     Mat4::from_translation(shoulder)
-        * Mat4::from_quat(Quat::from_rotation_arc(direction, new.normalize()))
+        * Mat4::from_quat(crate::rotations::arc(direction, new.normalize()))
         * Mat4::from_mat3(stretch)
         * Mat4::from_translation(-elbow)
 }
@@ -531,7 +531,7 @@ fn gear_projection() -> Projection {
 }
 
 fn projection_for(first: bool) -> Projection {
-    let fov = if first { 70f32.to_radians() } else { 2.0 * (0.75 * 30f32.to_radians().tan()).atan() };
+    let fov = if first { 70f32.to_radians() } else { 2.0 * (0.75 * 30f32.to_radians().dtan()).datan2(1.0) };
     Projection::custom(MirroredPerspective(PerspectiveProjection { fov, near: 0.1, ..default() }))
 }
 

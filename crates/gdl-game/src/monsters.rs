@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_6, PI};
 use std::sync::Arc;
 
-use bevy::camera::primitives::{Frustum, Sphere};
 use bevy::prelude::*;
 use gdl_formats::anim::AnimFile;
 use gdl_formats::collision::{node_flags, push_out};
@@ -42,6 +41,7 @@ use crate::play_camera::PlayCamera;
 use crate::player::{Player, PlayerTick};
 use crate::player_state::{EnemyScale, TimeStop, power};
 use crate::population::LevelPopulation;
+use crate::tick_places::{Between, TickPlaces};
 use crate::projectiles::{self, MonsterShot};
 use crate::texanim::{LevelTexAnims, TexAnim};
 use crate::world::{LevelEntity, LevelGround};
@@ -138,7 +138,8 @@ impl Plugin for MonstersPlugin {
             .add_systems(
                 Update,
                 (setup_level.run_if(resource_exists_and_changed::<LevelPopulation>), interpolate, log_hits).chain(),
-            );
+            )
+            .add_systems(FixedPreUpdate, interpolate.in_set(TickPlaces::Movers));
     }
 }
 
@@ -1042,26 +1043,58 @@ fn monster_model(
 /// camera's; online each hero's own): each view from eye to target with the
 /// game's 60° × 45° (4:3) field of view — whatever the window's shape or
 /// the free camera. Before the play camera exists nothing is on screen.
-pub struct Views(Vec<Frustum>);
+pub struct Views(Vec<View>);
+
+/// One camera's view: its eye and the directions it looks along, right
+/// and up.
+struct View {
+    eye: Vec3,
+    forward: Vec3,
+    right: Vec3,
+    up: Vec3,
+}
+
+/// The view's nearest and furthest distances.
+const VIEW_NEAR: f32 = 0.5;
+const VIEW_FAR: f32 = 2000.0;
+/// The tangents of half its width (30°) and half its height.
+const VIEW_ACROSS: f32 = 0.577_350_26;
+const VIEW_UP: f32 = 0.75 * VIEW_ACROSS;
 
 pub fn game_view(camera: Option<&PlayCamera>) -> Views {
     let Some(camera) = camera else { return Views(Vec::new()) };
-    let fov = 2.0 * (0.75 * 30f32.to_radians().dtan()).datan();
-    let frustum = |(eye, target): ([f32; 3], [f32; 3])| {
-        let (eye, target) = (Vec3::from(eye), Vec3::from(target));
+    Views(camera.game_views().into_iter().filter_map(|(eye, target)| View::from(Vec3::from(eye), Vec3::from(target))).collect())
+}
+
+impl View {
+    fn from(eye: Vec3, target: Vec3) -> Option<View> {
         if eye.distance_squared(target) < 1e-6 {
             return None;
         }
-        let clip = Mat4::perspective_rh(fov, 4.0 / 3.0, 0.5, 2000.0) * Mat4::look_at_rh(eye, target, Vec3::Y);
-        Some(Frustum::from_clip_from_world(&clip))
-    };
-    Views(camera.game_views().into_iter().filter_map(frustum).collect())
+        let forward = (target - eye).normalize();
+        let right = forward.cross(Vec3::Y).normalize();
+        Some(View { eye, forward, right, up: right.cross(forward) })
+    }
 }
 
 /// The on-screen test the game makes against its camera: a sphere around a
-/// point (in any of the views).
+/// point (in any of the views). A number at a time, so every machine
+/// online decides alike (`rotations.rs`).
 pub fn on_screen(view: &Views, at: [f32; 3], radius: f32) -> bool {
-    view.0.iter().any(|f| f.intersects_sphere(&Sphere { center: Vec3::from(at).into(), radius }, true))
+    let at = Vec3::from(at);
+    view.0.iter().any(|v| {
+        let to = at - v.eye;
+        let (x, y, depth) = (to.dot(v.right), to.dot(v.up), to.dot(v.forward));
+        // Outside one of the six sides by more than its radius, it's out.
+        let side = |tangent: f32, across: f32| (depth * tangent + across) / (tangent * tangent + 1.0).sqrt() + radius <= 0.0;
+        let out = depth - VIEW_NEAR + radius <= 0.0
+            || VIEW_FAR - depth + radius <= 0.0
+            || side(VIEW_ACROSS, x)
+            || side(VIEW_ACROSS, -x)
+            || side(VIEW_UP, y)
+            || side(VIEW_UP, -y);
+        !out
+    })
 }
 
 /// A player as the monsters see it.
@@ -2213,8 +2246,8 @@ fn log_hits(mut hits: MessageReader<MonsterHit>, monsters: Query<&Monster>) {
 
 /// Places the monsters between ticks, drawn at the enemies' scale (the
 /// shrink power's).
-fn interpolate(fixed: Res<Time<Fixed>>, enemies: Res<EnemyScale>, mut monsters: Query<(&Monster, &mut Transform)>) {
-    let t = fixed.overstep_fraction();
+fn interpolate(between: Res<Between>, enemies: Res<EnemyScale>, mut monsters: Query<(&Monster, &mut Transform)>) {
+    let t = between.0;
     for (m, mut transform) in &mut monsters {
         let (p0, f0) = m.previous;
         transform.translation = Vec3::from(p0).lerp(Vec3::from(m.position), t);
@@ -2226,6 +2259,37 @@ fn interpolate(fixed: Res<Time<Fixed>>, enemies: Res<EnemyScale>, mut monsters: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The on-screen test is the camera's own frustum test (Bevy's, from
+    /// the game's projection), a number at a time.
+    #[test]
+    fn on_screen_is_the_cameras_frustum() {
+        use bevy::camera::primitives::{Frustum, Sphere};
+        let (eye, target) = (Vec3::new(3.0, 40.0, -35.0), Vec3::new(1.0, 2.0, 5.0));
+        let fov = 2.0 * (0.75 * 30f32.to_radians().dtan()).datan();
+        let clip = Mat4::perspective_rh(fov, 4.0 / 3.0, VIEW_NEAR, VIEW_FAR) * Mat4::look_at_rh(eye, target, Vec3::Y);
+        let frustum = Frustum::from_clip_from_world(&clip);
+        let views = Views(vec![View::from(eye, target).unwrap()]);
+        let (mut inside, mut outside) = (0, 0);
+        for i in -12..=12 {
+            for j in -6..=6 {
+                for k in -12..=12 {
+                    // Off the grid's lines, so no sphere only just touches a side.
+                    let at = Vec3::new(i as f32 * 9.7 + 0.31, j as f32 * 8.3 + 0.17, k as f32 * 9.1 + 0.23);
+                    for radius in [0.0, 1.0, 6.5] {
+                        let theirs = frustum.intersects_sphere(&Sphere { center: at.into(), radius }, true);
+                        assert_eq!(on_screen(&views, at.to_array(), radius), theirs, "{at:?} radius {radius}");
+                        if theirs { inside += 1 } else { outside += 1 }
+                    }
+                }
+            }
+        }
+        assert!(inside > 500 && outside > 500, "{inside} in, {outside} out");
+        // Behind the eye and past the far side.
+        assert!(!on_screen(&views, (eye - (target - eye).normalize() * 3.0).to_array(), 1.0));
+        assert!(!on_screen(&views, (eye + (target - eye).normalize() * 2100.0).to_array(), 1.0));
+    }
+
 
     #[test]
     fn blows_flinch_or_knock_down_like_the_game() {

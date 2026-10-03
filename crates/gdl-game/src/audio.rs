@@ -98,10 +98,13 @@ fn music_held(intro: &crate::level_intro::LevelIntro, fe: Option<&Frontend>) -> 
     intro.active() || fe.is_some_and(|f| f.screen_sounds() != ScreenSounds::Play)
 }
 
-/// The menus' music (`FUN_800a079c`: bank `SELECT`, call 0) and its
-/// requested volume (`r13-0x7fb4`), the shop screens' too.
+/// The menus' music (bank `SELECT`, call 0) and its requested volume, the
+/// shop screens' too (`docs/audio-format.md`, "The front end's sounds").
 const MENU_MUSIC: &str = "S_SELECTMUS";
 const MENU_MUSIC_VOLUME: u8 = 100;
+
+/// Every sound the game started: one-shots and both kinds of loop.
+type StartedSound = Or<(With<EffectName>, With<LoopChannel>, With<FollowingLoop>)>;
 
 fn shop_music(letter: char) -> String {
     format!("S_SHOP_{letter}")
@@ -109,17 +112,16 @@ fn shop_music(letter: char) -> String {
 
 /// The front end's sounds as the game switches them (`docs/audio-format.md`,
 /// "The front end's sounds"): GAME OVER stops the music and every sound the
-/// game started, and empties the voice queues (`FUN_800a0944`,
-/// `FUN_800a1004`); the title and the select screen stop the level's sounds
-/// and play the menus' music; the after-level and shop screens play the
-/// realm's shop music (`FUN_800a05e0`); play stops them (a level's start
-/// stops every sound started before it, `FUN_80015618`).
+/// game started, and empties the voice queues; the title and the select
+/// screen stop the level's sounds and play the menus' music; the
+/// after-level and shop screens play the realm's shop music; play stops
+/// them (a level's start stops every sound started before it).
 #[allow(clippy::too_many_arguments)]
 fn front_end_sounds(
     fe: Option<Res<Frontend>>,
     mut was: Local<Option<ScreenSounds>>,
     mut commands: Commands,
-    started: Query<Entity, Or<(With<EffectName>, With<LoopChannel>, With<FollowingLoop>)>>,
+    started: Query<Entity, StartedSound>,
     mut voices: ResMut<VoiceQueues>,
     mut play: MessageWriter<PlaySoundAt>,
     mut stop: MessageWriter<StopSound>,

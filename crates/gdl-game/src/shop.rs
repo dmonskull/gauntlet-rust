@@ -19,6 +19,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
+use gdl_formats::detmath::Det;
 use gdl_formats::ModelFile;
 use gdl_formats::chunk::ChunkFile;
 use gdl_formats::font::FONT32;
@@ -992,7 +993,8 @@ fn inventory_look(x: f32, y: f32, w: f32, h: f32, col: f32, inv: &Inventory) -> 
         let spin = (x + y + (180.0 * t * t * t).trunc()) as i32;
         let angle = (spin.rem_euclid(60) as f32 * 6.0).to_radians();
         let r = (1.0 - t) * 60.0;
-        let pos = Vec2::new((r * angle.cos() + x + col).trunc(), (r * angle.sin() + y).trunc());
+        // Where it's drawn only: the screen's state doesn't read it.
+        let pos = Vec2::new((r * angle.dcos() + x + col).trunc(), (r * angle.dsin() + y).trunc());
         let grow = 1.0 - t * t;
         (pos, Vec2::new((w * grow + w).trunc(), (h * grow + h).trunc()), (255.0 * grow).trunc())
     }
