@@ -32,16 +32,15 @@ for everyone), leaving or a game ending under you plays on alone in the
 tower with the level-start record, first person shows every player's
 panel. Checked: pausing on both machines through a fight stays in sync;
 the v0.2.3 build's `test` job passed on Windows, Linux and macOS (the
-"same bits" tests too).
+"same bits" tests too). Monsters are stopped by doors, chests, barrels
+and generators as the game's mover stops them (`docs/monsters.md`,
+"Items in the way") — they used to walk through shut doors.
 
 Asked for and **not done yet** (next, in this order):
 
-1. Monsters push through a door when a hero stands right against its
-   other side and they keep attacking (check the monster/door collision in
-   `monsters.rs` against the original).
-2. Other classes' throw and attack animations (check each class's action
+1. Other classes' throw and attack animations (check each class's action
    table against the original's).
-3. Sync points don't carry yet: broken barrels and walls, chest contents
+2. Sync points don't carry yet: broken barrels and walls, chest contents
    let out in another order, `mechanics.rs`, a critter's move under way,
    camera cuts and the boss camera.
 

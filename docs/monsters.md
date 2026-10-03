@@ -433,6 +433,50 @@ otherwise the move is cancelled. Y follows the floor, down at most 16
 per second (`r2-0x6ec0`); more than 5 below the floor it stood on
 (`r2-0x6ea0`) kills it.
 
+### Items in the way
+
+The level's collision has no doors in it (a wall cast goes straight
+through a gate): what holds a monster at a door, a chest or a generator
+is the mover's last test, `FUN_8005d1f8(monster, from, to, moving)`, run
+when neither a player nor a monster put it back (`from` its centre
+`+0x54`, `to` that plus the move; `moving` its flag `+0x280`: the move
+with its knockback over 0.001, `r2-0x6ef8`). A stopped monster is put
+back, its move zeroed, and it steps round the item as round a monster.
+
+- The test is the heroes' touch test (`FUN_8005f0e0`,
+  [items.md](items.md) "Touching items") with radius 0.5 × the monster's
+  (`r2-0x6790`) and half height 1.5 × that (`r2-0x6788`), against **one**
+  item:
+  - standing still (`moving` 0) with an item that stopped it last
+    (`+0x28C`): that item again;
+  - else, once its wait `+0x32C` (fields; counted down while moving) is
+    under 1: `FUN_80062fdc(radius, to, …)` — over every item that's
+    there (not free, `& 0x8100` clear), has a shape, is in this game
+    (`+0xCD`), isn't a sound, a powerup still in its chest (`+0xE8`), or
+    a damage tile that isn't on (state 2 or 4 with flag 1): the distance
+    from `to` to its centre less its type's radius. The nearest of all
+    sets the wait — (distance − radius) × 0.5 × `+0xB8` (1 / the ground
+    it covers a tick), 30 at most, when positive: away from every item it
+    doesn't look again until it could have reached one — and the nearest
+    that's on screen (`0x4000`) or always active (`0x40`) is the one
+    tested.
+- A touched item stops it by class (`FUN_8005d3c4`):
+
+| class | stops a monster |
+| --- | --- |
+| powerup, trigger, exit, transporter, rotator | never |
+| container | unless the monster is a flier (types `0x1D`, `0x20`) |
+| generator | while it stands (`+0xE2`) and doesn't make type `0x11`; a flier passes one no taller than 3 (`r2-0x6778`) |
+| damage tile | every type but the fliers, Death (`0x1E`) and types 0 and 3 — which, on a tile that's on, take its damage instead (`FUN_8004e660`) |
+| obstacle | all but rock falls `0x28`, leaves `0x31`, debris `0x33`, shot-down walls `0x34`, sinking rocks `0x35` |
+| anything else (doors, statues, traps) | always (an open door isn't touched at all) |
+
+Here: `LevelItems::stops_monster` (`items.rs`), called from the monster
+tick after its bump tests, with `ItemWatch` on the monster for the last
+item and the wait. Before this monsters walked through shut doors toward
+a hero standing behind one. Not ported: types 0 and 3 taking a damage
+tile's damage.
+
 ## Critter files (`CRITTER/*.WAD`)
 
 Everything about critters is now in [critters.md](critters.md); this is

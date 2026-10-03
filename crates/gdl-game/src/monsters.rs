@@ -388,6 +388,8 @@ pub struct Monster {
     flash: Flash,
     /// Death's own state (type 30 only).
     pub death: DeathState,
+    /// The item that stopped it last, and when it looks for one again.
+    item_watch: crate::items::ItemWatch,
 }
 
 /// Death (`docs/monsters.md`, "Death"): the drain's timer and contact
@@ -773,6 +775,7 @@ pub fn spawn_monster(level: &mut MonsterLevel, new: NewMonster, commands: &mut C
         flash: Flash::default(),
         // A placed Death lets one contact pass before it drains.
         death: DeathState { delay: u8::from(new.placed && new.enemy == DEATH_TYPE), ..DeathState::default() },
+        item_watch: default(),
     };
     // Hittable: its radius, and (a stand-in for the game's height test)
     // twice its centre height.
@@ -1133,6 +1136,16 @@ type DeathWriters<'w, 's> = (
     MessageWriter<'w, EffectOn>,
 );
 
+/// What the monsters' tick reads of the rest of the game: the flash
+/// colours and body tags, the powers on them, and the items in their way.
+type Surroundings<'w, 's> = (
+    Res<'w, FlashColours>,
+    Query<'w, 's, &'static mut MeshTag>,
+    Res<'w, TimeStop>,
+    Res<'w, EnemyScale>,
+    Option<Res<'w, crate::items::LevelItems>>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn tick_monsters(
     mut commands: Commands,
@@ -1148,11 +1161,14 @@ fn tick_monsters(
     death_textures: Option<Res<DeathTextures>>,
     mut effects: MessageWriter<EffectAt>,
     (mut explosions, mut sounds): (MessageWriter<ExplosionAt>, MessageWriter<PlaySoundAt>),
-    (colours, mut tags, stop, enemies): (Res<FlashColours>, Query<&mut MeshTag>, Res<TimeStop>, Res<EnemyScale>),
+    (colours, mut tags, stop, enemies, items): Surroundings,
     (mut drains, mut loops, mut hints, mut fades, mut riding): DeathWriters,
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
     level.tick = level.tick.wrapping_add(1);
+    // The generators standing, and what each makes: their items stop the
+    // monsters (`LevelItems::stops_monster`).
+    let standing: Vec<(usize, i32)> = generators.iter().filter(|g| g.hit_points > 0.0).map(|g| (g.placement, g.enemy)).collect();
     // Where the Death draining a hero this tick is (its drain's sound
     // follows it).
     let mut sucking: Option<Vec3> = None;
@@ -1420,8 +1436,10 @@ fn tick_monsters(
             m.facing = turn_toward(m.facing, h, rate);
         }
 
-        // Walls and floor, then players and other monsters in the way.
+        // Walls and floor, then players, other monsters and items in the
+        // way.
         let velocity = add(velocity, knock);
+        let sets_out = velocity[0].dhypot(velocity[2]) > 0.001;
         let moved = monster_move(collision, m, velocity, MAX_DROP_PER_SECOND * dt);
         let delta = moved.delta;
         if moved.wall {
@@ -1475,6 +1493,18 @@ fn tick_monsters(
             .find(|b| b.entity != entity && bumps(m.position, to, b.feet, r + b.radius, m.stats.step + b.step))
         {
             blocked(m, Some(other.feet), target.map(|t| t.feet));
+            m.position[1] += delta[1];
+        } else if let Some(item) = items.as_deref().and_then(|items| {
+            // An item in the way — a door, a chest, a barrel, a generator
+            // (the game's monster-against-items test, `docs/monsters.md`).
+            let centre = m.centre().to_array();
+            let kind = (m.enemy, m.stats.radius, m.stats.speed_per_tick);
+            let seen = |c: [f32; 3]| on_screen(frustum, c, 1.0);
+            let makes = |placement: usize| standing.iter().find(|(p, _)| *p == placement).map(|(_, enemy)| *enemy);
+            items.stops_monster(&mut m.item_watch, kind, centre, add(centre, delta), sets_out, &seen, &makes)
+        }) {
+            // Put back, it steps round the item as round another monster.
+            blocked(m, Some(item), target.map(|t| t.feet));
             m.position[1] += delta[1];
         } else {
             if !moved.wall {
