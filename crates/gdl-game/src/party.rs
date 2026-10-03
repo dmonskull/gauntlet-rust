@@ -201,13 +201,16 @@ impl SlotInput {
     /// first tick whose controls carry it every machine stops and they
     /// put their games together again.
     pub const SYNC: u32 = 0x02;
+    /// Online, the host's Quit Level: the party leaves the level for the
+    /// tower on the tick that takes it.
+    pub const QUIT_LEVEL: u32 = 0x04;
     /// The settings' bits.
     pub const FIRST_PERSON: u32 = 0x10;
     /// Mouse look uses a wider angular range than a controller stick.
     pub const MOUSE_LOOK: u32 = 0x08;
     pub const SETTINGS: u32 = Self::AUTO_AIM | Self::AUTO_ATTACK | Self::ROBOTRON | Self::FIRST_PERSON;
     const EXTRAS: u32 =
-        Self::SETTINGS | Self::MOUSE_LOOK | Self::BACK | Self::OPEN_SHOP | Self::OPEN_INVENTORY | Self::OWN_CAMERAS | Self::SYNC;
+        Self::SETTINGS | Self::MOUSE_LOOK | Self::BACK | Self::OPEN_SHOP | Self::OPEN_INVENTORY | Self::OWN_CAMERAS | Self::SYNC | Self::QUIT_LEVEL;
 
     /// The game's buttons held, without the extras.
     pub fn buttons(&self) -> u32 {

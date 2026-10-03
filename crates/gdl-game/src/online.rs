@@ -87,7 +87,10 @@ impl Plugin for OnlinePlugin {
             .add_systems(Update, fresh_game)
             .add_systems(RunFixedMainLoop, drive.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .add_systems(RunFixedMainLoop, run_net_tick.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
-            .add_systems(NetTick, (leave_gone, net_shop.after(leave_gone), test_desync.before(checksum), checksum.after(net_shop)))
+            .add_systems(
+                NetTick,
+                (leave_gone, net_shop.after(leave_gone), quit_level.after(leave_gone), test_desync.before(checksum), checksum.after(net_shop)),
+            )
             .add_systems(Last, settle);
     }
 }
@@ -781,6 +784,23 @@ fn leave_gone(
                 commands.entity(e).despawn();
             }
         }
+    }
+}
+
+/// The host's Quit Level (`SlotInput::QUIT_LEVEL` with its controls): on
+/// the tick that takes it every machine leaves the level for the tower,
+/// as Quit Level does in a game on one machine.
+fn quit_level(
+    lock: Res<Lockstep>,
+    inputs: Res<Inputs>,
+    population: Option<Res<LevelPopulation>>,
+    mut change: MessageWriter<crate::exits::ChangeLevelTo>,
+) {
+    let asked = inputs.slots[0].held & SlotInput::QUIT_LEVEL & !lock.last_held[0] != 0;
+    let in_tower = population.as_ref().and_then(|p| crate::quest::level_of(&p.level)).is_some_and(|(realm, _)| realm == crate::quest::TOWER);
+    if asked && !in_tower {
+        info!("online: the host quits the level at tick {}", lock.tick);
+        change.write(crate::exits::ChangeLevelTo::to(crate::frontend::TOWER));
     }
 }
 

@@ -109,12 +109,11 @@ mod tests {
             let b = Quat::from_rotation_y(2.0 - t * 0.21) * Quat::from_rotation_x(t * 0.013);
             let v = Vec3::new(t * 0.3 - 40.0, 2.5, 17.0 - t * 0.9);
             for q in [slerp(a, b, (t * 0.07).fract()), arc(Vec3::Y, (a * Vec3::Z).normalize()), a * b] {
-                q.to_array().map(&mut take);
-                (q * v).to_array().map(&mut take);
+                q.to_array().into_iter().chain((q * v).to_array()).for_each(&mut take);
             }
             let m = Transform::from_translation(v).with_rotation(a).with_scale(Vec3::splat(1.5)).compute_affine()
                 * Transform::from_xyz(1.0, -2.0, 3.0).with_rotation(b).compute_affine();
-            m.transform_point3(v).to_array().map(&mut take);
+            m.transform_point3(v).to_array().into_iter().for_each(&mut take);
         }
         assert_eq!(sum, EXPECTED_BITS, "{sum:#x}");
     }
