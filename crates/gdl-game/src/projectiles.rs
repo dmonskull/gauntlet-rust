@@ -351,9 +351,9 @@ const WEAPONS: [(&str, &[u8; 10]); 16] = [
     ("BOM", b"1111112233"),
 ];
 
-/// Missile type index for a class: the secret classes (8 and up) share the
-/// class record values of the class eight before them, and this table too
-/// (stand-in: the game's per-class index for them isn't traced).
+/// Missile type index for a class: the alternate characters (8 and up)
+/// use the class eight before them's — the record's `+0x08`, which the
+/// game's class switch sets to the class less 8 for them.
 fn missile_class(class: usize) -> usize {
     class % HERO_MISSILES.len()
 }

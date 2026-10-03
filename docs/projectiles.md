@@ -93,9 +93,9 @@ in that order, the gauntlets' records and models (`BOSSG_ELEC`,
 `BOSSG_ACID`, `SUPERARROW` from `WEAPONS`), the crossbow's use spent
 (`SpendPower`; with none left the class's missile), × 2 / × 1.5, the bolt
 flying straight along the facing through walls at release and on past
-an item it strikes there, the sound. The secret classes' throw sound is
-their base class's (stand-in: their `+0x08` isn't traced; read as it is,
-the table would give them turbo sounds).
+an item it strikes there, the sound. The alternate characters' throw sound is
+their base class's: the record's `+0x08` is the class less 8 for them
+(`FUN_80079a00`).
 
 After any release the event word loses `0xFF00` and gains `0x10000000`
 — the throw event the phoenix, the familiars and the body looks read
@@ -502,9 +502,9 @@ throw every two seconds.
   would play READY's animation in their place).
 - The throw pause's added clip length (`+0x80`) is taken to be the new
   clip's frame count.
-- The secret classes use the missile record, offsets and effects folder
-  of the class eight before them (their PDAT values match those); the
-  game's per-class index for them isn't traced.
+- The alternate characters use the missile record of the class eight
+  before them: the game indexes it by the record's `+0x08`, the class
+  less 8 for them ([combat.md](combat.md), "The action state machine").
 
 ## The throw's target (`FUN_800864b0`)
 
