@@ -213,6 +213,14 @@ then ten digits by player level ÷ 10:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 0000000000 | 0000000000 | 1112223333 | 1112223333 | 0000000000 | 0000000000 | 1112223333 | 1111112233 | 1111111111 | 1111111111 |
 
+Sixteen entries, one per class: after the falconess come **STF** (the
+jackal: the wizard's), **BOW** (the tigress: the archer's), **OGR**,
+**UNI** (digits `1111111111`, as MIN and FAL), **WND** (the medusa: the
+sorceress's) and **BOM** (the hyena: the jester's), each with the digits
+of the entry it repeats. (The rewrite had only the first ten: those six
+characters threw nothing to see.) STF and WND carry `0x80` in their last
+byte.
+
 Digit `0` → atree `"%s_THROW0"` in the class's own `ANIM.PS2`
 (`PLAYERS/WAR/BLU`: `AXE_THROW0`); else `"%s_THROW%c"` in its effects
 folder (`PLAYERS/ARC/SFXBLU`: `BOW_THROW1…4`); failing both, `"%s_THROW1"`

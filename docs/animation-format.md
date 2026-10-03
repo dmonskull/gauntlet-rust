@@ -128,6 +128,24 @@ variant's skeleton (named `ARC_BLU` etc., no clips), and
 `PLAYERS/<class>/ANIM/ANIM.PS2` the class's shared skeleton, 139 actions and
 clips (named `ARC`). Bones match by name.
 
+The eight alternate characters (classes 8–15: `min fal jac tig ogr uni med
+hye`, names at `0x8011f834`) have no `ANIM` folder: the loader
+(`FUN_8007b8b0`) loads the model from
+`players/<class>/<colour>` and the animations from
+`players/<class − 8>/anim` — the minotaur moves as the warrior, the
+falconess as the valkyrie, the jackal as the wizard, the tigress as the
+archer, the ogre as the dwarf, the unicorn as the knight, the medusa as
+the sorceress, the hyena as the jester (`character::animation_class`).
+
+Clips by class (the action table's names against each class's clips):
+`THROW1` / `THROW2` have no frames for the archer and the jester (their
+throw goes from its start straight to its release), `ATT360R` none but
+for the sorceress, `ATTPWRAMEDR` none for the wizard and sorceress;
+`ATTPWRALOW(R)` is missing for the archer, dwarf, knight, sorceress and
+jester, `ATTQ3TOSTEP1(R)` for the wizard and archer (who have
+`ATTQ2TOSTEP1(R)`, the archer `STEP2TOATTQ1(R)` too), `COMBOACT2/3` for
+all but the dwarf; `PIVOTL/R` and `ATTACK1` for every class.
+
 ## Clips header (7 words, `FUN_8000e994`)
 
 Offsets relative to the header: rotation delta table, translation delta

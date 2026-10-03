@@ -38,8 +38,13 @@ and generators as the game's mover stops them (`docs/monsters.md`,
 
 Asked for and **not done yet** (next, in this order):
 
-1. Other classes' throw and attack animations (check each class's action
-   table against the original's).
+1. The alternate characters (minotaur … hyena) load now — their
+   animations are their base class's (`character::animation_class`) and
+   all sixteen classes have their thrown weapon (`projectiles::WEAPONS`) —
+   but nothing in the front end unlocks or offers them yet (only
+   `--character MIN` and the like): port the select screen's unlocks.
+   Their per-class action rules (`actions.rs`, by class index) haven't
+   been checked against the original for indices 8–15.
 2. Sync points don't carry yet: broken barrels and walls, chest contents
    let out in another order, `mechanics.rs`, a critter's move under way,
    camera cuts and the boss camera.
