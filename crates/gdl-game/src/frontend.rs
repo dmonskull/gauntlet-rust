@@ -43,7 +43,7 @@ use crate::options::GameOptions;
 use crate::party::{MAX_PLAYERS, Party, SlotInput};
 use crate::player::{Player, PlayerChoice};
 use crate::party::Devices;
-use crate::player_state::{PartyChange, PlayerState};
+use crate::player_state::{PartyChange, PlayerState, SUMNER, SUMNER_STAT, StatBonus};
 use crate::population::LevelPopulation;
 use crate::saves::{SavedCharacter, Saves};
 
@@ -1051,21 +1051,26 @@ impl Column {
                 special: None,
                 auto_pick: false,
                 unlocked: 0,
+                kept: Vec::new(),
             },
             ready: false,
         }
     }
 
     /// A player in the game at the character menu, or ready.
-    fn member(devices: Devices, choice: &PlayerChoice, name: &str, has_saves: bool, ready: bool) -> Self {
-        let mut c = Self::new(devices, has_saves);
+    fn member(m: &crate::party::Member, has_saves: bool, ready: bool) -> Self {
+        let mut c = Self::new(m.devices, has_saves);
         let s = &mut c.select;
         s.step = Step::Character;
         s.menu = character_menu(has_saves).selecting(Item::Done);
-        s.name = name.to_string();
-        s.class = CLASSES.iter().position(|k| *k == choice.class).unwrap_or(6);
-        s.colour = COLOURS.iter().position(|k| choice.variant.starts_with(k)).unwrap_or(0);
-        s.special = special_model(&choice.variant);
+        s.name = m.name.clone();
+        s.class = CLASSES.iter().position(|k| *k == m.choice.class).unwrap_or(6);
+        s.colour = COLOURS.iter().position(|k| m.choice.variant.starts_with(k)).unwrap_or(0);
+        s.special = special_model(&m.choice.variant);
+        // Sumner's card is his own (he plays as the wizard).
+        if let Some(under) = m.state.sumner.as_deref() {
+            s.sumner_card(&under.variant);
+        }
         c.ready = ready;
         c
     }
@@ -1093,9 +1098,21 @@ struct Select {
     /// record's bits): the classes from the ninth on it can pick. None
     /// for a new character.
     unlocked: u16,
+    /// What the character choosing has kept of the classes it has played
+    /// (class, experience, points bought), for the class card: its level
+    /// and attributes as that class. None for a new character.
+    kept: Vec<(usize, u32, StatBonus)>,
 }
 
 impl Select {
+    /// The card is Sumner's, played on a character of `variant`: the
+    /// colour (and model) stay the character's, for the class picked next.
+    fn sumner_card(&mut self, variant: &str) {
+        self.class = SUMNER_CARD;
+        self.colour = COLOURS.iter().position(|k| variant.starts_with(k)).unwrap_or(0);
+        self.special = special_model(variant);
+    }
+
     /// The hero's variant: the colour's folder, a secret character's model
     /// after it.
     fn variant(&self) -> String {
@@ -1412,6 +1429,32 @@ impl Strings {
 /// Class codes in the game's class order, and the four colours.
 const CLASSES: [&str; 17] =
     ["WAR", "VAL", "WIZ", "ARC", "DWF", "KNI", "SOR", "JES", "MIN", "FAL", "JAC", "TIG", "OGR", "UNI", "MED", "HYE", "SUM"];
+/// The seventeenth class's place: Sumner, picked only with his bit among
+/// the character's unlocked ones (the ninth, after the eight alternates).
+const SUMNER_CARD: usize = 16;
+
+/// The class after (or before) `class` on the class card, as the game
+/// steps it: round all seventeen, passing over Sumner unless the
+/// character has unlocked him.
+fn next_class(class: usize, forward: bool, unlocked: u16) -> usize {
+    let count = CLASSES.len();
+    let step = |c: usize| if forward { (c + 1) % count } else { (c + count - 1) % count };
+    let next = step(class);
+    if next == SUMNER_CARD && !crate::exits::secret_realm::class_open(SUMNER_CARD, unlocked) { step(next) } else { next }
+}
+
+/// What a character has kept of the classes it has played (class,
+/// experience, points bought): the one it's playing and the others.
+fn classes_kept(character: &PlayerState) -> Vec<(usize, u32, StatBonus)> {
+    let class = |code: &str| CLASSES.iter().position(|c| c.eq_ignore_ascii_case(code));
+    let mut kept: Vec<(usize, u32, StatBonus)> =
+        character.others.iter().filter_map(|r| Some((class(&r.class)?, r.experience, r.bought))).collect();
+    if let Some(playing) = class(&character.class) {
+        kept.retain(|(c, ..)| *c != playing);
+        kept.push((playing, character.experience, character.bought));
+    }
+    kept
+}
 const COLOURS: [&str; 4] = ["YEL", "BLU", "RED", "GRE"];
 /// Each player's column on the select screen, and name colour.
 const COLUMN: [f32; 4] = [0.0, 128.0, 256.0, 384.0];
@@ -1710,7 +1753,7 @@ pub(crate) fn run(
                             && let Some(m) = party.get(me)
                         {
                             fe.columns = Default::default();
-                            let mut c = Column::member(m.devices, &m.choice, &m.name, has_saves, false);
+                            let mut c = Column::member(m, has_saves, false);
                             c.select.menu.column = COLUMN[me];
                             fe.columns[me] = Some(c);
                             fe.online_manage = true;
@@ -2069,7 +2112,7 @@ fn start_select(fe: &mut Frontend, how: SelectFor, has_saves: bool, party: &Part
         }
         SelectFor::AfterLevel { final_level } => {
             for (slot, m) in party.members() {
-                let mut c = Column::member(m.devices, &m.choice, &m.name, has_saves, false);
+                let mut c = Column::member(m, has_saves, false);
                 if final_level {
                     c.select.menu.disabled = vec![Item::Change, Item::Load, Item::Quit];
                 }
@@ -2083,7 +2126,7 @@ fn start_select(fe: &mut Frontend, how: SelectFor, has_saves: bool, party: &Part
                 // Whoever asked picks; with only new players joining, the
                 // players already in wait ready.
                 let ready = joining || (!asker.among(&m.devices) && party.len() > 1);
-                fe.columns[slot] = Some(Column::member(m.devices, &m.choice, &m.name, has_saves, ready));
+                fe.columns[slot] = Some(Column::member(m, has_saves, ready));
             }
             for slot in 0..MAX_PLAYERS {
                 if let Some(devices) = fe.waiting[slot].take()
@@ -2258,6 +2301,7 @@ fn select_column(
                 s.name.clear();
                 s.letter = b'@';
                 s.unlocked = 0;
+                s.kept.clear();
             }
             Some(Item::Load) => {
                 s.from_character_menu = false;
@@ -2272,8 +2316,15 @@ fn select_column(
             Some(Item::Change) => {
                 s.from_character_menu = true;
                 s.step = Step::Class;
-                // The character's own unlocked classes are open to it.
-                s.unlocked = member.map_or(0, |m| m.state.secret_characters);
+                // The character's own unlocked classes are open to it
+                // (Sumner's player's: the character he's played on), and
+                // its card shows what it kept of each.
+                let character = member.map(|m| m.state.character());
+                s.unlocked = character.map_or(0, |c| c.secret_characters);
+                s.kept = character.map_or_else(Vec::new, classes_kept);
+                if let Some(under) = member.and_then(|m| m.state.sumner.as_deref()) {
+                    s.sumner_card(&under.variant);
+                }
             }
             Some(Item::Save) => {
                 // Stand-in for the game's memory card screens: the record
@@ -2405,14 +2456,14 @@ fn select_column(
         // The name blinks for its 60 fields (`select_tick`).
         Step::NameShown => {}
         Step::Class => {
-            // Left/L and right/R change class (the secret seventeenth only
-            // when unlocked, never here); up/down change colour.
+            // Left/L and right/R change class (the seventeenth, Sumner,
+            // only when unlocked); up/down change colour.
             if p.left || p.l {
-                s.class = (s.class + 15) % 16;
+                s.class = next_class(s.class, false, s.unlocked);
                 s.special = None;
             }
             if p.right || p.r {
-                s.class = (s.class + 1) % 16;
+                s.class = next_class(s.class, true, s.unlocked);
                 s.special = None;
             }
             if p.up {
@@ -2424,6 +2475,8 @@ fn select_column(
                 s.special = None;
             }
             if (p.accept || std::mem::take(&mut s.auto_pick)) && crate::exits::secret_realm::class_open(s.class, s.unlocked) {
+                // (Sumner goes as his own class: the party makes him the
+                // wizard with his model, `player_state::set_members`.)
                 let picked = PlayerChoice { class: CLASSES[s.class].to_string(), variant: s.variant() };
                 // A new character has a fresh record; one changing its
                 // class or colour (from its character menu) keeps its own,
@@ -2608,7 +2661,7 @@ fn play_on_alone(
     changes.write(PartyChange::Clear);
     changes.write(PartyChange::Set {
         slot: 0,
-        choice: m.choice.clone(),
+        choice: hero_form(m),
         name: m.name.clone(),
         saved: Some(Box::new(saved)),
         fresh: true,
@@ -2719,12 +2772,19 @@ fn online_in_play(
         return;
     }
     // Out of sync, and the games can't be put together where they are
-    // (`resync.rs`: they aren't on the same level): the level under way
-    // again, from the host's records.
-    if std::mem::take(&mut online.restart_level) {
+    // (`resync.rs`: they aren't on the same level): everyone starts again
+    // on the level a machine went on to last, each hero with its own
+    // machine's record.
+    if let Some(level) = online.restart_level.take() {
         online.desync = None;
-        online.notice("Out of sync, the level starts again");
-        host_resync(fe, online, party, changes, (lock, new_game), &[], here);
+        online.notice(if level.eq_ignore_ascii_case(here) {
+            "Out of sync, the level starts again"
+        } else if level.eq_ignore_ascii_case(TOWER) {
+            "Out of sync, back at the tower"
+        } else {
+            "Out of sync, on to the next level"
+        });
+        host_resync(fe, online, party, changes, (lock, new_game), &[], &level);
         return;
     }
     // Players waiting to join come in at the tower, as in the game.
@@ -2737,7 +2797,23 @@ fn online_in_play(
 /// Whether a hero a player sent changes them: another class or colour, or a
 /// saved record loaded (the same hero, unsaved, keeps its record).
 fn hero_changes(party: &Party, slot: usize, h: &Hero) -> bool {
-    party.get(slot).is_none_or(|m| m.choice.class != h.class || m.choice.variant != h.variant || h.saved.is_some())
+    party.get(slot).is_none_or(|m| {
+        let now = hero_form(m);
+        // (Sumner has the one look: his card's colour changes nothing.)
+        let same = now.class == h.class && (now.variant == h.variant || m.state.is_sumner());
+        !same || h.saved.is_some()
+    })
+}
+
+/// A member's class and colour as its hero is sent to the other machines
+/// or made again: Sumner goes as the seventeenth class, in the colour of
+/// the character he's played on (`player_state::new_member` makes him
+/// from it).
+fn hero_form(m: &crate::party::Member) -> PlayerChoice {
+    match &m.state.sumner {
+        Some(character) => PlayerChoice { class: SUMNER.to_string(), variant: character.variant.clone() },
+        None => m.choice.clone(),
+    }
 }
 
 /// The host starts again everywhere on `level`: every player's record as
@@ -2755,7 +2831,8 @@ fn host_resync(
         .members()
         .map(|(slot, m)| {
             let saved = SavedCharacter::of(&m.name, &m.choice.class, &m.choice.variant, &m.state);
-            (slot, Hero { class: m.choice.class.clone(), variant: m.choice.variant.clone(), name: m.name.clone(), saved: Some(saved) })
+            let PlayerChoice { class, variant } = hero_form(m);
+            (slot, Hero { class, variant, name: m.name.clone(), saved: Some(saved) })
         })
         .collect();
     for (slot, h) in extra {
@@ -2809,8 +2886,17 @@ fn online_manage(
         && let Some(m) = party.get(me)
     {
         let mut state = m.state.clone();
-        state.change_class(&hero.class, None);
-        hero.saved = Some(SavedCharacter::of(&hero.name, &hero.class, &hero.variant, &state));
+        // From Sumner, the character he was played on; to Sumner, the
+        // character as it is, in its own colour (every machine makes
+        // Sumner from it).
+        let was = state.leave_sumner().unwrap_or_else(|| m.choice.variant.clone());
+        if hero.class.eq_ignore_ascii_case(SUMNER) {
+            hero.variant = was;
+            hero.saved = Some(SavedCharacter::of(&hero.name, &state.class, &hero.variant, &state));
+        } else {
+            state.change_class(&hero.class, None);
+            hero.saved = Some(SavedCharacter::of(&hero.name, &hero.class, &hero.variant, &state));
+        }
     }
     if changed {
         info!("online: player {} changes hero: {} the {} ({})", me + 1, hero.name, hero.class, hero.variant);
@@ -2839,6 +2925,7 @@ fn show_of(c: &Column) -> ColumnShow {
         selected: s.menu.selected as u8,
         ready: c.ready,
         unlocked: s.unlocked,
+        kept: s.kept.iter().map(|(class, experience, bought)| (*class as u8, *experience, *bought)).collect(),
     }
 }
 
@@ -2861,6 +2948,7 @@ fn apply_show(c: &mut Column, slot: usize, show: &ColumnShow) {
     s.class = (show.class as usize).min(CLASSES.len() - 1);
     s.colour = (show.colour as usize) % COLOURS.len();
     s.unlocked = show.unlocked;
+    s.kept = show.kept.iter().map(|(class, experience, bought)| (usize::from(*class), *experience, *bought)).collect();
     s.name = show.name.chars().take(8).collect();
     s.letter = show.letter;
     if step != Step::LoadList {
@@ -3544,9 +3632,12 @@ fn column_screen(d: &mut Painter, s: &Select, slot: usize, strings: &Strings, st
 fn class_card(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassStats, col: f32, choosing: bool) {
     let class = CLASSES[s.class];
     let open = crate::exits::secret_realm::class_open(s.class, s.unlocked);
+    let sumner = s.class == SUMNER_CARD;
     d.image(&format!("S12_WEAP_{}", CLASSES[s.class & 7]), col, 0.0, Color::WHITE);
     if open {
-        d.image(&format!("S12_{class}_{}", COLOURS[s.colour]), col, 28.0, Color::WHITE);
+        // Sumner has the one picture, whatever the colour.
+        let picture = if sumner { "S12_SUM".to_string() } else { format!("S12_{class}_{}", COLOURS[s.colour]) };
+        d.image(&picture, col, 28.0, Color::WHITE);
         d.image(&format!("{class}_NAME"), col + 8.0, 272.0, Color::WHITE);
     } else {
         d.image(&format!("S12_{class}_SHADW"), col, 28.0, Color::WHITE);
@@ -3566,13 +3657,27 @@ fn class_card(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassStats
             d.image_sized("BUTTON_X", 0, col + 20.0, 252.0, icon, icon, Color::WHITE);
             d.draw.text(d.fonts, &small, col + 20.0 + icon + 8.0, 256.0, "Select");
         }
-        if let Some(values) = stats.0.get(s.class).copied().flatten() {
-            let best = (0..4).max_by_key(|&i| (values[i], -(i as i32))).unwrap_or(0);
+        // The class as the character has it: its level by the experience
+        // it kept, its attributes the class's start, 5 a level and the
+        // points bought, at most 999 — a class not played yet at level 1.
+        // Sumner has 999 in each, none of them the strongest.
+        let kept = s.kept.iter().find(|(c, ..)| *c == s.class);
+        let level = kept.map_or(1, |(_, experience, _)| crate::shop::level_for(*experience));
+        let values = if sumner {
+            Some([SUMNER_STAT as i32; 4])
+        } else {
+            stats.0.get(s.class).copied().flatten().map(|start| {
+                let bought = kept.map_or([0.0; 4], |(_, _, b)| [b.strength, b.speed, b.armour, b.magic]);
+                std::array::from_fn(|i| ((bought[i] + start[i] + 5.0 * (level - 1) as f32) as i32).min(999))
+            })
+        };
+        if let Some(values) = values {
+            let best = (0..4).max_by_key(|&i| (values[i], -(i as i32))).filter(|_| !sumner);
             for i in 0..4 {
                 let y = 162.0 + 16.0 * i as f32;
                 let label = strings.get("ATTS_DESC", i).unwrap_or(["Strength", "Speed", "Armor", "Magic"][i]);
                 let w = d.fonts.width(FONT32, 0.5, label);
-                if i == best {
+                if Some(i) == best {
                     d.image_sized("ATT_GLOW", 0, col + 84.0 - 6.0, y - 6.0, 68.0, 32.0, Color::WHITE);
                     d.draw.shimmer(d.fonts, FONT32, 0.5, col + 81.0 - w, y - 2.0, label, rgb(PURPLE), 1.0);
                 } else {
@@ -3581,15 +3686,20 @@ fn class_card(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassStats
                 d.draw.text(d.fonts, &TextStyle::new(INITIALS, 0.5, Color::WHITE), col + 84.0, y, &format!("{:03}", values[i]));
             }
         }
-        d.draw.text(d.fonts, &small, -(col + 64.0), 292.0, "Level 1");
+        // A class the character has no experience as is new (Sumner
+        // always).
+        let level = match kept {
+            Some((_, experience, _)) if !sumner && *experience >= 1 => format!("Level {level}"),
+            _ => "NEW".to_string(),
+        };
+        d.draw.text(d.fonts, &small, -(col + 64.0), 292.0, &level);
     }
 }
 
 /// Each class's attributes as a new hero has them (strength, speed,
-/// armour, magic: the `PDAT` start values, capped at 999), for the class
-/// card.
+/// armour, magic: the `PDAT` start values), for the class card.
 #[derive(Resource)]
-struct ClassStats(Vec<Option<[i32; 4]>>);
+struct ClassStats(Vec<Option<[f32; 4]>>);
 
 impl ClassStats {
     fn load(game: &mut LoadedGame) -> Self {
@@ -3599,10 +3709,38 @@ impl ClassStats {
                 .map(|c| {
                     let bytes = game.install.read(&format!("PDATA/{c}.WAD")).ok()?;
                     let s = PlayerStats::parse(&bytes).ok().flatten()?;
-                    let v = |x: f32| (x.round() as i32).min(999);
-                    Some([v(s.strength.start), v(s.speed.start), v(s.armor.start), v(s.magic.start)])
+                    Some([s.strength.start, s.speed.start, s.armor.start, s.magic.start])
                 })
                 .collect(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The class card steps round all seventeen classes, passing over
+    /// Sumner unless the character has unlocked him (its ninth bit).
+    #[test]
+    fn the_class_card_passes_over_sumner_unless_unlocked() {
+        assert_eq!((next_class(15, true, 0), next_class(0, false, 0), next_class(3, true, 0)), (0, 15, 4));
+        assert_eq!((next_class(15, true, 0xFF), next_class(0, false, 0xFF)), (0, 15));
+        assert_eq!((next_class(15, true, 0x100), next_class(16, true, 0x100)), (16, 0));
+        assert_eq!((next_class(0, false, 0x100), next_class(16, false, 0x100)), (16, 15));
+    }
+
+    /// What a character kept of its classes, for the class card: the one
+    /// it's playing as it is now, the others as they were put away.
+    #[test]
+    fn the_card_shows_what_the_character_kept_of_each_class() {
+        let mut c = PlayerState::new("WAR", None);
+        c.experience = 5000;
+        c.change_class("VAL", None);
+        c.experience = 70;
+        c.bought.strength = 20.0;
+        let mut kept = classes_kept(&c);
+        kept.sort_by_key(|k| k.0);
+        assert_eq!(kept.iter().map(|k| (k.0, k.1, k.2.strength)).collect::<Vec<_>>(), [(0, 5000, 0.0), (1, 70, 20.0)]);
     }
 }

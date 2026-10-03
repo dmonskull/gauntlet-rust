@@ -683,8 +683,6 @@ pub struct LevelItems {
     /// realm's first level (where they're louder).
     ambient: Vec<Ambient>,
     secret_first: bool,
-    /// Items released so far this level (container contents).
-    released: usize,
     /// The level's scroll texts (`SCROLLSA1`).
     scrolls: String,
     /// Statues walked into since the critters last looked (placements).
@@ -718,12 +716,34 @@ impl LevelItems {
     pub fn sync_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (self.items.len(), self.released, self.in_exit, self.leaving.is_some()).hash(&mut h);
+        (self.items.len(), self.in_exit, self.leaving.is_some()).hash(&mut h);
         for i in &self.items {
+            // One that's gone is only gone: nothing reads the rest of it
+            // (and how it went — taken there, freed here by a sync point —
+            // leaves it otherwise as it stood).
+            if i.gone {
+                (i.placement, true).hash(&mut h);
+                continue;
+            }
             (i.placement, i.state, i.action, sync_bits(i.frame), i.timer, i.amount, i.delay, i.stage, i.hit_points).hash(&mut h);
             (i.leaving, i.gone, i.held, i.shape.centre.map(sync_bits)).hash(&mut h);
         }
         h.finish()
+    }
+}
+
+impl LevelItems {
+    /// Every item as the hash takes it, a line each (for the sync log,
+    /// `online.rs`: two machines' lists show which item differs).
+    pub fn sync_detail(&self) -> String {
+        let line = |i: &Item| {
+            let c = i.shape.centre.map(|x| format!("{:08x}", sync_bits(x))).join(" ");
+            format!(
+                "{:x} {} state {} action {} frame {} timer {} amount {} delay {} stage {} hp {} leaving {} gone {} held {} at {c}",
+                i.placement, i.ty.name, i.state, i.action, i.frame, i.timer, i.amount, i.delay, i.stage, i.hit_points, i.leaving, i.gone, i.held
+            )
+        };
+        self.items.iter().map(line).collect::<Vec<_>>().join("; ")
     }
 }
 
@@ -762,9 +782,34 @@ pub struct ItemView<'a> {
     pub floor_node: Option<usize>,
 }
 
-/// Placement numbers of items released at run time (container contents)
-/// start here, clear of the level's own.
+/// Placement numbers of items released at run time start here, clear of
+/// the level's own. Each is numbered by what let it out ([`Released`]):
+/// online every machine gives the same item the same number, whatever
+/// order its game let them out in, so a sync point can tell which is
+/// which (`resync.rs`).
 pub const RELEASED_BASE: usize = 1 << 20;
+
+/// What lets an item out at run time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Released {
+    /// A container's contents (the container's placement).
+    Contents(usize),
+    /// The n-th item of a boss's loot.
+    Loot(usize),
+    /// What a dead critter leaves (the placement its statue stood at).
+    Drop(usize),
+}
+
+impl Released {
+    /// The released item's placement number.
+    pub fn number(self) -> usize {
+        match self {
+            Released::Contents(p) => RELEASED_BASE + p % RELEASED_BASE,
+            Released::Loot(n) => 2 * RELEASED_BASE + n % RELEASED_BASE,
+            Released::Drop(p) => 3 * RELEASED_BASE + p % RELEASED_BASE,
+        }
+    }
+}
 
 impl LevelItems {
     fn find(&self, placement: usize) -> Option<&Item> {
@@ -945,6 +990,7 @@ impl LevelItems {
     /// shape goes with it. Returns its model, for the caller to move.
     pub fn place(&mut self, placement: usize, position: [f32; 3]) -> Option<Entity> {
         let i = self.find_mut(placement)?;
+        i.position = position;
         i.shape = Shape::of(&i.ty, position, rotation_matrix([0.0; 3]));
         i.model
     }
@@ -956,6 +1002,7 @@ impl LevelItems {
         let i = self.find_mut(placement)?;
         i.held = false;
         i.delay = delay;
+        i.position = at;
         i.shape = Shape::of(&i.ty, at, rotation_matrix([0.0; 3]));
         i.model
     }
@@ -1098,12 +1145,36 @@ impl LevelItems {
     /// placement-style `rotation`), the way the game releases a container's
     /// contents: `amount` overrides the type's (keys take the container's
     /// count), and it can't be picked up for `delay` fields. Returns its
-    /// placement number; its model, if one was built for the level, is
-    /// spawned by the caller with it ([`ContentModels::spawn`]).
-    pub fn release(&mut self, ty: ItemType, position: [f32; 3], rotation: [f32; 9], amount: Option<i32>, delay: i32) -> usize {
+    /// placement number ([`Released::number`]); its model, if one was
+    /// built for the level, is spawned by the caller with it
+    /// ([`ContentModels::spawn`]). `None`: it's out already (online, a
+    /// sync point brought it from a machine that let it out first).
+    pub fn release(
+        &mut self,
+        from: Released,
+        ty: ItemType,
+        position: [f32; 3],
+        rotation: [f32; 9],
+        amount: Option<i32>,
+        delay: i32,
+    ) -> Option<usize> {
+        self.release_as(from.number(), ty, position, rotation, amount, delay)
+    }
+
+    /// [`Self::release`], by the item's number.
+    fn release_as(
+        &mut self,
+        placement: usize,
+        ty: ItemType,
+        position: [f32; 3],
+        rotation: [f32; 9],
+        amount: Option<i32>,
+        delay: i32,
+    ) -> Option<usize> {
         let (hit_points_of_type, armor_of_type) = (ty.hit_points, ty.armor);
-        let placement = RELEASED_BASE + self.released;
-        self.released += 1;
+        if self.find(placement).is_some() {
+            return None;
+        }
         let params = match ty.class {
             ItemClass::Powerup => PlacementParams::Powerup { count: amount.unwrap_or(ty.amount as i32) as i16 },
             _ => PlacementParams::None,
@@ -1143,7 +1214,14 @@ impl LevelItems {
             shown: false,
             hangs: false,
         });
-        placement
+        Some(placement)
+    }
+
+    /// [`Self::release`] for the tests: one more item, whatever let it out.
+    #[cfg(test)]
+    fn add(&mut self, ty: ItemType, position: [f32; 3], rotation: [f32; 9], amount: Option<i32>, delay: i32) -> usize {
+        let from = Released::Loot(self.items.len());
+        self.release(from, ty, position, rotation, amount, delay).expect("a number of its own")
     }
 
     /// The monsters let out of containers since the last call: their type
@@ -1201,14 +1279,18 @@ impl LevelItems {
             _ => None,
         };
         let delay = if powerup { CONTENTS_DELAY } else { 0 };
+        let from = Released::Contents(placement);
         if powerup && hangs {
-            let new = self.release(ty, centre, rotation_matrix([0.0; 3]), amount, delay);
-            if let Some(item) = self.find_mut(new) {
-                item.inside = Some(placement);
+            if let Some(new) = self.release(from, ty, centre, rotation_matrix([0.0; 3]), amount, delay) {
+                if let Some(item) = self.find_mut(new) {
+                    item.inside = Some(placement);
+                }
+                if let Some(chest) = self.find_mut(placement) {
+                    chest.holds = Some(new);
+                }
             }
-            self.items[i].holds = Some(new);
         } else {
-            self.release(ty, position, rotation, amount, delay);
+            self.release(from, ty, position, rotation, amount, delay);
         }
     }
 }
@@ -3000,7 +3082,10 @@ impl LevelItems {
 /// The level's items as a sync point carries them (`resync.rs`): each
 /// item's state and timers. What a hero took, and a door or chest a key
 /// opened, on any machine stays so on all; an item the machines otherwise
-/// have alike takes the host's timing.
+/// have alike takes the host's timing. The items let out as the level is
+/// played (a container's contents, a boss's loot, what a critter leaves)
+/// are every machine's: one let out on any machine is out on all, where
+/// that machine has it.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ItemsSave {
     items: Vec<ItemSave>,
@@ -3029,11 +3114,18 @@ struct ItemSave {
     hit_points: i16,
     leaving: bool,
     gone: bool,
-    /// Where it stands, how it's turned, its fall and its centre.
+    /// A critter holds it.
+    held: bool,
+    /// The container it hangs in, and what it holds hanging in it.
+    inside: Option<usize>,
+    holds: Option<usize>,
+    /// Where it stands, how it's turned, its fall, and its touch shape's
+    /// centre and axes.
     position: [f32; 3],
     rotation: [f32; 9],
     falling: Option<[f32; 3]>,
     centre: [f32; 3],
+    axes: [[f32; 3]; 2],
 }
 
 impl ItemSave {
@@ -3067,10 +3159,14 @@ impl ItemSave {
             hit_points: i.hit_points,
             leaving: i.leaving,
             gone: i.gone,
+            held: i.held,
+            inside: i.inside,
+            holds: i.holds,
             position: i.position,
             rotation: i.rotation,
             falling: i.falling,
             centre: i.shape.centre,
+            axes: i.shape.axes,
         }
     }
 
@@ -3082,6 +3178,29 @@ impl ItemSave {
     fn taken(&self) -> bool {
         self.gone || self.leaving
     }
+
+    /// Let out as the level is played.
+    fn released(&self) -> bool {
+        self.placement >= RELEASED_BASE
+    }
+
+    /// Its timers, its place and what it hangs in or holds go on `item`.
+    fn onto(&self, item: &mut Item) {
+        item.frame = self.frame;
+        item.done = self.done;
+        item.timer = self.timer;
+        item.amount = self.amount;
+        item.delay = self.delay;
+        item.stage = self.stage;
+        item.hit_points = self.hit_points;
+        item.position = self.position;
+        item.rotation = self.rotation;
+        item.falling = self.falling;
+        item.shape.centre = self.centre;
+        item.shape.axes = self.axes;
+        item.inside = self.inside;
+        item.holds = self.holds;
+    }
 }
 
 pub(crate) fn save_synced(world: &World) -> Option<ItemsSave> {
@@ -3092,31 +3211,84 @@ pub(crate) fn save_synced(world: &World) -> Option<ItemsSave> {
 impl ItemsSave {
     /// The host's items with what another machine's game has of them: a
     /// powerup taken there is taken, a door or key chest opened there is
-    /// open (as far along as it is there).
+    /// open (as far along as it is there), an item a dead critter let go
+    /// of there lies where it fell, and an item let out there and not
+    /// here is out.
     pub(crate) fn keep_progress(&mut self, theirs: &ItemsSave) {
-        for (mine, theirs) in self.items.iter_mut().zip(&theirs.items) {
-            if !mine.same_item(theirs) {
+        for (k, theirs) in theirs.items.iter().enumerate() {
+            // The level's own are in the same places on every machine.
+            let at = match self.items.get(k) {
+                Some(mine) if mine.same_item(theirs) => Some(k),
+                _ => self.items.iter().position(|mine| mine.same_item(theirs)),
+            };
+            let Some(mine) = at.map(|k| &mut self.items[k]) else {
+                if theirs.released() {
+                    self.items.push(theirs.clone());
+                }
                 continue;
-            }
+            };
             let taken = mine.kind == 1 && theirs.taken() && !mine.taken();
             // A door or key chest opened there, a rock fall set off there.
             let used = matches!(mine.kind, 2 | 3 | 5) && theirs.flags & USED != 0 && mine.flags & USED == 0 && !mine.gone;
-            if taken || used {
+            let dropped = mine.held && !theirs.held;
+            if taken || used || dropped {
                 *mine = theirs.clone();
             }
         }
     }
 }
 
-/// Every machine takes the items over as a sync point has them. An item
-/// it has differently in a way a sync point doesn't carry (a barrel
-/// broken, a chest's contents let out in another order) stays as it is.
+/// Every machine takes the items over as a sync point has them. The ones
+/// let out in play are the save's, in its order: one this machine never
+/// let out is made here, one the save hasn't goes. An item of the level's
+/// own it has differently in a way a sync point doesn't carry stays as it
+/// is.
 pub(crate) fn load_synced(world: &mut World, save: &ItemsSave) {
+    let types: Vec<ItemType> = world.get_resource::<LevelPopulation>().map(|p| p.population.item_types.clone()).unwrap_or_default();
+    load_with(world, save, &types);
+}
+
+/// [`load_synced`], given the level's item types (what an item this
+/// machine never let out is made from).
+fn load_with(world: &mut World, save: &ItemsSave, types: &[ItemType]) {
     if !world.contains_resource::<LevelItems>() {
         return;
     }
-    let mut left = 0;
+    let (mut left, mut made) = (0, 0);
+    // Models to make (type, number, where) and to move.
+    let mut models: Vec<(String, usize, [f32; 3])> = Vec::new();
+    let mut moved: Vec<(Entity, [f32; 3])> = Vec::new();
     world.resource_scope(|world, mut items: Mut<LevelItems>| {
+        let own = items.items.iter().position(|i| i.placement >= RELEASED_BASE).unwrap_or(items.items.len());
+        let mut out: Vec<Item> = items.items.drain(own..).collect();
+        for s in save.items.iter().filter(|s| s.released()) {
+            if let Some(k) = out.iter().position(|i| i.placement == s.placement) {
+                items.items.push(out.remove(k));
+                continue;
+            }
+            let Some(ty) = types.iter().find(|t| t.name == s.name).cloned() else {
+                warn!("sync point: no item type {} for item {}", s.name, s.placement);
+                continue;
+            };
+            if items.release_as(s.placement, ty, s.position, s.rotation, Some(s.amount), s.delay).is_none() {
+                continue;
+            }
+            made += 1;
+            let item = items.items.last_mut().expect("just let out");
+            (item.flags, item.state, item.action) = (s.flags, s.state, s.action);
+            (item.leaving, item.gone, item.held) = (s.leaving, s.gone, s.held);
+            s.onto(item);
+            // (What hangs in a chest gets its model there, `show_contents`.)
+            if !s.gone && s.inside.is_none() {
+                models.push((s.name.clone(), s.placement, s.position));
+            }
+        }
+        for mut item in out {
+            debug!("sync point: item {} ({}) isn't out on the other machines: it goes", item.placement, item.ty.name);
+            if let Some(m) = item.model.take() {
+                world.commands().entity(m).try_despawn();
+            }
+        }
         for (k, s) in save.items.iter().enumerate() {
             let Some(item) = items.items.get(k) else { break };
             if !ItemSave::of(item).same_item(s) {
@@ -3139,8 +3311,16 @@ pub(crate) fn load_synced(world: &mut World, save: &ItemsSave) {
                 _ => {}
             }
             let item = &mut items.items[k];
+            // Gone on both: nothing more to it.
+            if item.gone && s.gone {
+                continue;
+            }
+            // Its critter died elsewhere: it's let go of here.
+            if item.held && !s.held {
+                item.held = false;
+            }
             // Its timing and place, where it's otherwise the same.
-            let alike = (item.flags, item.leaving, item.gone) == (s.flags, s.leaving, s.gone)
+            let alike = (item.flags, item.leaving, item.gone, item.held) == (s.flags, s.leaving, s.gone, s.held)
                 && (matches!(s.kind, 1..=5) || (item.state, item.action) == (s.state, s.action));
             if !alike {
                 left += 1;
@@ -3150,21 +3330,33 @@ pub(crate) fn load_synced(world: &mut World, save: &ItemsSave) {
                 item.play(s.action);
                 item.state = s.state;
             }
-            item.frame = s.frame;
-            item.done = s.done;
-            item.timer = s.timer;
-            item.amount = s.amount;
-            item.delay = s.delay;
-            item.stage = s.stage;
-            item.hit_points = s.hit_points;
-            item.position = s.position;
-            item.rotation = s.rotation;
-            item.falling = s.falling;
-            item.shape.centre = s.centre;
+            let was = item.position;
+            s.onto(item);
+            // A powerup lying somewhere else (thrown, or let go of): its
+            // model goes there.
+            if s.kind == 1 && was != s.position && s.inside.is_none() && let Some(m) = item.model {
+                moved.push((m, s.position));
+            }
         }
         left += items.items.len().abs_diff(save.items.len());
     });
     world.flush();
+    if !models.is_empty() && world.contains_resource::<ContentModels>() {
+        world.resource_scope(|world, contents: Mut<ContentModels>| {
+            for (name, placement, at) in &models {
+                contents.spawn(name, Transform::from_translation(Vec3::from(*at)), *placement, &mut world.commands());
+            }
+        });
+        world.flush();
+    }
+    for (model, at) in moved {
+        if let Some(mut t) = world.get_mut::<Transform>(model) {
+            t.translation = Vec3::from(at);
+        }
+    }
+    if made > 0 {
+        info!("sync point: {made} items let out on another machine are out here");
+    }
     if left > 0 {
         info!("sync point: {left} items stay as this machine has them");
     }
@@ -3270,7 +3462,7 @@ mod tests {
     fn a_rock_fall_spins_and_drops_out_of_the_level() {
         let mut items = LevelItems { realm: 2, ..default() };
         let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let placement = items.release(obstacle(ROCK_FALL), [5.0, 30.0, -2.0], identity, None, 0);
+        let placement = items.add(obstacle(ROCK_FALL), [5.0, 30.0, -2.0], identity, None, 0);
         let item = items.items.iter_mut().find(|i| i.placement == placement).unwrap();
         // Two units a second slower each update, from rest: after a second
         // (30 updates) it's going 60 down and has fallen 31.
@@ -3301,7 +3493,7 @@ mod tests {
         let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         let mut items = LevelItems::default();
         let key = ItemType { class: ItemClass::Powerup, subtype: 2, ..obstacle(0) };
-        let k = items.release(key, [0.0; 3], identity, None, 0);
+        let k = items.add(key, [0.0; 3], identity, None, 0);
         let item = items.items.iter_mut().find(|i| i.placement == k).unwrap();
         // The key's ACTIVE has no loop flag, but it's the clip the build
         // started: round it goes, till another action starts.
@@ -3310,10 +3502,10 @@ mod tests {
         assert!(!item.loops(false) && item.loops(true));
         // A pad never goes round; an exit's waiting and open actions do.
         let pad = ItemType { class: ItemClass::Trigger, ..obstacle(0x18) };
-        let p = items.release(pad, [0.0; 3], identity, None, 0);
+        let p = items.add(pad, [0.0; 3], identity, None, 0);
         assert!(!items.items.iter().find(|i| i.placement == p).unwrap().loops(true));
         let exit = ItemType { class: ItemClass::Exit, ..obstacle(0) };
-        let e = items.release(exit, [0.0; 3], identity, None, 0);
+        let e = items.add(exit, [0.0; 3], identity, None, 0);
         let item = items.items.iter_mut().find(|i| i.placement == e).unwrap();
         let by_action: Vec<bool> = (0..5)
             .map(|a| {
@@ -3407,7 +3599,7 @@ mod tests {
         let build = || {
             let mut items = LevelItems::default();
             for (ty, placement) in level.iter().cloned() {
-                let p = items.release(ty, [0.0; 3], identity, None, 0);
+                let p = items.add(ty, [0.0; 3], identity, None, 0);
                 items.items.iter_mut().find(|i| i.placement == p).unwrap().placement = placement;
             }
             items
@@ -3422,7 +3614,7 @@ mod tests {
         items.items[i].flags |= USED;
         let i = at(&mut items, 5);
         items.items[i].state = 2;
-        items.release(powerup(GOLD, "TREAS_GOLD", 100), [0.0; 3], identity, None, 0);
+        items.add(powerup(GOLD, "TREAS_GOLD", 100), [0.0; 3], identity, None, 0);
         let (gone, opened) = items.kept(6);
         assert_eq!((gone.as_slice(), opened.as_slice()), ([1, 5, 6].as_slice(), [3].as_slice()));
         let mut fresh = build();
@@ -3458,7 +3650,7 @@ mod tests {
             )
         };
         let mut items = LevelItems::default();
-        items.release(boxed(ItemClass::Door), [0.0; 3], identity, None, 0);
+        items.add(boxed(ItemClass::Door), [0.0; 3], identity, None, 0);
         // Into the door (its depth and half the monster's radius: 1.5);
         // short of it; away from it.
         assert!(stopped(&items, 4, -3.0, -1.2, None));
@@ -3469,23 +3661,23 @@ mod tests {
         assert!(!stopped(&items, 4, -3.0, -1.2, None));
 
         let mut items = LevelItems::default();
-        items.release(boxed(ItemClass::Container), [0.0; 3], identity, None, 0);
+        items.add(boxed(ItemClass::Container), [0.0; 3], identity, None, 0);
         assert!(stopped(&items, 4, -3.0, -1.2, None));
         assert!(!stopped(&items, 0x1D, -3.0, -1.2, None), "a flier passes over a chest");
 
         let mut items = LevelItems::default();
-        items.release(boxed(ItemClass::Generator), [0.0; 3], identity, None, 0);
+        items.add(boxed(ItemClass::Generator), [0.0; 3], identity, None, 0);
         assert!(stopped(&items, 4, -3.0, -1.2, Some(4)));
         assert!(!stopped(&items, 4, -3.0, -1.2, None), "a broken generator's wreck");
 
         let mut items = LevelItems::default();
-        items.release(boxed(ItemClass::Powerup), [0.0; 3], identity, None, 0);
+        items.add(boxed(ItemClass::Powerup), [0.0; 3], identity, None, 0);
         assert!(!stopped(&items, 4, -3.0, -1.2, None));
 
         // Stopped, and standing still, it stays stopped by the same item;
         // far from every item it doesn't look again for a while.
         let mut items = LevelItems::default();
-        items.release(boxed(ItemClass::Door), [0.0; 3], identity, None, 0);
+        items.add(boxed(ItemClass::Door), [0.0; 3], identity, None, 0);
         let mut watch = ItemWatch::default();
         let test = |watch: &mut ItemWatch, from_z: f32, to_z: f32, moving: bool| {
             items.stops_monster(watch, (4, 1.0, 0.25), [0.0, 1.0, from_z], [0.0, 1.0, to_z], moving, &|_| true, &|_| None).is_some()
@@ -3504,7 +3696,7 @@ mod tests {
         let mut tile = boxed(ItemClass::DamageTile);
         tile.raw[0x40] = 12;
         tile.flags = USED;
-        items.release(tile, [0.0; 3], identity, None, 0);
+        items.add(tile, [0.0; 3], identity, None, 0);
         let onto = |items: &LevelItems, enemy: i32| {
             let mut watch = ItemWatch::default();
             items.stops_monster(&mut watch, (enemy, 1.0, 0.25), [0.0, 1.0, -3.0], [0.0, 1.0, -1.2], true, &|_| true, &|_| None)
@@ -3521,7 +3713,7 @@ mod tests {
     fn chest(items: &mut LevelItems, subtype: i32, contents: ItemType, count: i16) -> usize {
         let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         let ty = ItemType { class: ItemClass::Container, flags: LOCKED | 6, extent: [3.9, 2.0, 1.2, 1.0], ..obstacle(subtype) };
-        let p = items.release(ty, [0.0; 3], identity, None, 0);
+        let p = items.add(ty, [0.0; 3], identity, None, 0);
         let i = items.items.iter().position(|i| i.placement == p).unwrap();
         let c = &mut items.items[i];
         c.contents = Some(contents);
@@ -3560,6 +3752,113 @@ mod tests {
         for i in [c, g] {
             assert!(items.items[i].leaving && items.items[i].timer == RELEASED_LINGER, "{i}");
         }
+    }
+
+    /// Items let out as the level is played are numbered by what let them
+    /// out — the same on every machine online, whatever order they came
+    /// out in — and one already out isn't let out again.
+    #[test]
+    fn released_items_are_numbered_by_what_let_them_out() {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let gold = || powerup(GOLD, "TREAS_GOLD", 100);
+        let mut items = LevelItems::default();
+        assert_eq!(items.release(Released::Contents(7), gold(), [0.0; 3], identity, None, 0), Some(RELEASED_BASE + 7));
+        assert_eq!(items.release(Released::Contents(7), gold(), [0.0; 3], identity, None, 0), None);
+        let loot = items.release(Released::Loot(7), gold(), [0.0; 3], identity, None, 0).unwrap();
+        let drop = items.release(Released::Drop(7), gold(), [0.0; 3], identity, None, 0).unwrap();
+        assert!(loot != drop && loot != RELEASED_BASE + 7 && drop != RELEASED_BASE + 7);
+        assert_eq!(items.items.len(), 3);
+    }
+
+    /// A sync point's items (`resync.rs`): what any machine let out is out
+    /// on all, where that machine has it; what a hero took on any is
+    /// taken; and every machine ends with the same ones in the same order.
+    #[test]
+    fn a_sync_point_carries_the_items_let_out() {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let (gold, food) = (powerup(GOLD, "TREAS_GOLD", 100), powerup(0x10, "FOOD_MEAT", 50));
+        let saved = |items: &LevelItems| ItemsSave { items: items.items.iter().map(ItemSave::of).collect() };
+        // The host broke barrel 3 (its food is out); the client opened
+        // chest 5 first (its gold lies at 9, 0, 4), then broke the barrel
+        // and ate the food, and has a coin of its own the host hasn't.
+        let mut host = LevelItems::default();
+        host.release(Released::Contents(3), food.clone(), [1.0, 0.0, 1.0], identity, None, 0);
+        let mut client = LevelItems::default();
+        client.release(Released::Contents(5), gold.clone(), [9.0, 0.0, 4.0], identity, None, 30);
+        let eaten = client.release(Released::Contents(3), food.clone(), [1.0, 0.0, 1.0], identity, None, 0).unwrap();
+        client.find_mut(eaten).unwrap().gone = true;
+        let mut save = saved(&host);
+        save.keep_progress(&saved(&client));
+        assert_eq!(save.items.iter().map(|i| (i.placement, i.gone)).collect::<Vec<_>>(), [(RELEASED_BASE + 3, true), (RELEASED_BASE + 5, false)]);
+
+        // Each machine takes it over. The client throws a coin only it
+        // has (the host never reported it: say its report was late).
+        client.release(Released::Loot(0), gold.clone(), [0.0; 3], identity, None, 0);
+        let types = [gold, food];
+        for mut machine in [host, client] {
+            let mut world = World::new();
+            machine.items.iter_mut().for_each(|i| i.model = None);
+            world.insert_resource(machine);
+            load_with(&mut world, &save, &types);
+            let items = world.resource::<LevelItems>();
+            let now: Vec<_> = items.items.iter().map(|i| (i.placement, i.ty.name.as_str(), i.gone, i.position, i.delay)).collect();
+            assert_eq!(now, [(RELEASED_BASE + 3, "FOOD_MEAT", true, [1.0, 0.0, 1.0], 0), (RELEASED_BASE + 5, "TREAS_GOLD", false, [9.0, 0.0, 4.0], 30)]);
+            assert_eq!(items.sync_hash(), {
+                let mut again = World::new();
+                again.insert_resource(LevelItems::default());
+                load_with(&mut again, &save, &types);
+                again.resource::<LevelItems>().sync_hash()
+            });
+        }
+    }
+
+    /// An item taken on one machine and freed by a sync point on another
+    /// compares the same: gone is gone, however it went.
+    #[test]
+    fn a_gone_item_compares_alike_however_it_went() {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let machine = || {
+            let mut items = LevelItems::default();
+            let p = items.add(powerup(GOLD, "TREAS_GOLD", 100), [2.0, 0.0, 2.0], identity, None, 0);
+            (items, p)
+        };
+        // Taken here: it lingered (its clip running on) and went.
+        let (mut taken, p) = machine();
+        let item = taken.find_mut(p).unwrap();
+        (item.leaving, item.frame, item.timer, item.gone) = (true, 15.0, -1, true);
+        // Freed there, at once.
+        let (mut freed, _) = machine();
+        freed.find_mut(p).unwrap().gone = true;
+        assert_eq!(taken.sync_hash(), freed.sync_hash());
+        assert_ne!(taken.sync_hash(), machine().0.sync_hash());
+    }
+
+    /// An item a critter held and let go of on one machine (it died
+    /// there) lies where it fell on every machine after a sync point.
+    #[test]
+    fn a_sync_point_carries_what_a_critter_let_go_of() {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let key = powerup(KEY, "KEY", 1);
+        let machine = || {
+            let mut items = LevelItems::default();
+            let k = items.add(key.clone(), [2.0, 0.0, 2.0], identity, None, 0);
+            assert_eq!(items.hold_nearest([2.0, 0.0, 2.0]), Some(k));
+            (items, k)
+        };
+        let saved = |items: &LevelItems| ItemsSave { items: items.items.iter().map(ItemSave::of).collect() };
+        let (host, k) = machine();
+        let (mut client, _) = machine();
+        client.drop_held(k, [7.0, 0.0, -3.0], 30);
+        let mut save = saved(&host);
+        save.keep_progress(&saved(&client));
+        let mut world = World::new();
+        world.insert_resource(host);
+        load_with(&mut world, &save, &[]);
+        let items = world.resource::<LevelItems>();
+        let item = items.find(k).unwrap();
+        assert!(!item.held && item.delay == 30);
+        assert_eq!((item.position, item.shape.centre), ([7.0, 0.0, -3.0], client.find(k).unwrap().shape.centre));
+        assert_eq!(items.sync_hash(), client.sync_hash());
     }
 
     #[test]

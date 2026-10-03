@@ -64,8 +64,9 @@ fn change(before: u32, now: u32) -> Option<Change> {
     }
 }
 
-/// Each hero's watch: the hero, its level, and ticks watched.
-type Watch = Option<(Entity, u32, u32)>;
+/// Each hero's watch: the hero and which of its records
+/// (`PlayerState::record_key`), its level, and ticks watched.
+type Watch = Option<((Entity, (u8, bool)), u32, u32)>;
 
 #[allow(clippy::too_many_arguments)]
 fn watch_level(
@@ -84,17 +85,20 @@ fn watch_level(
             continue;
         };
         let (state, choice) = (&member.state, &member.choice);
+        // (Another class's record, taken up at the character menu, is
+        // watched afresh: its level isn't one gained.)
+        let watched = (hero, state.record_key());
         let (before, ticks) = match seen[slot] {
-            Some((e, level, ticks)) if e == hero && !level_start => (level, ticks + 1),
+            Some((w, level, ticks)) if w == watched && !level_start => (level, ticks + 1),
             _ => {
                 debug!("watching player {} from level {}", slot + 1, state.level);
-                seen[slot] = Some((hero, state.level, 0));
+                seen[slot] = Some((watched, state.level, 0));
                 continue;
             }
         };
         // A new record (a character loaded or made) is taken as it is.
         let before = if ticks < SETTLE_TICKS { state.level } else { before };
-        seen[slot] = Some((hero, state.level, ticks));
+        seen[slot] = Some((watched, state.level, ticks));
         let colour = colour_of(choice);
         match change(before, state.level) {
             Some(Change::Rose) => {

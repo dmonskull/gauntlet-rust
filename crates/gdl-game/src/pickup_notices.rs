@@ -239,12 +239,16 @@ const ALL_STONES: u32 = 0x1FFF;
 /// loaded record's, the tests' `GDL_RUNES`).
 const SETTLE_TICKS: u32 = 30;
 
+/// A hero's runestones as last seen: which of its records
+/// (`PlayerState::record_key`), the stones' bits, and ticks watched.
+type StonesSeen = ((u8, bool), u32, u32);
+
 /// A new runestone in play has the announcer count them, whatever the
 /// wait (and not once a boss level's end has begun) — each player's.
 fn count_runestones(
     party: Res<Party>,
     population: Option<Res<LevelPopulation>>,
-    mut seen: Local<[Option<(u32, u32)>; MAX_PLAYERS]>,
+    mut seen: Local<[Option<StonesSeen>; MAX_PLAYERS]>,
     mut voices: MessageWriter<QueueVoice>,
 ) {
     let level_start = population.as_ref().is_some_and(|p| p.is_changed());
@@ -254,14 +258,17 @@ fn count_runestones(
             continue;
         };
         let bits = state.runestone_bits() & ALL_STONES;
+        // (Another class's record, taken up at the character menu, is
+        // watched afresh: its stones aren't ones found.)
+        let record = state.record_key();
         let (before, ticks) = match seen[slot] {
-            Some((b, t)) if !level_start => (b, t + 1),
+            Some((r, b, t)) if r == record && !level_start => (b, t + 1),
             _ => {
-                seen[slot] = Some((bits, 0));
+                seen[slot] = Some((record, bits, 0));
                 continue;
             }
         };
-        seen[slot] = Some((bits, ticks));
+        seen[slot] = Some((record, bits, ticks));
         if ticks < SETTLE_TICKS || bits & !before == 0 {
             continue;
         }

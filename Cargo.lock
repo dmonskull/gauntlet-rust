@@ -3005,6 +3005,7 @@ version = "0.2.4"
 dependencies = [
  "arboard",
  "bevy",
+ "flate2",
  "gdl-formats",
  "gdl-install",
  "gdl-net",

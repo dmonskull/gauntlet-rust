@@ -221,11 +221,16 @@ freezes play for everyone — the tick is then the box's alone — and any
 player's B puts a page away), the voice queues (2 fields a tick; level
 changes wait on them), players whose machine left (gone from the first
 tick without their controls), and every 30 ticks the state hash
-(`GDL_SYNC_LOG=1` logs its parts).
+(`GDL_SYNC_LOG=1` logs its parts: the level, the party's records, the
+heroes, monsters, critters, missiles, generators, the monsters' and the
+critters' level counters, the items, the mechanisms, the breakables, the
+damage tiles, the blasts in flight and the game's camera).
 
 Online these run on the ticks instead of each frame: a hero's death
 (`frontend::death`), the clips' frames (`character::advance_clips`; the
 game reads them), the tower's speeches and unlock announcements, the
+captions' typing (`message_box::tick_captions`: the tower's scenes wait on
+it), the
 level-start shot's skip (any player's press). Each player's auto-aim,
 auto-attack and Robotron style ride with their controls
 (`SlotInput::AUTO_AIM` …), so every machine plays each hero by its own
@@ -299,7 +304,9 @@ starts again:
   Load, Save, Done — their own column while the others play on): everyone
   starts again in the tower with the new hero; Quit leaves the game;
 - **when the machines aren't on the same level** at a sync point (below):
-  the one case their games can't be put together where they are.
+  the one case their games can't be put together where they are. Everyone
+  starts on the level a machine's game came to last, so a level one game
+  has finished isn't played again.
 
 **Sync points** (`resync.rs`). Every 30 ticks the machines compare a hash
 of the game. Should they ever differ, nothing starts again: the host calls
@@ -307,41 +314,110 @@ a sync point. Its controls carry `SlotInput::SYNC`, and every machine
 stops before the first tick whose bundle has it — the same tick everywhere,
 whatever the network does. Then
 
-1. each machine sends the host a report: its own players' heroes as its
-   game has them (record, place, action, clip), what it has of the monsters
-   (which are alive, which generators stand), its items and its heroes'
-   cameras;
+1. each machine sends the host a report: the heroes as its game has
+   them (record, place, action, clip), what it has of the monsters
+   (which are alive, which generators stand), its items, its critters, its
+   heroes' cameras, a boss's loot in flight, its message box and voice
+   queues;
 2. the host puts one game together: **each hero from its own player's
    machine** — nobody's hero moves under them, and nobody loses what they
    saw their hero get — with what only grows on a level (experience, quest
-   pieces, runestones, tallies) at its most between the two copies; the
-   host's monsters less those dead on any machine, a generator broken on
-   any machine broken; the host's items, with a powerup taken, a door or
-   key chest opened and a rock fall set off on any machine taken, opened
-   or set off; a barrel or wall broken on any machine broken, a blow
-   landed on any landed; the host's triggers, movers, rotators and
-   animated objects (and the pads and tiles that show them), its damage
-   tiles' cycles and the heroes' guards against them; the host's
-   critters — where each is, how hurt, the move it's in and its clip's
-   frame — and level counters; each hero's own camera from its machine;
+   pieces, runestones, realms won, tallies) at its most between every
+   machine's copy of it; and
+   the rest of the level as the host has it, with **whatever any machine's
+   game has got further with**:
+   - monsters: the host's less those dead on any machine; a generator
+     broken on any machine is broken;
+   - items: a powerup taken, a door or key chest opened, a rock fall set
+     off on any machine is taken, opened or set off; an item a critter
+     held and let go of on any machine lies where it fell there; **an item
+     let out in play on any machine** — a chest's or barrel's contents, a
+     boss's loot, what a gargoyle leaves — is out, as that machine has it
+     (and the loot's flight with it);
+   - breakables: a barrel or wall broken on any machine is broken, a blow
+     landed on any landed;
+   - critters: a statue woken on any machine is woken, and its critter
+     made there is made; each critter (and each part of a boss) is as hurt
+     as where it's most hurt, and **as far into its death as where it's
+     furthest**; one dead and gone on any machine is gone; a boss level's
+     end (the key, the wizard, the countdown out of the level) is as far
+     along as the furthest;
+   - the host's triggers, movers, rotators and animated objects (and the
+     pads and tiles that show them), its damage tiles' cycles and the
+     heroes' guards against them, and its level counters;
+   - the game's camera as the host has it — its rig, the opening shot, a
+     cut, a shake, a boss level's camera (the heroes' sticks turn by it
+     and their steps are kept in its view, monsters wake by what it sees,
+     the level's animated objects wait on its cuts) — and each hero's own
+     camera from its machine;
+   - the host's game clock; the voice queues and the message box — the
+     host's, or another machine's where the host has none (a box up
+     anywhere is up everywhere, at the same page); a shop screen stays up
+     only if it's up on every machine;
 3. every machine, the host too, takes that game over (as the same text,
    read back) and plays on from the tick it stopped before. Missiles in
-   flight go; monsters are made again from the list, so every machine has
-   the same ones in the same order.
+   flight go, the heroes' guards against blows are down, and what the
+   last tick left for the next to do — blows to land, heroes to hurt or
+   grab, missiles to launch, blasts to set off — is dropped
+   (`resync::drop_pending`: a machine alone in having one would hurt or
+   blast what the others don't); monsters are made again from the list,
+   so every machine has the same ones in the same order. The blasts in flight (magic, explosions, a boss's breath)
+   stay as they are where every machine has the same ones; where they
+   differ — one machine has a blast the others haven't — none hurts any
+   more, on every machine alike, and their effects play out.
 
 The wait is a round trip to the host and four frames (measured over
-loopback: 20–65 ms and the frames). A sync point that follows the last
-within 150 ticks didn't hold — the games differ in something it doesn't
-carry — and the host waits longer before the next (2 s doubling to 30 s),
-so such games never stop every second. Not carried yet: what chests and
-barrels let out when the machines let it out in another order (the items'
-numbers then differ), a critter dead on one machine only, effects and
-blasts in flight, the opening shot, cuts and the boss camera.
+loopback: 20–65 ms and the frames). The report and the game are RON text,
+deflated on the wire (`online::pack_sync`): 16 KB on a boss level and
+180 KB on the first castle level as text, about a tenth of that packed. A
+sync point that follows the last within 150 ticks didn't hold — the games
+differ in something it doesn't carry — and the host waits longer before
+the next (2 s doubling to 30 s), so such games never stop every second.
+Not carried: the tower's wizard scenes (each machine's runs from its own
+records, on the game's ticks). A boss's death sweep under way on one
+machine alone stops with the other blasts (what it had broken is broken
+everywhere).
+Machines on different levels can't be put together: everyone starts again
+on the level a machine's game came to last (each reports the tick it came
+to its level: a level one game has finished isn't played again), each
+hero with the record its own player's machine has.
 
-A breakable the sync point has broken takes, on a machine where it
-stands, a blow that breaks it on the next tick (it bursts and lets out
-what it holds, as any blow would); a key chest opened elsewhere opens and
-lets out its contents; monsters are made again from the list.
+**How each machine takes it over.** A breakable the sync point has broken
+takes, on a machine where it stands, a blow that breaks it on the next
+tick (it bursts and lets out what it holds, as any blow would); a key
+chest opened elsewhere opens and lets out its contents; monsters are made
+again from the list. A critter dying on another machine is set dying here
+at the same frame of its DEATH, so every machine throws a boss's loot and
+ends the level on the same tick; one already gone elsewhere goes at once,
+and what it left is in the items. A statue's critter made elsewhere is
+made here and takes its state. A boss level's end shows its key and wizard
+where they haven't shown, and marks the realm won on every hero's record.
+
+**The same number for the same item.** An item let out in play gets its
+placement number from what let it out (`items::Released`): a container's
+contents `2²⁰ +` the container's placement, the n-th piece of a boss's
+loot `2·2²⁰ + n`, what a critter leaves `3·2²⁰ +` its statue's placement.
+So the machines number an item alike whatever order their games let them
+out in, a sync point can tell which is which, and letting out one that's
+already out (brought by a sync point from a machine that got there first)
+does nothing. After a sync point every machine has the same ones in the
+same order.
+
+**The game clock.** The ticks time some things by the fixed loop's clock
+(a hero's stun and wind-up, the guards against blows, a blast's spared
+targets). Every machine's starts at zero with the game and moves a tick at
+a time — but a tick with a message box or a shop screen up doesn't move it
+(play is frozen), so a box up on one machine alone would leave its clock
+behind for good. A sync point sets every clock to the host's; the heroes'
+own times travel as seconds from now, and the blasts' go with the clock.
+
+**Captions.** The wizards' words type out a letter at a time, and the
+tower's scenes wait on them (`tower_scenes.rs`). Offline they type by the
+frame's time; online by the game's ticks, two fields each
+(`message_box::tick_captions`, before the scene's own step), so a scene
+moves on at the same tick everywhere. (Typed by the frame, a scene's cut
+could start a tick apart on two machines, and the level's animated
+objects — which wait on cuts — differed for as long as it lasted.)
 
 **The lag sign** (`lag_sign.rs`). All the screen shows of the network: a
 small medallion in the top right corner — a red gem sending out three
@@ -358,10 +434,18 @@ starts the host alone, so the client joins the game under way;
 `CLIENT_MENU` scripts the client's menus (Manage Character);
 `CLIENT_DESYNC_AT=<tick>[:<what>]` puts the client's game out of sync then
 (`GDL_DESYNC_AT`: `coin`, `hero`, `monster`, `kill`, `generator`, `item`,
-`door`, `chest`, `barrel`, `mover`, `critter`); a sync point must put the
+`door`, `chest`, `barrel`, `mover`, `critter`, `slay` — every critter
+awake is killed, a boss too —, `box` — a message box comes up —, `clock`
+— the game clock jumps a second); a sync point must put the
 games together, with no level starting again, and every check after it
-must agree. Each of these comes together at the first sync point (the
-chest at the second). `FIGHT=1`
+must agree. Each of these comes together at the first sync point.
+`GDL_SYNC_AFTER=<ticks>` has the host call the sync point that long after
+the games were found to differ: with `slay` on a boss level, after the
+loot is thrown (120), after the boss is gone and the level's end begun
+(300), or after the client's game is back at the tower (800: everyone goes
+on to the tower) on the client alone. `GDL_SYNC_LOG=items` logs every
+item's hashed state at each check, to find which one two machines have
+differently. `FIGHT=1`
 hops the heroes among levelA1's grunts (`HOPS`) and has them throw every 9
 ticks; `HOST_PREFIX` / `CLIENT_PREFIX` put a command before a side's game
 (`taskpolicy -b`: slowed down).

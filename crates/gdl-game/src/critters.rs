@@ -637,6 +637,9 @@ struct CritterDrop {
     held: Option<usize>,
     class: i16,
     at: [f32; 3],
+    /// The placement its statue stood at (what numbers the piece it
+    /// leaves, `items::Released`).
+    from: usize,
 }
 
 /// Fields before a dropped item can be picked up (a stand-in: the game
@@ -1045,6 +1048,8 @@ pub struct Critter {
     flash: Flash,
     /// Its 2D health meter, by number (`meter.rs`).
     meter: Option<usize>,
+    /// The placement its statue stood at (none: the level's boss).
+    statue: Option<usize>,
 }
 
 impl Critter {
@@ -1539,7 +1544,7 @@ fn setup_level(
         if let Some(h) = ground.0.floor_probe(at, 4.0, -1000.0, 5.0, 2) {
             at[1] = h.point[1];
         }
-        level.boss = spawn_critter(&mut level, &kind, at, yaw, &mut commands);
+        level.boss = spawn_critter(&mut level, &kind, at, yaw, None, &mut commands);
         level.boss_spot = spot.position;
         // The boss gathers the level's safe rocks: the round its throws
         // take with no target starts at a random one.
@@ -1686,7 +1691,14 @@ fn runes_held(realm_id: u32, bits: u32) -> usize {
 /// meter; then its parts (the types chained by `TYPE +0x11C`: the
 /// chimera's heads), which move subtrees of its model, each with its own
 /// meter. Hit spheres are numbered across the body and its parts.
-fn spawn_critter(level: &mut CritterLevel, kind: &Arc<CritterKind>, position: [f32; 3], yaw: f32, commands: &mut Commands) -> Option<Entity> {
+fn spawn_critter(
+    level: &mut CritterLevel,
+    kind: &Arc<CritterKind>,
+    position: [f32; 3],
+    yaw: f32,
+    statue: Option<usize>,
+    commands: &mut Commands,
+) -> Option<Entity> {
     let ty = 0;
     let body = kind.bodies[ty].as_ref()?;
     let t = &kind.file.types[ty];
@@ -1695,6 +1707,7 @@ fn spawn_critter(level: &mut CritterLevel, kind: &Arc<CritterKind>, position: [f
     let root = body.model.as_ref()?.spawn(transform, commands);
     let mut owners = Vec::new();
     let mut c = new_critter(level, kind, ty, position, yaw, root, None, &mut owners, commands);
+    c.statue = statue;
     c.meter = level.meters.add(t, c.full_hit_points);
     if t.flags & meter::FLAT != 0 {
         level.meters.folder = kind.folder.clone();
@@ -1849,6 +1862,7 @@ fn new_critter(
         mirrored: true,
         flash: Flash::default(),
         meter: None,
+        statue: None,
     }
 }
 
@@ -2024,7 +2038,12 @@ fn tick_critters(
                 info!("the boss is gone");
             }
             if !boss {
-                level.drops.push(CritterDrop { held: level.held.remove(&entity), class: c.class(), at: c.position });
+                level.drops.push(CritterDrop {
+                    held: level.held.remove(&entity),
+                    class: c.class(),
+                    at: c.position,
+                    from: c.statue.unwrap_or(0),
+                });
             }
             for s in c.spheres.iter().chain([&c.aim]).chain(c.parts.iter().flat_map(|p| p.spheres.iter().chain([&p.aim]))) {
                 commands.entity(*s).try_despawn();
@@ -2689,11 +2708,15 @@ fn drop_items(
             })
         {
             let name = ty.name.clone();
-            let placement = items.release(ty, d.at, rotation_matrix([0.0; 3]), None, DROP_DELAY);
-            if let Some(models) = contents.as_deref() {
-                models.spawn(&name, Transform::from_translation(Vec3::from(d.at)), placement, &mut commands);
+            // (Online, a sync point may have brought it already, from a
+            // machine where the gargoyle died first.)
+            let from = crate::items::Released::Drop(d.from);
+            if let Some(placement) = items.release(from, ty, d.at, rotation_matrix([0.0; 3]), None, DROP_DELAY) {
+                if let Some(models) = contents.as_deref() {
+                    models.spawn(&name, Transform::from_translation(Vec3::from(d.at)), placement, &mut commands);
+                }
+                info!("the gargoyle leaves {name} at {:?}", d.at);
             }
-            info!("the gargoyle leaves {name} at {:?}", d.at);
             true
         } else {
             false
@@ -2782,7 +2805,8 @@ fn wake_statues(
     for i in ready {
         let (enemy, position, yaw) = (level.statues[i].enemy, level.statues[i].position, level.statues[i].yaw);
         let Some(kind) = level.kinds.get(&enemy).cloned() else { continue };
-        if let Some(e) = spawn_critter(level, &kind, position, yaw, commands) {
+        let placement = level.statues[i].placement;
+        if let Some(e) = spawn_critter(level, &kind, position, yaw, Some(placement), commands) {
             info!("critter {} awakes at {position:?} ({e:?})", kind.file.desc.name);
             if let Some(h) = level.statues[i].holds {
                 level.held.insert(e, h);
@@ -4027,11 +4051,13 @@ fn length(a: [f32; 3]) -> f32 {
 }
 
 /// The critters as a sync point carries them (`resync.rs`): the level's
-/// own counters and, for each critter (told apart by where it was made),
-/// what its ticks keep — where it is, how hurt it and its parts are, the
-/// move it's in and its clip's frame — as the host has them. What it
-/// holds by entity starts afresh everywhere: a grab lets go, the targets
-/// it tracks are found again.
+/// own counters, its statues and, for each critter (told apart by where
+/// it was made), what its ticks keep — where it is, how hurt it and its
+/// parts are, the move it's in and its clip's frame — and a boss level's
+/// end. They're the host's, with what any machine's game has got further
+/// with ([`CrittersSave::keep_progress`]). What a critter holds by entity
+/// starts afresh everywhere: a grab lets go, the targets it tracks are
+/// found again.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct CrittersSave {
     rng: u32,
@@ -4041,10 +4067,59 @@ pub struct CrittersSave {
     boss_dead: bool,
     players: usize,
     legendary_used: bool,
+    /// The safe rocks the boss threw down with the seconds till each is
+    /// made, and the one it threw last.
+    rocks: (Vec<(usize, f32)>, i32),
+    /// The statues: placement, waking, done (its critter made).
+    statues: Vec<(usize, bool, bool)>,
+    victory: Option<VictorySave>,
     critters: Vec<CritterSave>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+/// A boss level's end ([`Victory`]): its key is the time it shows until
+/// and whether it's the second model.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct VictorySave {
+    step: u8,
+    timer: f32,
+    key_at: [f32; 3],
+    key: Option<(f32, bool)>,
+    wizard: bool,
+    wizard_at: [f32; 3],
+    fade: i32,
+    countdown: f32,
+    over: bool,
+}
+
+impl VictorySave {
+    /// Further along than `other`: at a later step, or sooner done with
+    /// the same one.
+    fn ahead_of(&self, other: &VictorySave) -> bool {
+        if self.step != other.step {
+            return self.step > other.step;
+        }
+        match self.step {
+            9..=11 => self.countdown < other.countdown,
+            4 => self.fade < other.fade,
+            _ => self.timer < other.timer,
+        }
+    }
+}
+
+/// How far into its death a critter is: none while it lives; −1 dying
+/// with its DEATH yet to start; then DEATH's frame; and, the clip over, a
+/// hundred thousand less the seconds its hold has left.
+fn death_of(c: &Critter) -> Option<f32> {
+    if c.state != CritterState::Dying {
+        return None;
+    }
+    if c.move_kind(c.current) != Some(kind::DEATH) {
+        return Some(-1.0);
+    }
+    Some(if c.clock.ended { 1.0e5 - (c.hold_until - c.now).max(0.0) } else { c.clock.frame })
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct CritterSave {
     made_at: [u32; 3],
     /// 0 new, 1 dying, 2 active.
@@ -4084,6 +4159,10 @@ struct CritterSave {
     now: f32,
     missile_hit: bool,
     mirrored: bool,
+    /// The placement its statue stood at.
+    statue: Option<usize>,
+    /// How far into its death it is ([`death_of`]).
+    death: Option<f32>,
     parts: Vec<CritterSave>,
 }
 
@@ -4127,7 +4206,25 @@ impl CritterSave {
             now: c.now,
             missile_hit: c.missile_hit,
             mirrored: c.mirrored,
+            statue: c.statue,
+            death: death_of(c),
             parts: c.parts.iter().map(|p| CritterSave::of(p, slot)).collect(),
+        }
+    }
+
+    /// With what another machine's game has of the same critter: further
+    /// into its death there, it's as they have it; else it and its parts
+    /// are as hurt as the more hurt of the two.
+    fn keep_progress(&mut self, theirs: &CritterSave) {
+        if theirs.death > self.death {
+            *self = theirs.clone();
+            return;
+        }
+        if self.death.is_none() {
+            self.hit_points = self.hit_points.min(theirs.hit_points);
+        }
+        for (mine, theirs) in self.parts.iter_mut().zip(&theirs.parts) {
+            mine.keep_progress(theirs);
         }
     }
 
@@ -4191,6 +4288,41 @@ impl CritterSave {
     }
 }
 
+impl CrittersSave {
+    /// The host's critters with what another machine's game has got
+    /// further with: a statue woken there is woken, and its critter made
+    /// there is made; a critter is as hurt as where it's more hurt, and
+    /// as far into its death as where it's further; one dead and gone
+    /// there is gone; and a boss level's end is as far along as there.
+    pub(crate) fn keep_progress(&mut self, theirs: &CrittersSave) {
+        let made = |statues: &[(usize, bool, bool)], statue: Option<usize>| {
+            statue.is_none_or(|p| statues.iter().any(|s| s.0 == p && s.2))
+        };
+        self.critters.retain(|c| !made(&theirs.statues, c.statue) || theirs.critters.iter().any(|t| t.made_at == c.made_at));
+        for t in &theirs.critters {
+            match self.critters.iter_mut().find(|c| c.made_at == t.made_at) {
+                Some(mine) => mine.keep_progress(t),
+                // (One made and gone here stays gone.)
+                None if !made(&self.statues, t.statue) => self.critters.push(t.clone()),
+                None => {}
+            }
+        }
+        self.critters.sort_by_key(|c| c.made_at);
+        for mine in &mut self.statues {
+            if let Some(theirs) = theirs.statues.iter().find(|s| s.0 == mine.0) {
+                mine.1 |= theirs.1;
+                mine.2 |= theirs.2;
+            }
+        }
+        self.boss_dead |= theirs.boss_dead;
+        if let Some(t) = theirs.victory
+            && self.victory.is_none_or(|mine| t.ahead_of(&mine))
+        {
+            self.victory = Some(t);
+        }
+    }
+}
+
 pub(crate) fn save_synced(world: &mut World) -> Option<CrittersSave> {
     let level = world.get_resource::<CritterLevel>()?;
     let mut save = CrittersSave {
@@ -4201,6 +4333,19 @@ pub(crate) fn save_synced(world: &mut World) -> Option<CrittersSave> {
         boss_dead: level.boss_dead,
         players: level.players,
         legendary_used: level.legendary_used,
+        rocks: (level.rock_timers.clone(), level.last_rock),
+        statues: level.statues.iter().map(|s| (s.placement, s.waking, s.done)).collect(),
+        victory: level.victory.as_ref().map(|v| VictorySave {
+            step: v.step,
+            timer: v.timer,
+            key_at: v.key_at,
+            key: v.key.map(|(_, until, second)| (until, second)),
+            wizard: v.wizard.is_some(),
+            wizard_at: v.wizard_at,
+            fade: v.fade,
+            countdown: v.countdown,
+            over: v.over,
+        }),
         critters: Vec::new(),
     };
     let slots: Vec<(Entity, usize)> = world.query::<(Entity, &Player)>().iter(world).map(|(e, p)| (e, p.slot)).collect();
@@ -4212,35 +4357,174 @@ pub(crate) fn save_synced(world: &mut World) -> Option<CrittersSave> {
     Some(save)
 }
 
+/// Every machine takes the critters over as a sync point has them. A
+/// statue whose critter another machine has made makes it here; a critter
+/// dead and gone on another machine goes here at once (what it left comes
+/// with the level's items, `items::load_synced`); the rest are as the
+/// save has them, a dying one as far into its death; and a boss level's
+/// end goes on from where the save has it.
 pub(crate) fn load_synced(world: &mut World, save: &CrittersSave) {
-    let Some(mut level) = world.get_resource_mut::<CritterLevel>() else { return };
-    level.rng = save.rng;
-    level.now = save.now;
-    level.clock = save.clock;
-    (level.intro, level.intro_timer) = save.intro;
-    level.boss_dead = save.boss_dead;
-    level.players = save.players;
-    level.legendary_used = save.legendary_used;
+    if !world.contains_resource::<CritterLevel>() {
+        return;
+    }
+    let mut woken = 0;
+    world.resource_scope(|world, mut level: Mut<CritterLevel>| {
+        let level = &mut *level;
+        level.rng = save.rng;
+        level.now = save.now;
+        level.clock = save.clock;
+        (level.intro, level.intro_timer) = save.intro;
+        level.boss_dead = save.boss_dead;
+        level.players = save.players;
+        level.legendary_used = save.legendary_used;
+        (level.rock_timers, level.last_rock) = save.rocks.clone();
+        let mut commands = world.commands();
+        for &(placement, waking, done) in &save.statues {
+            let Some(i) = level.statues.iter().position(|s| s.placement == placement) else { continue };
+            level.statues[i].waking = waking;
+            if !done || level.statues[i].done {
+                continue;
+            }
+            level.statues[i].done = true;
+            if let Some(e) = level.statues[i].entity.take() {
+                commands.entity(e).try_despawn();
+            }
+            level.made.push(placement);
+            // (One dead and gone already is in no save.)
+            if !save.critters.iter().any(|c| c.statue == Some(placement)) {
+                continue;
+            }
+            let (enemy, position, yaw, holds) = {
+                let s = &level.statues[i];
+                (s.enemy, s.position, s.yaw, s.holds)
+            };
+            let Some(kind) = level.kinds.get(&enemy).cloned() else { continue };
+            if let Some(e) = spawn_critter(level, &kind, position, yaw, Some(placement), &mut commands) {
+                if let Some(h) = holds {
+                    level.held.insert(e, h);
+                }
+                woken += 1;
+            }
+        }
+    });
+    world.flush();
+
     let heroes: Vec<(usize, Entity)> = world.query::<(Entity, &Player)>().iter(world).map(|(e, p)| (p.slot, e)).collect();
     let hero = |slot: Option<usize>| slot.and_then(|s| heroes.iter().find(|(h, _)| *h == s).map(|(_, e)| *e));
-    for (mut c, animator) in world.query::<(&mut Critter, Option<&mut Animator>)>().iter_mut(world) {
+    let (mut gone, mut theirs) = (Vec::new(), Vec::new());
+    for (entity, mut c, animator) in world.query::<(Entity, &mut Critter, Option<&mut Animator>)>().iter_mut(world) {
         let made_at = c.spawned_at.map(f32::to_bits);
-        let Some(s) = save.critters.iter().find(|s| s.made_at == made_at) else { continue };
+        let Some(s) = save.critters.iter().find(|s| s.made_at == made_at) else {
+            gone.push(entity);
+            theirs.extend(c.spheres.iter().chain([&c.aim]).chain(c.parts.iter().flat_map(|p| p.spheres.iter().chain([&p.aim]))).copied());
+            continue;
+        };
         s.onto(&mut c, &hero);
         // Its model plays its clip from the same frame.
         if let Some(mut animator) = animator {
             animator.set_clip(s.clip.0, s.clip.1);
         }
     }
+    for e in theirs.into_iter().chain(gone.iter().copied()) {
+        let _ = world.try_despawn(e);
+    }
+
+    world.resource_scope(|world, mut level: Mut<CritterLevel>| {
+        let level = &mut *level;
+        for e in &gone {
+            level.held.remove(e);
+        }
+        let old = level.victory.take();
+        let mut commands = world.commands();
+        let Some(s) = save.victory else {
+            for e in old.iter().flat_map(|v| v.key.map(|k| k.0).into_iter().chain(v.wizard)) {
+                commands.entity(e).try_despawn();
+            }
+            return;
+        };
+        let mut v = old.unwrap_or(Victory {
+            step: 0,
+            timer: 0.0,
+            key_at: s.key_at,
+            key: None,
+            wizard: None,
+            wizard_at: s.wizard_at,
+            fade: 0,
+            countdown: 0.0,
+            over: false,
+        });
+        (v.step, v.timer, v.key_at, v.wizard_at) = (s.step, s.timer, s.key_at, s.wizard_at);
+        (v.fade, v.countdown, v.over) = (s.fade, s.countdown, s.over);
+        let spawn = |model: &Arc<CharacterModel>, at: [f32; 3], commands: &mut Commands| {
+            let e = model.spawn(Transform::from_translation(Vec3::from(at)), commands);
+            commands.entity(e).insert(LevelEntity);
+            e
+        };
+        // The key and the wizard this machine hasn't shown yet show; ones
+        // the save has no more go.
+        v.key = match (s.key, v.key.take()) {
+            (Some((until, second)), Some((e, _, was))) if was == second => Some((e, until, second)),
+            (wanted, had) => {
+                let model = wanted.and_then(|(_, second)| if second { level.end.key_after.as_ref() } else { level.end.key.as_ref().map(|k| &k.0) });
+                let key = wanted.zip(model).map(|((until, second), m)| (spawn(m, s.key_at, &mut commands), until, second));
+                if let Some((e, ..)) = had {
+                    commands.entity(e).try_despawn();
+                }
+                key
+            }
+        };
+        v.wizard = match (s.wizard, v.wizard.take()) {
+            (true, None) => level.end.wizard.as_ref().map(|m| spawn(m, s.wizard_at, &mut commands)),
+            (false, Some(e)) => {
+                commands.entity(e).try_despawn();
+                None
+            }
+            (_, had) => had,
+        };
+        // Past its first step the realm is won, on every hero's record.
+        if s.step >= 1 {
+            level.meters.hidden = true;
+            for (_, state) in world.resource_mut::<Party>().states_mut() {
+                state.realms_beaten |= 1 << level.realm_id;
+            }
+        }
+        level.victory = Some(v);
+    });
+    world.flush();
+    // What the rest of the game reads of the boss (`BossWatch`: no harm
+    // comes to the heroes once its level's end has begun) follows at
+    // once, not a tick later.
+    if let Err(e) = world.run_system_cached(watch_boss) {
+        warn!("sync point: the boss watch didn't run: {e}");
+    }
+    if woken > 0 || !gone.is_empty() {
+        info!("sync point: {woken} critters awake on another machine wake here, {} dead on another are gone", gone.len());
+    }
 }
 
 /// `GDL_DESYNC_AT=<tick>:critter` (testing the sync points, `online.rs`):
-/// on this machine alone every critter is hurt and turned.
-pub(crate) fn test_diverge(world: &mut World) {
-    for mut c in world.query::<&mut Critter>().iter_mut(world) {
-        c.hit_points -= 25.0;
-        c.yaw += 0.3;
+/// on this machine alone every critter is hurt and turned; `slay`: every
+/// critter awake takes a blow that kills it.
+pub(crate) fn test_diverge(world: &mut World, slay: bool) {
+    let mut blows = Vec::new();
+    for (entity, mut c) in world.query::<(Entity, &mut Critter)>().iter_mut(world) {
+        if !slay {
+            c.hit_points -= 25.0;
+            c.yaw += 0.3;
+        } else if c.state == CritterState::Active {
+            blows.push(crate::combat::Hit {
+                target: entity,
+                attacker: Entity::PLACEHOLDER,
+                damage: 1.0e9,
+                kind: 0,
+                push: Vec3::ZERO,
+                at: Vec3::from(c.position),
+                target_kind: crate::combat::TargetKind::Object,
+                ranged: true,
+            });
+        }
     }
+    world.resource_mut::<Messages<crate::combat::Hit>>().write_batch(blows);
 }
 
 #[cfg(test)]
@@ -4580,6 +4864,74 @@ mod tests {
         c.take_hit(1.0e6, 0, [0.0; 3], Some(0), None, false, None, &mut sounds);
         assert_eq!(c.state, CritterState::Dying);
         assert!(c.parts.iter().all(|p| p.state == CritterState::Dying));
+    }
+
+    /// A sync point's critters (`resync.rs`): the host's, with what
+    /// another machine's game has got further with.
+    #[test]
+    fn a_sync_point_keeps_the_furthest_each_machine_got_with_the_critters() {
+        let critter = |at: u32, statue: Option<usize>, hit_points: f32, death: Option<f32>| CritterSave {
+            made_at: [at, 0, 0],
+            state: if death.is_some() { 1 } else { 2 },
+            hit_points,
+            statue,
+            death,
+            ..default()
+        };
+        let boss = |hit_points: f32, death: Option<f32>, head: f32| CritterSave {
+            parts: vec![critter(0, None, head, None)],
+            ..critter(9, None, hit_points, death)
+        };
+        let mut host = CrittersSave {
+            statues: vec![(10, true, true), (11, false, false), (12, true, true), (13, true, true)],
+            // Golem 10 fights on; 12 is dead and gone here; 13 is dying.
+            critters: vec![critter(1, Some(10), 80.0, None), critter(4, Some(13), 0.0, Some(12.0)), boss(500.0, None, 40.0)],
+            ..default()
+        };
+        let client = CrittersSave {
+            statues: vec![(10, true, true), (11, true, true), (12, true, true), (13, true, true)],
+            // 10 is dead and gone there; 11 has woken there; 12 still
+            // fights there; 13 is further into its death; the boss is more
+            // hurt and its head less.
+            critters: vec![
+                critter(2, Some(11), 60.0, None),
+                critter(3, Some(12), 30.0, None),
+                critter(4, Some(13), 0.0, Some(20.0)),
+                boss(450.0, None, 70.0),
+            ],
+            boss_dead: false,
+            ..default()
+        };
+        host.keep_progress(&client);
+        let now: Vec<_> = host.critters.iter().map(|c| (c.made_at[0], c.hit_points, c.death)).collect();
+        assert_eq!(now, [(2, 60.0, None), (4, 0.0, Some(20.0)), (9, 450.0, None)]);
+        assert_eq!(host.critters[2].parts[0].hit_points, 40.0);
+        assert_eq!(host.statues[1], (11, true, true));
+
+        // A boss dying on the other machine is dying here, as far into it;
+        // its level's end is as far along as the furthest.
+        let end = |step: u8, timer: f32, countdown: f32| VictorySave {
+            step,
+            timer,
+            key_at: [0.0; 3],
+            key: None,
+            wizard: false,
+            wizard_at: [0.0; 3],
+            fade: 0,
+            countdown,
+            over: false,
+        };
+        let mut host = CrittersSave { critters: vec![boss(5.0, None, 0.0)], victory: None, ..default() };
+        host.keep_progress(&CrittersSave { critters: vec![boss(0.0, Some(-1.0), 0.0)], ..default() });
+        assert_eq!((host.critters[0].state, host.critters[0].death), (1, Some(-1.0)));
+        host.keep_progress(&CrittersSave { victory: Some(end(2, 30.0, 0.0)), boss_dead: true, ..default() });
+        assert!(host.critters.is_empty() && host.boss_dead);
+        assert_eq!(host.victory, Some(end(2, 30.0, 0.0)));
+        host.keep_progress(&CrittersSave { victory: Some(end(2, 31.0, 0.0)), ..default() });
+        assert_eq!(host.victory, Some(end(2, 30.0, 0.0)));
+        host.keep_progress(&CrittersSave { victory: Some(end(9, 31.0, 1.5)), ..default() });
+        host.keep_progress(&CrittersSave { victory: Some(end(9, 0.0, 1.75)), ..default() });
+        assert_eq!(host.victory, Some(end(9, 31.0, 1.5)));
     }
 
     #[test]

@@ -300,8 +300,10 @@ fn draw(
             t.key_row = KEY_ROW_FIELDS;
         }
         t.runes = runes;
+        // A popup at another time than the one shown is a new one (not
+        // just a later one: online a sync point can set the clock back).
         if let Some((_, at)) = state.popup
-            && t.popup.is_none_or(|(_, seen)| at > seen)
+            && t.popup.is_none_or(|(_, seen)| (at - seen).abs() > 1.0 / 60.0)
         {
             t.popup = state.popup;
             t.popup_left = if state.popup.is_some_and(|(what, _)| what >= COIN_COUNT) { COIN_COUNT_SECONDS } else { POPUP_SECONDS };

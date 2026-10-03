@@ -48,7 +48,7 @@ use crate::saves::SavedCharacter;
 
 /// The game's own lockstep revision, part of the build every machine must
 /// share: raise it whenever the game steps differently.
-const LOCKSTEP_REVISION: u32 = 9;
+const LOCKSTEP_REVISION: u32 = 10;
 
 /// Frames without level work before the next tick may run: a level change
 /// and its setup (systems that run as its population comes in, then as
@@ -235,7 +235,7 @@ pub struct Hero {
 }
 
 /// What a select column shows, for a remote player's column.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ColumnShow {
     pub step: u8,
     pub class: u8,
@@ -248,6 +248,10 @@ pub struct ColumnShow {
     /// card shows open).
     #[serde(default)]
     pub unlocked: u16,
+    /// What its character has kept of the classes it has played (class,
+    /// experience, points bought): its card's level and attributes.
+    #[serde(default)]
+    pub kept: Vec<(u8, u32, crate::player_state::StatBonus)>,
 }
 
 /// What the lobby hears, for the front end to act on.
@@ -317,8 +321,9 @@ pub struct Online {
     pub sync_reports: Vec<(u8, Tick, String)>,
     pub sync_state: Option<(Tick, String)>,
     /// The games can't be put together where they are (they aren't on the
-    /// same level): the host starts the level again (`frontend.rs`).
-    pub restart_level: bool,
+    /// same level): the host starts everyone again on this level
+    /// (`frontend.rs`) — the one a machine went on to last.
+    pub restart_level: Option<String>,
 }
 
 impl Online {
@@ -342,7 +347,7 @@ impl Online {
             skip_movie: None,
             sync_reports: Vec::new(),
             sync_state: None,
-            restart_level: false,
+            restart_level: None,
         }
     }
 
@@ -359,8 +364,8 @@ impl Online {
 
     /// Sends a message to the host alone.
     pub fn send_host(&self, m: &Message) {
-        match ron::to_string(m) {
-            Ok(text) => self.session.send_control(Target::Host, text.into_bytes()),
+        match encode(m) {
+            Ok(bytes) => self.session.send_control(Target::Host, bytes),
             Err(e) => warn!("online: can't encode {m:?}: {e}"),
         }
     }
@@ -377,8 +382,8 @@ impl Online {
 
     /// Sends a message to every other machine.
     pub fn send(&self, m: &Message) {
-        match ron::to_string(m) {
-            Ok(text) => self.session.send_control(Target::All, text.into_bytes()),
+        match encode(m) {
+            Ok(bytes) => self.session.send_control(Target::All, bytes),
             Err(e) => warn!("online: can't encode {m:?}: {e}"),
         }
     }
@@ -403,6 +408,50 @@ impl Online {
 #[derive(Resource)]
 pub struct Opening {
     rx: Mutex<Receiver<Result<(NetSession, String), String>>>,
+}
+
+/// A message as it goes on the wire: its RON text — but a sync point's
+/// report or game packed ([`pack_sync`]).
+fn encode(m: &Message) -> Result<Vec<u8>, ron::Error> {
+    match m {
+        Message::SyncReport { tick, report } => Ok(pack_sync(1, *tick, report)),
+        Message::SyncState { tick, state } => Ok(pack_sync(2, *tick, state)),
+        _ => ron::to_string(m).map(String::into_bytes),
+    }
+}
+
+/// A sync point's text can't unpack to more than this (16 MiB).
+const MOST_UNPACKED: u64 = 1 << 24;
+
+/// A sync point's report (`what` 1) or game (2), packed: a big level's
+/// whole state is some 180 KB as text and a tenth of that deflated, and
+/// the wait at a sync point is the time it takes to cross. On the wire: a
+/// zero byte (no RON text starts with one), `what`, the tick, then the
+/// text deflated.
+fn pack_sync(what: u8, tick: Tick, text: &str) -> Vec<u8> {
+    use std::io::Write;
+    let mut packed = vec![0, what];
+    packed.extend_from_slice(&tick.to_le_bytes());
+    let mut encoder = flate2::write::DeflateEncoder::new(packed, flate2::Compression::fast());
+    // (Writing into memory doesn't fail.)
+    let _ = encoder.write_all(text.as_bytes());
+    let packed = encoder.finish().unwrap_or_default();
+    debug!("online: sync point: {} bytes of text go as {}", text.len(), packed.len());
+    packed
+}
+
+/// A packed sync point message ([`pack_sync`]); none for anything else.
+fn unpack_sync(bytes: &[u8]) -> Option<Message> {
+    use std::io::Read;
+    let [0, what, t0, t1, t2, t3, packed @ ..] = bytes else { return None };
+    let tick = Tick::from_le_bytes([*t0, *t1, *t2, *t3]);
+    let mut text = String::new();
+    flate2::read::DeflateDecoder::new(packed).take(MOST_UNPACKED).read_to_string(&mut text).ok()?;
+    match what {
+        1 => Some(Message::SyncReport { tick, report: text }),
+        2 => Some(Message::SyncState { tick, state: text }),
+        _ => None,
+    }
 }
 
 /// Why going online didn't work, for the front end to show.
@@ -616,7 +665,7 @@ fn poll(mut commands: Commands, opening: Option<Res<Opening>>, online: Option<Re
             }
             NetEvent::DelayChanged { delay } => info!("online: input delay now {delay} ticks"),
             NetEvent::Control { from, bytes } => {
-                let decoded = std::str::from_utf8(&bytes).ok().and_then(|t| ron::from_str::<Message>(t).ok());
+                let decoded = unpack_sync(&bytes).or_else(|| std::str::from_utf8(&bytes).ok().and_then(|t| ron::from_str::<Message>(t).ok()));
                 match decoded {
                     Some(Message::Column { slot, show }) => online.inbox.push(Lobby::Column { slot: slot as usize, show }),
                     Some(Message::Hero { slot, hero }) => online.inbox.push(Lobby::Hero { slot: slot as usize, hero }),
@@ -883,7 +932,11 @@ fn checksum(
     heroes: Query<&crate::player::Player>,
     monsters: Query<&crate::monsters::Monster>,
     critters: Query<&crate::critters::Critter>,
-    projectiles: Query<&crate::projectiles::Projectile>,
+    (projectiles, blasts, camera): (
+        Query<&crate::projectiles::Projectile>,
+        Query<&crate::effects::Blast>,
+        Option<Res<crate::play_camera::PlayCamera>>,
+    ),
     (monster_level, critter_level, items, generators, mechanics, breakables, hazards): (
         Option<Res<crate::monsters::MonsterLevel>>,
         Option<Res<crate::critters::CritterLevel>>,
@@ -939,13 +992,15 @@ fn checksum(
         ),
         ("monster level", monster_level.map_or(0, |l| l.sync_hash())),
         ("critter level", critter_level.map_or(0, |l| l.sync_hash())),
-        ("items", items.map_or(0, |i| i.sync_hash())),
+        ("items", items.as_ref().map_or(0, |i| i.sync_hash())),
         ("mechanics", mechanics.map_or(0, |m| m.sync_hash())),
         (
             "breakables",
             sum(&mut breakables.iter().filter(|b| b.standing()).map(|b| hash(&|h| b.sync_key().hash(h)))),
         ),
         ("hazards", hazards.map_or(0, |z| z.sync_hash())),
+        ("blasts", sum(&mut blasts.iter().filter(|b| b.hurts()).map(|b| b.sync_key()))),
+        ("camera", camera.map_or(0, |c| c.sync_hash())),
     ];
     let total = hash(&|h| parts.iter().for_each(|(_, v)| v.hash(h)));
     online.session.report_checksum(lock.tick, total);
@@ -955,6 +1010,12 @@ fn checksum(
         // The run counts too (ticks start again at each restart).
         let at = u64::from(online.session.epoch()) * 100_000 + u64::from(lock.tick);
         info!("sync tick {at}: {:016x} ({})", total, list.join(", "));
+        // (`GDL_SYNC_LOG=items`: every item, to find which differs.)
+        if std::env::var("GDL_SYNC_LOG").is_ok_and(|v| v == "items")
+            && let Some(items) = items.as_ref()
+        {
+            info!("sync tick {at}: items: {}", items.sync_detail());
+        }
     }
 }
 
@@ -965,7 +1026,9 @@ fn checksum(
 /// hurt and pushed; `kill`: it's dead; `generator`: the first generator
 /// is broken; `item`, `door`, `chest`: the first powerup is taken, the
 /// first door or locked chest opened (`items::test_diverge`); `barrel`:
-/// the first breakable breaks; `mover`: the first mover is elsewhere.
+/// the first breakable breaks; `mover`: the first mover is elsewhere;
+/// `critter`, `slay`: every critter is hurt and turned, or killed; `box`:
+/// a message box comes up; `clock`: the game clock jumps a second ahead.
 fn test_desync(world: &mut World) {
     static AT: std::sync::OnceLock<Option<(u32, String)>> = std::sync::OnceLock::new();
     let at = AT.get_or_init(|| {
@@ -1005,7 +1068,9 @@ fn test_desync(world: &mut World) {
         }
         "item" | "door" | "chest" => crate::items::test_diverge(world, what),
         "barrel" => crate::breakables::test_diverge(world),
-        "critter" => crate::critters::test_diverge(world),
+        "box" => world.resource_mut::<crate::message_box::MessageBox>().test_diverge(),
+        "clock" => world.resource_mut::<Time<Fixed>>().advance_by(std::time::Duration::from_secs(1)),
+        "critter" | "slay" => crate::critters::test_diverge(world, what == "slay"),
         "mover" => {
             if let Some(mut m) = world.get_resource_mut::<crate::mechanics::Mechanics>() {
                 m.test_diverge();
@@ -1062,6 +1127,22 @@ fn settle(mut lock: ResMut<Lockstep>, population: Option<Res<LevelPopulation>>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sync point's text goes packed and comes back as it was; ordinary
+    /// messages (RON text) aren't taken for one.
+    #[test]
+    fn a_sync_points_text_goes_packed() {
+        let text = format!("(level:\"levelA1\",items:[{}])", "(placement:12,name:\"TREAS_GOLD\",flags:0),".repeat(2000));
+        let packed = pack_sync(2, 934, &text);
+        assert!(packed.len() * 10 < text.len(), "{} of {}", packed.len(), text.len());
+        assert_eq!(unpack_sync(&packed), Some(Message::SyncState { tick: 934, state: text.clone() }));
+        assert_eq!(encode(&Message::SyncReport { tick: 7, report: text.clone() }).ok().and_then(|b| unpack_sync(&b)), Some(Message::SyncReport { tick: 7, report: text }));
+        let skip = encode(&Message::SkipMovie { level: "levelA1".into() }).unwrap();
+        assert!(unpack_sync(&skip).is_none());
+        assert_eq!(ron::from_str::<Message>(std::str::from_utf8(&skip).unwrap()).ok(), Some(Message::SkipMovie { level: "levelA1".into() }));
+        assert!(unpack_sync(&[0, 9, 0, 0, 0, 0]).is_none());
+        assert!(unpack_sync(&[0, 2, 1]).is_none());
+    }
 
     #[test]
     fn sticks_round_trip_to_the_same_value_everywhere() {

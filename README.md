@@ -59,11 +59,11 @@ details and the full to-do list):
 | Hero combat, magic, power-ups | `█████████░` 88 % |
 | Monsters and generators | `████████░░` 77 % |
 | Bosses and critters | `████████░░` 78 % |
-| Items, pickups, doors, exits, hazards | `█████████░` 93 % |
+| Items, pickups, doors, exits, hazards | `██████████` 95 % |
 | Level mechanics (triggers, lifts, moving objects, secret walls) | `█████████░` 86 % |
 | What each level places and hides | `█████████░` 90 % |
 | Every level played start to exit | `████░░░░░░` 35 % |
-| Quest, tower, saving | `█████████░` 90 % |
+| Quest, tower, saving | `██████████` 95 % |
 | Front end, menus, HUD, hints | `█████████░` 88 % |
 | Audio | `█████████░` 85 % |
 | Local co-op (2–4 players) | `███████░░░` 72 % |
@@ -76,7 +76,8 @@ details and the full to-do list):
   settings, watching a teammate while down. Friends can join a game under
   way, heroes can be changed mid-game, and if the machines ever disagree
   their games are put back together where they stand — no level starts
-  again, and nobody loses their place or what they picked up.
+  again, and nobody loses their place, what they picked up, or a monster
+  or boss they brought down.
 - Optional **first-person view**, independently chosen by each player:
   animated equipped weapons and hands, mouse/right-stick look, throws that
   go where you look, and local split screens when needed.

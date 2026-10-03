@@ -94,16 +94,25 @@ pub struct PlayCamera {
     pub watching: Option<usize>,
 }
 
-/// The play camera's rigs as a sync point carries them (`resync.rs`): the
-/// shared one as the host has it, each hero's own as its player's machine
-/// does — a camera never jumps on the screen it's drawn on. The opening
-/// shot, cuts, shakes and the boss camera run from the level's own events
-/// and stay as each machine has them.
+/// The play camera as a sync point carries it (`resync.rs`): the game's
+/// own camera as the host has it — its rig, the opening shot, a cut, a
+/// shake, a boss level's camera — and each hero's own rig as its player's
+/// machine does (a hero's camera never jumps on the screen it's drawn
+/// on). The game's camera is every machine's: the heroes' sticks turn by
+/// it while it has the view, monsters wake by what it sees, and the
+/// level's animated objects wait on its cuts.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct CameraSave {
     shared: Option<RigAt>,
     own: Vec<(usize, RigAt)>,
     standing: [bool; MAX_PLAYERS],
+    intro: Option<Intro>,
+    cut: Option<Cut>,
+    shake: Option<Shake>,
+    shake_offset: ([f32; 3], [f32; 3]),
+    boss: Option<crate::boss_camera::BossCamSave>,
+    boss_active: bool,
+    opening: bool,
 }
 
 /// A rig, and its eye and target before the latest tick.
@@ -136,6 +145,13 @@ pub(crate) fn save_synced(world: &World) -> Option<CameraSave> {
         shared: Some(RigAt { rig: camera.rig.save(), previous: camera.previous }),
         own: camera.own.iter().enumerate().filter_map(own).collect(),
         standing: camera.standing,
+        intro: camera.intro,
+        cut: camera.cut,
+        shake: camera.shake,
+        shake_offset: camera.shake_offset,
+        boss: camera.boss.as_ref().map(BossCam::save),
+        boss_active: camera.boss_active,
+        opening: camera.opening,
     })
 }
 
@@ -152,6 +168,31 @@ pub(crate) fn load_synced(world: &mut World, save: &CameraSave) {
         }
     }
     camera.standing = save.standing;
+    (camera.intro, camera.cut, camera.opening) = (save.intro, save.cut, save.opening);
+    (camera.shake, camera.shake_offset) = (save.shake, save.shake_offset);
+    if let (Some(boss), Some(saved)) = (camera.boss.as_mut(), &save.boss) {
+        boss.load(saved);
+    }
+    camera.boss_active = save.boss_active;
+}
+
+impl PlayCamera {
+    /// What the machines compare of the game's camera online
+    /// (`online.rs`): where it looks from and at, and what has the view.
+    pub fn sync_hash(&self) -> u64 {
+        use gdl_formats::detmath::sync_bits;
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let (eye, target) = self.view();
+        (eye.map(sync_bits), target.map(sync_bits), sync_bits(self.yaw())).hash(&mut h);
+        self.cut.map(|c| (sync_bits(c.delay), sync_bits(c.fields_left), sync_bits(c.extra))).hash(&mut h);
+        self.intro.map(|i| sync_bits(i.fields_left)).hash(&mut h);
+        (self.boss_active, self.opening, self.standing).hash(&mut h);
+        for own in self.own.iter().flatten() {
+            (own.rig.eye().map(sync_bits), own.rig.target.map(sync_bits)).hash(&mut h);
+        }
+        h.finish()
+    }
 }
 
 /// A hero's own camera (online): a rig following it alone, and its eye and
@@ -166,7 +207,7 @@ struct OwnCamera {
 /// target, 1 the eye, 2 both, round a circle of radius `amplitude` that
 /// turns 0.663 rad a field, after `delay` fields, for `fields`; a shake
 /// with a lower `priority` doesn't replace one still going.
-#[derive(Message, Clone, Copy, Debug)]
+#[derive(Message, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Shake {
     pub amplitude: f32,
     pub what: u8,
@@ -205,7 +246,7 @@ impl StartCut {
 /// time (40 fields, or 6 × the point's byte), held while the moved node
 /// still moves, with black bars top and bottom; then play resumes, gliding
 /// back like the level start. The hero can't be hurt meanwhile.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct Cut {
     delay: f32,
     eye: [f32; 3],
@@ -226,7 +267,7 @@ const CUT_BAR: f32 = 80.0 / 384.0;
 /// starting camera holds for 91 video fields (any button skips it once
 /// fewer than 45 remain), then eye and target glide a tenth of the way to
 /// the play camera each tick until both are within 0.3 of it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct Intro {
     eye: [f32; 3],
     target: [f32; 3],

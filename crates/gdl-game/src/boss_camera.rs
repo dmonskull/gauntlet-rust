@@ -152,7 +152,62 @@ pub struct BossCam {
     limit: f32,
 }
 
+/// What of a boss camera moves as the fight goes: what a sync point
+/// carries of it (`resync.rs`).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct BossCamSave {
+    started: bool,
+    opening: bool,
+    moving: u32,
+    target: [f32; 3],
+    anchor: [f32; 3],
+    way: [f32; 3],
+    way_speed: [f32; 3],
+    /// Progress, yaw, pitch and distance, each with its speed.
+    glide: [(f32, f32); 4],
+    fraction: f32,
+    margin: f32,
+    point: Option<usize>,
+    facing: f32,
+    limit: f32,
+}
+
 impl BossCam {
+    pub(crate) fn save(&self) -> BossCamSave {
+        BossCamSave {
+            started: self.started,
+            opening: self.opening,
+            moving: self.moving,
+            target: self.target,
+            anchor: self.anchor,
+            way: self.way,
+            way_speed: self.way_speed,
+            glide: [
+                (self.progress, self.progress_speed),
+                (self.yaw, self.yaw_speed),
+                (self.pitch, self.pitch_speed),
+                (self.distance, self.distance_speed),
+            ],
+            fraction: self.fraction,
+            margin: self.margin,
+            point: self.point,
+            facing: self.facing,
+            limit: self.limit,
+        }
+    }
+
+    pub(crate) fn load(&mut self, s: &BossCamSave) {
+        (self.started, self.opening, self.moving) = (s.started, s.opening, s.moving);
+        (self.target, self.anchor, self.way, self.way_speed) = (s.target, s.anchor, s.way, s.way_speed);
+        [
+            (self.progress, self.progress_speed),
+            (self.yaw, self.yaw_speed),
+            (self.pitch, self.pitch_speed),
+            (self.distance, self.distance_speed),
+        ] = s.glide;
+        (self.fraction, self.margin, self.point, self.facing, self.limit) = (s.fraction, s.margin, s.point, s.facing, s.limit);
+    }
+
     pub fn new(record: BossCamera) -> Self {
         Self {
             record,
@@ -707,6 +762,30 @@ mod tests {
         let mut s = 0.0;
         let y = ease(3.0, -3.0, -FRAC_PI_2, FRAC_PI_2, 0.5, 0.1, &mut s, true, DT);
         assert!(y > 3.0 || y < -3.0, "{y}");
+    }
+
+    /// A sync point's boss camera (`resync.rs`): a machine that takes
+    /// another's over moves exactly as it does from then on.
+    #[test]
+    fn a_camera_that_took_anothers_save_moves_as_it_does() {
+        let boss = Boss { position: [0.0, 0.0, 30.0], spawn: [0.0, 0.0, 30.0], yaw: PI, height: 12.0, dying: false };
+        let (here, there) = ([hero([0.0, 0.0, 0.0])], [hero([14.0, 0.0, -9.0])]);
+        // Two machines whose heroes stood apart for a while: their cameras
+        // differ.
+        let (mut host, mut client) = (BossCam::new(record()), BossCam::new(record()));
+        for _ in 0..200 {
+            host.tick(&scene(&here, &[], Some(boss), true), DT);
+            client.tick(&scene(&there, &[], Some(boss), true), DT);
+        }
+        assert!(host.eye() != client.eye());
+        let text = ron::to_string(&host.save()).unwrap();
+        client.load(&ron::from_str(&text).unwrap());
+        for _ in 0..200 {
+            host.tick(&scene(&here, &[], Some(boss), true), DT);
+            client.tick(&scene(&here, &[], Some(boss), true), DT);
+            let bits = |c: &BossCam| (c.eye().map(f32::to_bits), c.target.map(f32::to_bits), c.yaw.to_bits(), c.margin.to_bits());
+            assert_eq!(bits(&host), bits(&client));
+        }
     }
 
     #[test]

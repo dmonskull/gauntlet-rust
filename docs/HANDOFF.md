@@ -1,6 +1,6 @@
 # Handoff: where the rewrite stands and how to continue
 
-Last updated 2026-10-03 (v0.2.4, and master past it). Read this first when resuming;
+Last updated 2026-10-03 (v0.2.4; master is past it, lockstep revision 10). Read this first when resuming;
 [STATUS.md](STATUS.md) has how close the rewrite is to the original
 (≈ 84 % for one player, ≈ 83 % done overall) and everything left to do,
 in order.
@@ -36,14 +36,37 @@ the v0.2.3 build's `test` job passed on Windows, Linux and macOS (the
 and generators as the game's mover stops them (`docs/monsters.md`,
 "Items in the way") — they used to walk through shut doors.
 
-Asked for and **not done yet** (next, in this order):
+After v0.2.4 (master, lockstep revision 10 — **not released**; the user
+decides when):
 
-1. Sumner as a class (the seventeenth, unlocked with bit `0x100`): class
-   2 with his model and fixed record (`docs/frontend.md`, "Changing
-   class").
-2. Sync points don't carry yet: chest and barrel contents let out in
-   another order, a critter dead on one machine only, effects and blasts
-   in flight, camera cuts and the boss camera.
+- **Sync points carry the rest of the level** (`docs/online.md`, "Sync
+  points"): items let out in play (chest and barrel contents, a boss's
+  loot and its flight, what a critter leaves or lets go of — each has the
+  same number on every machine, `items::Released`), critters' deaths as
+  far along as the furthest machine, statues woken, a boss level's end
+  (key, wizard, countdown), the game's camera (opening shot, cuts,
+  shakes, the boss camera), the game clock, the voice queues and the
+  message box. Blasts in flight stop hurting when the machines' differ;
+  what the last tick queued for the next is dropped. The report and the
+  game go deflated (180 KB → 20 KB on A1).
+- Machines on different levels all go to the level a game came to last
+  (not always the host's), each hero with its own machine's record.
+- The tower's captions type on the game's ticks online (a scene's cut
+  could start a tick apart).
+- **Sumner is a class** (the seventeenth card, bit `0x100`):
+  `docs/frontend.md`, "Sumner". The class card shows each class as the
+  character kept it (`Level n` / `NEW`, its attributes).
+- Tests: `tools/online_test.sh` with `CLIENT_DESYNC_AT=<tick>:<what>`
+  (`slay`, `box`, `clock` are new), `GDL_SYNC_AFTER=<ticks>` for a late
+  sync point, `GDL_SYNC_LOG=items` to find the item that differs. Every
+  case comes together at the first sync point.
+
+Asked for and **not done yet**:
+
+1. Sync points don't carry the tower's wizard scenes (each machine's
+   runs from its own records, on the ticks).
+2. Cross-platform play (Windows with Mac) is only covered by the build's
+   `test` job (the "same bits" tests), not by a real session.
 
 ## Pick up here
 

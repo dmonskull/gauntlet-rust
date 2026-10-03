@@ -90,7 +90,8 @@ the class's, `PLAYERS/<class>/<model>`):
 
 SUM224 has Sumner's model on a Wizard, but its `+0xF0` is the table's
 `"sum"`, not `r13-0x7d94`'s: it isn't the real Sumner (999 in every stat,
-every level counted; [shop.md](shop.md), [items.md](items.md)).
+his own record; [frontend.md](frontend.md) "Sumner", [shop.md](shop.md),
+[items.md](items.md)).
 
 Gameplay codes (the powers' names are the power menu's, [powers.md](
 powers.md)):

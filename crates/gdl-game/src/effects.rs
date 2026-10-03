@@ -440,7 +440,7 @@ const BREATH_NEAR: f32 = 0.3;
 
 /// A magic effect or explosion doing damage.
 #[derive(Component)]
-struct Blast {
+pub(crate) struct Blast {
     owner: Entity,
     shape: BlastShape,
     centre: Vec3,
@@ -470,6 +470,77 @@ struct Blast {
     /// A breath's or a critter's area's heading (unit, across the floor)
     /// and its cone's cosine: targets outside the cone aren't hit.
     heading: Option<(Vec2, f32)>,
+}
+
+/// Online, a sync point set the game clock `by` seconds on (`resync.rs`):
+/// the times the blasts in flight keep by it go with it.
+pub(crate) fn shift_clock(world: &mut World, by: f64) {
+    for mut b in world.query::<&mut Blast>().iter_mut(world) {
+        b.spared.values_mut().for_each(|until| *until += by);
+        b.spared_items.values_mut().for_each(|until| *until += by);
+    }
+}
+
+impl Blast {
+    /// What the machines compare of a blast online (`online.rs`): what
+    /// it is, where, and how far through.
+    pub(crate) fn sync_key(&self) -> u64 {
+        use gdl_formats::detmath::sync_bits;
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.kind, sync_bits(self.damage), sync_bits(self.radius), sync_bits(self.life), sync_bits(self.age)).hash(&mut h);
+        self.centre.to_array().map(sync_bits).hash(&mut h);
+        h.finish()
+    }
+}
+
+/// A sync point (`resync.rs`): the blasts asked for on the last tick and
+/// not yet made are dropped, on every machine alike.
+pub(crate) fn drop_pending(world: &mut World) {
+    fn drop<M: Message>(world: &mut World) {
+        if let Some(mut messages) = world.get_resource_mut::<Messages<M>>() {
+            messages.clear();
+        }
+    }
+    drop::<UsePotion>(world);
+    drop::<StrikePotion>(world);
+    drop::<BlastAt>(world);
+    drop::<SweepItems>(world);
+    drop::<CritterBlast>(world);
+    drop::<BreathAt>(world);
+    drop::<ChopAt>(world);
+    drop::<NextStage>(world);
+    drop::<ExplosionAt>(world);
+    drop::<WorldBurst>(world);
+}
+
+impl Blast {
+    /// It still hurts (one a sync point has spent only plays out).
+    pub(crate) fn hurts(&self) -> bool {
+        self.radius > 0.0
+    }
+}
+
+/// The blasts in flight that still hurt, for a sync point (`resync.rs`):
+/// their keys' sum, whatever order this machine has them in.
+pub(crate) fn blasts_key(world: &mut World) -> u64 {
+    world.query::<&Blast>().iter(world).filter(|b| b.hurts()).fold(0, |sum, b| sum.wrapping_add(b.sync_key()))
+}
+
+/// A sync point found the machines' blasts differ (one has a blast the
+/// others haven't): none hurts any more, on every machine alike; their
+/// effects play out.
+pub(crate) fn spend_blasts(world: &mut World) {
+    let mut spent = 0;
+    for mut b in world.query::<&mut Blast>().iter_mut(world) {
+        if b.hurts() {
+            (b.radius, b.damage) = (0.0, 0.0);
+            spent += 1;
+        }
+    }
+    if spent > 0 {
+        info!("sync point: {spent} blasts in flight hurt no more");
+    }
 }
 
 /// What a blast does to heroes.
@@ -1050,7 +1121,10 @@ fn use_potions(
             cycle.0 += 1;
         }
         let bought = state.as_ref().map_or(0.0, |s| s.bought.magic);
-        let stat = magic.as_ref().map_or(400.0, |m| m.at(slot, level, bought));
+        let stat = match state.as_ref().is_some_and(|s| s.is_sumner()) {
+            true => crate::player_state::SUMNER_STAT,
+            false => magic.as_ref().map_or(400.0, |m| m.at(slot, level, bought)),
+        };
         let e = potion_effect(kind, u.mode, 0, powered_magic(stat, state.as_deref()), level);
         let c = colour_index(kind);
         info!(
@@ -1159,7 +1233,10 @@ fn set_off_potions(
             let slot = players.get(hero).map_or(0, |p| p.slot);
             let state = party.state(slot);
             let level = state.map_or(1, |s| s.level.max(1));
-            let stat = magic.as_ref().map_or(400.0, |m| m.at(slot, level, state.map_or(0.0, |s| s.bought.magic)));
+            let stat = match state.is_some_and(|s| s.is_sumner()) {
+                true => crate::player_state::SUMNER_STAT,
+                false => magic.as_ref().map_or(400.0, |m| m.at(slot, level, state.map_or(0.0, |s| s.bought.magic))),
+            };
             let e = potion_effect(kind, 0, 0, STRUCK_POWER * powered_magic(stat, state), level);
             // The striker's own magic: its sound at the striker's feet.
             let feet = players.get(hero).map_or(at, |p| Vec3::from(p.mover.position));

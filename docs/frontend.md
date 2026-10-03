@@ -301,22 +301,66 @@ the new class's up, its level worked out from its experience
 as a new hero (`FUN_80079b34`). The class `+0xC` is the one picked and
 `+0x8` that less 8 for the alternates (their base class). The quest's
 pieces, the unlocked characters `+0xA8C` and the powers stay the
-character's. (Sumner, class 16, becomes class 2 with his model and his
-own fixed record: level 99, 5000 gold, 9 keys and potions, every mark.)
+character's.
 
 Here: `PlayerState::change_class` and `ClassRecord` (`player_state.rs`;
 saved with the character, `saves.rs`). The class card opens the classes
 the character choosing has unlocked (`Select::unlocked`,
 `secret_realm::class_open`); a pick from the character menu keeps the
 record (`PartyChange::Set` not fresh → `set_members`), online the changed
-record goes to the host with the hero. Not done: Sumner as a class.
+record goes to the host with the hero.
+
+**Sumner** (class 16, the seventeenth card). The class step
+(`FUN_8008db78(record, class, direction)`) goes round 0–16 and passes over
+16 unless the character's `+0xA8C` has bit `0x100` (the ninth unlock: all
+the coins of the secret realm's fifth level). Picked, `FUN_80079a00` makes
+him **class 2 (the wizard)** and sets the record's model `+0xF0` to
+`r13-0x7d94` (the string `"sum"`: his folder, `PLAYERS/WIZ/SUM`) — that
+pointer is all that marks the real Sumner (the name code SUM224 gives the
+same model with the table's own pointer, and is an ordinary wizard:
+[cheats.md](cheats.md)). With it `FUN_8007a738` doesn't take a class's
+values up but
+
+- copies the character's saved block (`+0xA80`, `0x1430` bytes) to
+  `+0x1ECC`, where `FUN_8007a9e0` copies it back from before it stores
+  anything: **the character under him stays as it was** — what Sumner
+  earns, spends or unlocks isn't kept, and a save writes the character;
+- sets colour `+4` = 0, the four raw stats `+0xF4…+0x100` = 999
+  (`r2-0x5dc4`; `FUN_8007f104` keeps them there), level `+0x3324` = 99,
+  experience `+0x1EC0` = `0x54218` (344 600), health = min(9999,
+  100 × 98 + 500) = 9999, gold 5000, potions 9, keys 9, the realm marks
+  `0x7FE` and the runestone marks `0x1FFF`, and empties the eleven power
+  slots.
+
+`FUN_8007a9e0` ends by running that again: every store (a save, a class
+change) makes Sumner's record anew.
+
+His card (`FUN_8008fc88`, `FUN_8008f828`): the picture `S12_SUM` (one, no
+colours: `r2-0x5864`), the plate `SUM_NAME`, the weapon art by class & 7
+(the warrior's), 999 for each attribute with none glowing, and — like any
+class the character has no experience as — `NEW` where a played class
+shows `Level %d` (`r2-0x577c`; his record's level isn't looked at). A
+ready player who is Sumner (class 2 with his model) shows `SUM_NAME` too.
+
+Here: `PlayerState::become_sumner` / `leave_sumner` and `Character`
+(`player_state.rs`): the hero is the wizard in `YELSUM` with Sumner's
+record, the character kept under it with its colour; `SavedCharacter::of`
+writes the character; `set_members` / `new_member` take the class code
+`SUM` for him (online he goes between machines as `SUM` with the
+character's record, `frontend::hero_form`); his 999s are in
+`player::derived_stats`, the potions' and missiles' power and the shop's
+raw stats; the class card (`frontend::class_card`, `next_class`,
+`classes_kept`) shows each class as the character kept it.
 
 Class card (`FUN_8008f828`): `ATTS_DESC` labels (`font32` × 0.5)
 right-aligned at column + 81, y 160 + 16 × i; values `%03d` in `initials`
 × 0.5 at column + 84, y 162 + 16 × i: class start value (`PDAT +0x28`,
-`+0x30`, `+0x38`, `+0x40`) + per-character points + 5 × (level − 1), capped
-at 999; the highest glows with `ATT_GLOW` behind it. `"Level %d"` centred
-at y 292.
+`+0x30`, `+0x38`, `+0x40`) + the points the character bought as that class
+(its class record's `+0xA98`, `+0xAA4`, `+0xA9C`, `+0xAA0`: strength,
+speed, armour, magic) + 5 × (level − 1), the level from the experience it
+kept as that class, capped at 999; the highest glows with `ATT_GLOW`
+behind it. Centred at y 292: `"Level %d"` for a class the character has
+experience as, `NEW` (`r2-0x577c`) for one it hasn't.
 
 Picking an open class makes the player ready (state 3); when every joined
 player is ready the game starts (`FUN_80053530`) in the tower level
