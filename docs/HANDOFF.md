@@ -38,11 +38,10 @@ and generators as the game's mover stops them (`docs/monsters.md`,
 
 Asked for and **not done yet** (next, in this order):
 
-1. The alternate characters' per-class action rules (`actions.rs`, by
-   class index) haven't been checked against the original for indices
-   8–15. (They load, throw their own weapons, and the select screen opens
-   the ones a character has unlocked; changing class keeps the character,
-   `PlayerState::change_class`.)
+1. Sumner as a class (the seventeenth, unlocked with bit `0x100`): class
+   2 with his model and fixed record (`docs/frontend.md`, "Changing
+   class"). Monster types 0 and 3 taking a damage tile's damage
+   (`docs/monsters.md`, "Items in the way").
 2. Sync points don't carry yet: chest and barrel contents let out in
    another order, a critter dead on one machine only, effects and blasts
    in flight, camera cuts and the boss camera.

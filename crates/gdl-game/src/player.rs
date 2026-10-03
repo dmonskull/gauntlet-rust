@@ -730,6 +730,14 @@ fn stun_action(class: u32, current: Action) -> Option<Action> {
 }
 
 impl Player {
+    /// The class its actions go by (the record's `+0x8`): its own, or for
+    /// an alternate character the class eight before it — the minotaur
+    /// fights by the warrior's rules, … the hyena by the jester's
+    /// (`docs/combat.md`, "The action state machine").
+    pub fn base_class(&self) -> Option<usize> {
+        self.class.map(|c| if (8..16).contains(&c) { c - 8 } else { c })
+    }
+
     /// Whether a monster's blow turns back on it (the Hand of Death or,
     /// first, the Health Vampire armed): `Some(vampire)`.
     pub fn turns_blows(&self) -> Option<bool> {
@@ -1577,7 +1585,7 @@ fn tick(
             let clip = clip_for(&animator, Action::GRABBED);
             if animator.action != clip || animator.finished() {
                 animator.play(clip);
-                p.actions.switched(Action::GRABBED, p.class);
+                p.actions.switched(Action::GRABBED, p.base_class());
             }
             continue;
         }
@@ -1864,7 +1872,7 @@ fn tick(
         p.came_round |= ended;
         let env = Env {
             frame: animator.frame,
-            class: p.class,
+            class: p.base_class(),
             has_low2: clips.actions.iter().any(|a| a.name == Action::ATTLOW2.name()),
             magic_released: p.magic.flags & MagicState::RELEASED != 0,
             came_round: p.came_round,
@@ -1884,7 +1892,7 @@ fn tick(
             }
             next.action = action;
         }
-        let (move_factor, turn_factor) = actions::factors(current, p.class.unwrap_or(0));
+        let (move_factor, turn_factor) = actions::factors(current, p.base_class().unwrap_or(0));
         let clip = clip_for(&animator, next.action);
         let again = next.again && ended && clip == animator.action;
         if again || next.switch.applies(clip != animator.action, ended) {
@@ -1894,7 +1902,7 @@ fn tick(
                 animator.play(clip);
             }
             p.came_round = false;
-            let strike = p.actions.switched(next.action, p.class);
+            let strike = p.actions.switched(next.action, p.base_class());
             // A turbo attack pays for itself as it lands.
             if matches!(current.0, 0x56 | 0x57) {
                 p.turbo = (p.turbo - p.turbo_cost).max(0.0);

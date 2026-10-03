@@ -168,6 +168,14 @@ fire/breath/chop/shot actions; not modelled.
 
 ## The action state machine (`FUN_800ab898`)
 
+Its class checks read the record's `+0x8`, which the class switch
+(`FUN_80079a00`) sets to the class less 8 for the alternate characters:
+the minotaur fights by the warrior's rules, the falconess by the
+valkyrie's, … the hyena by the jester's (`Player::base_class`). The
+tables indexed by `+0x8` ([projectiles.md](projectiles.md): the throw
+sounds, the missile records) go the same way; the weapon table and the
+hand bones are by the class itself (`+0xC`).
+
 Picks the next action from the playing one (`+0x208`) and the requested one
 (`+0x20C`), with a transition mode applied by `FUN_80011134` →
 `FUN_8000eb70`: **2** now if the clip differs or has ended, **0** once
