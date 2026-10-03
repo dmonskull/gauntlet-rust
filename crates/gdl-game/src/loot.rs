@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use gdl_formats::population::rotation_matrix;
 
 use crate::effects::SweepItems;
-use crate::items::LevelItems;
+use crate::items::{LevelItems, Released};
 use crate::monsters::MonsterTick;
 use crate::player::Player;
 use crate::population::{ContentModels, LevelPopulation};
@@ -171,9 +171,46 @@ fn fly(position: &mut Vec3, velocity: &mut Vec3, floor: impl Fn(Vec3) -> Option<
     }
 }
 
-/// The items in flight: placement number, where it is, how it's going.
+/// The items in flight: placement number, where it is, how it's going
+/// and whether it has come to rest; and the seed of the last throw's
+/// random numbers.
 #[derive(Resource, Default)]
-struct Flung(Vec<(usize, Vec3, Vec3, bool)>);
+struct Flung(Vec<(usize, Vec3, Vec3, bool)>, u32);
+
+/// The loot in flight as a sync point carries it (`resync.rs`): the
+/// host's, and what another machine's boss has thrown that the host's
+/// hasn't.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct LootSave {
+    flung: Vec<(usize, [f32; 3], [f32; 3], bool)>,
+    seed: u32,
+}
+
+impl LootSave {
+    /// With another machine's: an item in flight there and not here flies
+    /// here too.
+    pub(crate) fn keep_progress(&mut self, theirs: &LootSave) {
+        for item in &theirs.flung {
+            if self.flung.iter().all(|mine| mine.0 != item.0) {
+                self.flung.push(*item);
+                self.seed = theirs.seed;
+            }
+        }
+    }
+}
+
+pub(crate) fn save_synced(world: &World) -> LootSave {
+    let flung = world.resource::<Flung>();
+    LootSave { flung: flung.0.iter().map(|&(n, at, going, settled)| (n, at.to_array(), going.to_array(), settled)).collect(), seed: flung.1 }
+}
+
+/// Every machine takes the loot in flight over as a sync point has it
+/// (the items themselves come with the level's, `items::load_synced`).
+pub(crate) fn load_synced(world: &mut World, save: &LootSave) {
+    let mut flung = world.resource_mut::<Flung>();
+    flung.0 = save.flung.iter().map(|&(n, at, going, settled)| (n, Vec3::from(at), Vec3::from(going), settled)).collect();
+    flung.1 = save.seed;
+}
 
 /// A boss's loot: the items' sweep, then the loot thrown.
 #[allow(clippy::too_many_arguments)]
@@ -185,23 +222,23 @@ fn spray_loot(
     heroes: Query<(), With<Player>>,
     mut flung: ResMut<Flung>,
     mut sweeps: MessageWriter<SweepItems>,
-    (mut seed, mut new_game): (Local<u32>, MessageReader<crate::online::NewGame>),
+    mut new_game: MessageReader<crate::online::NewGame>,
 ) {
     if new_game.read().count() > 0 {
-        *seed = 0;
+        flung.1 = 0;
     }
     let (Some(mut items), Some(population)) = (items, population) else { return };
     for l in loot.read() {
         sweeps.write(SweepItems { at: l.at, damage: SWEEP_DAMAGE, radius: SWEEP_RADIUS, life: SWEEP_LIFE });
-        *seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345) | 1;
-        let mut state = *seed;
+        flung.1 = flung.1.wrapping_mul(1_103_515_245).wrapping_add(12_345) | 1;
+        let mut state = flung.1;
         let random = move || {
             state ^= state << 13;
             state ^= state >> 17;
             state ^= state << 5;
             (state & 0x7FFF) as f32 / 32767.0
         };
-        for t in tosses(l, heroes.iter().count().max(1), random) {
+        for (n, t) in tosses(l, heroes.iter().count().max(1), random).into_iter().enumerate() {
             if flung.0.len() >= MOST_FLUNG {
                 break;
             }
@@ -209,7 +246,12 @@ fn spray_loot(
                 warn!("no item type {} for the boss's loot", t.name);
                 continue;
             };
-            let placement = items.release(ty, l.at.to_array(), rotation_matrix([0.0; 3]), t.worth, PICKUP_DELAY);
+            // (Online, one a sync point brought already is in flight as
+            // the machine that threw it has it.)
+            let Some(placement) = items.release(Released::Loot(n), ty, l.at.to_array(), rotation_matrix([0.0; 3]), t.worth, PICKUP_DELAY)
+            else {
+                continue;
+            };
             if let Some(models) = contents.as_deref() {
                 models.spawn(t.name, Transform::from_translation(l.at), placement, &mut commands);
             }

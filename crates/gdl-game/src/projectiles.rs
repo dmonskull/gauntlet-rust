@@ -902,17 +902,18 @@ fn setup_level(
     guard.0.clear();
     let mut missiles = HeroMissiles::default();
     for (slot, member) in party.members() {
-        missiles.0[slot] =
-            hero_missile(&member.choice, member.state.level, &member.state.bought, &mut game, (&mut meshes, &mut materials, &mut images));
+        let state = &member.state;
+        let power = (state.level, &state.bought, state.is_sumner());
+        missiles.0[slot] = hero_missile(&member.choice, power, &mut game, (&mut meshes, &mut materials, &mut images));
     }
     commands.insert_resource(missiles);
 }
 
-/// The missile a hero of `choice` throws at `level`.
+/// The missile a hero of `choice` throws at `level` with the points
+/// `bought` (Sumner: with his 999).
 fn hero_missile(
     choice: &PlayerChoice,
-    level: u32,
-    bought: &crate::player_state::StatBonus,
+    (level, bought, sumner): (u32, &crate::player_state::StatBonus, bool),
     game: &mut LoadedGame,
     (meshes, materials, images): (&mut Assets<Mesh>, &mut Assets<LevelMaterial>, &mut Assets<Image>),
 ) -> Option<HeroMissile> {
@@ -924,7 +925,7 @@ fn hero_missile(
         .ok()
         .and_then(|b| PlayerStats::parse(&b).ok().flatten());
     let magic = matches!(missile_class(class), 2 | 6);
-    let stat = stats.map_or(400.0, |s| {
+    let stat = stats.filter(|_| !sumner).map_or(if sumner { crate::player_state::SUMNER_STAT } else { 400.0 }, |s| {
         let (st, b) = if magic { (s.magic, bought.magic) } else { (s.strength, bought.strength) };
         locomotion::stat_at_level(st.start, st.max, level, b)
     });
@@ -1697,11 +1698,14 @@ fn orientation(p: &Projectile) -> Quat {
 }
 
 /// A sync point (`resync.rs`): every missile in flight goes, on every
-/// machine alike.
+/// machine alike, and the heroes' guards against blows are down.
 pub(crate) fn clear(world: &mut World) {
     let flying: Vec<Entity> = world.query_filtered::<Entity, With<Projectile>>().iter(world).collect();
     for e in flying {
         world.despawn(e);
+    }
+    if let Some(mut guard) = world.get_resource_mut::<PlayerGuard>() {
+        guard.0.clear();
     }
 }
 

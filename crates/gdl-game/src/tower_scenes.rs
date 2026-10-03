@@ -36,7 +36,10 @@ pub struct TowerScenesPlugin;
 impl Plugin for TowerScenesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Scene>()
-            .add_systems(FixedUpdate, run_scene.after(PlayerTick).before(crate::play_camera::tick))
+            .add_systems(
+                FixedUpdate,
+                run_scene.after(PlayerTick).after(crate::message_box::CaptionTick).before(crate::play_camera::tick),
+            )
             .add_systems(Update, show_reveals);
     }
 }

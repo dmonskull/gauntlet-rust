@@ -22,7 +22,7 @@ OUT=${GDL_TEST_OUT:-${TMPDIR:-/tmp}/gdl-tests}/online
 SECS=${1:-90}
 mkdir -p $OUT
 rm -f $OUT/invite.txt $OUT/host.log $OUT/client.log
-export GDL_NET_LOCAL=1 GDL_INVITE_FILE=$OUT/invite.txt GDL_SYNC_LOG=1 GDL_SKIP_BOXES=1 RUST_LOG=${RUST_LOG:-info}
+export GDL_NET_LOCAL=1 GDL_INVITE_FILE=$OUT/invite.txt GDL_SYNC_LOG=${GDL_SYNC_LOG:-1} GDL_SKIP_BOXES=1 RUST_LOG=${RUST_LOG:-info}
 HOST_BUTTONS=attack@200-900 CLIENT_BUTTONS=attack@300-1200
 if [[ -n ${FIGHT:-} ]]; then
   # A press every 9 ticks (held, the attack button throws once).

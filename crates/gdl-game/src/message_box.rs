@@ -39,9 +39,13 @@ impl Plugin for MessageBoxPlugin {
                 Update,
                 (
                     run_box.run_if(crate::online::lockstep_off).after(frontend::read_input).before(frontend::run),
-                    run_captions,
+                    run_captions.run_if(crate::online::lockstep_off),
                 ),
             )
+            // Online the captions type with the game's ticks: a scene that
+            // waits on one (`tower_scenes.rs`) moves on at the same tick on
+            // every machine, however each draws its frames.
+            .add_systems(FixedUpdate, tick_captions.run_if(|lock: Res<crate::online::Lockstep>| lock.on).in_set(CaptionTick))
             // Online the box runs on the network's ticks: every machine
             // opens, turns and closes it alike, and any player's B puts a
             // page away (`online.rs`).
@@ -49,6 +53,11 @@ impl Plugin for MessageBoxPlugin {
             .add_systems(PostUpdate, (draw_box, draw_captions).in_set(DrawBox).before(Flush2d));
     }
 }
+
+/// The captions' step on a game tick online ([`tick_captions`]): what
+/// waits on a caption runs after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CaptionTick;
 
 /// Where the box and the captions are drawn: what goes under them draws
 /// before it.
@@ -185,6 +194,75 @@ impl MessageBox {
     /// Whether the heroes' pads are ignored: the box is up, or just closed.
     pub fn holds_input(&self) -> bool {
         self.open.is_some() || self.quiet > 0
+    }
+
+    /// `GDL_DESYNC_AT=<tick>:box` (testing the sync points, `online.rs`):
+    /// a message comes up on this machine alone.
+    pub(crate) fn test_diverge(&mut self) {
+        if let Some(g) = self.scroll.as_ref().and_then(|r| r.groups.first()) {
+            self.queue.push_back(ShowMessage::new(g.name.clone(), 0));
+        }
+    }
+
+    /// The box for a sync point.
+    pub(crate) fn save_synced(&self) -> BoxSave {
+        BoxSave {
+            open: self.open.as_ref().map(|o| (o.group.name.clone(), o.pages.clone(), o.page, o.fields)),
+            queue: self.queue.iter().map(|m| (m.group.clone(), m.index)).collect(),
+            quiet: self.quiet,
+        }
+    }
+
+    /// Every machine takes the box over as a sync point has it: the same
+    /// message at the same page, and the same ones waiting. A box this
+    /// machine already has up keeps its voice line; one it didn't comes
+    /// up without.
+    pub(crate) fn load_synced(&mut self, save: &BoxSave) {
+        match &save.open {
+            None => self.open = None,
+            Some((name, pages, page, fields)) => {
+                let same = self.open.as_ref().is_some_and(|o| o.group.name.eq_ignore_ascii_case(name) && o.pages == *pages);
+                if !same {
+                    self.open = group(self.scroll.as_ref(), name).map(|g| Open {
+                        group: g.clone(),
+                        pages: pages.clone(),
+                        page: 0,
+                        fields: 0.0,
+                        voice: None,
+                    });
+                }
+                if let Some(o) = self.open.as_mut() {
+                    (o.page, o.fields) = (*page, *fields);
+                }
+            }
+        }
+        let waiting: Vec<(String, Option<usize>)> = self.queue.iter().map(|m| (m.group.clone(), m.index)).collect();
+        if waiting != save.queue {
+            self.queue = save
+                .queue
+                .iter()
+                .map(|(group, index)| ShowMessage { group: group.clone(), index: *index, voice: None, queue_voice: false })
+                .collect();
+        }
+        self.quiet = save.quiet;
+    }
+}
+
+/// The box as a sync point carries it (`resync.rs`): the message up (its
+/// group, its pages, the page up and the fields it has been), those
+/// waiting, and the frames the pads stay ignored. Play stops while a box
+/// is up, so every machine must have the same one.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BoxSave {
+    open: Option<(String, Vec<usize>, usize, f32)>,
+    queue: Vec<(String, Option<usize>)>,
+    quiet: u32,
+}
+
+impl BoxSave {
+    /// A box is up, or one waits.
+    pub(crate) fn busy(&self) -> bool {
+        self.open.is_some() || !self.queue.is_empty()
     }
 }
 
@@ -442,14 +520,19 @@ pub fn typed(page: &str, mut budget: f32) -> (Vec<TypedLine>, bool) {
     (done, true)
 }
 
-/// Types queued captions one after another.
-fn run_captions(
-    time: Res<Time>,
-    mut captions: ResMut<Captions>,
-    mut requests: MessageReader<ShowCaption>,
-) {
+/// Types queued captions one after another, by the frame's time.
+fn run_captions(time: Res<Time>, mut captions: ResMut<Captions>, mut requests: MessageReader<ShowCaption>) {
+    step_captions(&mut captions, &mut requests, time.delta_secs() * 60.0);
+}
+
+/// The captions online, on a game tick: two fields.
+fn tick_captions(mut captions: ResMut<Captions>, mut requests: MessageReader<ShowCaption>) {
+    step_captions(&mut captions, &mut requests, 2.0);
+}
+
+/// The captions' step: `fields` gone by.
+fn step_captions(captions: &mut Captions, requests: &mut MessageReader<ShowCaption>, fields: f32) {
     captions.queue.extend(requests.read().cloned());
-    let fields = time.delta_secs() * 60.0;
     if let Some(c) = captions.up.as_mut() {
         c.ticks += fields / 2.0;
         let page = &c.pages[c.page];
@@ -564,6 +647,41 @@ mod tests {
         let cost = 70.0 * LETTER + RETURN + STOP;
         assert!(!typed(page, cost).1);
         assert!(typed(page, cost + 0.01).1);
+    }
+
+    /// A sync point's box (`resync.rs`): a machine without it has the
+    /// same message up at the same page; one with it keeps its own (and
+    /// its voice line); one with another has the save's.
+    #[test]
+    fn a_sync_point_puts_the_same_box_up_everywhere() {
+        let group = |name: &str, pages: usize| TextGroup { name: name.into(), strings: vec!["...".into(); pages], font: 0, scale: [1.0; 2] };
+        let rom = TextRom { groups: vec![group("WELCOME", 3), group("GATE", 1)], fonts: Vec::new(), lists: Vec::new() };
+        let machine = || MessageBox { scroll: Some(rom.clone()), ..default() };
+        let up = |boxes: &MessageBox| boxes.open.as_ref().map(|o| (o.group.name.clone(), o.page, o.fields, o.voice));
+        let mut theirs = machine();
+        theirs.open = Some(Open { group: rom.groups[0].clone(), pages: vec![0, 1, 2], page: 1, fields: 9.0, voice: Some("S_WELCOME") });
+        theirs.queue.push_back(ShowMessage::new("GATE", 0));
+        let save = theirs.save_synced();
+        assert!(save.busy() && !machine().save_synced().busy());
+
+        let mut without = machine();
+        without.load_synced(&save);
+        assert_eq!(up(&without), Some(("WELCOME".into(), 1, 9.0, None)));
+        assert_eq!(without.save_synced(), save);
+
+        let mut with = machine();
+        with.open = Some(Open { group: rom.groups[0].clone(), pages: vec![0, 1, 2], page: 0, fields: 30.0, voice: Some("S_WELCOME") });
+        with.load_synced(&save);
+        assert_eq!(up(&with), Some(("WELCOME".into(), 1, 9.0, Some("S_WELCOME"))));
+
+        let mut other = machine();
+        other.open = Some(Open { group: rom.groups[1].clone(), pages: vec![0], page: 0, fields: 2.0, voice: None });
+        other.load_synced(&save);
+        assert_eq!(other.save_synced(), save);
+
+        // No box anywhere else: this machine's goes.
+        other.load_synced(&BoxSave::default());
+        assert!(!other.is_open() && other.queue.is_empty());
     }
 
     #[test]

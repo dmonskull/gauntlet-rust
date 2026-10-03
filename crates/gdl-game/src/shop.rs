@@ -1175,10 +1175,6 @@ const POJO_NAME: &str = "S_POJO2";
 
 /// The colours' order (`PlayerChoice::variant`).
 const COLOURS: [&str; 4] = ["YEL", "BLU", "RED", "GRE"];
-/// The summoner's place in the class order.
-const SUMMONER: usize = 16;
-/// The wizard's: the summoner plays as one.
-const WIZARD: usize = 2;
 
 /// The tally's sound for the realm just played: `S_TALLYSFX<letter>` for
 /// realms 1–11 (A–K).
@@ -1228,9 +1224,9 @@ impl ShopScreen {
             }
             let start = open.level_start[slot].as_ref();
             let code = member.choice.class.to_ascii_uppercase();
-            let class = crate::character::class_index(&code).unwrap_or(0);
-            let summoner = class == SUMMONER;
-            let text_class = if summoner { WIZARD } else { class };
+            // (The summoner — Sumner — plays as the wizard: its class here.)
+            let text_class = crate::character::class_index(&code).unwrap_or(0);
+            let summoner = state.is_sumner();
             let variant = member.choice.variant.to_ascii_uppercase();
             let gained = |now: u32, then: u32| i64::from(now) - i64::from(then);
             let amounts = [

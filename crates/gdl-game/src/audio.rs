@@ -348,6 +348,26 @@ impl QueueVoice {
     }
 }
 
+/// The voice queues as a sync point carries them (`resync.rs`): each
+/// queue's lines (name, fields, volume) and when its first is done, the
+/// queues' clock, and whether the announcer's is closed.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct VoicesSave {
+    queues: [QueueSave; 2],
+    now: f32,
+    closed: bool,
+}
+
+/// A queue's lines (name, fields, volume) and when its first is done.
+type QueueSave = (Vec<(String, f32, u8)>, Option<f32>);
+
+impl VoicesSave {
+    /// A queue holds a line.
+    pub(crate) fn busy(&self) -> bool {
+        self.queues.iter().any(|(lines, _)| !lines.is_empty())
+    }
+}
+
 /// The voice queues' step on a network tick (`online.rs`).
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NetVoices;
@@ -406,6 +426,33 @@ impl VoiceQueues {
     /// Empty, for a new game (online, every machine alike).
     pub fn clear(&mut self) {
         *self = Self::default();
+    }
+
+    /// The queues for a sync point.
+    pub(crate) fn save_synced(&self) -> VoicesSave {
+        let queue = |q: &Queue| (q.lines.iter().map(|l| (l.name.clone(), l.fields, l.volume)).collect(), q.ends);
+        VoicesSave { queues: [queue(&self.queues[0]), queue(&self.queues[1])], now: self.now, closed: self.closed }
+    }
+
+    /// Every machine takes the queues over as a sync point has them: the
+    /// same lines holding them for as long (a level's end waits on them).
+    /// A line this machine has already keeps the pan it was queued with;
+    /// one that has started elsewhere isn't started again here.
+    pub(crate) fn load_synced(&mut self, save: &VoicesSave) {
+        for (q, (lines, ends)) in self.queues.iter_mut().zip(&save.queues) {
+            let lines = lines
+                .iter()
+                .enumerate()
+                .map(|(i, (name, fields, volume))| {
+                    let pan = q.lines.get(i).filter(|l| l.name == *name).map_or(CENTRE_PAN, |l| l.pan);
+                    Line { name: name.clone(), fields: *fields, volume: *volume, pan }
+                })
+                .collect();
+            q.lines = lines;
+            q.ends = *ends;
+        }
+        self.now = save.now;
+        self.closed = save.closed;
     }
 
     /// Refuses the announcer's lines from now until the next level starts
@@ -1286,6 +1333,38 @@ impl Source for SoundEffectDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sync point's voice queues (`resync.rs`): every machine has the
+    /// same lines holding them for as long; a line it had keeps its pan.
+    #[test]
+    fn a_sync_point_carries_the_voice_queues() {
+        let look = |pan| LineLook { volume: 0xFF, pan };
+        let mut host = VoiceQueues::default();
+        assert!(host.append(VoiceQueue::Announcer, "S_DEFEATVOXB", 240.0, None, look(CENTRE_PAN)));
+        assert!(host.append(VoiceQueue::Announcer, "S_RUNEVOX0B", 180.0, None, look(CENTRE_PAN)));
+        assert!(host.step(10.0).len() == 1);
+        host.close_announcer();
+        let save = host.save_synced();
+        assert!(save.busy());
+
+        let mut client = VoiceQueues::default();
+        assert!(client.append(VoiceQueue::Heroes, "S_WAROUCH", 60.0, None, look(40)));
+        client.load_synced(&save);
+        assert!(client.closed && client.now == 10.0);
+        // Its own hero's line isn't in the host's queues: it's gone; the
+        // announcer's first line holds its queue till field 250, then the
+        // second starts here as it does there.
+        assert!(client.queues[VoiceQueue::Heroes as usize].lines.is_empty());
+        assert!(client.step(249.0).is_empty() && client.step(250.0).is_empty());
+        assert_eq!(client.step(252.0).iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["S_RUNEVOX0B"]);
+        assert_eq!(ron::to_string(&client.save_synced()).unwrap(), ron::to_string(&{ host.step(249.0); host.step(250.0); host.step(252.0); host.save_synced() }).unwrap());
+
+        // A line both have keeps the pan this machine queued it with.
+        let mut other = VoiceQueues::default();
+        assert!(other.append(VoiceQueue::Announcer, "S_RUNEVOX0B", 180.0, None, look(40)));
+        other.load_synced(&host.save_synced());
+        assert_eq!(other.queues[VoiceQueue::Announcer as usize].lines[0].pan, 40);
+    }
 
     fn effect(lens: &[(u32, usize)], loop_from: Option<usize>) -> SoundEffect {
         let segments: Vec<Segment> = lens

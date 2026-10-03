@@ -207,8 +207,8 @@ pub struct Player {
 
 /// A hero as a sync point carries it (`resync.rs`): its record, whether
 /// it's out of the level, and — on the level — what its ticks keep
-/// between them. Each machine sends its own players' heroes; every
-/// machine takes them over.
+/// between them. Each hero is taken from its own player's machine;
+/// every machine takes them over.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeroSave {
     pub slot: u8,
@@ -247,10 +247,13 @@ struct HeroBody {
     move_factor: f32,
     death_hand: [bool; 2],
     halo: (bool, bool),
+    /// Seconds from the game clock's now (the machines' clocks may have
+    /// come apart: `resync.rs` sets them alike).
     stun_until: f64,
     came_round: bool,
     turbo: f32,
     turbo_cost: f32,
+    /// Seconds from now, as `stun_until`.
     attack_started: f64,
     going_out: Option<GoingOut>,
     light: Option<DeathLight>,
@@ -258,9 +261,9 @@ struct HeroBody {
     clip: (usize, f32),
 }
 
-/// The heroes for a sync point: this machine's own players' (`mine`), or
-/// everyone's.
-pub(crate) fn save_synced(world: &mut World, mine: bool) -> Vec<HeroSave> {
+/// The heroes for a sync point, as this machine's game has them.
+pub(crate) fn save_synced(world: &mut World) -> Vec<HeroSave> {
+    let now = world.resource::<Time<Fixed>>().elapsed_secs_f64();
     let mut bodies: Vec<(usize, HeroBody)> = Vec::new();
     let mut heroes = world.query::<(&Player, &Animator)>();
     for (p, animator) in heroes.iter(world) {
@@ -278,11 +281,11 @@ pub(crate) fn save_synced(world: &mut World, mine: bool) -> Vec<HeroSave> {
             move_factor: p.move_factor,
             death_hand: p.death_hand,
             halo: (p.halo_drank, p.halo_draining),
-            stun_until: p.stun_until,
+            stun_until: p.stun_until - now,
             came_round: p.came_round,
             turbo: p.turbo,
             turbo_cost: p.turbo_cost,
-            attack_started: p.attack_started,
+            attack_started: p.attack_started - now,
             going_out: p.going_out.clone(),
             light: p.light.clone(),
             clip: (animator.action, animator.frame),
@@ -290,17 +293,39 @@ pub(crate) fn save_synced(world: &mut World, mine: bool) -> Vec<HeroSave> {
         bodies.push((p.slot, body));
     }
     let fe = world.get_resource::<crate::frontend::Frontend>();
+    // The points bought at a shop screen still up go on the record as the
+    // screen's end puts them (a sync point may close it, `resync.rs`).
+    let shop = world.get_resource::<crate::shop::ShopScreen>().filter(|s| s.is_open());
     world
         .resource::<Party>()
         .members()
-        .filter(|(_, m)| !(mine && m.devices.remote))
-        .map(|(slot, m)| HeroSave {
-            slot: slot as u8,
-            record: m.state.clone(),
-            fallen: fe.map_or((false, 0.0), |f| f.fallen(slot)),
-            body: bodies.iter().find(|(s, _)| *s == slot).map(|(_, b)| b.clone()),
+        .map(|(slot, m)| {
+            let mut record = m.state.clone();
+            // Its popup's time, from now too.
+            record.popup = record.popup.map(|(what, at)| (what, at - now as f32));
+            if let Some(bought) = shop.and_then(|s| s.bonus(slot)) {
+                record.bought = bought;
+            }
+            HeroSave {
+                slot: slot as u8,
+                record,
+                fallen: fe.map_or((false, 0.0), |f| f.fallen(slot)),
+                body: bodies.iter().find(|(s, _)| *s == slot).map(|(_, b)| b.clone()),
+            }
         })
         .collect()
+}
+
+/// The heroes' records alone, as a sync point has them (all it can keep
+/// when the machines' games are on different levels).
+pub(crate) fn load_records(world: &mut World, saved: &[HeroSave]) {
+    let now = world.resource::<Time<Fixed>>().elapsed_secs_f64();
+    for h in saved {
+        if let Some(state) = world.resource_mut::<Party>().state_mut(usize::from(h.slot)) {
+            *state = h.record.clone();
+            state.popup = state.popup.map(|(what, from_now)| (what, now as f32 + from_now));
+        }
+    }
 }
 
 /// Every machine takes the heroes over as a sync point has them: their
@@ -308,13 +333,11 @@ pub(crate) fn save_synced(world: &mut World, mine: bool) -> Vec<HeroSave> {
 /// What a tick keeps that isn't carried starts afresh, alike everywhere:
 /// a grab lets go, blows not yet taken are dropped.
 pub(crate) fn load_synced(world: &mut World, saved: &[HeroSave]) {
+    let now = world.resource::<Time<Fixed>>().elapsed_secs_f64();
+    load_records(world, saved);
     for h in saved {
-        let slot = usize::from(h.slot);
-        if let Some(state) = world.resource_mut::<Party>().state_mut(slot) {
-            *state = h.record.clone();
-        }
         if let Some(mut fe) = world.get_resource_mut::<crate::frontend::Frontend>() {
-            fe.set_fallen(slot, h.fallen);
+            fe.set_fallen(usize::from(h.slot), h.fallen);
         }
     }
     let mut heroes = world.query::<(&mut Player, &mut Animator, &mut Visibility)>();
@@ -338,11 +361,11 @@ pub(crate) fn load_synced(world: &mut World, saved: &[HeroSave]) {
         p.move_factor = b.move_factor;
         p.death_hand = b.death_hand;
         (p.halo_drank, p.halo_draining) = b.halo;
-        p.stun_until = b.stun_until;
+        p.stun_until = now + b.stun_until;
         p.came_round = b.came_round;
         p.turbo = b.turbo;
         p.turbo_cost = b.turbo_cost;
-        p.attack_started = b.attack_started;
+        p.attack_started = now + b.attack_started;
         p.going_out = b.going_out.clone();
         p.light = b.light.clone();
         p.grabbed = None;
@@ -359,7 +382,12 @@ pub(crate) fn load_synced(world: &mut World, saved: &[HeroSave]) {
 /// The hero's working stats at a character level: strength (5–20),
 /// armour (0–5) and speed (units/s), each from the class stat plus 5 per
 /// level up to its maximum.
-fn derived_stats(stats: Option<&PlayerStats>, level: u32, bought: &crate::player_state::StatBonus) -> (f32, f32, f32) {
+fn derived_stats(stats: Option<&PlayerStats>, level: u32, bought: &crate::player_state::StatBonus, sumner: bool) -> (f32, f32, f32) {
+    // Sumner has 999 in each, whatever the wizard's are.
+    if sumner {
+        let all = crate::player_state::SUMNER_STAT;
+        return (combat::strength(all), (0.005 * all).clamp(0.0, 5.0), locomotion::move_speed(all, 0.0));
+    }
     let at = |s: gdl_formats::pdata::Stat, b: f32| locomotion::stat_at_level(s.start, s.max, level, b);
     let strength = combat::strength(stats.map_or(400.0 + bought.strength, |s| at(s.strength, bought.strength)));
     let armor = (0.005 * stats.map_or(bought.armour, |s| at(s.armor, bought.armour))).clamp(0.0, 5.0);
@@ -381,7 +409,7 @@ fn level_stats(
             continue;
         }
         applied[slot] = (state.level, state.bought);
-        let (strength, armor, speed) = derived_stats(hero.stats.as_ref(), state.level, &state.bought);
+        let (strength, armor, speed) = derived_stats(hero.stats.as_ref(), state.level, &state.bought, state.is_sumner());
         for mut p in players.iter_mut().filter(|p| p.slot == slot) {
             p.strength = strength;
             p.armor = armor;

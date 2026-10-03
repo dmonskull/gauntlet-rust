@@ -322,11 +322,15 @@ fn hits(
                         let amount = (ty.class == ItemClass::Powerup && ty.subtype == 2).then(|| keys.unwrap_or(1).max(1));
                         let at = [pos[0], pos[1] - 1.0, pos[2]];
                         let name = ty.name.clone();
-                        let placement = items.release(ty, at, rotation_matrix([0.0; 3]), amount, RELEASE_DELAY);
-                        if let Some(models) = contents.as_ref() {
-                            models.spawn(&name, Transform::from_translation(Vec3::from(at)), placement, &mut commands);
+                        // (Online, a sync point may have brought it out
+                        // already, from a machine where this broke first.)
+                        let from = items::Released::Contents(b.placement);
+                        if let Some(placement) = items.release(from, ty, at, rotation_matrix([0.0; 3]), amount, RELEASE_DELAY) {
+                            if let Some(models) = contents.as_ref() {
+                                models.spawn(&name, Transform::from_translation(Vec3::from(at)), placement, &mut commands);
+                            }
+                            info!("breakable {} released {name}", b.placement);
                         }
-                        info!("breakable {} released {name}", b.placement);
                     }
                 }
             }

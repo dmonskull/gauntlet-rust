@@ -267,7 +267,41 @@ pub struct PlayerState {
     /// ([`ClassRecord`]).
     #[serde(default)]
     pub others: Vec<ClassRecord>,
+    /// The hero is Sumner (the seventeenth class): the character he's
+    /// played on, as it was ([`Character`]).
+    #[serde(default)]
+    pub sumner: Option<Box<Character>>,
 }
+
+/// The character under Sumner. Sumner is a wizard with his own model,
+/// 999 in every stat and a record of his own that the game makes anew
+/// each time he's taken up; the character he's played on keeps its
+/// record as it was (the game holds a copy of its saved block): a save
+/// writes that, and it comes back when its player picks another class
+/// (`docs/frontend.md`, "Sumner").
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Character {
+    pub state: PlayerState,
+    /// Its colour (and model): the hero's variant before Sumner's.
+    pub variant: String,
+}
+
+/// Sumner's code as a class (the seventeenth), the class he plays as, and
+/// his model's variant (yellow, his folder in the wizard's).
+pub const SUMNER: &str = "SUM";
+pub const SUMNER_CLASS: &str = "WIZ";
+pub const SUMNER_VARIANT: &str = "YELSUM";
+/// His record: level 99 with its experience, 5000 gold, 9 keys and 9
+/// potions, every realm won and every runestone.
+const SUMNER_LEVEL: u32 = 99;
+const SUMNER_EXPERIENCE: u32 = 344_600;
+const SUMNER_GOLD: u32 = 5000;
+const SUMNER_KEYS: u32 = 9;
+const SUMNER_POTIONS: usize = 9;
+const SUMNER_REALMS: u32 = 0x7FE;
+const SUMNER_RUNESTONES: i32 = 13;
+/// Each of his four stats.
+pub const SUMNER_STAT: f32 = 999.0;
 
 /// What a character keeps of each class it has played: the game holds
 /// these per class in the character's record, puts the playing class's
@@ -512,7 +546,68 @@ impl PlayerState {
             gold_found: 0,
             play_fields: 0,
             others: Vec::new(),
+            sumner: None,
         }
+    }
+
+    /// Whether the hero is Sumner.
+    pub fn is_sumner(&self) -> bool {
+        self.sumner.is_some()
+    }
+
+    /// Which of the character's records this is: its class, and whether
+    /// it's Sumner's. What watches a record for changes (a level gained, a
+    /// runestone found) starts again when this changes: another class's
+    /// record isn't the hero gaining anything.
+    pub fn record_key(&self) -> (u8, bool) {
+        (crate::character::class_index(&self.class).map_or(u8::MAX, |c| c as u8), self.is_sumner())
+    }
+
+    /// The character as a save keeps it: the one under Sumner while he's
+    /// played, else this record.
+    pub fn character(&self) -> &PlayerState {
+        self.sumner.as_ref().map_or(self, |c| &c.state)
+    }
+
+    /// The hero becomes Sumner (the game's class switch to the seventeenth
+    /// class): the character, with the colour it had (`variant`), is kept
+    /// as it is, and the hero gets Sumner's record — level 99, 5000 gold,
+    /// 9 keys and potions (the kinds it held, then plain ones), every
+    /// realm won and every runestone, no powers. Already Sumner, his
+    /// record is made anew (the game does at each save). `stats` are the
+    /// wizard's (his size and powerup time).
+    pub fn become_sumner(&mut self, variant: &str, stats: Option<&PlayerStats>) {
+        let character = match self.sumner.take() {
+            Some(character) => character,
+            None => Box::new(Character { state: self.clone(), variant: variant.to_string() }),
+        };
+        let fresh = PlayerState::new(SUMNER_CLASS, stats);
+        self.class = fresh.class;
+        (self.radius, self.half_height, self.head_height, self.powerup_time) =
+            (fresh.radius, fresh.half_height, fresh.head_height, fresh.powerup_time);
+        self.level = SUMNER_LEVEL;
+        self.experience = SUMNER_EXPERIENCE;
+        self.health = self.max_health();
+        self.gold = SUMNER_GOLD;
+        self.keys = SUMNER_KEYS;
+        self.potions.resize(SUMNER_POTIONS, 0);
+        self.realms_beaten = SUMNER_REALMS;
+        self.runestones = (0..SUMNER_RUNESTONES).collect();
+        self.powers = [Power::default(); POWER_SLOTS];
+        self.bits = PowerBits::default();
+        self.bought = StatBonus::default();
+        self.sumner = Some(character);
+    }
+
+    /// Sumner's player picks another class: the character comes back as
+    /// it was (with what happened to Sumner gone), its colour with it.
+    /// None when the hero isn't Sumner.
+    pub fn leave_sumner(&mut self) -> Option<String> {
+        let character = self.sumner.take()?;
+        let alive = self.alive;
+        *self = character.state;
+        self.alive = alive;
+        Some(character.variant)
     }
 
     /// 100 more per level above the first, from 500, capped.
@@ -770,6 +865,11 @@ impl Plugin for PlayerStatePlugin {
     }
 }
 
+/// A class's record (`PDATA/<class>.WAD`), if the disc has it.
+fn class_stats(install: &mut GameInstall, class: &str) -> Option<PlayerStats> {
+    install.read(&format!("PDATA/{class}.WAD")).ok().and_then(|b| PlayerStats::parse(&b).ok().flatten())
+}
+
 /// A new player of `choice`'s class: the class record's hero
 /// (`PDATA/<class>.WAD`), a saved character's record laid on top
 /// (`saves.rs`), and `GDL_KEYS=n` keys (testing).
@@ -780,6 +880,20 @@ pub fn new_member(
     saved: Option<&crate::saves::SavedCharacter>,
     devices: Devices,
 ) -> Member {
+    // Sumner (the seventeenth class) comes with the character he's played
+    // on — its saved record, else a new wizard of the colour chosen — and
+    // is the wizard with his own model and record on top of it.
+    if choice.class.eq_ignore_ascii_case(SUMNER) {
+        let under = match saved {
+            Some(s) => PlayerChoice { class: s.class.clone(), variant: s.variant.clone() },
+            None => PlayerChoice { class: SUMNER_CLASS.to_string(), variant: choice.variant.clone() },
+        };
+        let variant = under.variant.clone();
+        let mut member = new_member(install, under, name, saved, devices);
+        member.state.become_sumner(&variant, class_stats(install, SUMNER_CLASS).as_ref());
+        member.choice = PlayerChoice { class: SUMNER_CLASS.to_string(), variant: SUMNER_VARIANT.to_string() };
+        return member;
+    }
     let stats = install.read(&format!("PDATA/{}.WAD", choice.class)).ok().and_then(|b| PlayerStats::parse(&b).ok().flatten());
     if stats.is_none() {
         warn!("no PDATA record for {}; using stand-in hero size", choice.class);
@@ -816,18 +930,31 @@ fn set_members(
                 if let Some(member) = party.get_mut(*slot)
                     && !fresh
                 {
+                    member.name = name.clone();
+                    member.devices = *devices;
+                    // Sumner picked again stays as he is.
+                    let to_sumner = choice.class.eq_ignore_ascii_case(SUMNER);
+                    if to_sumner && member.state.is_sumner() {
+                        continue;
+                    }
+                    // Sumner's player picks another class: the character he
+                    // was played on comes back first, in its own colour.
+                    if let Some(variant) = member.state.leave_sumner() {
+                        member.choice = PlayerChoice { class: member.state.class.clone(), variant };
+                    }
+                    if to_sumner {
+                        let variant = member.choice.variant.clone();
+                        member.state.become_sumner(&variant, class_stats(&mut game.install, SUMNER_CLASS).as_ref());
+                        member.choice = PlayerChoice { class: SUMNER_CLASS.to_string(), variant: SUMNER_VARIANT.to_string() };
+                        info!("player {}: {} is now Sumner (level {})", slot + 1, name, member.state.level);
+                        continue;
+                    }
                     if !member.choice.class.eq_ignore_ascii_case(&choice.class) {
-                        let stats = game
-                            .install
-                            .read(&format!("PDATA/{}.WAD", choice.class))
-                            .ok()
-                            .and_then(|b| PlayerStats::parse(&b).ok().flatten());
+                        let stats = class_stats(&mut game.install, &choice.class);
                         member.state.change_class(&choice.class, stats.as_ref());
                         info!("player {}: {} is now the {} (level {})", slot + 1, name, choice.class, member.state.level);
                     }
                     member.choice = choice.clone();
-                    member.name = name.clone();
-                    member.devices = *devices;
                     continue;
                 }
                 let member = new_member(&mut game.install, choice.clone(), name, saved.as_deref(), *devices);
@@ -1261,6 +1388,30 @@ fn powers_and_warning(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sumner is played on a character that stays as it was: a save
+    /// keeps the character, Sumner taken up again is as he began, and
+    /// another class brings the character back.
+    #[test]
+    fn sumner_is_played_on_a_character_that_stays_as_it_was() {
+        let mut s = PlayerState::new("WAR", None);
+        (s.level, s.experience, s.gold, s.keys, s.potions) = (12, 20_000, 321, 2, vec![3]);
+        s.secret_characters = 0x100;
+        s.become_sumner("BLU", None);
+        assert!(s.is_sumner());
+        assert_eq!((s.class.as_str(), s.level, s.experience, s.gold, s.keys), ("WIZ", 99, 344_600, 5000, 9));
+        assert_eq!((s.potions.len(), s.potions[0], s.health, s.realms_beaten, s.runestones.len()), (9, 3, 9999.0, 0x7FE, 13));
+        let saved = crate::saves::SavedCharacter::of("ANNA", "WIZ", SUMNER_VARIANT, &s);
+        assert_eq!((saved.class.as_str(), saved.variant.as_str(), saved.level, saved.gold), ("WAR", "BLU", 12, 321));
+        // He spends and unlocks; taken up again he's as he began, and the
+        // character under him as it was.
+        (s.gold, s.keys, s.secret_characters) = (7, 0, 0x1FF);
+        s.become_sumner(SUMNER_VARIANT, None);
+        assert_eq!((s.gold, s.keys, s.character().gold, s.character().secret_characters), (5000, 9, 321, 0x100));
+        assert_eq!(s.leave_sumner().as_deref(), Some("BLU"));
+        assert_eq!((s.class.as_str(), s.level, s.gold, s.keys, s.potions.clone(), s.secret_characters), ("WAR", 12, 321, 2, vec![3], 0x100));
+        assert!(!s.is_sumner() && s.leave_sumner().is_none());
+    }
 
     /// A character keeps each class's own level and holdings, and takes
     /// them up again as it changes back; its quest pieces and unlocked

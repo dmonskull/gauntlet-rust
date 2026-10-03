@@ -31,6 +31,23 @@ Keyboard and mouse, or any game pad (plug in more pads for local co-op).
 Enter / Start pauses; the Settings menu has the controls and lets you
 rebind keys.
 
+## Characters and classes
+
+A character keeps a record of its own for every class it plays. In the
+tower, Start → **Manage Character** → **Change** opens the class card:
+Left / Right change the class, Up / Down the colour; each class shows the
+level your character has reached as it (or **NEW**). Picking another class
+puts the one you were playing away and takes that one up — its level,
+gold, keys and potions.
+
+The eight alternate characters (minotaur, falconess, jackal, tigress,
+ogre, unicorn, medusa, hyena) open for a character once it has taken all
+the coins of that one's secret level. The ninth secret level opens
+**Sumner**, the wizard of the tower himself: level 99 with 999 in
+everything, 5000 gold, nine keys and potions. What Sumner earns or spends
+isn't kept — your character is as it was when you pick another class, and
+saving saves your character, not Sumner.
+
 ## Cheat codes
 
 As in the original, a hero's name can be a code: type it on the name

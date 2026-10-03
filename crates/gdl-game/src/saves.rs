@@ -57,8 +57,12 @@ pub struct SavedCharacter {
 }
 
 impl SavedCharacter {
-    /// The record of the hero playing now.
+    /// The record of the hero playing now. Sumner isn't saved: the
+    /// character he's played on is, as it was (`PlayerState::sumner`).
     pub fn of(name: &str, class: &str, variant: &str, state: &PlayerState) -> Self {
+        if let Some(character) = &state.sumner {
+            return Self::of(name, &character.state.class, &character.variant, &character.state);
+        }
         Self {
             name: name.to_string(),
             class: class.to_string(),
