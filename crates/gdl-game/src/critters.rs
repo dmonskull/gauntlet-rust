@@ -4026,6 +4026,99 @@ fn length(a: [f32; 3]) -> f32 {
     (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
 }
 
+/// The critters as a sync point carries them (`resync.rs`): the level's
+/// own counters and, for each critter (told apart by where it was made),
+/// where it is and how hurt it and its parts are, as the host has them.
+/// The move each is in stays each machine's.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct CrittersSave {
+    rng: u32,
+    now: f32,
+    clock: f64,
+    intro: (i32, f32),
+    boss_dead: bool,
+    players: usize,
+    legendary_used: bool,
+    critters: Vec<CritterSave>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct CritterSave {
+    made_at: [u32; 3],
+    position: [f32; 3],
+    yaw: f32,
+    previous: ([f32; 3], f32),
+    hit_points: f32,
+    anger: f32,
+    sphere_damage: Vec<f32>,
+    spent: Vec<bool>,
+    /// Its parts' hit points.
+    parts: Vec<f32>,
+}
+
+pub(crate) fn save_synced(world: &mut World) -> Option<CrittersSave> {
+    let level = world.get_resource::<CritterLevel>()?;
+    let mut save = CrittersSave {
+        rng: level.rng,
+        now: level.now,
+        clock: level.clock,
+        intro: (level.intro, level.intro_timer),
+        boss_dead: level.boss_dead,
+        players: level.players,
+        legendary_used: level.legendary_used,
+        critters: Vec::new(),
+    };
+    for c in world.query::<&Critter>().iter(world) {
+        save.critters.push(CritterSave {
+            made_at: c.spawned_at.map(f32::to_bits),
+            position: c.position,
+            yaw: c.yaw,
+            previous: c.previous,
+            hit_points: c.hit_points,
+            anger: c.anger,
+            sphere_damage: c.sphere_damage.clone(),
+            spent: c.spent.clone(),
+            parts: c.parts.iter().map(|p| p.hit_points).collect(),
+        });
+    }
+    save.critters.sort_by_key(|c| c.made_at);
+    Some(save)
+}
+
+pub(crate) fn load_synced(world: &mut World, save: &CrittersSave) {
+    let Some(mut level) = world.get_resource_mut::<CritterLevel>() else { return };
+    level.rng = save.rng;
+    level.now = save.now;
+    level.clock = save.clock;
+    (level.intro, level.intro_timer) = save.intro;
+    level.boss_dead = save.boss_dead;
+    level.players = save.players;
+    level.legendary_used = save.legendary_used;
+    for mut c in world.query::<&mut Critter>().iter_mut(world) {
+        let made_at = c.spawned_at.map(f32::to_bits);
+        let Some(s) = save.critters.iter().find(|s| s.made_at == made_at) else { continue };
+        let c = &mut *c;
+        c.position = s.position;
+        c.yaw = s.yaw;
+        c.previous = s.previous;
+        c.hit_points = s.hit_points;
+        c.hp_before = s.hit_points;
+        c.anger = s.anger;
+        if c.sphere_damage.len() == s.sphere_damage.len() {
+            c.sphere_damage.clone_from(&s.sphere_damage);
+        }
+        if c.spent.len() == s.spent.len() {
+            c.spent.clone_from(&s.spent);
+        }
+        for (part, hit_points) in c.parts.iter_mut().zip(&s.parts) {
+            part.hit_points = *hit_points;
+            part.hp_before = *hit_points;
+        }
+        // A grab lets go everywhere (the heroes' side does too).
+        c.held = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

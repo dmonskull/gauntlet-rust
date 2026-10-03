@@ -1686,6 +1686,15 @@ fn orientation(p: &Projectile) -> Quat {
     }
 }
 
+/// A sync point (`resync.rs`): every missile in flight goes, on every
+/// machine alike.
+pub(crate) fn clear(world: &mut World) {
+    let flying: Vec<Entity> = world.query_filtered::<Entity, With<Projectile>>().iter(world).collect();
+    for e in flying {
+        world.despawn(e);
+    }
+}
+
 fn interpolate(between: Res<Between>, mut projectiles: Query<(&Projectile, &mut Transform)>) {
     let t = between.0;
     // Those held on a node are placed in its space, once.

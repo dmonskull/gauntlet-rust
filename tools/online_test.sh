@@ -7,7 +7,8 @@
 # Usage: [GDL_ONLINE_LEVEL=levelA1] [SHOT_AT=<frame>] [HOST_MENU=<GDL_MENU>]
 #        [CLIENT_MENU=<GDL_MENU>] [HOST_PLAYERS=1: the host starts alone and the
 #        client joins the game under way] [CLIENT_DESYNC_AT=<tick>: the client's
-#        game goes its own way then; the games must agree again after]
+#        game goes its own way then; a sync point must put the games together
+#        again, with no level starting again]
 #        [FIGHT=1: the heroes hop to HOPS (default 0,0,40, among levelA1's
 #        grunts), stand (or HOST_STICK / CLIENT_STICK) and throw every 9 ticks,
 #        immortal unless MORTAL=1] [HOST_HERO=WAR] [CLIENT_HERO=VAL]
@@ -47,14 +48,16 @@ for side in host client; do
 done
 echo "host ticks: $(wc -l < $OUT/host.sync), client ticks: $(wc -l < $OUT/client.sync)"
 if [[ -n ${CLIENT_DESYNC_AT:-} ]]; then
-  # The first run goes out of sync; the run after the restart (its ticks
-  # logged from 100000) must not.
-  if ! join $OUT/host.sync $OUT/client.sync | awk '$1 < 100000 && $2 != $3' | grep -q .; then
+  # The games come apart, a sync point puts them together again (no level
+  # starts again), and every check from the point on must agree.
+  if ! join $OUT/host.sync $OUT/client.sync | awk '$2 != $3' | grep -q .; then
     echo "NO DESYNC (the client's game never went its own way)"; exit 1
   fi
-  grep -h 'differ from tick\|starts again' $OUT/host.log $OUT/client.log | sed 's/.*Z.\[0m //' | sort -u
-  for side in host client; do awk '$1 >= 100000' $OUT/$side.sync > $OUT/$side.sync.tmp && mv $OUT/$side.sync.tmp $OUT/$side.sync; done
-  if [[ ! -s $OUT/host.sync ]]; then echo "NO RESTART"; exit 1; fi
+  grep -h 'games differ\|sync point\|together again\|starts again' $OUT/host.log $OUT/client.log | sed 's/.*Z.\[0m //; s/^.*INFO //; s/^.*WARN //' | sort | uniq -c
+  if grep -q 'starts again' $OUT/host.log $OUT/client.log; then echo "THE LEVEL STARTED AGAIN"; exit 1; fi
+  from=$(grep -h -o 'together again from tick [0-9]*' $OUT/host.log | tail -1 | grep -o '[0-9]*$')
+  if [[ -z $from ]]; then echo "NO SYNC POINT"; exit 1; fi
+  for side in host client; do awk -v from=$from '$1 >= from' $OUT/$side.sync > $OUT/$side.sync.tmp && mv $OUT/$side.sync.tmp $OUT/$side.sync; done
 fi
 mismatch=$(join $OUT/host.sync $OUT/client.sync | awk '$2 != $3' | head -3)
 if grep -q 'panicked' $OUT/host.log $OUT/client.log; then

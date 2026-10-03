@@ -7,7 +7,7 @@
 
 /// A player action: an index into the game's action table ([`NAMES`]).
 /// Several indices share a clip name; the state machine tells them apart.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct Action(pub u8);
 
 /// The game's player action names, by action index. The clip an action plays
@@ -303,7 +303,7 @@ pub mod button {
 
 /// How far the target the controls aimed at is (the game recomputes these
 /// every tick from the target search).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Range(pub u32);
 
 impl Range {
@@ -327,7 +327,7 @@ impl Range {
 }
 
 /// The per-hero state the chaining reads and keeps.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ActionState {
     /// The action playing.
     pub action: Action,

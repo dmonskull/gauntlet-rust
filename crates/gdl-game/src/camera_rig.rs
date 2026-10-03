@@ -44,6 +44,22 @@ pub struct CameraPoint {
 /// A hero as the camera frames it: its top point and its feet.
 pub type Framed = ([f32; 3], [f32; 3]);
 
+/// What of a rig moves as it follows the heroes: what a sync point
+/// carries of it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RigSave {
+    current: Option<usize>,
+    players: usize,
+    angles: (f32, f32),
+    turn: (f32, f32),
+    turned: f32,
+    samples: Vec<[f32; 3]>,
+    distances: Vec<f32>,
+    slot: usize,
+    target: [f32; 3],
+    distance: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct CameraRig {
     points: Vec<CameraPoint>,
@@ -105,6 +121,41 @@ impl CameraRig {
     /// The level's ordinary camera points.
     pub fn points(&self) -> &[CameraPoint] {
         &self.points
+    }
+
+    /// What of the rig moves, for a sync point (`resync.rs`).
+    pub fn save(&self) -> RigSave {
+        RigSave {
+            current: self.current,
+            players: self.players,
+            angles: (self.yaw, self.pitch),
+            turn: self.turn,
+            turned: self.turned,
+            samples: self.samples.to_vec(),
+            distances: self.distances.to_vec(),
+            slot: self.slot,
+            target: self.target,
+            distance: self.distance,
+        }
+    }
+
+    /// Takes a saved rig's moves over (the level's points and bounds are
+    /// the same everywhere).
+    pub fn load(&mut self, s: &RigSave) {
+        self.current = s.current.filter(|&i| i < self.points.len());
+        self.players = s.players;
+        (self.yaw, self.pitch) = s.angles;
+        self.turn = s.turn;
+        self.turned = s.turned;
+        for (mine, theirs) in self.samples.iter_mut().zip(&s.samples) {
+            *mine = *theirs;
+        }
+        for (mine, theirs) in self.distances.iter_mut().zip(&s.distances) {
+            *mine = *theirs;
+        }
+        self.slot = s.slot % SMOOTHING;
+        self.target = s.target;
+        self.distance = s.distance;
     }
 
     /// The box the target is kept in.

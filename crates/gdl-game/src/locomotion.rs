@@ -47,7 +47,7 @@ pub fn move_speed(speed_stat: f32, boost: f32) -> f32 {
 }
 
 /// What the player's stick asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Gait {
     Idle,
     Walk,
@@ -75,7 +75,7 @@ pub struct Stick {
 }
 
 /// One player's movement state.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Mover {
     pub position: [f32; 3],
     /// Direction the body faces (same convention as `Stick::heading`).

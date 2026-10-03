@@ -99,7 +99,7 @@ pub enum MagicIntent {
 
 /// The magic half of the player record's control flags (`+0x956`) and the
 /// throw's wind-up (`+0x958`).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MagicState {
     pub flags: u16,
     /// Video fields the magic button was held into the throw.

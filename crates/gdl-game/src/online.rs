@@ -48,7 +48,7 @@ use crate::saves::SavedCharacter;
 
 /// The game's own lockstep revision, part of the build every machine must
 /// share: raise it whenever the game steps differently.
-const LOCKSTEP_REVISION: u32 = 4;
+const LOCKSTEP_REVISION: u32 = 5;
 
 /// Frames without level work before the next tick may run: a level change
 /// and its setup (systems that run as its population comes in, then as
@@ -58,9 +58,6 @@ const SETTLE_FRAMES: u32 = 4;
 /// Real time owed to the 30 Hz schedule is kept to this many ticks (a
 /// machine behind catches up a tick a frame).
 const MOST_OWED: u32 = 4;
-
-/// After this long waiting on the network the screen says who for.
-pub const WAIT_SHOWN: f32 = 0.5;
 
 /// A machine that says nothing this long has left (its game crashed or its
 /// network went): the others go on without it. A player who leaves or
@@ -132,6 +129,14 @@ pub struct Lockstep {
     pub waited: f32,
     /// The clock was started afresh for this game.
     clock_reset: bool,
+    /// The next tick's bundle, taken but not played yet: a sync point
+    /// comes first.
+    pending: Option<Bundle>,
+    /// A sync point is under way before this tick (`resync.rs`): it runs
+    /// once every machine has the game the host put together.
+    pub sync: Option<Tick>,
+    /// The tick the last sync point came before.
+    pub synced: Option<Tick>,
 }
 
 impl Lockstep {
@@ -144,6 +149,38 @@ impl Lockstep {
     /// Whether a player pressed (newly held) any of `bits` this tick.
     pub fn pressed(&self, inputs: &Inputs, bits: u32) -> bool {
         (0..MAX_PLAYERS).any(|s| inputs.slots[s].held & bits & !self.last_held[s] != 0)
+    }
+
+    /// The slots in the bundle a sync point holds back: the players in
+    /// the game at it.
+    pub fn held_back(&self) -> [bool; MAX_PLAYERS] {
+        let mut slots = [false; MAX_PLAYERS];
+        if let Some(bundle) = &self.pending {
+            for (slot, input) in bundle.iter().enumerate().take(MAX_PLAYERS) {
+                slots[slot] = input.is_some();
+            }
+        }
+        slots
+    }
+
+    /// The sync point is done: its tick runs once the game has settled
+    /// (what it made comes in over a few frames, as a level's does).
+    pub fn sync_done(&mut self) {
+        self.synced = self.sync.take();
+        self.quiet = 0;
+    }
+
+    /// The sync point is given up (the level starts again instead).
+    pub fn sync_dropped(&mut self) {
+        self.sync = None;
+        self.pending = None;
+    }
+
+    /// Whether `bundle`, the next tick's, is where the host calls a sync
+    /// point: its controls carry the call and the tick before's didn't.
+    fn calls_sync(&self, bundle: &Bundle) -> bool {
+        let calls = bundle.iter().next().and_then(|i| i.as_ref()).is_some_and(|i| i.buttons & SlotInput::SYNC != 0);
+        calls && self.last_held[0] & SlotInput::SYNC == 0 && self.synced != Some(self.tick)
     }
 }
 
@@ -176,6 +213,12 @@ pub enum Message {
     /// The host skipped `level`'s opening movie: it ends everywhere
     /// (`level_intro.rs`).
     SkipMovie { level: String },
+    /// A sync point (`resync.rs`), before tick `tick`: a machine's own
+    /// heroes and what its game has of the level, for the host.
+    SyncReport { tick: u32, report: String },
+    /// The game the host put together from the reports: every machine
+    /// takes it over and plays on from `tick`.
+    SyncState { tick: u32, state: String },
 }
 
 /// A hero a player brings: a new one, or one saved on their machine (its
@@ -262,6 +305,13 @@ pub struct Online {
     /// The level whose opening movie the host skipped (`level_intro.rs`
     /// takes it).
     pub skip_movie: Option<String>,
+    /// Sync points (`resync.rs`): the machines' reports as they come to
+    /// the host (machine, tick, report), and the game the host sent.
+    pub sync_reports: Vec<(u8, Tick, String)>,
+    pub sync_state: Option<(Tick, String)>,
+    /// The games can't be put together where they are (they aren't on the
+    /// same level): the host starts the level again (`frontend.rs`).
+    pub restart_level: bool,
 }
 
 impl Online {
@@ -283,6 +333,28 @@ impl Online {
             awaiting_restart: false,
             joiners: Vec::new(),
             skip_movie: None,
+            sync_reports: Vec::new(),
+            sync_state: None,
+            restart_level: false,
+        }
+    }
+
+    /// This machine's number among the game's machines.
+    pub fn machine(&self) -> Option<u8> {
+        self.peers.iter().find(|(_, slots)| self.me.is_some_and(|me| slots.contains(&(me as u8)))).map(|(p, _)| *p)
+    }
+
+    /// The other machines in the game and the slots they play.
+    pub fn others(&self) -> Vec<(u8, Vec<u8>)> {
+        let me = self.machine();
+        self.peers.iter().filter(|(p, _)| Some(*p) != me).cloned().collect()
+    }
+
+    /// Sends a message to the host alone.
+    pub fn send_host(&self, m: &Message) {
+        match ron::to_string(m) {
+            Ok(text) => self.session.send_control(Target::Host, text.into_bytes()),
+            Err(e) => warn!("online: can't encode {m:?}: {e}"),
         }
     }
 
@@ -312,16 +384,6 @@ impl Online {
         if let Err(e) = self.session.start() {
             warn!("online: can't start: {e}");
         }
-    }
-
-    /// The machines the next tick waits for, by their players' slots.
-    pub fn waiting_slots(&self) -> Vec<usize> {
-        let waiting = self.session.waiting_for();
-        self.peers
-            .iter()
-            .filter(|(peer, _)| waiting.contains(peer))
-            .flat_map(|(_, slots)| slots.iter().map(|&s| s as usize))
-            .collect()
     }
 
     /// A short notice on the screen.
@@ -561,16 +623,19 @@ fn poll(mut commands: Commands, opening: Option<Res<Opening>>, online: Option<Re
                         online.inbox.push(Lobby::Resync(heroes.into_iter().map(|(s, h)| (s as usize, h)).collect(), level));
                     }
                     Some(Message::SkipMovie { level }) => online.skip_movie = Some(level),
+                    Some(Message::SyncReport { tick, report }) => online.sync_reports.push((from, tick, report)),
+                    Some(Message::SyncState { tick, state }) => online.sync_state = Some((tick, state)),
                     None => warn!("online: machine {from} sent something this build doesn't read"),
                 }
             }
             NetEvent::Desync { tick } => {
-                error!("online: the machines' games differ from tick {tick}");
-                if online.desync.is_none() {
-                    // The host starts the level again (`frontend.rs`).
-                    online.notice("Out of sync, the level starts again");
+                // A check from before the last sync point is stale: the
+                // games were put together since.
+                if lock.synced.is_none_or(|at| tick >= at) {
+                    warn!("online: the machines' games differ at tick {tick}");
+                    // The host calls a sync point (`resync.rs`).
+                    online.desync.get_or_insert(tick);
                 }
-                online.desync.get_or_insert(tick);
             }
             NetEvent::Disconnected(why) => {
                 warn!("online: disconnected: {why}");
@@ -629,12 +694,21 @@ pub(crate) fn drive(
     // from the host's resync, which may come in the same frame.
     let resyncing = online.inbox.iter().any(|m| matches!(m, Lobby::Resync(..)));
     let started = online.started && !online.awaiting_restart && !resyncing;
-    if started && settled && lock.owed >= step {
-        match online.session.ready_inputs(lock.tick) {
+    if started && settled && lock.owed >= step && lock.sync.is_none() {
+        let bundle = lock.pending.take().or_else(|| {
+            let bundle = online.session.ready_inputs(lock.tick)?;
+            // ready_inputs commits this sample for a future tick only
+            // when it hands out a bundle. Retries keep the mouse pixels.
+            mouse.take(step.as_secs_f32());
+            Some(bundle)
+        });
+        match bundle {
+            // The host calls a sync point here: the tick waits for it.
+            Some(bundle) if lock.calls_sync(&bundle) => {
+                lock.sync = Some(lock.tick);
+                lock.pending = Some(bundle);
+            }
             Some(bundle) => {
-                // ready_inputs commits this sample for a future tick only
-                // when it hands out a bundle. Retries keep the mouse pixels.
-                mouse.take(step.as_secs_f32());
                 take_bundle(&mut lock, &mut inputs, &bundle);
                 lock.ticked = true;
                 lock.owed -= step;
@@ -786,10 +860,11 @@ fn checksum(
     monsters: Query<&crate::monsters::Monster>,
     critters: Query<&crate::critters::Critter>,
     projectiles: Query<&crate::projectiles::Projectile>,
-    (monster_level, critter_level, items): (
+    (monster_level, critter_level, items, generators): (
         Option<Res<crate::monsters::MonsterLevel>>,
         Option<Res<crate::critters::CritterLevel>>,
         Option<Res<crate::items::LevelItems>>,
+        Query<&crate::generators::Generator>,
     ),
 ) {
     const INTERVAL: Tick = 30;
@@ -829,6 +904,12 @@ fn checksum(
             "projectiles",
             sum(&mut projectiles.iter().map(|p| hash(&|h| p.position.to_array().map(sync_bits).hash(h)))),
         ),
+        (
+            "generators",
+            sum(&mut generators.iter().map(|g| {
+                hash(&|h| (g.placement, g.tier, sync_bits(g.hit_points), g.alive, sync_bits(g.wait), sync_bits(g.ramp)).hash(h))
+            })),
+        ),
         ("monster level", monster_level.map_or(0, |l| l.sync_hash())),
         ("critter level", critter_level.map_or(0, |l| l.sync_hash())),
         ("items", items.map_or(0, |i| i.sync_hash())),
@@ -844,16 +925,62 @@ fn checksum(
     }
 }
 
-/// `GDL_DESYNC_AT=<tick>` (testing the recovery): on that tick of the first
-/// run this machine's game goes its own way — player 1 finds a coin the
-/// others don't.
-fn test_desync(lock: Res<Lockstep>, online: Option<Res<Online>>, mut party: ResMut<Party>, mut at: Local<Option<Option<u32>>>) {
-    let at = *at.get_or_insert_with(|| std::env::var("GDL_DESYNC_AT").ok().and_then(|v| v.parse().ok()));
-    if at.is_some_and(|t| t == lock.tick) && online.is_some_and(|o| o.session.epoch() == 0)
-        && let Some(s) = party.states_mut().next().map(|(_, s)| s)
-    {
-        warn!("online: GDL_DESYNC_AT: player 1 gets a coin here only");
-        s.gold += 1;
+/// `GDL_DESYNC_AT=<tick>[:<what>]` (testing the sync points): on that tick
+/// this machine's game goes its own way — `coin` (the default): player 1
+/// finds a coin the others don't; `hero`: this machine's own hero steps
+/// 3 units aside and finds 50 gold; `monster`: the first monster made is
+/// hurt and pushed; `kill`: it's dead; `generator`: the first generator
+/// is broken; `item`, `door`, `chest`: the first powerup is taken, the
+/// first door or locked chest opened (`items::test_diverge`).
+fn test_desync(world: &mut World) {
+    static AT: std::sync::OnceLock<Option<(u32, String)>> = std::sync::OnceLock::new();
+    let at = AT.get_or_init(|| {
+        let v = std::env::var("GDL_DESYNC_AT").ok()?;
+        let (tick, what) = v.split_once(':').unwrap_or((v.as_str(), "coin"));
+        Some((tick.parse().ok()?, what.to_string()))
+    });
+    let Some((tick, what)) = at else { return };
+    if world.resource::<Lockstep>().tick != *tick {
+        return;
+    }
+    warn!("online: GDL_DESYNC_AT: this machine's game goes its own way here ({what})");
+    match what.as_str() {
+        "hero" => {
+            let Some(me) = world.get_resource::<Online>().and_then(|o| o.me) else { return };
+            for mut p in world.query::<&mut crate::player::Player>().iter_mut(world).filter(|p| p.slot == me) {
+                let (mut at, facing) = (p.mover.position, p.mover.facing);
+                at[0] += 3.0;
+                p.teleport(at, facing);
+            }
+            if let Some(s) = world.resource_mut::<Party>().state_mut(me) {
+                s.gold += 50;
+            }
+        }
+        "monster" | "kill" => {
+            let first = world.query::<(Entity, &crate::monsters::Monster)>().iter(world).min_by_key(|(_, m)| m.number()).map(|(e, _)| e);
+            if let Some(mut m) = first.and_then(|e| world.get_mut::<crate::monsters::Monster>(e)) {
+                if what == "kill" {
+                    let at = m.position;
+                    m.hit_points = 0.0;
+                    m.die(0, at);
+                } else {
+                    m.hit_points -= 1.0;
+                    m.position[0] += 0.5;
+                }
+            }
+        }
+        "item" | "door" | "chest" => crate::items::test_diverge(world, what),
+        "generator" => {
+            let first = world.query::<(Entity, &crate::generators::Generator)>().iter(world).min_by_key(|(_, g)| g.placement).map(|(e, g)| (e, g.placement));
+            if let Some((entity, placement)) = first {
+                crate::generators::wreck(world, entity, placement);
+            }
+        }
+        _ => {
+            if let Some(s) = world.resource_mut::<Party>().states_mut().next().map(|(_, s)| s) {
+                s.gold += 1;
+            }
+        }
     }
 }
 

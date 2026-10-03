@@ -134,7 +134,7 @@ pub enum PartyChange {
 
 /// A timed or counted powerup the hero carries — one slot of the record's
 /// eleven (empty while its time is 0).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Power {
     /// The item subtype that granted it (5 weapon, 6 armour, 7 speed,
     /// 8 magic, 9 special).
@@ -153,7 +153,7 @@ pub struct Power {
 /// hero turns it on in the power menu (`power_menu.rs`), and one turned
 /// off keeps its time for later. Only a slot that's on runs down and
 /// works.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SlotState {
     #[default]
     Empty,
@@ -210,7 +210,7 @@ pub enum Heal {
     Healed,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlayerState {
     pub health: f32,
     pub level: u32,
@@ -282,7 +282,7 @@ pub struct StatBonus {
 /// (`+0x120`) and special bits (`+0x124`, with `0x10000` while a speed
 /// power runs), what speed and magic powers add to its speed (`+0x110`)
 /// and magic power (`+0x10C`), and the turbo a turbo power fills in.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PowerBits {
     pub weapon: u32,
     pub armour: u32,
@@ -361,6 +361,28 @@ impl Default for PlayerState {
 }
 
 impl PlayerState {
+    /// What only ever grows on a level, at its most between this record
+    /// and `other` — another machine's copy of the same hero at a sync
+    /// point (`resync.rs`): its level and experience, quest pieces and
+    /// runestones, and its tallies. What a hero spends as well as gets
+    /// (health, gold, keys, potions, powers) stays this record's.
+    pub fn keep_progress(&mut self, other: &PlayerState) {
+        self.level = self.level.max(other.level);
+        self.experience = self.experience.max(other.experience);
+        for stone in &other.runestones {
+            if !self.runestones.contains(stone) {
+                self.runestones.push(*stone);
+            }
+        }
+        self.quest.keep_progress(&other.quest);
+        self.coins = self.coins.max(other.coins);
+        self.secret_characters |= other.secret_characters;
+        self.realms_beaten |= other.realms_beaten;
+        self.kills = self.kills.max(other.kills);
+        self.generators = self.generators.max(other.generators);
+        self.gold_found = self.gold_found.max(other.gold_found);
+    }
+
     /// What the machines compare of a hero's record online (`online.rs`):
     /// its numbers and holdings, not the HUD's popup.
     pub fn sync_hash(&self) -> u64 {

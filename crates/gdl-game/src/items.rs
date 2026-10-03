@@ -2874,6 +2874,195 @@ fn start_transport(
     items.heroes[slot].transport = Some(Transport { to, fields: TRANSPORT_FIELDS });
 }
 
+/// The level's items as a sync point carries them (`resync.rs`): each
+/// item's state and timers. What a hero took, and a door or chest a key
+/// opened, on any machine stays so on all; an item the machines otherwise
+/// have alike takes the host's timing.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct ItemsSave {
+    items: Vec<ItemSave>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ItemSave {
+    placement: usize,
+    /// Its type's name: with its placement, what tells it's the same item.
+    name: String,
+    /// 1 a powerup, 2 a door, 3 a container a key opens, 0 anything else.
+    kind: u8,
+    flags: u16,
+    state: usize,
+    action: usize,
+    frame: f32,
+    done: bool,
+    timer: i32,
+    amount: i32,
+    delay: i32,
+    stage: i16,
+    hit_points: i16,
+    leaving: bool,
+    gone: bool,
+}
+
+impl ItemSave {
+    fn of(i: &Item) -> Self {
+        let kind = match i.class() {
+            ItemClass::Powerup => 1,
+            ItemClass::Door => 2,
+            ItemClass::Container if i.flags & LOCKED != 0 => 3,
+            _ => 0,
+        };
+        Self {
+            placement: i.placement,
+            name: i.ty.name.clone(),
+            kind,
+            flags: i.flags,
+            state: i.state,
+            action: i.action,
+            frame: i.frame,
+            done: i.done,
+            timer: i.timer,
+            amount: i.amount,
+            delay: i.delay,
+            stage: i.stage,
+            hit_points: i.hit_points,
+            leaving: i.leaving,
+            gone: i.gone,
+        }
+    }
+
+    fn same_item(&self, other: &ItemSave) -> bool {
+        self.placement == other.placement && self.name == other.name
+    }
+
+    /// Taken (or on its way out).
+    fn taken(&self) -> bool {
+        self.gone || self.leaving
+    }
+}
+
+pub(crate) fn save_synced(world: &World) -> Option<ItemsSave> {
+    let items = world.get_resource::<LevelItems>()?;
+    Some(ItemsSave { items: items.items.iter().map(ItemSave::of).collect() })
+}
+
+impl ItemsSave {
+    /// The host's items with what another machine's game has of them: a
+    /// powerup taken there is taken, a door or key chest opened there is
+    /// open (as far along as it is there).
+    pub(crate) fn keep_progress(&mut self, theirs: &ItemsSave) {
+        for (mine, theirs) in self.items.iter_mut().zip(&theirs.items) {
+            if !mine.same_item(theirs) {
+                continue;
+            }
+            let taken = mine.kind == 1 && theirs.taken() && !mine.taken();
+            let opened = matches!(mine.kind, 2 | 3) && theirs.flags & USED != 0 && mine.flags & USED == 0 && !mine.gone;
+            if taken || opened {
+                *mine = theirs.clone();
+            }
+        }
+    }
+}
+
+/// Every machine takes the items over as a sync point has them. An item
+/// it has differently in a way a sync point doesn't carry (a barrel
+/// broken, a chest's contents let out in another order) stays as it is.
+pub(crate) fn load_synced(world: &mut World, save: &ItemsSave) {
+    if !world.contains_resource::<LevelItems>() {
+        return;
+    }
+    let mut left = 0;
+    world.resource_scope(|world, mut items: Mut<LevelItems>| {
+        for (k, s) in save.items.iter().enumerate() {
+            let Some(item) = items.items.get(k) else { break };
+            if !ItemSave::of(item).same_item(s) {
+                left += 1;
+                continue;
+            }
+            // What was taken or opened elsewhere is taken or opened here.
+            match s.kind {
+                1 if s.gone && !item.gone => items.free(s.placement, &mut world.commands()),
+                1 if s.leaving && !item.leaving && !item.gone => items.items[k].leaving = true,
+                2 if s.flags & USED != 0 && item.flags & USED == 0 => items.items[k].flags |= USED,
+                3 if s.flags & USED != 0 && item.flags & USED == 0 && item.state == 0 => {
+                    items.items[k].flags |= USED;
+                    open_quietly(&mut items, k);
+                }
+                _ => {}
+            }
+            let item = &mut items.items[k];
+            // Its timing, where it's otherwise the same.
+            let alike = (item.flags, item.leaving, item.gone) == (s.flags, s.leaving, s.gone)
+                && (matches!(s.kind, 1..=3) || (item.state, item.action) == (s.state, s.action));
+            if !alike {
+                left += 1;
+                continue;
+            }
+            if (item.state, item.action) != (s.state, s.action) {
+                item.play(s.action);
+                item.state = s.state;
+            }
+            item.frame = s.frame;
+            item.done = s.done;
+            item.timer = s.timer;
+            item.amount = s.amount;
+            item.delay = s.delay;
+            item.stage = s.stage;
+            item.hit_points = s.hit_points;
+        }
+        left += items.items.len().abs_diff(save.items.len());
+    });
+    world.flush();
+    if left > 0 {
+        info!("sync point: {left} items stay as this machine has them");
+    }
+}
+
+/// `GDL_DESYNC_AT=<tick>:item|door|chest` (testing the sync points,
+/// `online.rs`): on this machine alone the first powerup still there is
+/// taken, the first shut door opens, or the first locked chest does.
+pub(crate) fn test_diverge(world: &mut World, what: &str) {
+    if !world.contains_resource::<LevelItems>() {
+        return;
+    }
+    world.resource_scope(|world, mut items: Mut<LevelItems>| {
+        let fresh = |i: &Item| !i.gone && !i.leaving && i.flags & USED == 0 && i.state == 0;
+        let found = match what {
+            "item" => items.items.iter().position(|i| i.class() == ItemClass::Powerup && fresh(i)),
+            "door" => items.items.iter().position(|i| i.class() == ItemClass::Door && fresh(i)),
+            _ => items.items.iter().position(|i| i.class() == ItemClass::Container && i.flags & LOCKED != 0 && fresh(i)),
+        };
+        let Some(k) = found else {
+            warn!("GDL_DESYNC_AT: no {what} left to change");
+            return;
+        };
+        info!("GDL_DESYNC_AT: {what} {} ({})", items.items[k].placement, items.items[k].ty.name);
+        match what {
+            "item" => {
+                let placement = items.items[k].placement;
+                items.free(placement, &mut world.commands());
+            }
+            "door" => items.items[k].flags |= USED,
+            _ => {
+                items.items[k].flags |= USED;
+                open_quietly(&mut items, k);
+            }
+        }
+    });
+    world.flush();
+}
+
+/// [`open_chest`] with no sound: a chest a key opened on another machine.
+fn open_quietly(items: &mut LevelItems, i: usize) {
+    let chest = &mut items.items[i];
+    chest.play(1.min(chest.action_count().saturating_sub(1)));
+    if chest.ty.subtype == CHEST_EXP {
+        chest.flags |= ALWAYS_ACTIVE;
+        return;
+    }
+    items.release_contents(i);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

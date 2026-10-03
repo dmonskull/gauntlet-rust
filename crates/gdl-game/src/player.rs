@@ -205,6 +205,157 @@ pub struct Player {
     pub light: Option<DeathLight>,
 }
 
+/// A hero as a sync point carries it (`resync.rs`): its record, whether
+/// it's out of the level, and — on the level — what its ticks keep
+/// between them. Each machine sends its own players' heroes; every
+/// machine takes them over.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct HeroSave {
+    pub slot: u8,
+    pub record: PlayerState,
+    /// Out of the level, and seconds it has lain dead (`Frontend::fallen`).
+    fallen: (bool, f32),
+    body: Option<HeroBody>,
+}
+
+impl HeroSave {
+    /// Where it stands on the level.
+    pub(crate) fn place(&self) -> Option<[f32; 3]> {
+        self.body.as_ref().map(|b| b.mover.position)
+    }
+
+    /// A hero off the level, by its record alone.
+    #[cfg(test)]
+    pub(crate) fn of(slot: u8, record: PlayerState) -> Self {
+        Self { slot, record, fallen: (false, 0.0), body: None }
+    }
+}
+
+/// What a hero's ticks keep between them.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct HeroBody {
+    held: u32,
+    magic: MagicState,
+    mover: Mover,
+    ground: (f32, Option<usize>),
+    previous: ([f32; 3], f32),
+    actions: ActionState,
+    request: Action,
+    last_clip: (usize, f32),
+    idle_ticks: u32,
+    look: crate::first_person::Look,
+    move_factor: f32,
+    death_hand: [bool; 2],
+    halo: (bool, bool),
+    stun_until: f64,
+    came_round: bool,
+    turbo: f32,
+    turbo_cost: f32,
+    attack_started: f64,
+    going_out: Option<GoingOut>,
+    light: Option<DeathLight>,
+    /// Its model's clip and frame.
+    clip: (usize, f32),
+}
+
+/// The heroes for a sync point: this machine's own players' (`mine`), or
+/// everyone's.
+pub(crate) fn save_synced(world: &mut World, mine: bool) -> Vec<HeroSave> {
+    let mut bodies: Vec<(usize, HeroBody)> = Vec::new();
+    let mut heroes = world.query::<(&Player, &Animator)>();
+    for (p, animator) in heroes.iter(world) {
+        let body = HeroBody {
+            held: p.held,
+            magic: p.magic,
+            mover: p.mover,
+            ground: (p.ground.floor, p.ground.node),
+            previous: p.previous,
+            actions: p.actions,
+            request: p.request,
+            last_clip: p.last_clip,
+            idle_ticks: p.idle_ticks,
+            look: p.look,
+            move_factor: p.move_factor,
+            death_hand: p.death_hand,
+            halo: (p.halo_drank, p.halo_draining),
+            stun_until: p.stun_until,
+            came_round: p.came_round,
+            turbo: p.turbo,
+            turbo_cost: p.turbo_cost,
+            attack_started: p.attack_started,
+            going_out: p.going_out.clone(),
+            light: p.light.clone(),
+            clip: (animator.action, animator.frame),
+        };
+        bodies.push((p.slot, body));
+    }
+    let fe = world.get_resource::<crate::frontend::Frontend>();
+    world
+        .resource::<Party>()
+        .members()
+        .filter(|(_, m)| !(mine && m.devices.remote))
+        .map(|(slot, m)| HeroSave {
+            slot: slot as u8,
+            record: m.state.clone(),
+            fallen: fe.map_or((false, 0.0), |f| f.fallen(slot)),
+            body: bodies.iter().find(|(s, _)| *s == slot).map(|(_, b)| b.clone()),
+        })
+        .collect()
+}
+
+/// Every machine takes the heroes over as a sync point has them: their
+/// records, and on the level where they stand and what they're doing.
+/// What a tick keeps that isn't carried starts afresh, alike everywhere:
+/// a grab lets go, blows not yet taken are dropped.
+pub(crate) fn load_synced(world: &mut World, saved: &[HeroSave]) {
+    for h in saved {
+        let slot = usize::from(h.slot);
+        if let Some(state) = world.resource_mut::<Party>().state_mut(slot) {
+            *state = h.record.clone();
+        }
+        if let Some(mut fe) = world.get_resource_mut::<crate::frontend::Frontend>() {
+            fe.set_fallen(slot, h.fallen);
+        }
+    }
+    let mut heroes = world.query::<(&mut Player, &mut Animator, &mut Visibility)>();
+    for (mut player, mut animator, mut visibility) in heroes.iter_mut(world) {
+        let Some(h) = saved.iter().find(|h| usize::from(h.slot) == player.slot) else { continue };
+        let want = if h.fallen.0 { Visibility::Hidden } else { Visibility::Inherited };
+        visibility.set_if_neq(want);
+        let Some(b) = &h.body else { continue };
+        let p = &mut *player;
+        p.held = b.held;
+        p.magic = b.magic;
+        // Its speed is its level's (`level_stats`), the same everywhere.
+        p.mover = Mover { speed: p.mover.speed, ..b.mover };
+        p.ground = PlayerGround { floor: b.ground.0, node: b.ground.1 };
+        p.previous = b.previous;
+        p.actions = b.actions;
+        p.request = b.request;
+        p.last_clip = b.last_clip;
+        p.idle_ticks = b.idle_ticks;
+        p.look = b.look;
+        p.move_factor = b.move_factor;
+        p.death_hand = b.death_hand;
+        (p.halo_drank, p.halo_draining) = b.halo;
+        p.stun_until = b.stun_until;
+        p.came_round = b.came_round;
+        p.turbo = b.turbo;
+        p.turbo_cost = b.turbo_cost;
+        p.attack_started = b.attack_started;
+        p.going_out = b.going_out.clone();
+        p.light = b.light.clone();
+        p.grabbed = None;
+        p.thrown = None;
+        p.pending_hit = (0.0, 0, Vec3::ZERO);
+        p.pending_stun = None;
+        p.blow_cooldowns.clear();
+        p.wall_hit = None;
+        p.teleported = true;
+        animator.set_clip(b.clip.0, b.clip.1);
+    }
+}
+
 /// The hero's working stats at a character level: strength (5–20),
 /// armour (0–5) and speed (units/s), each from the class stat plus 5 per
 /// level up to its maximum.
