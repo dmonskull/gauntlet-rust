@@ -43,9 +43,9 @@ Asked for and **not done yet** (next, in this order):
    8–15. (They load, throw their own weapons, and the select screen opens
    the ones a character has unlocked; changing class keeps the character,
    `PlayerState::change_class`.)
-2. Sync points don't carry yet: broken barrels and walls, chest contents
-   let out in another order, `mechanics.rs`, a critter's move under way,
-   camera cuts and the boss camera.
+2. Sync points don't carry yet: chest and barrel contents let out in
+   another order, a critter dead on one machine only, effects and blasts
+   in flight, camera cuts and the boss camera.
 
 ## Pick up here
 

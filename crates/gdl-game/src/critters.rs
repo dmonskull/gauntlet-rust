@@ -4028,8 +4028,10 @@ fn length(a: [f32; 3]) -> f32 {
 
 /// The critters as a sync point carries them (`resync.rs`): the level's
 /// own counters and, for each critter (told apart by where it was made),
-/// where it is and how hurt it and its parts are, as the host has them.
-/// The move each is in stays each machine's.
+/// what its ticks keep — where it is, how hurt it and its parts are, the
+/// move it's in and its clip's frame — as the host has them. What it
+/// holds by entity starts afresh everywhere: a grab lets go, the targets
+/// it tracks are found again.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct CrittersSave {
     rng: u32,
@@ -4045,15 +4047,148 @@ pub struct CrittersSave {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct CritterSave {
     made_at: [u32; 3],
+    /// 0 new, 1 dying, 2 active.
+    state: u8,
+    hit_points: f32,
     position: [f32; 3],
     yaw: f32,
+    home_yaw: f32,
     previous: ([f32; 3], f32),
-    hit_points: f32,
+    floor: f32,
+    ground_node: Option<usize>,
+    /// The move it's in and the one chosen; the heroes they're at (slots).
+    moves: (Option<usize>, Option<usize>),
+    aims: (Option<usize>, Option<usize>),
+    switched: bool,
+    ends: Vec<f32>,
+    pattern_starts: Vec<f32>,
+    pattern: Option<(usize, usize)>,
+    chosen_pattern: Option<usize>,
+    /// Hold until, wake at, last blow, frozen, stunned.
+    times: (f32, f32, f32, f32, f32),
+    /// Blows and sounds done this move.
+    done: (u8, u8),
     anger: f32,
+    damage_taken: f32,
+    kinds: u32,
+    push: [f32; 3],
+    knock: [f32; 3],
+    /// Its clip: action, frame, frames, rate, loops, ended.
+    clip: (usize, f32, u16, u16, bool, bool),
+    node_at: Option<[f32; 3]>,
+    node_was: Option<[f32; 3]>,
     sphere_damage: Vec<f32>,
     spent: Vec<bool>,
-    /// Its parts' hit points.
-    parts: Vec<f32>,
+    blows_dealt: u32,
+    hp_before: f32,
+    now: f32,
+    missile_hit: bool,
+    mirrored: bool,
+    parts: Vec<CritterSave>,
+}
+
+impl CritterSave {
+    fn of(c: &Critter, slot: &dyn Fn(Option<Entity>) -> Option<usize>) -> Self {
+        Self {
+            made_at: c.spawned_at.map(f32::to_bits),
+            state: match c.state {
+                CritterState::New => 0,
+                CritterState::Dying => 1,
+                CritterState::Active => 2,
+            },
+            hit_points: c.hit_points,
+            position: c.position,
+            yaw: c.yaw,
+            home_yaw: c.home_yaw,
+            previous: c.previous,
+            floor: c.floor,
+            ground_node: c.ground_node,
+            moves: (c.current, c.next),
+            aims: (slot(c.pick), slot(c.move_target)),
+            switched: c.switched,
+            ends: c.ends.clone(),
+            pattern_starts: c.pattern_starts.clone(),
+            pattern: c.pattern,
+            chosen_pattern: c.chosen_pattern,
+            times: (c.hold_until, c.wake_at, c.last_blow, c.frozen, c.stunned),
+            done: (c.blows_done, c.sounds_done),
+            anger: c.anger,
+            damage_taken: c.damage_taken,
+            kinds: c.kinds,
+            push: c.push,
+            knock: c.knock,
+            clip: (c.clock.action, c.clock.frame, c.clock.frames, c.clock.rate, c.clock.loops, c.clock.ended),
+            node_at: c.node_at,
+            node_was: c.node_was,
+            sphere_damage: c.sphere_damage.clone(),
+            spent: c.spent.clone(),
+            blows_dealt: c.blows_dealt,
+            hp_before: c.hp_before,
+            now: c.now,
+            missile_hit: c.missile_hit,
+            mirrored: c.mirrored,
+            parts: c.parts.iter().map(|p| CritterSave::of(p, slot)).collect(),
+        }
+    }
+
+    /// Lays the save on the critter it was taken from (its type's moves
+    /// and patterns are the same everywhere: lists that don't line up are
+    /// left).
+    fn onto(&self, c: &mut Critter, hero: &dyn Fn(Option<usize>) -> Option<Entity>) {
+        c.state = match self.state {
+            0 => CritterState::New,
+            1 => CritterState::Dying,
+            _ => CritterState::Active,
+        };
+        c.hit_points = self.hit_points;
+        c.position = self.position;
+        c.yaw = self.yaw;
+        c.home_yaw = self.home_yaw;
+        c.previous = self.previous;
+        c.floor = self.floor;
+        c.ground_node = self.ground_node;
+        let moves = c.moves().len();
+        (c.current, c.next) = (self.moves.0.filter(|&m| m < moves), self.moves.1.filter(|&m| m < moves));
+        (c.pick, c.move_target) = (hero(self.aims.0), hero(self.aims.1));
+        c.switched = self.switched;
+        if c.ends.len() == self.ends.len() {
+            c.ends.clone_from(&self.ends);
+        }
+        if c.pattern_starts.len() == self.pattern_starts.len() {
+            c.pattern_starts.clone_from(&self.pattern_starts);
+            c.pattern = self.pattern;
+            c.chosen_pattern = self.chosen_pattern;
+        }
+        (c.hold_until, c.wake_at, c.last_blow, c.frozen, c.stunned) = self.times;
+        (c.blows_done, c.sounds_done) = self.done;
+        c.anger = self.anger;
+        c.damage_taken = self.damage_taken;
+        c.kinds = self.kinds;
+        c.push = self.push;
+        c.knock = self.knock;
+        let (action, frame, frames, rate, loops, ended) = self.clip;
+        c.clock = Clock { action, frame, frames, rate, loops, ended };
+        c.node_at = self.node_at;
+        c.node_was = self.node_was;
+        if c.sphere_damage.len() == self.sphere_damage.len() {
+            c.sphere_damage.clone_from(&self.sphere_damage);
+        }
+        if c.spent.len() == self.spent.len() {
+            c.spent.clone_from(&self.spent);
+        }
+        c.blows_dealt = self.blows_dealt;
+        c.hp_before = self.hp_before;
+        c.now = self.now;
+        c.missile_hit = self.missile_hit;
+        c.mirrored = self.mirrored;
+        // What it holds by entity starts afresh (the heroes' side lets
+        // go too, `player::load_synced`).
+        c.held = None;
+        c.tracked.clear();
+        for (part, saved) in c.parts.iter_mut().zip(&self.parts) {
+            saved.onto(part, hero);
+        }
+    }
 }
 
 pub(crate) fn save_synced(world: &mut World) -> Option<CrittersSave> {
@@ -4068,18 +4203,10 @@ pub(crate) fn save_synced(world: &mut World) -> Option<CrittersSave> {
         legendary_used: level.legendary_used,
         critters: Vec::new(),
     };
+    let slots: Vec<(Entity, usize)> = world.query::<(Entity, &Player)>().iter(world).map(|(e, p)| (e, p.slot)).collect();
+    let slot = |e: Option<Entity>| e.and_then(|e| slots.iter().find(|(h, _)| *h == e).map(|(_, s)| *s));
     for c in world.query::<&Critter>().iter(world) {
-        save.critters.push(CritterSave {
-            made_at: c.spawned_at.map(f32::to_bits),
-            position: c.position,
-            yaw: c.yaw,
-            previous: c.previous,
-            hit_points: c.hit_points,
-            anger: c.anger,
-            sphere_damage: c.sphere_damage.clone(),
-            spent: c.spent.clone(),
-            parts: c.parts.iter().map(|p| p.hit_points).collect(),
-        });
+        save.critters.push(CritterSave::of(c, &slot));
     }
     save.critters.sort_by_key(|c| c.made_at);
     Some(save)
@@ -4094,28 +4221,25 @@ pub(crate) fn load_synced(world: &mut World, save: &CrittersSave) {
     level.boss_dead = save.boss_dead;
     level.players = save.players;
     level.legendary_used = save.legendary_used;
-    for mut c in world.query::<&mut Critter>().iter_mut(world) {
+    let heroes: Vec<(usize, Entity)> = world.query::<(Entity, &Player)>().iter(world).map(|(e, p)| (p.slot, e)).collect();
+    let hero = |slot: Option<usize>| slot.and_then(|s| heroes.iter().find(|(h, _)| *h == s).map(|(_, e)| *e));
+    for (mut c, animator) in world.query::<(&mut Critter, Option<&mut Animator>)>().iter_mut(world) {
         let made_at = c.spawned_at.map(f32::to_bits);
         let Some(s) = save.critters.iter().find(|s| s.made_at == made_at) else { continue };
-        let c = &mut *c;
-        c.position = s.position;
-        c.yaw = s.yaw;
-        c.previous = s.previous;
-        c.hit_points = s.hit_points;
-        c.hp_before = s.hit_points;
-        c.anger = s.anger;
-        if c.sphere_damage.len() == s.sphere_damage.len() {
-            c.sphere_damage.clone_from(&s.sphere_damage);
+        s.onto(&mut c, &hero);
+        // Its model plays its clip from the same frame.
+        if let Some(mut animator) = animator {
+            animator.set_clip(s.clip.0, s.clip.1);
         }
-        if c.spent.len() == s.spent.len() {
-            c.spent.clone_from(&s.spent);
-        }
-        for (part, hit_points) in c.parts.iter_mut().zip(&s.parts) {
-            part.hit_points = *hit_points;
-            part.hp_before = *hit_points;
-        }
-        // A grab lets go everywhere (the heroes' side does too).
-        c.held = None;
+    }
+}
+
+/// `GDL_DESYNC_AT=<tick>:critter` (testing the sync points, `online.rs`):
+/// on this machine alone every critter is hurt and turned.
+pub(crate) fn test_diverge(world: &mut World) {
+    for mut c in world.query::<&mut Critter>().iter_mut(world) {
+        c.hit_points -= 25.0;
+        c.yaw += 0.3;
     }
 }
 

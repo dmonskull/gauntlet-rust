@@ -2991,7 +2991,11 @@ struct ItemSave {
     placement: usize,
     /// Its type's name: with its placement, what tells it's the same item.
     name: String,
-    /// 1 a powerup, 2 a door, 3 a container a key opens, 0 anything else.
+    /// 1 a powerup, 2 a door, 3 a container a key opens, 4 an item the
+    /// level's mechanisms drive (a pad, a switch, a damage tile, a trap,
+    /// an exit, a transporter: what it shows follows them), 5 an obstacle
+    /// that falls once set off, 0 anything else (what blows break:
+    /// `breakables.rs` carries those).
     kind: u8,
     flags: u16,
     state: usize,
@@ -3005,6 +3009,11 @@ struct ItemSave {
     hit_points: i16,
     leaving: bool,
     gone: bool,
+    /// Where it stands, how it's turned, its fall and its centre.
+    position: [f32; 3],
+    rotation: [f32; 9],
+    falling: Option<[f32; 3]>,
+    centre: [f32; 3],
 }
 
 impl ItemSave {
@@ -3013,6 +3022,13 @@ impl ItemSave {
             ItemClass::Powerup => 1,
             ItemClass::Door => 2,
             ItemClass::Container if i.flags & LOCKED != 0 => 3,
+            ItemClass::Trigger
+            | ItemClass::DamageTile
+            | ItemClass::Trap
+            | ItemClass::Exit
+            | ItemClass::Transporter
+            | ItemClass::Rotator => 4,
+            ItemClass::Obstacle if falls(i.ty.subtype) => 5,
             _ => 0,
         };
         Self {
@@ -3031,6 +3047,10 @@ impl ItemSave {
             hit_points: i.hit_points,
             leaving: i.leaving,
             gone: i.gone,
+            position: i.position,
+            rotation: i.rotation,
+            falling: i.falling,
+            centre: i.shape.centre,
         }
     }
 
@@ -3059,8 +3079,9 @@ impl ItemsSave {
                 continue;
             }
             let taken = mine.kind == 1 && theirs.taken() && !mine.taken();
-            let opened = matches!(mine.kind, 2 | 3) && theirs.flags & USED != 0 && mine.flags & USED == 0 && !mine.gone;
-            if taken || opened {
+            // A door or key chest opened there, a rock fall set off there.
+            let used = matches!(mine.kind, 2 | 3 | 5) && theirs.flags & USED != 0 && mine.flags & USED == 0 && !mine.gone;
+            if taken || used {
                 *mine = theirs.clone();
             }
         }
@@ -3091,12 +3112,16 @@ pub(crate) fn load_synced(world: &mut World, save: &ItemsSave) {
                     items.items[k].flags |= USED;
                     open_quietly(&mut items, k);
                 }
+                // Set off elsewhere, it falls here too.
+                5 if s.flags & USED != 0 && item.flags & USED == 0 => items.items[k].flags |= USED,
+                // What the mechanisms drive shows what theirs do.
+                4 => items.items[k].flags = s.flags,
                 _ => {}
             }
             let item = &mut items.items[k];
-            // Its timing, where it's otherwise the same.
+            // Its timing and place, where it's otherwise the same.
             let alike = (item.flags, item.leaving, item.gone) == (s.flags, s.leaving, s.gone)
-                && (matches!(s.kind, 1..=3) || (item.state, item.action) == (s.state, s.action));
+                && (matches!(s.kind, 1..=5) || (item.state, item.action) == (s.state, s.action));
             if !alike {
                 left += 1;
                 continue;
@@ -3112,6 +3137,10 @@ pub(crate) fn load_synced(world: &mut World, save: &ItemsSave) {
             item.delay = s.delay;
             item.stage = s.stage;
             item.hit_points = s.hit_points;
+            item.position = s.position;
+            item.rotation = s.rotation;
+            item.falling = s.falling;
+            item.shape.centre = s.centre;
         }
         left += items.items.len().abs_diff(save.items.len());
     });

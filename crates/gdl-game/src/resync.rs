@@ -26,9 +26,11 @@ use bevy::prelude::*;
 use gdl_net::Tick;
 use serde::{Deserialize, Serialize};
 
+use crate::breakables::BreakablesSave;
 use crate::critters::CrittersSave;
 use crate::items::ItemsSave;
 use crate::level::LoadedGame;
+use crate::mechanics::{Mechanics, MechanicsSave};
 use crate::monsters::{MonstersSave, MonstersSeen};
 use crate::online::{COMMAND_FRAMES, LocalControls, Lockstep, Message, Online};
 use crate::party::SlotInput;
@@ -110,6 +112,8 @@ struct Report {
     items: Option<ItemsSave>,
     /// Its cameras (its own heroes' are taken).
     camera: Option<CameraSave>,
+    /// The breakables it has standing.
+    breakables: Option<BreakablesSave>,
 }
 
 /// The game every machine takes over at a sync point.
@@ -126,6 +130,10 @@ struct GameState {
     critters: Option<CrittersSave>,
     /// The host's cameras, each hero's own from its player's machine.
     camera: Option<CameraSave>,
+    /// The host's triggers, movers, rotators and animated objects.
+    mechanics: Option<MechanicsSave>,
+    /// The breakables standing on every machine.
+    breakables: Option<BreakablesSave>,
 }
 
 /// Runs the sync points: the host's call when the games differ, then at
@@ -177,13 +185,15 @@ fn sync_point(world: &mut World) {
         let monsters = crate::monsters::save_synced(world);
         let items = crate::items::save_synced(world);
         let camera = crate::play_camera::save_synced(world);
+        let breakables = Some(crate::breakables::save_synced(world));
         if host {
             let heroes = crate::player::save_synced(world, false);
             let critters = crate::critters::save_synced(world);
-            point.state = Some(GameState { level, heroes, monsters, items, critters, camera });
+            let mechanics = world.get_resource::<Mechanics>().map(Mechanics::save_synced);
+            point.state = Some(GameState { level, heroes, monsters, items, critters, camera, mechanics, breakables });
         } else {
             let heroes = crate::player::save_synced(world, true);
-            let report = Report { level, heroes, monsters: monsters.map(|m| m.seen()), items, camera };
+            let report = Report { level, heroes, monsters: monsters.map(|m| m.seen()), items, camera, breakables };
             match ron::to_string(&report) {
                 Ok(report) => world.resource::<Online>().send_host(&Message::SyncReport { tick, report }),
                 Err(e) => warn!("online: can't encode the sync report: {e}"),
@@ -300,6 +310,9 @@ fn merge(state: &mut GameState, reports: &[(u8, Report)], machines: &[(u8, Vec<u
         if let (Some(camera), Some(theirs)) = (&mut state.camera, &report.camera) {
             camera.keep_own(theirs, slots);
         }
+        if let (Some(breakables), Some(theirs)) = (&mut state.breakables, &report.breakables) {
+            breakables.keep_progress(theirs);
+        }
     }
 }
 
@@ -326,6 +339,12 @@ fn apply(world: &mut World, state: &GameState) {
     }
     if let Some(camera) = &state.camera {
         crate::play_camera::load_synced(world, camera);
+    }
+    if let (Some(save), Some(mut mechanics)) = (&state.mechanics, world.get_resource_mut::<Mechanics>()) {
+        mechanics.load_synced(save);
+    }
+    if let Some(breakables) = &state.breakables {
+        crate::breakables::load_synced(world, breakables);
     }
 }
 
