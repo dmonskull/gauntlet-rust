@@ -430,6 +430,21 @@ voice queues").
 every player in play, and the last one unlocks the level's secret
 character — "The secret realm" below.
 
+**Shared pickups.** In the pickup routine (`FUN_8005de3c`) the quest
+items go to more than the hero who took them: a **runestone** (case 10)
+is taken only when the taker lacks it (`FUN_800a1ec8(taker, stone)`) and
+then set for every player in play (`FUN_800a1e58(i, stone)` for all four;
+state `+0xE8` 1 or 4); a **gem** (case 15) calls `FUN_800a1af4(−1,
+counter)` and a **gargoyle piece** (case 16) `FUN_800a1850(−1, piece)` —
+with −1 every player in play counts it, each on their own record's
+counter while it's at least 0 and below its need, with the count's popup
+on their panel; a **legendary item** (case 13) is the taker's alone
+(`FUN_800a1c34(taker, item)`). Every record counts once: four players
+each end with the level's crystals, not four times them. The tower's
+gates then read every hero's record (`FUN_800a2ba8`, "with the bits of
+every hero in the game"). Here: `items.rs` (`Out::shared`,
+`share_pickup`) — before, only the taker's record counted them.
+
 Here (`pickup_notices.rs`): the plates for player 1's panel from
 `PickupNotice` messages — which the pickups in `items.rs` have yet to send
 — moved by play's clock (stopped under the message box, and held under the
