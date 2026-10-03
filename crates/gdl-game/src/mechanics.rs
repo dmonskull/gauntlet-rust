@@ -51,6 +51,7 @@ use crate::play_camera::{PlayCamera, Shake, StartCut};
 use crate::player::{Player, PlayerTick};
 use crate::message_box::ShowMessage;
 use crate::party::Party;
+use crate::tick_places::{Between, TickPlaces};
 use crate::player_state::TimeStop;
 use crate::population::LevelPopulation;
 use crate::quest;
@@ -65,7 +66,8 @@ impl Plugin for MechanicsPlugin {
             setup.run_if(resource_exists_and_changed::<LevelPopulation>).after(crate::quest::seed_tests),
         )
             .add_systems(FixedUpdate, tick.after(PlayerTick))
-            .add_systems(Update, pose_groups);
+            .add_systems(Update, pose_groups)
+            .add_systems(FixedPreUpdate, pose_groups.in_set(TickPlaces::Movers));
     }
 }
 
@@ -1490,20 +1492,20 @@ fn world_poses(mech: &Mechanics, nodes: &LevelNodes) -> HashMap<usize, NodePose>
 /// fades bridges in and out (8 alpha steps a field) and hides vanished
 /// ones.
 fn pose_groups(
-    time: Res<Time<Fixed>>,
+    between: Res<Between>,
     mechanics: Option<Res<Mechanics>>,
     mut groups: Query<(&mut MovingGroup, &mut Transform, &mut Visibility, &Children)>,
     parts: Query<&MeshMaterial3d<LevelMaterial>>,
     mut materials: ResMut<Assets<LevelMaterial>>,
 ) {
     let Some(mech) = mechanics else { return };
-    let f = time.overstep_fraction();
+    let f = between.0;
     for (mut g, mut transform, mut visibility, children) in &mut groups {
         let Some(&(before, now)) = mech.poses.get(&g.root) else { continue };
         let a = to_transform(&before);
         let b = to_transform(&now);
         transform.translation = a.translation.lerp(b.translation, f);
-        transform.rotation = a.rotation.slerp(b.rotation, f);
+        transform.rotation = crate::rotations::slerp(a.rotation, b.rotation, f);
         // An animated object's scale, about its node's origin.
         transform.scale = match mech.scales.get(&g.root) {
             Some(&(scale, pivot)) => {

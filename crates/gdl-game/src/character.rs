@@ -687,7 +687,10 @@ pub fn spawn_character(
     (root, model.bounds.0, model.bounds.1)
 }
 
-/// Online: each clip's frame moves on a tick's worth.
+/// Online: each clip's frame, and a blend into it, move on a tick's worth
+/// — the tick's systems read the bones (a boss's blows land where its
+/// are), so every machine must pose them alike at each tick, however
+/// often it draws between them.
 fn advance_clips(time: Res<Time>, mut animators: Query<&mut Animator>) {
     for mut a in &mut animators {
         if a.hold {
@@ -696,6 +699,9 @@ fn advance_clips(time: Res<Time>, mut animators: Query<&mut Animator>) {
         let Some(action) = a.clips.actions.get(a.action) else { continue };
         let (frames, rate, loops) = (action.frames, action.rate, action.loops());
         advance_clip(&mut a.frame, time.delta_secs(), frames, rate, loops);
+        if let Blend::Active { elapsed, .. } = &mut a.blend {
+            *elapsed += time.delta_secs();
+        }
     }
 }
 
@@ -725,7 +731,9 @@ fn animate(
         }
         let weight = match &mut a.blend {
             Blend::Active { elapsed, duration, .. } => {
-                *elapsed += time.delta_secs();
+                if !lock.on {
+                    *elapsed += time.delta_secs();
+                }
                 (1.0 - *elapsed / *duration).max(0.0)
             }
             _ => 0.0,
@@ -751,7 +759,7 @@ fn animate(
             *t = match &a.blend {
                 Blend::Active { from, .. } if weight > 0.0 => Transform {
                     translation: pose.translation.lerp(from[i].translation, weight),
-                    rotation: pose.rotation.slerp(from[i].rotation, weight),
+                    rotation: crate::rotations::slerp(pose.rotation, from[i].rotation, weight),
                     scale: pose.scale.lerp(from[i].scale, weight),
                 },
                 _ => pose,

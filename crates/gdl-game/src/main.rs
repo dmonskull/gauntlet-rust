@@ -59,10 +59,12 @@ mod player_state;
 mod power_looks;
 mod power_menu;
 mod texanim;
+mod tick_places;
 mod tower;
 mod tower_scenes;
 mod population;
 mod quest;
+mod rotations;
 mod rumble;
 mod saves;
 mod scene_light;
@@ -210,7 +212,7 @@ fn main() {
             .insert_resource(party)
             .add_plugins((world::WorldPlugin, hud::HudPlugin, player::PlayerPlugin, combat::CombatPlugin, damage::DamagePlugin, play_camera::PlayCameraPlugin, first_person::FirstPersonPlugin, audio::GameAudioPlugin, population::PopulationPlugin, collision_debug::CollisionDebugPlugin))
             .add_plugins(level_intro::LevelIntroPlugin)
-            .add_plugins(cheats::CheatsPlugin)
+            .add_plugins((cheats::CheatsPlugin, tick_places::TickPlacesPlugin))
             .add_plugins((monsters::MonstersPlugin, projectiles::ProjectilesPlugin, critters::CrittersPlugin, effects::EffectsPlugin, deaths::DeathsPlugin, flash::FlashPlugin, fade::FadePlugin, quest::QuestPlugin, scene_light::SceneLightPlugin, saves::SavesPlugin))
             .add_plugins((
                 player_state::PlayerStatePlugin,

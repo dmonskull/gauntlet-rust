@@ -266,7 +266,7 @@ mod tests {
         assert!((rig.pitch + 0.6).abs() < 1e-6);
         let eye = rig.eye();
         assert!(eye[1] > 0.0 && eye[2] < 0.0, "above and behind: {eye:?}");
-        let d = ((eye[0] - 5.0).powi(2) + eye[1].powi(2) + eye[2].powi(2)).sqrt();
+        let d = ((eye[0] - 5.0) * (eye[0] - 5.0) + eye[1] * eye[1] + eye[2] * eye[2]).sqrt();
         assert!((d - 24.0).abs() < 1e-4);
     }
 

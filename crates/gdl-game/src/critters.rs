@@ -73,7 +73,7 @@
 //! heroes' highlights in the intro, breaking nodes, look nodes, fading,
 //! its blows on other monsters and pushing players aside aren't done.
 
-use gdl_formats::detmath::Det;
+use gdl_formats::detmath::{Det, sync_bits, sync_bits64};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -107,6 +107,7 @@ use crate::monsters::{MonsterLevel, MonsterTick, game_view, on_screen};
 use crate::play_camera::PlayCamera;
 use crate::player::{GrabHero, Player, ReleaseHero, ThrowHero};
 use crate::party::Party;
+use crate::tick_places::{Between, TickPlaces};
 use crate::player_state::{Cry, EnemyScale, HurtHero, TimeStop};
 use crate::population::{ContentModels, LevelPopulation};
 use crate::projectiles::{CritterMissile, CritterStop, cylinder_hit, load_atree, spawn_critter_missile};
@@ -135,6 +136,7 @@ impl Plugin for CrittersPlugin {
             Update,
             (setup_level.run_if(resource_added::<MonsterLevel>).after(crate::items::build_items), interpolate).chain(),
         )
+        .add_systems(FixedPreUpdate, interpolate.in_set(TickPlaces::Movers))
         .add_systems(Update, pose_parts.after(Animate));
     }
 }
@@ -792,7 +794,7 @@ impl CritterLevel {
     pub fn sync_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (self.rng, self.now.to_bits(), self.clock.to_bits(), self.intro, self.boss_dead, self.players).hash(&mut h);
+        (self.rng, sync_bits(self.now), sync_bits64(self.clock), self.intro, self.boss_dead, self.players).hash(&mut h);
         h.finish()
     }
 
@@ -3506,7 +3508,7 @@ fn grab(
     }
     // The throw's kind (the blow's | 0x8050) makes the hero fall
     // (`player.rs`); its damage lands later, plain.
-    let (s, co) = c.yaw.sin_cos();
+    let (s, co) = c.yaw.dsin_cos();
     let push = Vec3::new(s, THROW_DOWN, co).normalize_or_zero() * d.speed[0];
     level.throws.push(ThrowHero { hero, damage, push });
     level.guard.insert(hero, level.clock + f64::from(HIT_GUARD));
@@ -3993,8 +3995,8 @@ fn turn(c: &mut Critter, m: &CritterMove, heroes: &[Hero]) {
 
 /// Places the critters between ticks, drawn at the enemies' scale (the
 /// shrink power's).
-fn interpolate(fixed: Res<Time<Fixed>>, enemies: Res<EnemyScale>, mut critters: Query<(&Critter, &mut Transform)>) {
-    let t = fixed.overstep_fraction();
+fn interpolate(between: Res<Between>, enemies: Res<EnemyScale>, mut critters: Query<(&Critter, &mut Transform)>) {
+    let t = between.0;
     for (c, mut transform) in &mut critters {
         let (p0, f0) = c.previous;
         transform.translation = Vec3::from(p0).lerp(Vec3::from(c.position), t);
@@ -4004,7 +4006,8 @@ fn interpolate(fixed: Res<Time<Fixed>>, enemies: Res<EnemyScale>, mut critters: 
 }
 
 fn horizontal(a: [f32; 3], b: [f32; 3]) -> f32 {
-    ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    let (dx, dz) = (a[0] - b[0], a[2] - b[2]);
+    (dx * dx + dz * dz).sqrt()
 }
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {

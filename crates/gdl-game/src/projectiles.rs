@@ -41,6 +41,7 @@ use crate::locomotion;
 use crate::monsters::{Monster, MonsterLevel, MonsterTick};
 use crate::player::{Player, PlayerChoice};
 use crate::party::{MAX_PLAYERS, Party};
+use crate::tick_places::{Between, TickPlaces};
 use crate::player_state::{Cry, EnemyScale, HurtHero, SpendPower, power};
 use crate::population::LevelPopulation;
 use crate::world::{LevelEntity, LevelGround};
@@ -57,7 +58,8 @@ impl Plugin for ProjectilesPlugin {
             .add_systems(
                 Update,
                 (setup_level.run_if(resource_exists_and_changed::<LevelPopulation>), interpolate).chain(),
-            );
+            )
+            .add_systems(FixedPreUpdate, interpolate.in_set(TickPlaces::Movers));
         if let Some(spec) = ThrowerSpec::from_env() {
             app.insert_resource(spec).add_systems(FixedUpdate, spawn_thrower.before(MonsterTick));
         }
@@ -1684,8 +1686,8 @@ fn orientation(p: &Projectile) -> Quat {
     }
 }
 
-fn interpolate(fixed: Res<Time<Fixed>>, mut projectiles: Query<(&Projectile, &mut Transform)>) {
-    let t = fixed.overstep_fraction();
+fn interpolate(between: Res<Between>, mut projectiles: Query<(&Projectile, &mut Transform)>) {
+    let t = between.0;
     // Those held on a node are placed in its space, once.
     for (p, mut transform) in projectiles.iter_mut().filter(|(p, _)| p.anchor.is_none()) {
         transform.translation = p.previous.lerp(p.position, t);
