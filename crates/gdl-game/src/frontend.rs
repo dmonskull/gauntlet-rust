@@ -672,7 +672,13 @@ static ONLINE_GAME_MENU: MenuDef =
     game_menu(
         "Online Game",
         true,
-        &[e("Settings", Item::Settings), e("Camera", Item::OnlineCamera), e("Invite", Item::CopyInvite), e("Leave Game", Item::LeaveGame)],
+        &[
+            e("Settings", Item::Settings),
+            e("Camera", Item::OnlineCamera),
+            e("Invite", Item::CopyInvite),
+            e("Quit Level", Item::QuitLevel),
+            e("Leave Game", Item::LeaveGame),
+        ],
     );
 /// Seven items: smaller, to fit the scroll.
 static ONLINE_TOWER_MENU: MenuDef = MenuDef {
@@ -1445,7 +1451,7 @@ pub(crate) fn run(
         ResMut<Lockstep>,
         MessageWriter<NewGame>,
     ),
-    (keys, mut camera): (Res<ButtonInput<KeyCode>>, Option<ResMut<PlayCamera>>),
+    (keys, mut camera, snapshot): (Res<ButtonInput<KeyCode>>, Option<ResMut<PlayCamera>>, Res<Snapshot>),
     (mut shop, mut local, mut gate): (
         (ResMut<ShopScreen>, Option<Res<ShopData>>),
         ResMut<crate::online::LocalControls>,
@@ -1468,6 +1474,8 @@ pub(crate) fn run(
     }
     let mut p = fe.input;
     let in_tower = game.current_name().eq_ignore_ascii_case(TOWER);
+    // Any of the tower's levels: nothing is under way to lose there.
+    let at_tower = game.current_name().to_ascii_lowercase().starts_with("levell");
 
     // A volume slider under the cursor moves while left or right is held.
     if let Some(m) = fe.menus.last()
@@ -1661,12 +1669,27 @@ pub(crate) fn run(
                         }
                         fe.menus.clear();
                     }
+                    // This player leaves the online game and plays on
+                    // alone, in the tower.
                     Item::ConfirmLeave => {
+                        let me = online.as_ref().and_then(|o| o.me);
                         crate::online::leave(&mut commands, &mut lock);
-                        fe.menus.clear();
-                        fe.go(Screen::GameOver);
+                        play_on_alone(&mut fe, me, &party, &snapshot, at_tower, &mut changes, &mut new_game);
                     }
                     Item::QuitLevel => fe.menus.push(Menu::new(&ABORT_LEVEL)),
+                    // Online the party leaves on a tick, and only the host
+                    // sends everyone out of a level.
+                    Item::ConfirmAbortLevel if lock.on => {
+                        fe.menus.clear();
+                        match online.as_deref_mut() {
+                            Some(o) if o.host => {
+                                let bits = local.1.map_or(0, |(bits, _)| bits) | SlotInput::QUIT_LEVEL;
+                                local.1 = Some((bits, crate::online::COMMAND_FRAMES));
+                            }
+                            Some(o) => o.notice("Only the host can quit the level"),
+                            None => {}
+                        }
+                    }
                     Item::ConfirmQuitGame => {
                         fe.menus.clear();
                         fe.go(Screen::GameOver);
@@ -1790,11 +1813,13 @@ pub(crate) fn run(
                 _ => None,
             });
             if let Some(why) = over {
+                // The online game ended (the host left, the network went):
+                // this machine's player plays on alone, in the tower.
                 warn!("online game over: {why}");
+                let me = online.as_ref().and_then(|o| o.me);
                 crate::online::leave(&mut commands, &mut lock);
-                fe.menus.clear();
                 fe.notice = Some((format!("Online game ended, {why}"), 600.0));
-                fe.go(Screen::GameOver);
+                play_on_alone(&mut fe, me, &party, &snapshot, at_tower, &mut changes, &mut new_game);
             } else if let (Some(o), Some(camera)) = (online.as_ref(), camera.as_deref_mut()) {
                 camera.watching = watched(&fe, &party, o.me, camera.watching, &p);
             }
@@ -2543,6 +2568,58 @@ fn online_lobby(
         online.start_game(&heroes);
         begin_online(fe, online, &heroes, None, changes, lock, new_game);
     }
+}
+
+/// This machine leaves the online game — its player's choice, the host
+/// ending it, or the network gone — and its player plays on alone in the
+/// tower, not back at the title: with the record its hero has there, or,
+/// leaving a level under way, the one it began the level with (what a
+/// hero gets on a level it keeps by finishing it; the screen says so
+/// before it leaves). Without a hero of its own (it hadn't joined in yet)
+/// the game is over.
+fn play_on_alone(
+    fe: &mut Frontend,
+    me: Option<usize>,
+    party: &Party,
+    snapshot: &Snapshot,
+    in_tower: bool,
+    changes: &mut MessageWriter<PartyChange>,
+    new_game: &mut MessageWriter<NewGame>,
+) {
+    fe.menus.clear();
+    let Some((slot, m)) = me.and_then(|slot| Some((slot, party.get(slot)?))) else {
+        fe.go(Screen::GameOver);
+        return;
+    };
+    let mut record = match &snapshot.0[slot] {
+        Some(began) if !in_tower => began.clone(),
+        _ => m.state.clone(),
+    };
+    record.alive = true;
+    record.health = record.health.max(1.0);
+    info!("playing on alone as {} ({}), {}", m.name, m.choice.class, if in_tower { "from the tower" } else { "with the record the level began with" });
+    let saved = SavedCharacter::of(&m.name, &m.choice.class, &m.choice.variant, &record);
+    changes.write(PartyChange::Clear);
+    changes.write(PartyChange::Set {
+        slot: 0,
+        choice: m.choice.clone(),
+        name: m.name.clone(),
+        saved: Some(Box::new(saved)),
+        fresh: true,
+        devices: Devices { keyboard: true, ..Devices::default() },
+    });
+    new_game.write(NewGame);
+    fe.columns = Default::default();
+    fe.waiting = [None; MAX_PLAYERS];
+    fe.dead_for = [0.0; MAX_PLAYERS];
+    fe.out = [false; MAX_PLAYERS];
+    fe.leaving = false;
+    fe.fresh_hero = [true; MAX_PLAYERS];
+    fe.menu_slot = 0;
+    fe.online_manage = false;
+    fe.after_level_for = None;
+    fe.load_level = None;
+    fe.go(Screen::LoadingGame);
 }
 
 /// Every machine starts the online game alike: the party as the host sent

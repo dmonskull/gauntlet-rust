@@ -323,11 +323,16 @@ fn draw(
     let mut p = Painter { draw: &mut draw, tex, images: &mut images };
     let layout = personal_layout(&party, &options, online.is_some(), free.0, frontend.as_deref().is_none_or(Frontend::playing));
     let personal = layout.is_some();
+    let split = layout.as_ref().is_some_and(|(_, split)| *split);
     let locals = layout.as_ref().map(|(l, _)| l.clone()).unwrap_or_default();
     for slot in 0..MAX_PLAYERS {
-        // A personal screen keeps its own status at the foot of its pane.
-        // Empty panels would obscure the weapon without providing status.
-        if personal && !locals.contains(&slot) { continue }
+        // A pane of its own keeps its player's status at its foot. One
+        // screen for one player (alone, or online) shows every player's
+        // panel in its place, as the classic view does — but not the empty
+        // ones, which would cover the weapon and say nothing.
+        if personal && !locals.contains(&slot) && (split || party.get(slot).is_none()) {
+            continue;
+        }
         let first_quad = p.draw.quads.len();
         let first_text = p.draw.texts.len();
         let x = PANEL_X + PANEL_WIDTH * slot as f32;
@@ -392,8 +397,12 @@ impl PanelPlace {
         let scale = if split && locals.len() > 2 { 0.75 } else { 1.0 };
         let origin = at * Vec2::new(512.0, 384.0);
         let area = extent * Vec2::new(512.0, 384.0);
-        let target = Vec2::new(if split { origin.x + (area.x - PANEL_WIDTH * scale) * 0.5 } else { 0.0 }, origin.y + area.y - 384.0 * scale);
-        Some(Self { from_x: PANEL_X + PANEL_WIDTH * slot as f32, scale, target, pane: (origin.x, area.x) })
+        let from_x = PANEL_X + PANEL_WIDTH * slot as f32;
+        // In a pane of its own, centred at its foot; on one screen, where
+        // its slot's panel always is (the other players' are beside it).
+        let x = if split { origin.x + (area.x - PANEL_WIDTH * scale) * 0.5 } else { from_x };
+        let target = Vec2::new(x, origin.y + area.y - 384.0 * scale);
+        Some(Self { from_x, scale, target, pane: (origin.x, area.x) })
     }
 
     /// Moves the quads drawn since `first_quad` / `first_text`.

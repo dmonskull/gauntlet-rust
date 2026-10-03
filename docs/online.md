@@ -242,15 +242,25 @@ every standing hero's view, and each machine draws its own hero's
 (`watching`) — a teammate's while its own is down or out, L / R picking
 another. Cuts, the level-start shot and boss cameras stay everyone's.
 
-**In play.** Start opens *Online Game*: Settings, Camera, Leave Game, and
-in the tower Shop, Inventory and Manage Character too; play goes on
-underneath. Dead heroes are out until the level ends, as the original's (their
+**In play.** Start opens *Online Game*: Settings, Camera, Invite, Quit
+Level, Leave Game, and in the tower Shop, Inventory and Manage Character
+too; play goes on underneath. **Quit Level** is the host's: the command
+rides with its controls (`SlotInput::QUIT_LEVEL`) and on the tick that
+takes it every machine leaves the level for the tower, as Quit Level does
+in a game on one machine (a client's says "Only the host can quit the
+level"). In first person a screen shows every player's panel in its slot
+(not the empty ones). Dead heroes are out until the level ends, as the original's (their
 gold from the level goes with the restored record). The screen says who the
 game waits for after half a second and notices who left.
 
 **Leaving.** Leave Game outside the tower asks with a warning: "Leaving
 before reaching the tower will make you lose all progress in this level
-for this character." A player who leaves — or quits the game, which drops
+for this character." The player who leaves plays on alone in their own
+tower, not back at the title (`frontend::play_on_alone`): from a level
+under way with the record their hero began the level with (the level
+start's `Snapshot`), from the tower with the record as it is. The same
+when the online game ends under them — the host left, or the network
+went. A player who leaves — or quits the game, which drops
 the session — says goodbye, and the host's ticks go straight on: checked
 over loopback, 30 a second through the departure (the leaver's slot is
 empty from the tick the host had reached). A machine that goes silent
