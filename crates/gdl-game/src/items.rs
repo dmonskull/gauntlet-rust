@@ -2874,6 +2874,109 @@ fn start_transport(
     items.heroes[slot].transport = Some(Transport { to, fields: TRANSPORT_FIELDS });
 }
 
+/// What a monster keeps of the items between its moves (`docs/monsters.md`,
+/// "Items in the way"): the item that stopped it last (its placement), and
+/// the fields before it looks for one again.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ItemWatch {
+    stopped_by: Option<usize>,
+    wait: i32,
+}
+
+/// The monster types that fly over what stands low.
+const FLIERS: [i32; 2] = [0x1D, 0x20];
+
+impl LevelItems {
+    /// The game's test of a monster's move against the items: whether one
+    /// stops a monster of type `enemy` moving its centre from `from` to
+    /// `to` — and where that item is. The test is the heroes' touch test
+    /// with half the monster's radius (and 1.5 × that as half height),
+    /// against one item: the one that stopped it last while it stands
+    /// still, else the nearest to where it's going that's on screen
+    /// (`seen`) or always active. Away from every item it doesn't look
+    /// again until it could have reached one (30 fields at most). Doors,
+    /// chests and barrels, standing generators (`standing`: its monster
+    /// type, by placement), statues and most obstacles stop it; powerups,
+    /// pads, exits, transporters, falling rocks and leaves don't, nor an
+    /// open door (not touched at all). Fliers pass over containers and low
+    /// generators; damage tiles stop every type but the grunts, the fliers
+    /// and Death.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stops_monster(
+        &self,
+        watch: &mut ItemWatch,
+        (enemy, radius, per_tick): (i32, f32, f32),
+        from: [f32; 3],
+        to: [f32; 3],
+        moving: bool,
+        seen: &dyn Fn([f32; 3]) -> bool,
+        standing: &dyn Fn(usize) -> Option<i32>,
+    ) -> Option<[f32; 3]> {
+        let r = 0.5 * radius;
+        let h = 1.5 * r;
+        // The touch test takes feet 2.5 under the centre it tests from.
+        let feet = |p: [f32; 3]| [p[0], p[1] - HERO_CENTRE, p[2]];
+        let touches = |item: &Item| {
+            touchable(item)
+                && match &item.wall {
+                    Some(w) => wall_contact(w, feet(from), feet(to), r).is_some(),
+                    None => contact(&item.shape, false, feet(from), feet(to), r, h).is_some(),
+                }
+        };
+        let there = |item: &Item| !(item.gone || item.leaving || item.held || item.flags & HOLD_REFUSED != 0);
+        let mut found: Option<&Item> = None;
+        if let (false, Some(placement)) = (moving, watch.stopped_by) {
+            found = self.find(placement).filter(|i| there(i) && touches(i));
+        } else {
+            if moving {
+                watch.wait -= FIELDS_PER_TICK;
+            }
+            if watch.wait < 1 {
+                // The nearest item to where it's going, and the nearest
+                // that's in play (on screen, or always active).
+                let (mut nearest, mut best) = (f32::MAX, f32::MAX);
+                for item in &self.items {
+                    let skipped = !there(item)
+                        || item.shape.kind == 0
+                        || item.inside.is_some()
+                        || match item.class() {
+                            ItemClass::Sound | ItemClass::Random => true,
+                            ItemClass::DamageTile => !matches!(item.state, 2 | 4) || item.flags & USED == 0,
+                            _ => false,
+                        };
+                    if skipped {
+                        continue;
+                    }
+                    let c = item.shape.centre;
+                    let d = (c[0] - to[0]).dhypot(c[2] - to[2]) - item.ty.extent[0];
+                    nearest = nearest.min(d);
+                    if d < best && (item.flags & ALWAYS_ACTIVE != 0 || seen(c)) {
+                        best = d;
+                        found = Some(item);
+                    }
+                }
+                let clear = nearest - r;
+                if clear > 0.0 && per_tick > 0.0 {
+                    watch.wait = ((clear * 0.5 / per_tick) as i32).min(30);
+                }
+                found = found.filter(|i| touches(i));
+            }
+        }
+        let flier = FLIERS.contains(&enemy);
+        let stops = |item: &Item| match item.class() {
+            ItemClass::Powerup | ItemClass::Trigger | ItemClass::Exit | ItemClass::Transporter | ItemClass::Rotator => false,
+            ItemClass::Container => !flier,
+            ItemClass::Generator => standing(item.placement).is_some_and(|makes| makes != 0x11) && !(flier && item.ty.extent[1] <= 3.0),
+            ItemClass::DamageTile => !(flier || matches!(enemy, 0x1E | 3 | 0)),
+            ItemClass::Obstacle => !matches!(item.ty.subtype, ROCK_FALL | LEAF_FALL | DEBRIS | SHOT_FALL | ROCK_SINK),
+            _ => true,
+        };
+        let stopped = found.filter(|i| stops(i));
+        watch.stopped_by = stopped.map(|i| i.placement);
+        stopped.map(|i| i.shape.centre)
+    }
+}
+
 /// The level's items as a sync point carries them (`resync.rs`): each
 /// item's state and timers. What a hero took, and a door or chest a key
 /// opened, on any machine stays so on all; an item the machines otherwise
@@ -3283,6 +3386,63 @@ mod tests {
             [1, 2, 3, 4, 5, 6].map(|p| state(&mut fresh, p)),
             [(true, false), (false, false), (false, true), (false, false), (true, false), (true, false)]
         );
+    }
+
+    /// The monsters' item test: a door, a chest and a standing generator
+    /// stop a move into them; an open door, a powerup, a broken generator
+    /// and a move away don't; a flier passes over a chest.
+    #[test]
+    fn items_stop_monsters_as_the_game_does() {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        // A door's box: 3.5 wide either way, 1.0 deep.
+        let boxed = |class: ItemClass| {
+            let mut ty = ItemType { class, extent: [3.7, 5.0, 3.5, 1.0], ..obstacle(0) };
+            ty.raw[8] = 3;
+            ty
+        };
+        let stopped = |items: &LevelItems, enemy: i32, from_z: f32, to_z: f32, makes: Option<i32>| {
+            let mut watch = ItemWatch::default();
+            let kind = (enemy, 1.0, 0.25);
+            items.stops_monster(&mut watch, kind, [0.0, 1.0, from_z], [0.0, 1.0, to_z], true, &|_| true, &|_| makes).is_some()
+        };
+        let mut items = LevelItems::default();
+        items.release(boxed(ItemClass::Door), [0.0; 3], identity, None, 0);
+        // Into the door (its depth and half the monster's radius: 1.5);
+        // short of it; away from it.
+        assert!(stopped(&items, 4, -3.0, -1.2, None));
+        assert!(!stopped(&items, 4, -3.0, -2.0, None));
+        assert!(!stopped(&items, 4, -1.0, -1.3, None));
+        // Open, it's no longer there to touch.
+        items.items[0].state = 2;
+        assert!(!stopped(&items, 4, -3.0, -1.2, None));
+
+        let mut items = LevelItems::default();
+        items.release(boxed(ItemClass::Container), [0.0; 3], identity, None, 0);
+        assert!(stopped(&items, 4, -3.0, -1.2, None));
+        assert!(!stopped(&items, 0x1D, -3.0, -1.2, None), "a flier passes over a chest");
+
+        let mut items = LevelItems::default();
+        items.release(boxed(ItemClass::Generator), [0.0; 3], identity, None, 0);
+        assert!(stopped(&items, 4, -3.0, -1.2, Some(4)));
+        assert!(!stopped(&items, 4, -3.0, -1.2, None), "a broken generator's wreck");
+
+        let mut items = LevelItems::default();
+        items.release(boxed(ItemClass::Powerup), [0.0; 3], identity, None, 0);
+        assert!(!stopped(&items, 4, -3.0, -1.2, None));
+
+        // Stopped, and standing still, it stays stopped by the same item;
+        // far from every item it doesn't look again for a while.
+        let mut items = LevelItems::default();
+        items.release(boxed(ItemClass::Door), [0.0; 3], identity, None, 0);
+        let mut watch = ItemWatch::default();
+        let test = |watch: &mut ItemWatch, from_z: f32, to_z: f32, moving: bool| {
+            items.stops_monster(watch, (4, 1.0, 0.25), [0.0, 1.0, from_z], [0.0, 1.0, to_z], moving, &|_| true, &|_| None).is_some()
+        };
+        assert!(test(&mut watch, -3.0, -1.2, true));
+        assert!(test(&mut watch, -1.2, -1.2, false));
+        let mut watch = ItemWatch::default();
+        assert!(!test(&mut watch, -30.0, -29.75, true));
+        assert_eq!(watch.wait, 30);
     }
 
     /// A locked chest of `subtype` holding `contents` (`count` of them) at
