@@ -16,7 +16,7 @@
 //! opens, till the hero walks into the open chest and takes it — and the
 //! chest goes with it (`docs/items.md`, "Containers").
 
-use gdl_formats::detmath::Det;
+use gdl_formats::detmath::{Det, sync_bits};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -720,8 +720,8 @@ impl LevelItems {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.items.len(), self.released, self.in_exit, self.leaving.is_some()).hash(&mut h);
         for i in &self.items {
-            (i.placement, i.state, i.action, i.frame.to_bits(), i.timer, i.amount, i.delay, i.stage, i.hit_points).hash(&mut h);
-            (i.leaving, i.gone, i.held, i.shape.centre.map(f32::to_bits)).hash(&mut h);
+            (i.placement, i.state, i.action, sync_bits(i.frame), i.timer, i.amount, i.delay, i.stage, i.hit_points).hash(&mut h);
+            (i.leaving, i.gone, i.held, i.shape.centre.map(sync_bits)).hash(&mut h);
         }
         h.finish()
     }
@@ -928,7 +928,8 @@ impl LevelItems {
     pub fn hold_nearest(&mut self, at: [f32; 3]) -> Option<usize> {
         let near = |i: &Item| {
             let c = i.shape.centre;
-            ((c[0] - at[0]).powi(2) + (c[2] - at[2]).powi(2)).sqrt()
+            let (dx, dz) = (c[0] - at[0], c[2] - at[2]);
+            (dx * dx + dz * dz).sqrt()
         };
         let item = self
             .items
@@ -1663,6 +1664,10 @@ struct Out<'a> {
     /// with the level as it's left (`exits/secret_realm.rs`).
     coins: u32,
     secret_exit: Option<SecretExitTaken>,
+    /// Pickups every hero in play gets with the one who took them
+    /// (subtype, amount): runestones, gems and gargoyle pieces
+    /// (`docs/items.md`, "Shared pickups").
+    shared: Vec<(i32, i32)>,
 }
 
 impl Out<'_> {
@@ -1775,6 +1780,7 @@ fn tick(
         realm: items.realm,
         coins: 0,
         secret_exit: None,
+        shared: Vec::new(),
     };
     // Each hero against the items, in slot order: the exits each living
     // hero stands in, and where they all are.
@@ -1817,6 +1823,14 @@ fn tick(
         let at = Vec3::from(player.mover.position);
         for n in &mut out.notices {
             n.slot = slot;
+        }
+        // What every hero in play gets with this one.
+        for (subtype, amount) in std::mem::take(&mut out.shared) {
+            for (other, member) in party.members_mut() {
+                if other != slot && member.state.alive {
+                    share_pickup(&mut member.state, subtype, amount, now);
+                }
+            }
         }
         flush(out, (at, slot), items, (&mut sounds, &mut voices, &mut hints, &mut messages, &mut notices, &mut effects), (&mut coins, &mut secret));
     }
@@ -2240,6 +2254,31 @@ fn take_contents(items: &mut LevelItems, chest: usize, placement: usize, state: 
     }
 }
 
+/// A pickup the game gives every hero in play, not only the one who took
+/// it: a runestone's bit, a gem's or a gargoyle piece's count — each on
+/// the hero's own record, up to its need, with the count shown on its
+/// panel.
+fn share_pickup(state: &mut PlayerState, subtype: i32, amount: i32, now: f32) {
+    match subtype {
+        10 => {
+            if !state.runestones.contains(&amount) {
+                state.runestones.push(amount);
+            }
+        }
+        GEM => {
+            if let Some(c) = state.quest.add_gem(amount) {
+                state.popup = Some((c as u16, now));
+            }
+        }
+        GARGOYLE_PIECE => {
+            if let Some(p) = state.quest.add_gargoyle(amount) {
+                state.popup = Some((0x100 + p as u16, now));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Picks up a powerup of `subtype`: returns `true` if it's used up (the
 /// item goes), `false` if it stays (full health, key ring or potions).
 #[allow(clippy::too_many_arguments)]
@@ -2342,6 +2381,7 @@ fn pick_up(
                 return false;
             }
             state.runestones.push(*amount);
+            out.shared.push((subtype, *amount));
             out.sound("S_PICKUPRUNE");
             out.notice(10, *amount);
             out.sparkle(RUNE_SPARKLE);
@@ -2371,6 +2411,7 @@ fn pick_up(
         // Gems count toward their colour's realm, gargoyle pieces toward
         // their tower section (`quest.rs`).
         GEM => {
+            out.shared.push((subtype, *amount));
             if let Some(c) = state.quest.add_gem(*amount) {
                 info!("{} crystals: {}/{}", quest::CRYSTAL_COLOURS[c], state.quest.crystals[c], quest::CRYSTALS_NEEDED[c]);
                 state.popup = Some((c as u16, out.now));
@@ -2381,6 +2422,7 @@ fn pick_up(
             true
         }
         GARGOYLE_PIECE => {
+            out.shared.push((subtype, *amount));
             if let Some(p) = state.quest.add_gargoyle(*amount) {
                 info!("gargoyle pieces {p}: {}/{}", state.quest.gargoyle[p], quest::GARGOYLE_NEEDED[p]);
                 state.popup = Some((0x100 + p as u16, out.now));
@@ -2960,7 +3002,33 @@ mod tests {
             realm: 1,
             coins: 0,
             secret_exit: None,
+            shared: Vec::new(),
         }
+    }
+
+    /// A runestone, a gem and a gargoyle piece go to every hero in play,
+    /// each on its own record: once, and never past its own need.
+    #[test]
+    fn shared_pickups_count_once_on_each_heros_own_record() {
+        let seen = Hints::default();
+        let mut out = out(&seen);
+        let (mut picker, mut friend) = (PlayerState::default(), PlayerState::default());
+        // The friend is one short of its need on this gem's counter (4).
+        let counter = quest::GEM_COUNTERS[0].unwrap();
+        friend.quest.crystals[counter] = quest::CRYSTALS_NEEDED[counter] - 1;
+        for (subtype, mut amount) in [(10, 3), (GEM, 0), (GARGOYLE_PIECE, 0)] {
+            assert!(pick_up(&mut picker, subtype, 0, "X", &mut amount, 0.0, 0, &mut out));
+        }
+        assert_eq!(out.shared, vec![(10, 3), (GEM, 0), (GARGOYLE_PIECE, 0)]);
+        for _ in 0..2 {
+            for &(subtype, amount) in &out.shared {
+                share_pickup(&mut friend, subtype, amount, 1.0);
+            }
+        }
+        assert_eq!(friend.runestones, vec![3], "the stone once");
+        assert_eq!(friend.quest.crystals[counter], quest::CRYSTALS_NEEDED[counter], "up to the need, no further");
+        assert_eq!(friend.quest.gargoyle[0], 2);
+        assert_eq!((picker.quest.crystals[counter], picker.quest.gargoyle[0]), (1, 1), "the picker's own count");
     }
 
     /// In the secret realm gold is a coin, counted with no hint; elsewhere
