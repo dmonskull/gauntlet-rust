@@ -6,7 +6,7 @@ Last updated 2026-10-01 (v0.2.0). Read this first when resuming;
 in order.
 
 
-## 2026-10-03: online sync, v0.2.3
+## 2026-10-03: online sync, v0.2.3 and v0.2.4
 
 Done and released as v0.2.3 (`docs/online.md`: "What a tick may read",
 "The same maths everywhere", "Sync points", "The lag sign"):
@@ -27,7 +27,7 @@ Done and released as v0.2.3 (`docs/online.md`: "What a tick may read",
   taken on an ARM Mac. **Check that job after each push**: a failure on
   Intel there is a real cross-machine difference to fix.
 
-Since v0.2.3 (not released): online Quit Level (the host's, to the tower
+In v0.2.4 (2026-10-03, same day): online Quit Level (the host's, to the tower
 for everyone), leaving or a game ending under you plays on alone in the
 tower with the level-start record, first person shows every player's
 panel. Checked: pausing on both machines through a fight stays in sync;
