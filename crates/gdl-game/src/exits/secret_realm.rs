@@ -325,9 +325,7 @@ pub fn unlock_bit(character: u8) -> u16 {
 }
 
 /// Whether a class can be picked with these characters unlocked: the
-/// first eight always (for the select screen, `frontend.rs`, which is yet
-/// to ask).
-#[allow(dead_code)]
+/// first eight always (the select screen's class card, `frontend.rs`).
 pub fn class_open(class: usize, unlocked: u16) -> bool {
     class < usize::from(FIRST_SECRET_CLASS) || u8::try_from(class).is_ok_and(|c| unlocked & unlock_bit(c) != 0)
 }

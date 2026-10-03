@@ -48,7 +48,7 @@ use crate::saves::SavedCharacter;
 
 /// The game's own lockstep revision, part of the build every machine must
 /// share: raise it whenever the game steps differently.
-const LOCKSTEP_REVISION: u32 = 6;
+const LOCKSTEP_REVISION: u32 = 7;
 
 /// Frames without level work before the next tick may run: a level change
 /// and its setup (systems that run as its population comes in, then as
@@ -244,6 +244,10 @@ pub struct ColumnShow {
     pub letter: u8,
     pub selected: u8,
     pub ready: bool,
+    /// The secret characters its character has unlocked (the classes its
+    /// card shows open).
+    #[serde(default)]
+    pub unlocked: u16,
 }
 
 /// What the lobby hears, for the front end to act on.

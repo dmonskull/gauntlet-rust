@@ -8,9 +8,9 @@
 //! A record holds what a character keeps between games: name, class and
 //! colour, level and experience, health, gold, keys, potions, runestones,
 //! the realms beaten, the quest's progress and the secret characters
-//! unlocked. Stand-ins: the memory card
-//! screens aren't drawn (the characters are listed in the player's column),
-//! and experience isn't kept per class as the game's record does.
+//! unlocked, and what it kept of each other class it has played
+//! (`player_state::ClassRecord`). Stand-in: the memory card screens aren't
+//! drawn (the characters are listed in the player's column).
 
 use std::path::PathBuf;
 
@@ -51,6 +51,9 @@ pub struct SavedCharacter {
     /// The secret characters unlocked (a bit per class from the ninth).
     #[serde(default)]
     pub secret_characters: u16,
+    /// What the character keeps of the other classes it has played.
+    #[serde(default)]
+    pub others: Vec<crate::player_state::ClassRecord>,
 }
 
 impl SavedCharacter {
@@ -75,6 +78,7 @@ impl SavedCharacter {
             gold_found: state.gold_found,
             play_fields: state.play_fields,
             secret_characters: state.secret_characters,
+            others: state.others.clone(),
         }
     }
 
@@ -94,6 +98,7 @@ impl SavedCharacter {
         state.gold_found = self.gold_found;
         state.play_fields = self.play_fields;
         state.secret_characters = self.secret_characters;
+        state.others = self.others.clone();
         state.health = if self.health > 0.0 { self.health.min(state.max_health()) } else { state.max_health() };
     }
 
