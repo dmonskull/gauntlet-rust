@@ -474,8 +474,11 @@ back, its move zeroed, and it steps round the item as round a monster.
 Here: `LevelItems::stops_monster` (`items.rs`), called from the monster
 tick after its bump tests, with `ItemWatch` on the monster for the last
 item and the wait. Before this monsters walked through shut doors toward
-a hero standing behind one. Not ported: types 0 and 3 taking a damage
-tile's damage.
+a hero standing behind one. A tile that's out hurts types 0 and 3 as
+they walk onto it: the game's hurt-monster routine
+(`FUN_8004e660(amount, monster, −1, 0, …)`) with the tile's amount
+`+0xDC`, from nobody — here a `Hit` on the monster from no attacker
+(`MonsterItem::Hurts`).
 
 ## Critter files (`CRITTER/*.WAD`)
 

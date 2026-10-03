@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::breakables::BreakablesSave;
 use crate::critters::CrittersSave;
+use crate::hazards::{Hazards, HazardsSave};
 use crate::items::ItemsSave;
 use crate::level::LoadedGame;
 use crate::mechanics::{Mechanics, MechanicsSave};
@@ -134,6 +135,8 @@ struct GameState {
     mechanics: Option<MechanicsSave>,
     /// The breakables standing on every machine.
     breakables: Option<BreakablesSave>,
+    /// The host's damage tiles and the heroes' guards against them.
+    hazards: Option<HazardsSave>,
 }
 
 /// Runs the sync points: the host's call when the games differ, then at
@@ -190,7 +193,8 @@ fn sync_point(world: &mut World) {
             let heroes = crate::player::save_synced(world, false);
             let critters = crate::critters::save_synced(world);
             let mechanics = world.get_resource::<Mechanics>().map(Mechanics::save_synced);
-            point.state = Some(GameState { level, heroes, monsters, items, critters, camera, mechanics, breakables });
+            let hazards = world.get_resource::<Hazards>().map(Hazards::save_synced);
+            point.state = Some(GameState { level, heroes, monsters, items, critters, camera, mechanics, breakables, hazards });
         } else {
             let heroes = crate::player::save_synced(world, true);
             let report = Report { level, heroes, monsters: monsters.map(|m| m.seen()), items, camera, breakables };
@@ -345,6 +349,9 @@ fn apply(world: &mut World, state: &GameState) {
     }
     if let Some(breakables) = &state.breakables {
         crate::breakables::load_synced(world, breakables);
+    }
+    if let (Some(save), Some(mut hazards)) = (&state.hazards, world.get_resource_mut::<Hazards>()) {
+        hazards.load_synced(save);
     }
 }
 

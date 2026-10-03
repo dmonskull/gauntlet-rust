@@ -25,7 +25,8 @@ use gdl_formats::{LevelCollision, LevelTuning, ModelFile, WorldData};
 use gdl_install::GameInstall;
 
 use crate::audio::{CALL_VOLUME, LoopSoundAt, PlaySoundAt};
-use crate::combat::{TargetKind, Targetable};
+use crate::combat::{Hit, TargetKind, Targetable};
+use crate::items::MonsterItem;
 use crate::character::{Animator, CharacterData, CharacterModel};
 use crate::deaths::{self, DeathSet, DeathTextures, Dissolve};
 use crate::flash::{self, Flash, FlashColours};
@@ -1144,6 +1145,7 @@ type Surroundings<'w, 's> = (
     Res<'w, TimeStop>,
     Res<'w, EnemyScale>,
     Option<Res<'w, crate::items::LevelItems>>,
+    MessageWriter<'w, Hit>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -1161,7 +1163,7 @@ fn tick_monsters(
     death_textures: Option<Res<DeathTextures>>,
     mut effects: MessageWriter<EffectAt>,
     (mut explosions, mut sounds): (MessageWriter<ExplosionAt>, MessageWriter<PlaySoundAt>),
-    (colours, mut tags, stop, enemies, items): Surroundings,
+    (colours, mut tags, stop, enemies, items, mut blows): Surroundings,
     (mut drains, mut loops, mut hints, mut fades, mut riding): DeathWriters,
 ) {
     let (Some(mut level), Some(ground)) = (level, ground) else { return };
@@ -1169,6 +1171,8 @@ fn tick_monsters(
     // The generators standing, and what each makes: their items stop the
     // monsters (`LevelItems::stops_monster`).
     let standing: Vec<(usize, i32)> = generators.iter().filter(|g| g.hit_points > 0.0).map(|g| (g.placement, g.enemy)).collect();
+    // The damage tiles' blows on the monsters that walked onto them.
+    let mut tile_blows: Vec<Hit> = Vec::new();
     // Where the Death draining a hero this tick is (its drain's sound
     // follows it).
     let mut sucking: Option<Vec3> = None;
@@ -1494,23 +1498,42 @@ fn tick_monsters(
         {
             blocked(m, Some(other.feet), target.map(|t| t.feet));
             m.position[1] += delta[1];
-        } else if let Some(item) = items.as_deref().and_then(|items| {
+        } else {
             // An item in the way — a door, a chest, a barrel, a generator
             // (the game's monster-against-items test, `docs/monsters.md`).
-            let centre = m.centre().to_array();
-            let kind = (m.enemy, m.stats.radius, m.stats.speed_per_tick);
-            let seen = |c: [f32; 3]| on_screen(frustum, c, 1.0);
-            let makes = |placement: usize| standing.iter().find(|(p, _)| *p == placement).map(|(_, enemy)| *enemy);
-            items.stops_monster(&mut m.item_watch, kind, centre, add(centre, delta), sets_out, &seen, &makes)
-        }) {
-            // Put back, it steps round the item as round another monster.
-            blocked(m, Some(item), target.map(|t| t.feet));
-            m.position[1] += delta[1];
-        } else {
-            if !moved.wall {
-                m.blocked = Block::None;
+            let in_way = items.as_deref().and_then(|items| {
+                let centre = m.centre().to_array();
+                let kind = (m.enemy, m.stats.radius, m.stats.speed_per_tick);
+                let seen = |c: [f32; 3]| on_screen(frustum, c, 1.0);
+                let makes = |placement: usize| standing.iter().find(|(p, _)| *p == placement).map(|(_, enemy)| *enemy);
+                items.stops_monster(&mut m.item_watch, kind, centre, add(centre, delta), sets_out, &seen, &makes)
+            });
+            match in_way {
+                // Put back, it steps round the item as round another monster.
+                Some(MonsterItem::Stops(item)) => {
+                    blocked(m, Some(item), target.map(|t| t.feet));
+                    m.position[1] += delta[1];
+                }
+                other => {
+                    // A damage tile that's out hurts what walks onto it.
+                    if let Some(MonsterItem::Hurts(damage)) = other {
+                        tile_blows.push(Hit {
+                            target: entity,
+                            attacker: Entity::PLACEHOLDER,
+                            damage,
+                            kind: 0,
+                            push: Vec3::ZERO,
+                            at: Vec3::from(m.position),
+                            target_kind: TargetKind::Monster,
+                            ranged: false,
+                        });
+                    }
+                    if !moved.wall {
+                        m.blocked = Block::None;
+                    }
+                    m.position = to;
+                }
             }
-            m.position = to;
         }
         if moved.fell {
             despawn_monster(&mut commands, entity, m, &mut generators);
@@ -1601,6 +1624,7 @@ fn tick_monsters(
         None => {}
     }
     level.death_sucking = sucking.is_some();
+    blows.write_batch(tile_blows);
 }
 
 /// Death touches a hero (the game's bump routine, Death's branch): nothing
