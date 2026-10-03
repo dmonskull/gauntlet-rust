@@ -547,6 +547,47 @@ music zones (`+0xE8` ≥ 1), the crumbling floors (not ported); senders in
 `critters.rs`, `projectiles.rs` and `effects.rs` still send
 `DamagePlayer` (kind 0, mode 1); the game's 12 voices (no limit here).
 
+## The front end's sounds
+
+What each screen does with the sounds, from the decompile:
+
+- **The title** (`FUN_80013b30`): `"Audio Stop"` — `FUN_800a1004` →
+  `FUN_80015618` empties both voice queues and stops every sound the game
+  started (`FUN_800166d8(0x1FFF)`) — then `"Audio Select"` —
+  `FUN_800a079c(1)`: the menus' music. `FUN_800a079c(on)` keeps a state
+  (`r13-0x6ed4`): from 0 it loads bank `SELECT` (`r2-0x526c`,
+  `FUN_800a0a18`); on plays sound `0xC0000` (`S_SELECTMUS`, bank 12 call 0)
+  through `FUN_800157ec` at volume `r13-0x7fb4` = 100, priority 1; off
+  stops it (`FUN_80016558`).
+- **The select screen** (`FUN_8008ffec`): stops the level's stream
+  (`FUN_800a0944`); entered over play (Manage Character, after a level)
+  it counts 4 frames (`r13-0x6f48`) and `FUN_8008be04` then calls
+  `FUN_800a079c(1)`.
+- **A level's loading screen** (`FUN_8001a630` → `FUN_800a06cc`): stops
+  `0xC0000` and the stream.
+- **A level's start** (`FUN_80053530` → `FUN_800a097c`): once the voice
+  queues are empty, `FUN_80015618` stops every started sound (the menus'
+  music with them) and the level's stream starts at track 0.
+- **The after-level and shop screens** (mode `0x4012`, `FUN_800a05e0`):
+  stop `0xC0000` and the stream, load bank `SHOP_<letter>` (`r2-0x527c`)
+  and play `S_SHOP_<letter>` at volume 100 — the letter is
+  `FUN_80057a68(0)`: the realm last selected (`r13-0x72b4`: after a level,
+  still that level's, as the tower isn't selected until the screen ends;
+  from the Tower Menu the tower's `L`), `G` for the test realm's `T`, and
+  `A` for any past `K`.
+- **GAME OVER** (mode `0x4014`): `FUN_800a0944` stops the stream and
+  `FUN_800a1004` every sound and the queues.
+
+Here (`audio.rs` `front_end_sounds`, `Frontend::screen_sounds`): the
+title, the select screen and the loading before play are "menus" —
+entering them from play stops every started sound and the queues, and
+`S_SELECTMUS` plays at 100; the shop screens play `S_SHOP_<letter>`; GAME
+OVER stops everything; the level's music is held (paused) under all of
+them (`hold_music`) and the menus' music stops as play starts. Online a
+player's own character menu leaves the level's sounds alone (the game
+goes on under it). Before this the tower's music played behind the title
+and a level's music and loops played on through GAME OVER and the menus.
+
 ## Not done / unconfirmed
 
 - Track switching during gameplay, ducking and priorities: the runtime

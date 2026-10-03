@@ -30,7 +30,7 @@ use bevy::prelude::*;
 use gdl_formats::audio::{AdsSamples, AdsStream, AudioCatalog, SoundBank};
 use gdl_formats::{LevelAudio, WorldData};
 
-use crate::frontend::Frontend;
+use crate::frontend::{Frontend, ScreenSounds};
 use crate::level::LoadedGame;
 use crate::options::{GameOptions, SoundKind};
 use crate::play_camera::PlayCamera;
@@ -57,6 +57,7 @@ impl Plugin for GameAudioPlugin {
             .add_systems(
                 Update,
                 (
+                    front_end_sounds,
                     level_music,
                     hold_music,
                     audio_keys,
@@ -79,8 +80,8 @@ impl Plugin for GameAudioPlugin {
 /// (`level_intro.rs`): the game stops it for a movie and starts it with
 /// the level, after them (`docs/frontend.md`, "Loading screens and
 /// movies").
-fn hold_music(intro: Res<crate::level_intro::LevelIntro>, sinks: Query<&AudioSink, With<LevelMusic>>) {
-    let hold = intro.active();
+fn hold_music(intro: Res<crate::level_intro::LevelIntro>, fe: Option<Res<Frontend>>, sinks: Query<&AudioSink, With<LevelMusic>>) {
+    let hold = music_held(&intro, fe.as_deref());
     for sink in &sinks {
         if hold && !sink.is_paused() {
             sink.pause();
@@ -88,6 +89,78 @@ fn hold_music(intro: Res<crate::level_intro::LevelIntro>, sinks: Query<&AudioSin
             sink.play();
         }
     }
+}
+
+/// Whether the level's music waits: under its loading screen and movie,
+/// and while a front-end screen has its own sounds (the game stops the
+/// level's stream for them).
+fn music_held(intro: &crate::level_intro::LevelIntro, fe: Option<&Frontend>) -> bool {
+    intro.active() || fe.is_some_and(|f| f.screen_sounds() != ScreenSounds::Play)
+}
+
+/// The menus' music (`FUN_800a079c`: bank `SELECT`, call 0) and its
+/// requested volume (`r13-0x7fb4`), the shop screens' too.
+const MENU_MUSIC: &str = "S_SELECTMUS";
+const MENU_MUSIC_VOLUME: u8 = 100;
+
+fn shop_music(letter: char) -> String {
+    format!("S_SHOP_{letter}")
+}
+
+/// The front end's sounds as the game switches them (`docs/audio-format.md`,
+/// "The front end's sounds"): GAME OVER stops the music and every sound the
+/// game started, and empties the voice queues (`FUN_800a0944`,
+/// `FUN_800a1004`); the title and the select screen stop the level's sounds
+/// and play the menus' music; the after-level and shop screens play the
+/// realm's shop music (`FUN_800a05e0`); play stops them (a level's start
+/// stops every sound started before it, `FUN_80015618`).
+#[allow(clippy::too_many_arguments)]
+fn front_end_sounds(
+    fe: Option<Res<Frontend>>,
+    mut was: Local<Option<ScreenSounds>>,
+    mut commands: Commands,
+    started: Query<Entity, Or<(With<EffectName>, With<LoopChannel>, With<FollowingLoop>)>>,
+    mut voices: ResMut<VoiceQueues>,
+    mut play: MessageWriter<PlaySoundAt>,
+    mut stop: MessageWriter<StopSound>,
+) {
+    let Some(fe) = fe else { return };
+    let now = fe.screen_sounds();
+    if *was == Some(now) {
+        return;
+    }
+    let before = was.replace(now);
+    match before {
+        Some(ScreenSounds::Menus) => {
+            stop.write(StopSound(MENU_MUSIC.into()));
+        }
+        Some(ScreenSounds::Shop(c)) => {
+            stop.write(StopSound(shop_music(c)));
+        }
+        _ => {}
+    }
+    let mut silence = || {
+        for e in &started {
+            commands.entity(e).try_despawn();
+        }
+        voices.clear();
+    };
+    match now {
+        ScreenSounds::Over => silence(),
+        ScreenSounds::Menus => {
+            // From play or GAME OVER (and at start-up): the level's sounds
+            // stop under the menus.
+            if !matches!(before, Some(ScreenSounds::Menus | ScreenSounds::Shop(_))) {
+                silence();
+            }
+            play.write(PlaySoundAt::centred(MENU_MUSIC, MENU_MUSIC_VOLUME));
+        }
+        ScreenSounds::Shop(c) => {
+            play.write(PlaySoundAt::centred(shop_music(c), MENU_MUSIC_VOLUME));
+        }
+        ScreenSounds::Play => {}
+    }
+    info!("front end sounds: {now:?}");
 }
 
 /// Plays a sound effect by catalog name the way the game's own calls do
@@ -667,9 +740,10 @@ fn level_music(
     mut tracks: ResMut<Assets<MusicTrack>>,
     playing: Query<Entity, With<LevelMusic>>,
     options: Res<GameOptions>,
-    intro: Res<crate::level_intro::LevelIntro>,
+    (intro, fe): (Res<crate::level_intro::LevelIntro>, Option<Res<Frontend>>),
 ) {
     let Some(stats) = stats else { return };
+    let held = music_held(&intro, fe.as_deref());
     if !stats.is_changed() {
         return;
     }
@@ -689,8 +763,8 @@ fn level_music(
                         muted: status.muted,
                         volume: options.category(SoundKind::Music),
                         // Held while the level's loading screen and movie
-                        // are up (`hold_music`).
-                        paused: intro.active(),
+                        // are up, or a menu screen (`hold_music`).
+                        paused: held,
                         ..PlaybackSettings::DESPAWN
                     },
                 ));
