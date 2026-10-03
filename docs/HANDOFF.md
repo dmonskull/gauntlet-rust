@@ -1,6 +1,6 @@
 # Handoff: where the rewrite stands and how to continue
 
-Last updated 2026-10-01 (v0.2.0). Read this first when resuming;
+Last updated 2026-10-03 (v0.2.4, and master past it). Read this first when resuming;
 [STATUS.md](STATUS.md) has how close the rewrite is to the original
 (≈ 84 % for one player, ≈ 83 % done overall) and everything left to do,
 in order.
@@ -40,8 +40,7 @@ Asked for and **not done yet** (next, in this order):
 
 1. Sumner as a class (the seventeenth, unlocked with bit `0x100`): class
    2 with his model and fixed record (`docs/frontend.md`, "Changing
-   class"). Monster types 0 and 3 taking a damage tile's damage
-   (`docs/monsters.md`, "Items in the way").
+   class").
 2. Sync points don't carry yet: chest and barrel contents let out in
    another order, a critter dead on one machine only, effects and blasts
    in flight, camera cuts and the boss camera.

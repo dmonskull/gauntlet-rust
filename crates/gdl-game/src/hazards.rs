@@ -98,7 +98,7 @@ struct Tile {
 }
 
 #[derive(Resource, Default)]
-struct Hazards {
+pub struct Hazards {
     tiles: Vec<Tile>,
     /// By slot: the tile and phase that last hurt the hero — the game's
     /// guard lasts until that tile's phase is over.
@@ -372,6 +372,56 @@ fn wall_hurts(nodes: &LevelNodes, mechanics: Option<&Mechanics>, p: &mut Player,
     }
     debug!("wall node {node} hurts player {} for {amount:.1}", p.slot + 1);
     true
+}
+
+/// The level's hazards as a sync point carries them (`resync.rs`): each
+/// damage tile's place in its cycle and the heroes' guards, as the host
+/// has them.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct HazardsSave {
+    /// Per tile: timer, action, phase, started.
+    tiles: Vec<(f32, usize, u32, bool)>,
+    tile_guard: [Option<(usize, u32)>; MAX_PLAYERS],
+    wall_guard: [f32; MAX_PLAYERS],
+    rng: u32,
+}
+
+impl Hazards {
+    /// What the machines compare online (`online.rs`).
+    pub fn sync_hash(&self) -> u64 {
+        use gdl_formats::detmath::sync_bits;
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for t in &self.tiles {
+            (sync_bits(t.timer), t.action, t.phase, t.started).hash(&mut h);
+        }
+        (self.tile_guard, self.wall_guard.map(sync_bits), self.rng).hash(&mut h);
+        h.finish()
+    }
+
+    pub(crate) fn save_synced(&self) -> HazardsSave {
+        HazardsSave {
+            tiles: self.tiles.iter().map(|t| (t.timer, t.action, t.phase, t.started)).collect(),
+            tile_guard: self.tile_guard,
+            wall_guard: self.wall_guard,
+            rng: self.rng,
+        }
+    }
+
+    /// Takes a sync point's hazards over (the same level: the tiles line
+    /// up).
+    pub(crate) fn load_synced(&mut self, save: &HazardsSave) {
+        if save.tiles.len() != self.tiles.len() {
+            warn!("sync point: the level's damage tiles don't line up; left as they are");
+            return;
+        }
+        for (t, s) in self.tiles.iter_mut().zip(&save.tiles) {
+            (t.timer, t.action, t.phase, t.started) = *s;
+        }
+        self.tile_guard = save.tile_guard;
+        self.wall_guard = save.wall_guard;
+        self.rng = save.rng;
+    }
 }
 
 #[cfg(test)]

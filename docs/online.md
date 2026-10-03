@@ -320,7 +320,8 @@ whatever the network does. Then
    key chest opened and a rock fall set off on any machine taken, opened
    or set off; a barrel or wall broken on any machine broken, a blow
    landed on any landed; the host's triggers, movers, rotators and
-   animated objects (and the pads and tiles that show them); the host's
+   animated objects (and the pads and tiles that show them), its damage
+   tiles' cycles and the heroes' guards against them; the host's
    critters — where each is, how hurt, the move it's in and its clip's
    frame — and level counters; each hero's own camera from its machine;
 3. every machine, the host too, takes that game over (as the same text,

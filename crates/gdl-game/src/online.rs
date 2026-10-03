@@ -48,7 +48,7 @@ use crate::saves::SavedCharacter;
 
 /// The game's own lockstep revision, part of the build every machine must
 /// share: raise it whenever the game steps differently.
-const LOCKSTEP_REVISION: u32 = 8;
+const LOCKSTEP_REVISION: u32 = 9;
 
 /// Frames without level work before the next tick may run: a level change
 /// and its setup (systems that run as its population comes in, then as
@@ -884,13 +884,14 @@ fn checksum(
     monsters: Query<&crate::monsters::Monster>,
     critters: Query<&crate::critters::Critter>,
     projectiles: Query<&crate::projectiles::Projectile>,
-    (monster_level, critter_level, items, generators, mechanics, breakables): (
+    (monster_level, critter_level, items, generators, mechanics, breakables, hazards): (
         Option<Res<crate::monsters::MonsterLevel>>,
         Option<Res<crate::critters::CritterLevel>>,
         Option<Res<crate::items::LevelItems>>,
         Query<&crate::generators::Generator>,
         Option<Res<crate::mechanics::Mechanics>>,
         Query<&crate::breakables::Breakable>,
+        Option<Res<crate::hazards::Hazards>>,
     ),
 ) {
     const INTERVAL: Tick = 30;
@@ -944,6 +945,7 @@ fn checksum(
             "breakables",
             sum(&mut breakables.iter().filter(|b| b.standing()).map(|b| hash(&|h| b.sync_key().hash(h)))),
         ),
+        ("hazards", hazards.map_or(0, |z| z.sync_hash())),
     ];
     let total = hash(&|h| parts.iter().for_each(|(_, v)| v.hash(h)));
     online.session.report_checksum(lock.tick, total);

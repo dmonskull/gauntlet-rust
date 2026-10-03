@@ -2886,6 +2886,16 @@ pub struct ItemWatch {
 /// The monster types that fly over what stands low.
 const FLIERS: [i32; 2] = [0x1D, 0x20];
 
+/// What an item does to a monster moving into it
+/// ([`LevelItems::stops_monster`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MonsterItem {
+    /// It's in the way (the item's centre): the monster is put back.
+    Stops([f32; 3]),
+    /// A damage tile that's out hurts it (types 0 and 3, which walk on).
+    Hurts(f32),
+}
+
 impl LevelItems {
     /// The game's test of a monster's move against the items: whether one
     /// stops a monster of type `enemy` moving its centre from `from` to
@@ -2899,8 +2909,8 @@ impl LevelItems {
     /// type, by placement), statues and most obstacles stop it; powerups,
     /// pads, exits, transporters, falling rocks and leaves don't, nor an
     /// open door (not touched at all). Fliers pass over containers and low
-    /// generators; damage tiles stop every type but the grunts, the fliers
-    /// and Death.
+    /// generators; a damage tile that's out stops every type but the
+    /// fliers, Death and types 0 and 3, which it hurts instead.
     #[allow(clippy::too_many_arguments)]
     pub fn stops_monster(
         &self,
@@ -2911,7 +2921,7 @@ impl LevelItems {
         moving: bool,
         seen: &dyn Fn([f32; 3]) -> bool,
         standing: &dyn Fn(usize) -> Option<i32>,
-    ) -> Option<[f32; 3]> {
+    ) -> Option<MonsterItem> {
         let r = 0.5 * radius;
         let h = 1.5 * r;
         // The touch test takes feet 2.5 under the centre it tests from.
@@ -2973,7 +2983,17 @@ impl LevelItems {
         };
         let stopped = found.filter(|i| stops(i));
         watch.stopped_by = stopped.map(|i| i.placement);
-        stopped.map(|i| i.shape.centre)
+        if let Some(item) = stopped {
+            return Some(MonsterItem::Stops(item.shape.centre));
+        }
+        // A tile that's out hurts the types that walk onto it.
+        found.filter(|i| i.class() == ItemClass::DamageTile && matches!(enemy, 3 | 0)).map(|tile| {
+            let placed = match tile.params {
+                PlacementParams::DamageTile { damage, .. } if damage != 0 => damage,
+                _ => i16::from_le_bytes([tile.ty.raw[0x40], tile.ty.raw[0x41]]),
+            };
+            MonsterItem::Hurts(f32::from(placed))
+        })
     }
 }
 
@@ -3432,7 +3452,10 @@ mod tests {
         let stopped = |items: &LevelItems, enemy: i32, from_z: f32, to_z: f32, makes: Option<i32>| {
             let mut watch = ItemWatch::default();
             let kind = (enemy, 1.0, 0.25);
-            items.stops_monster(&mut watch, kind, [0.0, 1.0, from_z], [0.0, 1.0, to_z], true, &|_| true, &|_| makes).is_some()
+            matches!(
+                items.stops_monster(&mut watch, kind, [0.0, 1.0, from_z], [0.0, 1.0, to_z], true, &|_| true, &|_| makes),
+                Some(MonsterItem::Stops(_))
+            )
         };
         let mut items = LevelItems::default();
         items.release(boxed(ItemClass::Door), [0.0; 3], identity, None, 0);
@@ -3467,11 +3490,30 @@ mod tests {
         let test = |watch: &mut ItemWatch, from_z: f32, to_z: f32, moving: bool| {
             items.stops_monster(watch, (4, 1.0, 0.25), [0.0, 1.0, from_z], [0.0, 1.0, to_z], moving, &|_| true, &|_| None).is_some()
         };
+        let _ = &items;
         assert!(test(&mut watch, -3.0, -1.2, true));
         assert!(test(&mut watch, -1.2, -1.2, false));
         let mut watch = ItemWatch::default();
         assert!(!test(&mut watch, -30.0, -29.75, true));
         assert_eq!(watch.wait, 30);
+
+        // A damage tile that's out (state 2, its hurting flag set) hurts a
+        // type 3 monster walking onto it, stops a type 4, and is nothing
+        // to either while it's in.
+        let mut items = LevelItems::default();
+        let mut tile = boxed(ItemClass::DamageTile);
+        tile.raw[0x40] = 12;
+        tile.flags = USED;
+        items.release(tile, [0.0; 3], identity, None, 0);
+        let onto = |items: &LevelItems, enemy: i32| {
+            let mut watch = ItemWatch::default();
+            items.stops_monster(&mut watch, (enemy, 1.0, 0.25), [0.0, 1.0, -3.0], [0.0, 1.0, -1.2], true, &|_| true, &|_| None)
+        };
+        assert_eq!((onto(&items, 3), onto(&items, 4)), (None, None));
+        items.items[0].state = 2;
+        assert_eq!(onto(&items, 3), Some(MonsterItem::Hurts(12.0)));
+        assert!(matches!(onto(&items, 4), Some(MonsterItem::Stops(_))));
+        assert_eq!(onto(&items, 0x1E), None);
     }
 
     /// A locked chest of `subtype` holding `contents` (`count` of them) at
