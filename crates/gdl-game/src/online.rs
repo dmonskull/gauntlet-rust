@@ -48,7 +48,7 @@ use crate::saves::SavedCharacter;
 
 /// The game's own lockstep revision, part of the build every machine must
 /// share: raise it whenever the game steps differently.
-const LOCKSTEP_REVISION: u32 = 7;
+const LOCKSTEP_REVISION: u32 = 8;
 
 /// Frames without level work before the next tick may run: a level change
 /// and its setup (systems that run as its population comes in, then as
@@ -884,11 +884,13 @@ fn checksum(
     monsters: Query<&crate::monsters::Monster>,
     critters: Query<&crate::critters::Critter>,
     projectiles: Query<&crate::projectiles::Projectile>,
-    (monster_level, critter_level, items, generators): (
+    (monster_level, critter_level, items, generators, mechanics, breakables): (
         Option<Res<crate::monsters::MonsterLevel>>,
         Option<Res<crate::critters::CritterLevel>>,
         Option<Res<crate::items::LevelItems>>,
         Query<&crate::generators::Generator>,
+        Option<Res<crate::mechanics::Mechanics>>,
+        Query<&crate::breakables::Breakable>,
     ),
 ) {
     const INTERVAL: Tick = 30;
@@ -937,6 +939,11 @@ fn checksum(
         ("monster level", monster_level.map_or(0, |l| l.sync_hash())),
         ("critter level", critter_level.map_or(0, |l| l.sync_hash())),
         ("items", items.map_or(0, |i| i.sync_hash())),
+        ("mechanics", mechanics.map_or(0, |m| m.sync_hash())),
+        (
+            "breakables",
+            sum(&mut breakables.iter().filter(|b| b.standing()).map(|b| hash(&|h| b.sync_key().hash(h)))),
+        ),
     ];
     let total = hash(&|h| parts.iter().for_each(|(_, v)| v.hash(h)));
     online.session.report_checksum(lock.tick, total);
@@ -955,7 +962,8 @@ fn checksum(
 /// 3 units aside and finds 50 gold; `monster`: the first monster made is
 /// hurt and pushed; `kill`: it's dead; `generator`: the first generator
 /// is broken; `item`, `door`, `chest`: the first powerup is taken, the
-/// first door or locked chest opened (`items::test_diverge`).
+/// first door or locked chest opened (`items::test_diverge`); `barrel`:
+/// the first breakable breaks; `mover`: the first mover is elsewhere.
 fn test_desync(world: &mut World) {
     static AT: std::sync::OnceLock<Option<(u32, String)>> = std::sync::OnceLock::new();
     let at = AT.get_or_init(|| {
@@ -994,6 +1002,13 @@ fn test_desync(world: &mut World) {
             }
         }
         "item" | "door" | "chest" => crate::items::test_diverge(world, what),
+        "barrel" => crate::breakables::test_diverge(world),
+        "critter" => crate::critters::test_diverge(world),
+        "mover" => {
+            if let Some(mut m) = world.get_resource_mut::<crate::mechanics::Mechanics>() {
+                m.test_diverge();
+            }
+        }
         "generator" => {
             let first = world.query::<(Entity, &crate::generators::Generator)>().iter(world).min_by_key(|(_, g)| g.placement).map(|(e, g)| (e, g.placement));
             if let Some((entity, placement)) = first {

@@ -316,9 +316,13 @@ whatever the network does. Then
    saw their hero get — with what only grows on a level (experience, quest
    pieces, runestones, tallies) at its most between the two copies; the
    host's monsters less those dead on any machine, a generator broken on
-   any machine broken; the host's items, with a powerup taken and a door or
-   key chest opened on any machine taken or opened; the host's critters and
-   level counters; each hero's own camera from its machine;
+   any machine broken; the host's items, with a powerup taken, a door or
+   key chest opened and a rock fall set off on any machine taken, opened
+   or set off; a barrel or wall broken on any machine broken, a blow
+   landed on any landed; the host's triggers, movers, rotators and
+   animated objects (and the pads and tiles that show them); the host's
+   critters — where each is, how hurt, the move it's in and its clip's
+   frame — and level counters; each hero's own camera from its machine;
 3. every machine, the host too, takes that game over (as the same text,
    read back) and plays on from the tick it stopped before. Missiles in
    flight go; monsters are made again from the list, so every machine has
@@ -328,10 +332,15 @@ The wait is a round trip to the host and four frames (measured over
 loopback: 20–65 ms and the frames). A sync point that follows the last
 within 150 ticks didn't hold — the games differ in something it doesn't
 carry — and the host waits longer before the next (2 s doubling to 30 s),
-so such games never stop every second. Not carried yet: a barrel or wall
-broken, what a chest let out in another order, the movers
-(`mechanics.rs`), a critter's move under way, the opening shot, cuts and
-the boss camera.
+so such games never stop every second. Not carried yet: what chests and
+barrels let out when the machines let it out in another order (the items'
+numbers then differ), a critter dead on one machine only, effects and
+blasts in flight, the opening shot, cuts and the boss camera.
+
+A breakable the sync point has broken takes, on a machine where it
+stands, a blow that breaks it on the next tick (it bursts and lets out
+what it holds, as any blow would); a key chest opened elsewhere opens and
+lets out its contents; monsters are made again from the list.
 
 **The lag sign** (`lag_sign.rs`). All the screen shows of the network: a
 small medallion in the top right corner — a red gem sending out three
@@ -348,8 +357,10 @@ starts the host alone, so the client joins the game under way;
 `CLIENT_MENU` scripts the client's menus (Manage Character);
 `CLIENT_DESYNC_AT=<tick>[:<what>]` puts the client's game out of sync then
 (`GDL_DESYNC_AT`: `coin`, `hero`, `monster`, `kill`, `generator`, `item`,
-`door`, `chest`); a sync point must put the games together, with no level
-starting again, and every check after it must agree. `FIGHT=1`
+`door`, `chest`, `barrel`, `mover`, `critter`); a sync point must put the
+games together, with no level starting again, and every check after it
+must agree. Each of these comes together at the first sync point (the
+chest at the second). `FIGHT=1`
 hops the heroes among levelA1's grunts (`HOPS`) and has them throw every 9
 ticks; `HOST_PREFIX` / `CLIENT_PREFIX` put a command before a side's game
 (`taskpolicy -b`: slowed down).

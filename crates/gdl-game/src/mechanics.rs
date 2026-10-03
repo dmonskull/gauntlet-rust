@@ -1579,6 +1579,109 @@ pub fn hit_switch(mech: &mut Mechanics, placement: usize) {
     }
 }
 
+/// The level's mechanisms as a sync point carries them (`resync.rs`): what
+/// each trigger, mover, rotator and animated object has reached, as the
+/// host has it. The level builds the same ones in the same order on every
+/// machine; where they stand follows from these on the next tick.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct MechanicsSave {
+    /// Per trigger: flags, touches, timer, action, shown.
+    triggers: Vec<(u16, u8, f32, u8, u8)>,
+    /// Per mover: offset, state, the state before, alpha.
+    movers: Vec<(f32, u8, u8, i32)>,
+    /// Per rotator: its turn so far, touched, done.
+    rotators: Vec<(f32, bool, bool)>,
+    /// Per animated object: its frame, hidden by its burst.
+    animations: Vec<(f32, bool)>,
+    /// The animated nodes' play flags, by node.
+    play: Vec<(usize, u32)>,
+    clock: f32,
+    need_again: Vec<(u8, f32)>,
+    stand_rule: bool,
+}
+
+impl Mechanics {
+    /// What the machines compare online (`online.rs`).
+    pub fn sync_hash(&self) -> u64 {
+        use gdl_formats::detmath::sync_bits;
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for t in &self.triggers {
+            (t.flags, t.touches, sync_bits(t.timer), t.action, t.shown).hash(&mut h);
+        }
+        for m in &self.movers {
+            (sync_bits(m.offset), m.state, m.alpha).hash(&mut h);
+        }
+        for r in &self.rotators {
+            (sync_bits(r.total), r.touched, r.done).hash(&mut h);
+        }
+        for a in &self.animations {
+            (sync_bits(a.frame), a.burst_hidden).hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// `GDL_DESYNC_AT=<tick>:mover` (testing the sync points,
+    /// `online.rs`): on this machine alone the first mover is switched
+    /// the other way.
+    pub(crate) fn test_diverge(&mut self) {
+        if let Some(m) = self.movers.first_mut() {
+            m.state ^= ON;
+        }
+    }
+
+    pub(crate) fn save_synced(&self) -> MechanicsSave {
+        let mut play: Vec<(usize, u32)> = self.play.iter().map(|(n, p)| (*n, *p)).collect();
+        play.sort_unstable();
+        let mut need_again: Vec<(u8, f32)> = self.need_again.iter().map(|(id, t)| (*id, *t)).collect();
+        need_again.sort_by_key(|(id, _)| *id);
+        MechanicsSave {
+            triggers: self.triggers.iter().map(|t| (t.flags, t.touches, t.timer, t.action, t.shown)).collect(),
+            movers: self.movers.iter().map(|m| (m.offset, m.state, m.previous, m.alpha)).collect(),
+            rotators: self.rotators.iter().map(|r| (r.total, r.touched, r.done)).collect(),
+            animations: self.animations.iter().map(|a| (a.frame, a.burst_hidden)).collect(),
+            play,
+            clock: self.clock,
+            need_again,
+            stand_rule: self.stand_rule,
+        }
+    }
+
+    /// Takes a sync point's mechanisms over (the same level: the lists
+    /// line up; one that doesn't is left as it is).
+    pub(crate) fn load_synced(&mut self, save: &MechanicsSave) {
+        let lined_up = save.triggers.len() == self.triggers.len()
+            && save.movers.len() == self.movers.len()
+            && save.rotators.len() == self.rotators.len()
+            && save.animations.len() == self.animations.len();
+        if !lined_up {
+            warn!("sync point: the level's mechanisms don't line up; left as they are");
+            return;
+        }
+        for (t, s) in self.triggers.iter_mut().zip(&save.triggers) {
+            (t.flags, t.touches, t.timer, t.action, t.shown) = *s;
+        }
+        for (m, s) in self.movers.iter_mut().zip(&save.movers) {
+            (m.offset, m.state, m.previous, m.alpha) = *s;
+        }
+        for (r, s) in self.rotators.iter_mut().zip(&save.rotators) {
+            (r.total, r.touched, r.done) = *s;
+        }
+        for (a, s) in self.animations.iter_mut().zip(&save.animations) {
+            (a.frame, a.burst_hidden) = *s;
+        }
+        for (node, flags) in &save.play {
+            if let Some(p) = self.play.get_mut(node) {
+                *p = *flags;
+            }
+        }
+        self.clock = save.clock;
+        self.need_again = save.need_again.iter().copied().collect();
+        self.stand_rule = save.stand_rule;
+        self.woken.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

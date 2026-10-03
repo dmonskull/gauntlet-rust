@@ -80,13 +80,26 @@ impl Plugin for BreakablesPlugin {
 
 /// A hittable item.
 #[derive(Component)]
-struct Breakable {
+pub struct Breakable {
     placement: usize,
     hit_points: i32,
     armor: i8,
     /// Struck and still standing: an obstacle flashes on the next item
     /// update.
     flash: bool,
+}
+
+impl Breakable {
+    /// Not broken yet.
+    pub fn standing(&self) -> bool {
+        self.hit_points > 0
+    }
+
+    /// What the machines compare of it online (`online.rs`): which one,
+    /// and its hit points.
+    pub fn sync_key(&self) -> (usize, i32) {
+        (self.placement, self.hit_points)
+    }
 }
 
 // Item type subtypes.
@@ -739,6 +752,81 @@ fn view_hit_points(items: &LevelItems, placement: usize) -> i16 {
     items.view(placement).map_or(1, |v| v.ty.hit_points)
 }
 
+
+/// The breakables still standing as a sync point carries them
+/// (`resync.rs`): each one's placement and hit points. One broken on any
+/// machine is broken (a hero broke it there), and a blow landed on any
+/// machine landed.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct BreakablesSave {
+    standing: Vec<(usize, i32)>,
+}
+
+pub(crate) fn save_synced(world: &mut World) -> BreakablesSave {
+    let mut standing: Vec<(usize, i32)> =
+        world.query::<&Breakable>().iter(world).filter(|b| b.hit_points > 0).map(|b| (b.placement, b.hit_points)).collect();
+    standing.sort_unstable();
+    BreakablesSave { standing }
+}
+
+impl BreakablesSave {
+    /// These with what another machine's game has of them: only those
+    /// standing there too, at the fewer hit points.
+    pub(crate) fn keep_progress(&mut self, theirs: &BreakablesSave) {
+        self.standing.retain_mut(|(placement, hit_points)| match theirs.standing.iter().find(|(p, _)| p == placement) {
+            Some((_, theirs)) => {
+                *hit_points = (*hit_points).min(*theirs);
+                true
+            }
+            None => false,
+        });
+    }
+}
+
+/// Every machine takes the breakables over: one standing here that the
+/// sync point has broken takes a blow that breaks it (on the next tick,
+/// as any blow does: it bursts and lets out what it holds), the others
+/// their hit points.
+pub(crate) fn load_synced(world: &mut World, save: &BreakablesSave) {
+    let mut blows = Vec::new();
+    for (entity, mut b, transform) in world.query::<(Entity, &mut Breakable, &Transform)>().iter_mut(world) {
+        if b.hit_points <= 0 {
+            continue;
+        }
+        match save.standing.iter().find(|(p, _)| *p == b.placement) {
+            Some((_, hit_points)) => b.hit_points = *hit_points,
+            None => blows.push(Hit {
+                target: entity,
+                attacker: Entity::PLACEHOLDER,
+                damage: 1.0e6,
+                kind: 0,
+                push: Vec3::ZERO,
+                at: transform.translation,
+                target_kind: TargetKind::Breakable,
+                ranged: true,
+            }),
+        }
+    }
+    if !blows.is_empty() {
+        info!("sync point: {} breakables broken on another machine break here", blows.len());
+        world.resource_mut::<Messages<Hit>>().write_batch(blows);
+    }
+}
+
+/// `GDL_DESYNC_AT=<tick>:barrel` (testing the sync points, `online.rs`):
+/// on this machine alone the first breakable takes a blow that breaks it.
+pub(crate) fn test_diverge(world: &mut World) {
+    let first = world
+        .query::<(Entity, &Breakable, &Transform)>()
+        .iter(world)
+        .filter(|(_, b, _)| b.hit_points > 0)
+        .min_by_key(|(_, b, _)| b.placement)
+        .map(|(e, b, t)| (e, b.placement, t.translation));
+    let Some((target, placement, at)) = first else { return };
+    info!("GDL_DESYNC_AT: breakable {placement} breaks");
+    let blow = Hit { target, attacker: Entity::PLACEHOLDER, damage: 1.0e6, kind: 0, push: Vec3::ZERO, at, target_kind: TargetKind::Breakable, ranged: true };
+    world.resource_mut::<Messages<Hit>>().write(blow);
+}
 
 #[cfg(test)]
 mod tests {
