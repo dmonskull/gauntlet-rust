@@ -1050,6 +1050,7 @@ impl Column {
                 loaded: None,
                 special: None,
                 auto_pick: false,
+                unlocked: 0,
             },
             ready: false,
         }
@@ -1088,6 +1089,10 @@ struct Select {
     special: Option<String>,
     /// The class card takes the pick at once (a secret character).
     auto_pick: bool,
+    /// The secret characters the character choosing has unlocked (its
+    /// record's bits): the classes from the ninth on it can pick. None
+    /// for a new character.
+    unlocked: u16,
 }
 
 impl Select {
@@ -1408,9 +1413,6 @@ impl Strings {
 const CLASSES: [&str; 17] =
     ["WAR", "VAL", "WIZ", "ARC", "DWF", "KNI", "SOR", "JES", "MIN", "FAL", "JAC", "TIG", "OGR", "UNI", "MED", "HYE", "SUM"];
 const COLOURS: [&str; 4] = ["YEL", "BLU", "RED", "GRE"];
-/// The eight classes a new character can be; the rest are unlocked by
-/// play (the character's unlock bits) — shown as shadows.
-const OPEN_CLASSES: usize = 8;
 /// Each player's column on the select screen, and name colour.
 const COLUMN: [f32; 4] = [0.0, 128.0, 256.0, 384.0];
 const PLAYER_COLOUR: [[u8; 3]; 4] = [[255, 255, 0], [135, 206, 235], [255, 0, 0], [0, 255, 0]];
@@ -2255,6 +2257,7 @@ fn select_column(
                 s.step = Step::Name;
                 s.name.clear();
                 s.letter = b'@';
+                s.unlocked = 0;
             }
             Some(Item::Load) => {
                 s.from_character_menu = false;
@@ -2269,6 +2272,8 @@ fn select_column(
             Some(Item::Change) => {
                 s.from_character_menu = true;
                 s.step = Step::Class;
+                // The character's own unlocked classes are open to it.
+                s.unlocked = member.map_or(0, |m| m.state.secret_characters);
             }
             Some(Item::Save) => {
                 // Stand-in for the game's memory card screens: the record
@@ -2418,11 +2423,12 @@ fn select_column(
                 s.colour = (s.colour + 3) % 4;
                 s.special = None;
             }
-            if (p.accept || std::mem::take(&mut s.auto_pick)) && s.class < OPEN_CLASSES {
+            if (p.accept || std::mem::take(&mut s.auto_pick)) && crate::exits::secret_realm::class_open(s.class, s.unlocked) {
                 let picked = PlayerChoice { class: CLASSES[s.class].to_string(), variant: s.variant() };
-                // Another class or colour, or a new game even with the same
-                // hero: a fresh record.
-                let fresh = member.map(|m| &m.choice) != Some(&picked) || !s.from_character_menu;
+                // A new character has a fresh record; one changing its
+                // class or colour (from its character menu) keeps its own,
+                // with what it kept of that class (`set_members`).
+                let fresh = !s.from_character_menu;
                 info!("player {}: {} the {} ({})", slot + 1, s.name, picked.class, picked.variant);
                 s.loaded = None;
                 changes.write(PartyChange::Set { slot, choice: picked, name: s.name.clone(), saved: None, fresh, devices });
@@ -2793,8 +2799,20 @@ fn online_manage(
         }
     }
     let Some(c) = fe.columns[me].as_ref().filter(|c| c.ready) else { return };
-    let hero = hero_of(c);
-    if hero_changes(party, me, &hero) {
+    let mut hero = hero_of(c);
+    let changed = hero_changes(party, me, &hero);
+    // The same character with another class or colour keeps its record:
+    // what it kept of the new class goes along
+    // (`PlayerState::change_class`; each machine gives it the class's size).
+    if changed
+        && hero.saved.is_none()
+        && let Some(m) = party.get(me)
+    {
+        let mut state = m.state.clone();
+        state.change_class(&hero.class, None);
+        hero.saved = Some(SavedCharacter::of(&hero.name, &hero.class, &hero.variant, &state));
+    }
+    if changed {
         info!("online: player {} changes hero: {} the {} ({})", me + 1, hero.name, hero.class, hero.variant);
         if online.host {
             online.inbox.push(Lobby::Hero { slot: me, hero: Some(hero) });
@@ -2820,6 +2838,7 @@ fn show_of(c: &Column) -> ColumnShow {
         letter: s.letter,
         selected: s.menu.selected as u8,
         ready: c.ready,
+        unlocked: s.unlocked,
     }
 }
 
@@ -2841,6 +2860,7 @@ fn apply_show(c: &mut Column, slot: usize, show: &ColumnShow) {
     s.step = step;
     s.class = (show.class as usize).min(CLASSES.len() - 1);
     s.colour = (show.colour as usize) % COLOURS.len();
+    s.unlocked = show.unlocked;
     s.name = show.name.chars().take(8).collect();
     s.letter = show.letter;
     if step != Step::LoadList {
@@ -3523,7 +3543,7 @@ fn column_screen(d: &mut Painter, s: &Select, slot: usize, strings: &Strings, st
 /// attributes with the strongest glowing, and its level.
 fn class_card(d: &mut Painter, s: &Select, strings: &Strings, stats: &ClassStats, col: f32, choosing: bool) {
     let class = CLASSES[s.class];
-    let open = s.class < OPEN_CLASSES;
+    let open = crate::exits::secret_realm::class_open(s.class, s.unlocked);
     d.image(&format!("S12_WEAP_{}", CLASSES[s.class & 7]), col, 0.0, Color::WHITE);
     if open {
         d.image(&format!("S12_{class}_{}", COLOURS[s.colour]), col, 28.0, Color::WHITE);

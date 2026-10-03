@@ -289,6 +289,28 @@ A new character starts as class 6 (Sorceress): `FUN_80079b34` sets the
 class from a loop counter that always ends at 9, which its switch maps to
 6. The colour byte of a new record is 0 (yellow).
 
+**Changing class** (`FUN_8008dbf4` → `FUN_80079a00(player, class)`). The
+character's record holds a set of values for each class and swaps them:
+`FUN_8007a9e0` puts the playing class's away — experience `+0x1EC0` and
+health `+0x1EB4` (6 words a class from `+0xA90`), gold `+0x1EC4`, potions
+`+0x1EBC`, keys `+0x1EB8` and the realm and runestone marks `+0x1EC8`,
+`+0x1ECA` (OR-ed in; `0xF0` bytes a class from `+0xDD0`) — with the class
+`+0xA88` and colour `+0xA8A` it was; `FUN_8007a738(record, class)` takes
+the new class's up, its level worked out from its experience
+(`FUN_800765ac`), and a class with no health kept (never played) starts
+as a new hero (`FUN_80079b34`). The class `+0xC` is the one picked and
+`+0x8` that less 8 for the alternates (their base class). The quest's
+pieces, the unlocked characters `+0xA8C` and the powers stay the
+character's. (Sumner, class 16, becomes class 2 with his model and his
+own fixed record: level 99, 5000 gold, 9 keys and potions, every mark.)
+
+Here: `PlayerState::change_class` and `ClassRecord` (`player_state.rs`;
+saved with the character, `saves.rs`). The class card opens the classes
+the character choosing has unlocked (`Select::unlocked`,
+`secret_realm::class_open`); a pick from the character menu keeps the
+record (`PartyChange::Set` not fresh → `set_members`), online the changed
+record goes to the host with the hero. Not done: Sumner as a class.
+
 Class card (`FUN_8008f828`): `ATTS_DESC` labels (`font32` × 0.5)
 right-aligned at column + 81, y 160 + 16 × i; values `%03d` in `initials`
 × 0.5 at column + 84, y 162 + 16 × i: class start value (`PDAT +0x28`,

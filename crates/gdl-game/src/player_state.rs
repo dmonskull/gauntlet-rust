@@ -263,6 +263,33 @@ pub struct PlayerState {
     pub generators: u32,
     pub gold_found: u32,
     pub play_fields: u64,
+    /// What the character keeps of the other classes it has played
+    /// ([`ClassRecord`]).
+    #[serde(default)]
+    pub others: Vec<ClassRecord>,
+}
+
+/// What a character keeps of each class it has played: the game holds
+/// these per class in the character's record, puts the playing class's
+/// away as the class changes and takes the new one's up
+/// (`docs/frontend.md`, "Changing class"). Its quest pieces, unlocked
+/// characters and powers are the character's whatever its class.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClassRecord {
+    pub class: String,
+    pub level: u32,
+    pub experience: u32,
+    pub health: f32,
+    pub gold: u32,
+    pub keys: u32,
+    pub potions: Vec<i32>,
+    pub runestones: Vec<i32>,
+    pub realms_beaten: u32,
+    pub bought: StatBonus,
+    pub kills: u32,
+    pub generators: u32,
+    pub gold_found: u32,
+    pub play_fields: u64,
 }
 
 /// Stat points bought in the shop (`shop.rs`), on top of the class's stats
@@ -361,6 +388,66 @@ impl Default for PlayerState {
 }
 
 impl PlayerState {
+    /// The playing class's own values, as the character keeps them while
+    /// it plays another.
+    fn class_record(&self) -> ClassRecord {
+        ClassRecord {
+            class: self.class.clone(),
+            level: self.level,
+            experience: self.experience,
+            health: self.health,
+            gold: self.gold,
+            keys: self.keys,
+            potions: self.potions.clone(),
+            runestones: self.runestones.clone(),
+            realms_beaten: self.realms_beaten,
+            bought: self.bought,
+            kills: self.kills,
+            generators: self.generators,
+            gold_found: self.gold_found,
+            play_fields: self.play_fields,
+        }
+    }
+
+    /// The character changes class (the game's class switch): what it has
+    /// as the class it's playing is put away, and what it kept as `class`
+    /// taken up — a class it hasn't played starts as a new hero does
+    /// (level 1, full health, nothing in hand). `stats` are the new
+    /// class's (its size and powerup time).
+    pub fn change_class(&mut self, class: &str, stats: Option<&PlayerStats>) {
+        let class = class.to_ascii_uppercase();
+        if class == self.class {
+            return;
+        }
+        let mine = self.class_record();
+        self.others.retain(|r| r.class != mine.class);
+        self.others.push(mine);
+        let kept = self.others.iter().position(|r| r.class == class).map(|i| self.others.remove(i));
+        let fresh = PlayerState::new(&class, stats);
+        let alive = self.alive;
+        let r = kept.unwrap_or_else(|| ClassRecord { class: class.clone(), ..fresh.class_record() });
+        self.level = r.level.max(1);
+        self.experience = r.experience;
+        self.gold = r.gold;
+        self.keys = r.keys;
+        self.potions = r.potions;
+        self.runestones = r.runestones;
+        self.realms_beaten = r.realms_beaten;
+        self.bought = r.bought;
+        self.kills = r.kills;
+        self.generators = r.generators;
+        self.gold_found = r.gold_found;
+        self.play_fields = r.play_fields;
+        // The new class's own size and powerup time.
+        self.class = fresh.class;
+        self.radius = fresh.radius;
+        self.half_height = fresh.half_height;
+        self.head_height = fresh.head_height;
+        self.powerup_time = fresh.powerup_time;
+        self.health = if r.health > 0.0 { r.health.min(self.max_health()) } else { self.max_health() };
+        self.alive = alive;
+    }
+
     /// What only ever grows on a level, at its most between this record
     /// and `other` — another machine's copy of the same hero at a sync
     /// point (`resync.rs`): its level and experience, quest pieces and
@@ -424,6 +511,7 @@ impl PlayerState {
             generators: 0,
             gold_found: 0,
             play_fields: 0,
+            others: Vec::new(),
         }
     }
 
@@ -722,10 +810,22 @@ fn set_members(
     for change in changes.read() {
         match change {
             PartyChange::Set { slot, choice, name, saved, fresh, devices } => {
+                // The same character, not a fresh one: its name, colour or
+                // class changed. Another class takes up what the character
+                // kept of it (`PlayerState::change_class`).
                 if let Some(member) = party.get_mut(*slot)
                     && !fresh
-                    && member.choice == *choice
                 {
+                    if !member.choice.class.eq_ignore_ascii_case(&choice.class) {
+                        let stats = game
+                            .install
+                            .read(&format!("PDATA/{}.WAD", choice.class))
+                            .ok()
+                            .and_then(|b| PlayerStats::parse(&b).ok().flatten());
+                        member.state.change_class(&choice.class, stats.as_ref());
+                        info!("player {}: {} is now the {} (level {})", slot + 1, name, choice.class, member.state.level);
+                    }
+                    member.choice = choice.clone();
                     member.name = name.clone();
                     member.devices = *devices;
                     continue;
@@ -1161,6 +1261,31 @@ fn powers_and_warning(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A character keeps each class's own level and holdings, and takes
+    /// them up again as it changes back; its quest pieces and unlocked
+    /// characters are its own whatever its class.
+    #[test]
+    fn a_character_keeps_each_classs_own() {
+        let mut s = PlayerState::new("WAR", None);
+        (s.level, s.experience, s.gold, s.keys) = (7, 5000, 300, 2);
+        s.runestones = vec![3];
+        s.quest.legendary = 3;
+        s.secret_characters = 1;
+        s.change_class("min", None);
+        assert_eq!((s.class.as_str(), s.level, s.experience, s.gold, s.keys), ("MIN", 1, 0, 0, 0));
+        assert!(s.runestones.is_empty() && s.health == s.max_health());
+        assert_eq!((s.quest.legendary, s.secret_characters), (3, 1));
+        s.gold = 50;
+        s.change_class("WAR", None);
+        assert_eq!((s.level, s.experience, s.gold, s.keys, s.runestones.as_slice()), (7, 5000, 300, 2, [3].as_slice()));
+        s.change_class("MIN", None);
+        assert_eq!((s.gold, s.others.len()), (50, 1));
+        // The same class: nothing moves.
+        s.change_class("MIN", None);
+        assert_eq!((s.gold, s.others.len()), (50, 1));
+    }
+
 
     #[test]
     fn with_every_slot_held_for_good_a_new_power_takes_the_games_pick() {

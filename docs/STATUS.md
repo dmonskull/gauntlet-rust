@@ -32,7 +32,7 @@ leaves co-op out.
 | Level mechanics (triggers, lifts, animated objects, secret walls, falls) | 8 | 86 % | E2's debris, subtype 1 rotators; the G–T tour's leads (G2, G3, G4, H3, J3, K3, T1, the I2/J3/S3 triggers it found unregistered) |
 | What each level places and hides | 5 | 90 % | every level audited statically (the last round: A5, A6, J, K, L, S, T, DEMO1); random item types take the first choice; the stray objects likely the debug markers (now off) |
 | Every level checked start to exit | 5 | 35 % | only A1's exit checked start to exit; the trigger tour has run on every level (A1–T3) |
-| Quest, tower, saving | 5 | 92 % | the unlocked secret characters on the select screen, per-class records, memory card screens |
+| Quest, tower, saving | 5 | 94 % | Sumner as a class, memory card screens |
 | Front end, menus, HUD, hints | 7 | 88 % | options, the attract loop, the hints' plates, the memory card screens |
 | Audio | 5 | 85 % | music switching and ducking, menu sounds, footstep pan |
 | Co-op (2–4 players) | 6 | 72 % | co-op combos (decoded: [coop.md](coop.md)), the monsters' crowd penalty |
@@ -183,8 +183,8 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
   fade.
 - The memory card screens; one record per class.
 - Hints drawn as the game draws them, for its time (plain centred text now).
-- The select screen opening the secret characters a hero has unlocked
-  (`secret_realm::class_open`; the coins, count and `ALLCOINS` are in).
+- Sumner as a class (the seventeenth, unlocked with bit `0x100`: class 2
+  with his model and fixed record).
 
 ### 8. Audio ([audio-format.md](audio-format.md) "Not done / unconfirmed")
 
