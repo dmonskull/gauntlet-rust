@@ -279,6 +279,14 @@ impl Animator {
         self.play_blended(name, 0.0)
     }
 
+    /// Puts the model on `action` at `frame` outright, with no blend into
+    /// it (a sync point's, `resync.rs`: every machine poses it alike).
+    pub fn set_clip(&mut self, action: usize, frame: f32) {
+        self.play(action);
+        self.frame = frame;
+        self.blend = Blend::None;
+    }
+
     /// Starts `name` unless it's already playing, blending from the current
     /// pose over `blend` seconds.
     pub fn play_blended(&mut self, name: &str, blend: f32) -> bool {

@@ -124,6 +124,8 @@ impl Det for f64 {
 mod tests {
     use super::*;
 
+    const EXPECTED_BITS: u64 = 0xa534_cfde_c325_92f5;
+
     #[test]
     fn they_agree_with_the_usual_maths() {
         for x in [-3.0f32, -0.5, 0.0, 0.25, 1.0, 2.5, 6.0] {
@@ -133,6 +135,32 @@ mod tests {
         }
         assert_eq!(2.0f32.dpowf(3.0), 8.0);
         assert_eq!(3.0f32.dhypot(4.0), 5.0);
+    }
+
+    /// The same bits on every system: these sums were taken on an ARM
+    /// Mac, and the tests run on Intel Windows and Linux too (the build's
+    /// `test` job).
+    #[test]
+    fn every_system_computes_the_same_bits() {
+        let mut sum = 0u64;
+        let mut take = |x: f32| sum = sum.wrapping_mul(0x100_0000_01B3).wrapping_add(u64::from(sync_bits(x)));
+        for i in 0..4000 {
+            let x = i as f32 * 0.173 - 346.0;
+            let y = (i * 7 % 613) as f32 * 0.031 - 9.5;
+            take(x.dsin());
+            take(x.dcos());
+            take((x * 0.01).dtan());
+            take((y * 0.1).clamp(-1.0, 1.0).dasin());
+            take((y * 0.1).clamp(-1.0, 1.0).dacos());
+            take(y.datan());
+            take(y.datan2(x));
+            take(y.abs().dpowf(1.7));
+            take(x.dhypot(y));
+            take((y.abs() + 0.001).dlog10());
+            let (s, c) = (x * 0.5).dsin_cos();
+            take(s * c);
+        }
+        assert_eq!(sum, EXPECTED_BITS, "{sum:#x}");
     }
 
     #[test]

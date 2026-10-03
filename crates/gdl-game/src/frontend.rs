@@ -1256,6 +1256,17 @@ impl Frontend {
         self.screen == Screen::Playing
     }
 
+    /// A hero's death as the level keeps it: out of the level, and how
+    /// long it has lain dead (a sync point carries both, `resync.rs`).
+    pub fn fallen(&self, slot: usize) -> (bool, f32) {
+        (self.out[slot], self.dead_for[slot])
+    }
+
+    pub fn set_fallen(&mut self, slot: usize, (out, dead_for): (bool, f32)) {
+        self.out[slot] = out;
+        self.dead_for[slot] = dead_for;
+    }
+
     /// Whether the select screen (Manage Character) or the loading after
     /// it is up.
     pub fn selecting(&self) -> bool {
@@ -2624,8 +2635,12 @@ fn online_in_play(
         host_resync(fe, online, party, changes, (lock, new_game), &changed, TOWER);
         return;
     }
-    // Out of sync: the level under way again, from the host's records.
-    if online.desync.take().is_some() {
+    // Out of sync, and the games can't be put together where they are
+    // (`resync.rs`: they aren't on the same level): the level under way
+    // again, from the host's records.
+    if std::mem::take(&mut online.restart_level) {
+        online.desync = None;
+        online.notice("Out of sync, the level starts again");
         host_resync(fe, online, party, changes, (lock, new_game), &[], here);
         return;
     }
@@ -3004,11 +3019,10 @@ fn draw(
     strings: Option<Res<Strings>>,
     stats: Option<Res<ClassStats>>,
     options: Res<GameOptions>,
-    (online, opening, failed, lock, party, camera): (
+    (online, opening, failed, party, camera): (
         Option<Res<Online>>,
         Option<Res<Opening>>,
         Option<Res<OnlineFailed>>,
-        Res<Lockstep>,
         Res<Party>,
         Option<Res<PlayCamera>>,
     ),
@@ -3081,16 +3095,10 @@ fn draw(
         Screen::Shop | Screen::Intro => {}
         Screen::Playing => {
             if let Some(o) = online.as_deref() {
-                if lock.waited > crate::online::WAIT_SHOWN {
-                    let who: Vec<String> = o.waiting_slots().iter().map(|s| format!("Player {}", s + 1)).collect();
-                    let text = if who.is_empty() { "Waiting for the network...".to_string() } else { format!("Waiting for {}...", who.join(", ")) };
-                    small(&mut d, 176.0, &text, Color::WHITE);
-                }
+                // Waiting on the network shows as the lag sign alone
+                // (`lag_sign.rs`).
                 for (i, (text, _)) in o.notices.iter().enumerate() {
                     small(&mut d, 60.0 + 16.0 * i as f32, text, Color::WHITE);
-                }
-                if o.desync.is_some() {
-                    small(&mut d, 30.0, "Out of sync with the other players", Color::srgb(1.0, 0.3, 0.3));
                 }
                 if let (Some(me), Some(w)) = (o.me, camera.as_deref().filter(|c| c.per_hero()).and_then(|c| c.watching))
                     && w != me

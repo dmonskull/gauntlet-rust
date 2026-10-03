@@ -38,6 +38,7 @@ mod hazards;
 mod hints;
 mod hud;
 mod items;
+mod lag_sign;
 mod level;
 mod level_intro;
 mod level_material;
@@ -64,6 +65,7 @@ mod tower;
 mod tower_scenes;
 mod population;
 mod quest;
+mod resync;
 mod rotations;
 mod rumble;
 mod saves;
@@ -231,7 +233,7 @@ fn main() {
                 power_menu::PowerMenuPlugin,
                 rumble::RumblePlugin,
             ))
-            .add_plugins((party::PartyPlugin, fake_pad::FakePadPlugin, online::OnlinePlugin))
+            .add_plugins((party::PartyPlugin, fake_pad::FakePadPlugin, online::OnlinePlugin, resync::ResyncPlugin, lag_sign::LagSignPlugin))
             .add_plugins((
                 font::Screen2dPlugin,
                 frontend::FrontendPlugin { skip: skip_menus },

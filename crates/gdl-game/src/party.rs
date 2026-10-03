@@ -197,12 +197,17 @@ impl SlotInput {
     /// every machine switches between each player's own camera and the
     /// shared co-op one on the tick it changes.
     pub const OWN_CAMERAS: u32 = 0x20;
+    /// Online, the host's call for a sync point (`resync.rs`): on the
+    /// first tick whose controls carry it every machine stops and they
+    /// put their games together again.
+    pub const SYNC: u32 = 0x02;
     /// The settings' bits.
     pub const FIRST_PERSON: u32 = 0x10;
     /// Mouse look uses a wider angular range than a controller stick.
     pub const MOUSE_LOOK: u32 = 0x08;
     pub const SETTINGS: u32 = Self::AUTO_AIM | Self::AUTO_ATTACK | Self::ROBOTRON | Self::FIRST_PERSON;
-    const EXTRAS: u32 = Self::SETTINGS | Self::MOUSE_LOOK | Self::BACK | Self::OPEN_SHOP | Self::OPEN_INVENTORY | Self::OWN_CAMERAS;
+    const EXTRAS: u32 =
+        Self::SETTINGS | Self::MOUSE_LOOK | Self::BACK | Self::OPEN_SHOP | Self::OPEN_INVENTORY | Self::OWN_CAMERAS | Self::SYNC;
 
     /// The game's buttons held, without the extras.
     pub fn buttons(&self) -> u32 {

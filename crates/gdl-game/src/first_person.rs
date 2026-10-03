@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 const TURN_RATE: f32 = 2.4;
 const PITCH_LIMIT: f32 = 1.35;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Look {
     pub on: bool,
     pub yaw: f32,

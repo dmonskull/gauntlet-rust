@@ -287,6 +287,30 @@ pub struct Quest {
 }
 
 impl Quest {
+    /// The further along of this progress and `other`, piece by piece
+    /// (two machines' copies of a hero at a sync point, `resync.rs`): a
+    /// counter that has opened its realm (−1) stays opened.
+    pub fn keep_progress(&mut self, other: &Quest) {
+        let further = |mine: &mut i16, theirs: i16| {
+            if *mine >= 0 {
+                *mine = if theirs < 0 { theirs } else { (*mine).max(theirs) };
+            }
+        };
+        for (mine, theirs) in self.crystals.iter_mut().zip(other.crystals) {
+            further(mine, theirs);
+        }
+        for (mine, theirs) in self.gargoyle.iter_mut().zip(other.gargoyle) {
+            further(mine, theirs);
+        }
+        self.legendary |= other.legendary;
+        for (mine, theirs) in self.finished.iter_mut().zip(other.finished) {
+            *mine |= theirs;
+        }
+        self.shards_announced |= other.shards_announced;
+        self.runes_announced |= other.runes_announced;
+        self.rank_level = self.rank_level.max(other.rank_level);
+    }
+
     /// A gem of this colour code: its counter goes up unless its realm is
     /// open or it's full. Returns the counter.
     pub fn add_gem(&mut self, colour: i32) -> Option<usize> {

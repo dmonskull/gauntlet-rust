@@ -297,7 +297,7 @@ impl MonsterLevel {
 }
 
 /// What stopped a monster's last move.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Block {
     #[default]
     None,
@@ -459,7 +459,7 @@ const DEATH_ARC: &str = "DEATH_ARC";
 const DEATH_EXP: &str = "DEATH_EXP";
 
 /// A suicide runner's progress toward blowing up.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Suicide {
     /// 0 waiting for a player, 1 about to get up, 2 running.
     stage: u8,
@@ -507,6 +507,11 @@ impl Monster {
         let death = self.enemy == DEATH_TYPE;
         let set = if death { None } else { deaths::death_set(self.enemy, self.stats.step, kind) };
         self.dying = Some(Dying { set, kind, blow, step: deaths::DEATH_START, started: false, quiet: death });
+    }
+
+    /// The number it was made with: the level's count of monsters so far.
+    pub fn number(&self) -> u32 {
+        self.number
     }
 
     /// Its centre: feet plus its type's centre height.
@@ -2253,6 +2258,299 @@ fn interpolate(between: Res<Between>, enemies: Res<EnemyScale>, mut monsters: Qu
         transform.translation = Vec3::from(p0).lerp(Vec3::from(m.position), t);
         transform.rotation = Quat::from_rotation_y(f0 + locomotion::wrap(m.facing - f0) * t);
         transform.scale = Vec3::splat(enemies.0);
+    }
+}
+
+/// The level's monsters as a sync point carries them (`resync.rs`): the
+/// host's, which every machine — the host too — makes again from this, so
+/// all have the same ones in the same order.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct MonstersSave {
+    tick: u32,
+    rng: u32,
+    created: u32,
+    death_sucking: bool,
+    monsters: Vec<MonsterSave>,
+    /// The generators standing.
+    generators: Vec<GeneratorSave>,
+    /// The placed monsters already out (their placements).
+    placed_out: Vec<usize>,
+}
+
+/// What a machine's own game has of the monsters, for the host: which
+/// are alive of those made so far, the generators standing and the placed
+/// monsters out. What any machine's heroes killed or broke stays so.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct MonstersSeen {
+    created: u32,
+    alive: Vec<u32>,
+    generators: Vec<usize>,
+    placed_out: Vec<usize>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct GeneratorSave {
+    placement: usize,
+    tier: i32,
+    hit_points: f32,
+    wait: f32,
+    ramp: f32,
+}
+
+/// A monster: what its ticks keep, with heroes by their slots and its
+/// generator by its placement.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct MonsterSave {
+    number: u32,
+    enemy: i32,
+    tier: i32,
+    ai: i16,
+    hit_points: f32,
+    damage: f32,
+    awareness: f32,
+    hits: i16,
+    position: [f32; 3],
+    facing: f32,
+    heading: f32,
+    generator: Option<usize>,
+    placed: bool,
+    target: Option<usize>,
+    target_distance: f32,
+    aware: bool,
+    near_screen: bool,
+    floor: f32,
+    ground_node: Option<usize>,
+    freeze: f32,
+    action: u8,
+    request: u8,
+    attacks: u16,
+    strike: Option<usize>,
+    blocked: Block,
+    avoid: (i32, usize, f32),
+    stuck: u8,
+    last_heading: f32,
+    wander_turns: u8,
+    frame_ai: i16,
+    knock: [f32; 3],
+    throw: (f32, f32, f32, f32),
+    retreat: bool,
+    suicide: Suicide,
+    /// Death's own: its timer and delay, who it drained (slot), whether it
+    /// left, the haloed hero it runs from, its nudge, fade and effect.
+    death: (f32, u8, Option<usize>, usize, bool, Option<usize>, usize, f32, bool),
+    /// Its model's clip and frame.
+    clip: (usize, f32),
+}
+
+/// The monsters for a sync point (the dying are already counted: they go).
+pub(crate) fn save_synced(world: &mut World) -> Option<MonstersSave> {
+    let level = world.get_resource::<MonsterLevel>()?;
+    let mut save = MonstersSave {
+        tick: level.tick,
+        rng: level.rng,
+        created: level.created,
+        death_sucking: level.death_sucking,
+        ..default()
+    };
+    let slots: Vec<(Entity, usize)> = world.query::<(Entity, &Player)>().iter(world).map(|(e, p)| (e, p.slot)).collect();
+    let slot = |e: Option<Entity>| e.and_then(|e| slots.iter().find(|(h, _)| *h == e).map(|(_, s)| *s));
+    let generators: Vec<(Entity, Generator)> = world.query::<(Entity, &Generator)>().iter(world).map(|(e, g)| (e, g.clone())).collect();
+    save.generators = generators
+        .iter()
+        .map(|(_, g)| GeneratorSave { placement: g.placement, tier: g.tier, hit_points: g.hit_points, wait: g.wait, ramp: g.ramp })
+        .collect();
+    save.generators.sort_by_key(|g| g.placement);
+    for (m, animator) in world.query::<(&Monster, &Animator)>().iter(world) {
+        if m.dying.is_some() {
+            continue;
+        }
+        let d = &m.death;
+        save.monsters.push(MonsterSave {
+            number: m.number,
+            enemy: m.enemy,
+            tier: m.tier,
+            ai: m.ai,
+            hit_points: m.hit_points,
+            damage: m.stats.damage,
+            awareness: m.stats.awareness,
+            hits: m.hits,
+            position: m.position,
+            facing: m.facing,
+            heading: m.heading,
+            generator: m.generator.and_then(|g| generators.iter().find(|(e, _)| *e == g).map(|(_, g)| g.placement)),
+            placed: m.placed,
+            target: slot(m.target),
+            target_distance: m.target_distance,
+            aware: m.aware,
+            near_screen: m.near_screen,
+            floor: m.floor,
+            ground_node: m.ground_node,
+            freeze: m.freeze,
+            action: m.action,
+            request: m.request,
+            attacks: m.attacks,
+            strike: slot(m.strike),
+            blocked: m.blocked,
+            avoid: (m.avoid_side, m.avoid_step, m.avoid_timer),
+            stuck: m.stuck,
+            last_heading: m.last_heading,
+            wander_turns: m.wander_turns,
+            frame_ai: m.frame_ai,
+            knock: m.knock,
+            throw: (m.throw_timer, m.throw_pause, m.throw_carry, m.throw_rate),
+            retreat: m.retreat,
+            suicide: m.suicide,
+            death: (d.timer, d.delay, slot(d.drained), d.drained_slot, d.left, slot(d.halo_hero), d.nudge, d.fade, d.drain_effect),
+            clip: (animator.action, animator.frame),
+        });
+    }
+    // In the order they were made, whatever order each machine keeps them in.
+    save.monsters.sort_by_key(|m| m.number);
+    if let Some(placed) = world.get_resource::<generators::PlacedMonsters>() {
+        save.placed_out = placed.0.iter().filter(|p| p.spawned).map(|p| p.placement).collect();
+    }
+    Some(save)
+}
+
+impl MonstersSave {
+    /// How many monsters and generators it holds.
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        (self.monsters.len(), self.generators.len())
+    }
+
+    /// What this machine's game has of them, for the host.
+    pub(crate) fn seen(&self) -> MonstersSeen {
+        MonstersSeen {
+            created: self.created,
+            alive: self.monsters.iter().map(|m| m.number).collect(),
+            generators: self.generators.iter().map(|g| g.placement).collect(),
+            placed_out: self.placed_out.clone(),
+        }
+    }
+
+    /// The host's monsters with what another machine's game has of them:
+    /// a monster made there and dead there is dead, a generator broken
+    /// there is broken, a placed monster out there is out.
+    pub(crate) fn keep_progress(&mut self, seen: &MonstersSeen) {
+        self.monsters.retain(|m| m.number > seen.created || seen.alive.contains(&m.number));
+        self.generators.retain(|g| seen.generators.contains(&g.placement));
+        for p in &seen.placed_out {
+            if !self.placed_out.contains(p) {
+                self.placed_out.push(*p);
+            }
+        }
+    }
+}
+
+/// Every machine makes the monsters again as a sync point has them: the
+/// ones there go (with no death), the generators take their strength —
+/// one not standing in the save is broken — and each monster is made
+/// where and as it was.
+pub(crate) fn load_synced(world: &mut World, save: &MonstersSave) {
+    if !world.contains_resource::<MonsterLevel>() {
+        return;
+    }
+    let heroes: Vec<(usize, Entity)> = world.query::<(Entity, &Player)>().iter(world).map(|(e, p)| (p.slot, e)).collect();
+    let hero = |slot: Option<usize>| slot.and_then(|s| heroes.iter().find(|(h, _)| *h == s).map(|(_, e)| *e));
+    let old: Vec<Entity> = world.query_filtered::<Entity, With<Monster>>().iter(world).collect();
+    for e in old {
+        world.despawn(e);
+    }
+    // The generators: broken, or at the save's strength.
+    let standing: Vec<(Entity, usize, i32)> =
+        world.query::<(Entity, &Generator)>().iter(world).map(|(e, g)| (e, g.placement, g.tier)).collect();
+    let mut generators: Vec<(usize, Entity)> = Vec::new();
+    for (entity, placement, tier) in standing {
+        let Some(g) = save.generators.iter().find(|g| g.placement == placement) else {
+            crate::generators::wreck(world, entity, placement);
+            continue;
+        };
+        if g.tier != tier {
+            crate::generators::show_strength(world, placement, g.tier);
+        }
+        let alive = save.monsters.iter().filter(|m| m.generator == Some(placement)).count();
+        if let Some(mut live) = world.get_mut::<Generator>(entity) {
+            live.tier = g.tier;
+            live.hit_points = g.hit_points;
+            live.wait = g.wait;
+            live.ramp = g.ramp;
+            live.alive = alive.min(usize::from(u8::MAX)) as u8;
+        }
+        generators.push((placement, entity));
+    }
+    world.resource_scope(|world, mut level: Mut<MonsterLevel>| {
+        for m in &save.monsters {
+            let new = NewMonster {
+                enemy: m.enemy,
+                tier: m.tier,
+                ai: m.ai,
+                position: m.position,
+                facing: m.facing,
+                generator: m.generator.and_then(|p| generators.iter().find(|(q, _)| *q == p).map(|(_, e)| *e)),
+                placed: m.placed,
+                awareness: Some(m.awareness),
+                freeze: m.freeze,
+                throw_rate: m.throw.3,
+            };
+            let Some(entity) = spawn_monster(&mut level, new, &mut world.commands()) else {
+                warn!("sync point: no model for enemy {} tier {}", m.enemy, m.tier);
+                continue;
+            };
+            world.flush();
+            if let Some(mut animator) = world.get_mut::<Animator>(entity) {
+                animator.set_clip(m.clip.0, m.clip.1);
+            }
+            let Some(mut live) = world.get_mut::<Monster>(entity) else { continue };
+            let live = &mut *live;
+            live.number = m.number;
+            live.hit_points = m.hit_points;
+            live.stats.damage = m.damage;
+            live.hits = m.hits;
+            live.heading = m.heading;
+            live.target = hero(m.target);
+            live.target_distance = m.target_distance;
+            live.aware = m.aware;
+            live.near_screen = m.near_screen;
+            live.floor = m.floor;
+            live.ground_node = m.ground_node;
+            live.action = m.action;
+            live.request = m.request;
+            live.attacks = m.attacks;
+            live.strike = hero(m.strike);
+            live.blocked = m.blocked;
+            (live.avoid_side, live.avoid_step, live.avoid_timer) = m.avoid;
+            live.stuck = m.stuck;
+            live.last_heading = m.last_heading;
+            live.wander_turns = m.wander_turns;
+            live.frame_ai = m.frame_ai;
+            live.knock = m.knock;
+            (live.throw_timer, live.throw_pause, live.throw_carry, live.throw_rate) = m.throw;
+            live.retreat = m.retreat;
+            live.suicide = m.suicide;
+            let (timer, delay, drained, drained_slot, left, halo_hero, nudge, fade, drain_effect) = m.death;
+            live.death = DeathState {
+                timer,
+                delay,
+                drained: hero(drained),
+                drained_slot,
+                left,
+                halo_hero: hero(halo_hero),
+                nudge,
+                fade,
+                drain_effect,
+            };
+        }
+        // Making them moved the level's own counters on: back to the save's.
+        level.tick = save.tick;
+        level.rng = save.rng;
+        level.created = save.created;
+        level.death_sucking = save.death_sucking;
+        level.leader = None;
+    });
+    if let Some(mut placed) = world.get_resource_mut::<generators::PlacedMonsters>() {
+        for p in &mut placed.0 {
+            p.spawned = save.placed_out.contains(&p.placement);
+        }
     }
 }
 

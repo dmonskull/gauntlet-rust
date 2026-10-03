@@ -14,6 +14,25 @@ permissions:
   contents: write
 
 jobs:
+  # The tests on every system: online play needs each to compute the game
+  # alike, and some tests hold sums taken on one system that the others
+  # must reach too (`detmath.rs`, `rotations.rs`). Beside the build, not
+  # before it: a release's downloads don't wait on this.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libgtk-3-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
   build:
     strategy:
       fail-fast: false

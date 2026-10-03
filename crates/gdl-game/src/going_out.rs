@@ -33,7 +33,7 @@ const LIGHT_END: f32 = 10.0;
 const LIGHT_REPEATS: u8 = 1;
 
 /// The death light on a hero.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeathLight {
     counter: f32,
     step: f32,
@@ -65,7 +65,7 @@ impl DeathLight {
 }
 
 /// A hero going out through an exit.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GoingOut {
     /// Fields left until it's gone; none yet before its first tick.
     fields: Option<i32>,

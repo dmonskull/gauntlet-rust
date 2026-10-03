@@ -60,6 +60,8 @@ pub fn arc(from: Vec3, to: Vec3) -> Quat {
 mod tests {
     use super::*;
 
+    const EXPECTED_BITS: u64 = 0xcd12_2e87_c397_67ee;
+
     fn near(a: Quat, b: Quat) -> bool {
         // A rotation and its negative are the same one.
         a.abs_diff_eq(b, 1e-5) || a.abs_diff_eq(-b, 1e-5)
@@ -90,6 +92,31 @@ mod tests {
         assert!(near(slerp(a, b, 0.0), a));
         assert!(near(slerp(a, b, 1.0), b));
         assert!(slerp(a, a, 0.5).is_normalized());
+    }
+
+    /// The same bits on every processor: this sum was taken on an ARM
+    /// Mac, and the tests run on Intel Windows and Linux too (the build's
+    /// `test` job). It takes in a rotation applied to a vector and two
+    /// multiplied, which the game leaves to glam.
+    #[test]
+    fn every_processor_computes_the_same_bits() {
+        use gdl_formats::detmath::sync_bits;
+        let mut sum = 0u64;
+        let mut take = |x: f32| sum = sum.wrapping_mul(0x100_0000_01B3).wrapping_add(u64::from(sync_bits(x)));
+        for i in 0..600 {
+            let t = i as f32;
+            let a = Quat::from_euler(EulerRot::YXZ, t * 0.37, t * 0.11 - 1.0, t * 0.05);
+            let b = Quat::from_rotation_y(2.0 - t * 0.21) * Quat::from_rotation_x(t * 0.013);
+            let v = Vec3::new(t * 0.3 - 40.0, 2.5, 17.0 - t * 0.9);
+            for q in [slerp(a, b, (t * 0.07).fract()), arc(Vec3::Y, (a * Vec3::Z).normalize()), a * b] {
+                q.to_array().map(&mut take);
+                (q * v).to_array().map(&mut take);
+            }
+            let m = Transform::from_translation(v).with_rotation(a).with_scale(Vec3::splat(1.5)).compute_affine()
+                * Transform::from_xyz(1.0, -2.0, 3.0).with_rotation(b).compute_affine();
+            m.transform_point3(v).to_array().map(&mut take);
+        }
+        assert_eq!(sum, EXPECTED_BITS, "{sum:#x}");
     }
 
     #[test]

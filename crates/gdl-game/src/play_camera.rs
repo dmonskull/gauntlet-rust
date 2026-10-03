@@ -21,7 +21,7 @@ use gdl_formats::population::LocatorKind;
 use gdl_formats::{BossCamera, LevelCamera, LevelLight, WorldData};
 
 use crate::camera::{FlyCamera, FreeLook};
-use crate::camera_rig::{CameraPoint, CameraRig};
+use crate::camera_rig::{CameraPoint, CameraRig, RigSave};
 use crate::level::LoadedGame;
 use crate::level_material::SceneLight;
 use crate::player::{Player, PlayerTick};
@@ -92,6 +92,66 @@ pub struct PlayCamera {
     /// Online: whose camera this machine's screen shows (its own hero's, a
     /// teammate's while its own is out). The screen's, not the game's.
     pub watching: Option<usize>,
+}
+
+/// The play camera's rigs as a sync point carries them (`resync.rs`): the
+/// shared one as the host has it, each hero's own as its player's machine
+/// does — a camera never jumps on the screen it's drawn on. The opening
+/// shot, cuts, shakes and the boss camera run from the level's own events
+/// and stay as each machine has them.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct CameraSave {
+    shared: Option<RigAt>,
+    own: Vec<(usize, RigAt)>,
+    standing: [bool; MAX_PLAYERS],
+}
+
+/// A rig, and its eye and target before the latest tick.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct RigAt {
+    rig: RigSave,
+    previous: ([f32; 3], [f32; 3]),
+}
+
+impl CameraSave {
+    /// Each of `slots`' own cameras as `theirs` has it (those heroes'
+    /// machine's).
+    pub(crate) fn keep_own(&mut self, theirs: &CameraSave, slots: &[u8]) {
+        for (slot, rig) in &theirs.own {
+            if !slots.contains(&(*slot as u8)) {
+                continue;
+            }
+            match self.own.iter_mut().find(|(s, _)| s == slot) {
+                Some(mine) => mine.1 = rig.clone(),
+                None => self.own.push((*slot, rig.clone())),
+            }
+        }
+    }
+}
+
+pub(crate) fn save_synced(world: &World) -> Option<CameraSave> {
+    let camera = world.get_resource::<PlayCamera>()?;
+    let own = |(slot, o): (usize, &Option<OwnCamera>)| o.as_ref().map(|o| (slot, RigAt { rig: o.rig.save(), previous: o.previous }));
+    Some(CameraSave {
+        shared: Some(RigAt { rig: camera.rig.save(), previous: camera.previous }),
+        own: camera.own.iter().enumerate().filter_map(own).collect(),
+        standing: camera.standing,
+    })
+}
+
+pub(crate) fn load_synced(world: &mut World, save: &CameraSave) {
+    let Some(mut camera) = world.get_resource_mut::<PlayCamera>() else { return };
+    if let Some(shared) = &save.shared {
+        camera.rig.load(&shared.rig);
+        camera.previous = shared.previous;
+    }
+    for (slot, saved) in &save.own {
+        if let Some(own) = camera.own.get_mut(*slot).and_then(Option::as_mut) {
+            own.rig.load(&saved.rig);
+            own.previous = saved.previous;
+        }
+    }
+    camera.standing = save.standing;
 }
 
 /// A hero's own camera (online): a rig following it alone, and its eye and

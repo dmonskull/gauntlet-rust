@@ -5,6 +5,44 @@ Last updated 2026-10-01 (v0.2.0). Read this first when resuming;
 (≈ 84 % for one player, ≈ 83 % done overall) and everything left to do,
 in order.
 
+
+## 2026-10-03: online sync, v0.2.3
+
+Done and released as v0.2.3 (`docs/online.md`: "What a tick may read",
+"The same maths everywhere", "Sync points", "The lag sign"):
+
+- **The out-of-sync restarts' cause**: the ticks read where things were
+  *drawn* (a hero's aim found monsters by their transforms, which are
+  smoothed between ticks by each machine's own frame timing). Fixed in
+  `tick_places.rs`; `FIGHT=1 tools/online_test.sh` reproduces the old
+  failure (out of sync at the first throw) and passes now, with
+  `CLIENT_PREFIX="taskpolicy -b"` slowing one side too.
+- **Sync points** (`resync.rs`): no level restart; each hero from its own
+  machine. `CLIENT_DESYNC_AT=400:<what>` tests each kind.
+- **The lag sign** (`lag_sign.rs`, `GDL_LAG_SIGN=1` to see it).
+- Co-op quest pickups go to every hero in play (`items.rs`, `docs/items.md`).
+- The build's `test` job runs the tests on Windows, macOS and Linux:
+  `every_system_computes_the_same_bits` (`detmath.rs`) and
+  `every_processor_computes_the_same_bits` (`rotations.rs`) hold sums
+  taken on an ARM Mac. **Check that job after each push**: a failure on
+  Intel there is a real cross-machine difference to fix.
+
+Asked for and **not done yet** (next, in this order):
+
+1. Quitting a level (alone, co-op, online) goes back to the tower, not the
+   title; online that needs a `SlotInput::QUIT_LEVEL` command (bit `0x04`
+   is free) handled on a tick. A player who leaves mid-level keeps nothing
+   from it (their record from the level-start `Snapshot`, `frontend.rs`).
+2. First person: the other players' HUD panels aren't shown.
+3. Monsters push through a door when a hero stands right against its
+   other side and they keep attacking (check the monster/door collision in
+   `monsters.rs` against the original).
+4. Other classes' throw and attack animations (check each class's action
+   table against the original's).
+5. Sync points don't carry yet: broken barrels and walls, chest contents
+   let out in another order, `mechanics.rs`, a critter's move under way,
+   camera cuts and the boss camera.
+
 ## Pick up here
 
 **2026-10-02 session: the user's bug list (do these first).** Done and

@@ -503,7 +503,10 @@ impl BuiltModel {
 /// generator leaves (`GEN_<code>0`, `GEN_SPECIAL0`); empty where the game
 /// has none, and then the generator goes ([`GeneratorLooks::broken`]).
 #[derive(Component)]
-pub struct GeneratorLooks(pub Vec<Vec<(Handle<Mesh>, Handle<LevelMaterial>)>>);
+pub struct GeneratorLooks(pub Vec<Look>);
+
+/// One look: its meshes and their materials.
+pub type Look = Vec<(Handle<Mesh>, Handle<LevelMaterial>)>;
 
 impl GeneratorLooks {
     /// The wreck's meshes, if the game has a broken model for it.

@@ -568,6 +568,64 @@ pub fn tick_placed(
     }
 }
 
+/// The meshes a generator's model shows at strength `level` (0: its
+/// wreck), where it has that look.
+fn look_of(world: &mut World, placement: usize, level: usize) -> Vec<(Entity, Option<crate::population::Look>, Vec<Entity>)> {
+    world
+        .query::<(Entity, &crate::population::PlacementIndex, Option<&crate::population::GeneratorLooks>, Option<&Children>)>()
+        .iter(world)
+        .filter(|(_, index, _, _)| index.0 == placement)
+        .map(|(e, _, looks, children)| {
+            let parts = looks.and_then(|l| l.0.get(level)).filter(|p| !p.is_empty()).cloned();
+            (e, parts, children.map(|c| c.iter().collect()).unwrap_or_default())
+        })
+        .collect()
+}
+
+fn swap_look(world: &mut World, model: Entity, parts: crate::population::Look, children: Vec<Entity>) {
+    for c in children {
+        world.despawn(c);
+    }
+    for (mesh, material) in parts {
+        world.spawn((Mesh3d(mesh), MeshMaterial3d(material), ChildOf(model)));
+    }
+}
+
+/// A generator's model steps to strength `tier`'s look (a sync point's,
+/// `resync.rs`; a blow's does the same in `damage.rs`).
+pub(crate) fn show_strength(world: &mut World, placement: usize, tier: i32) {
+    for (model, parts, children) in look_of(world, placement, tier.max(0) as usize) {
+        if let Some(parts) = parts {
+            swap_look(world, model, parts, children);
+        }
+    }
+}
+
+/// A generator is broken, with no blow (a sync point's: another machine's
+/// hero broke it): its wreck where the game has one, else it's gone and
+/// its item freed — as `damage.rs` leaves one a hero destroys.
+pub(crate) fn wreck(world: &mut World, generator: Entity, placement: usize) {
+    let mut wrecked = false;
+    for (model, parts, children) in look_of(world, placement, 0) {
+        match parts {
+            Some(parts) => {
+                swap_look(world, model, parts, children);
+                wrecked = true;
+            }
+            None => {
+                world.despawn(model);
+            }
+        }
+    }
+    world.despawn(generator);
+    if !wrecked && world.contains_resource::<crate::items::LevelItems>() {
+        world.resource_scope(|world, mut items: Mut<crate::items::LevelItems>| {
+            items.free(placement, &mut world.commands());
+        });
+        world.flush();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
