@@ -1028,7 +1028,8 @@ fn checksum(
 /// first door or locked chest opened (`items::test_diverge`); `barrel`:
 /// the first breakable breaks; `mover`: the first mover is elsewhere;
 /// `critter`, `slay`: every critter is hurt and turned, or killed; `box`:
-/// a message box comes up; `clock`: the game clock jumps a second ahead.
+/// a message box comes up; `clock`: the game clock jumps a second ahead;
+/// `scene`: in the tower, the wizard comes with an announcement.
 fn test_desync(world: &mut World) {
     static AT: std::sync::OnceLock<Option<(u32, String)>> = std::sync::OnceLock::new();
     let at = AT.get_or_init(|| {
@@ -1069,6 +1070,7 @@ fn test_desync(world: &mut World) {
         "item" | "door" | "chest" => crate::items::test_diverge(world, what),
         "barrel" => crate::breakables::test_diverge(world),
         "box" => world.resource_mut::<crate::message_box::MessageBox>().test_diverge(),
+        "scene" => crate::tower_scenes::test_diverge(world),
         "clock" => world.resource_mut::<Time<Fixed>>().advance_by(std::time::Duration::from_secs(1)),
         "critter" | "slay" => crate::critters::test_diverge(world, what == "slay"),
         "mover" => {
