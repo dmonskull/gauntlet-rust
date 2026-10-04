@@ -183,15 +183,7 @@ fn setup(mut commands: Commands, items: Res<LevelItems>) {
     for view in items.views() {
         let class = view.ty.class;
         let subtype = view.ty.subtype;
-        let hittable = view.live
-            && view.ty.armor != -1
-            && match class {
-                ItemClass::Container => (BARREL..=POI_BARREL).contains(&subtype) && view.state < 1,
-                ItemClass::Obstacle => subtype != items::SAFE_ROCK && !((BARREL..=POI_BARREL).contains(&subtype) && view.state >= 1),
-                ItemClass::Trigger => subtype == HIT_SWITCH,
-                _ => false,
-            };
-        if !hittable {
+        if !hittable(&view) {
             continue;
         }
         let at = Vec3::from(view.shape.centre);
@@ -215,6 +207,20 @@ fn setup(mut commands: Commands, items: Res<LevelItems>) {
         count += 1;
     }
     info!("breakables: {count}");
+}
+
+/// Whether blows land on an item: a barrel still whole, an obstacle with
+/// armour to take them (not a safe rock), a hit switch.
+pub(crate) fn hittable(view: &ItemView) -> bool {
+    let subtype = view.ty.subtype;
+    view.live
+        && view.ty.armor != -1
+        && match view.ty.class {
+            ItemClass::Container => (BARREL..=POI_BARREL).contains(&subtype) && view.state < 1,
+            ItemClass::Obstacle => subtype != items::SAFE_ROCK && !((BARREL..=POI_BARREL).contains(&subtype) && view.state >= 1),
+            ItemClass::Trigger => subtype == HIT_SWITCH,
+            _ => false,
+        }
 }
 
 /// Keeps each breakable's target on its item, which may have moved since

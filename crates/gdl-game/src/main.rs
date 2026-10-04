@@ -74,6 +74,7 @@ mod shop;
 mod projectiles;
 mod status_hud;
 mod viewer;
+mod walker;
 mod world;
 
 use bevy::prelude::*;
@@ -234,6 +235,7 @@ fn main() {
                 rumble::RumblePlugin,
             ))
             .add_plugins((party::PartyPlugin, fake_pad::FakePadPlugin, online::OnlinePlugin, resync::ResyncPlugin, lag_sign::LagSignPlugin))
+            .add_plugins(walker::WalkerPlugin)
             .add_plugins((
                 font::Screen2dPlugin,
                 frontend::FrontendPlugin { skip: skip_menus },

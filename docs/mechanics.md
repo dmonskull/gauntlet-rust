@@ -770,3 +770,33 @@ released monster starts
 right away (the game wakes a placed-monster item); a shootable wall's in-between hits are silent;
 safe rocks aren't hittable; walls' own collision (item shape 4) isn't
 ported, so shootable walls never blocked the hero in the first place.
+
+## Walking the levels
+
+A test tool, not part of the game: `GDL_WALK=1` (`walker.rs`,
+`tools/walk.sh <levels>`; never online) lets the first player's hero play
+a level by itself, through the same controls a player has, to check that
+the level can be finished and its levers do something.
+
+- **The map.** From where the hero stands, a 1-unit grid of the steps the
+  game's own player move allows (`LevelCollision::move_player`, in moves
+  of at most half a unit), less the steps an item stops (the touch
+  handler's blocking cases: `LevelItems::stops_step`), plus each
+  transporter's hop to the floor under its partner. It's made again
+  whenever the movers, bridges, rotators, animated objects or the items
+  in the way have changed (`Mechanics::shape_key`, `LevelItems::in_way`).
+- **What it goes for**, nearest first: pads and levers (stood on, in the
+  shape the mechanics test), hit switches (thrown at from in sight), keys,
+  doors (with a key), barrels, shootable walls and generators that stopped
+  a step, then floors that move (stood on while it waits). The exit as
+  soon as it can be walked to; `GDL_WALK=all` leaves it for last. A thing
+  is tried again only after something else changed, four times at most.
+  Monsters and generators within 9 units, in sight, are fought first.
+- **The end.** One line, `walker: <level> FINISHED …` (the party is going
+  out through an exit) or `walker: <level> STUCK …` (nothing left to try
+  for 20 s, 80 s on a moving floor), with where it stood, what it did and
+  the pads, switches, keys and exits it could never walk to;
+  `GDL_WALK_SHOT=<file.png>` saves a picture there, and the game closes.
+
+Boss levels end by their victory, not an exit, and secret exits are left
+alone: the walker says STUCK on those.

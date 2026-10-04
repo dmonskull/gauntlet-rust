@@ -1563,6 +1563,68 @@ impl Mechanics {
     }
 }
 
+/// What the level walker (`walker.rs`, testing) sees of a trigger.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Switch {
+    pub placement: usize,
+    pub subtype: i32,
+    /// Its touch radius where the placement gives one (else the type's
+    /// shape; a lift pad's twice as wide).
+    pub radius: Option<f32>,
+    /// Touched through another trigger's chain, not by standing on it.
+    pub chained: bool,
+    /// Pressed by a blow, not by standing on it.
+    pub hit: bool,
+    pub on: bool,
+}
+
+impl Mechanics {
+    /// The triggers as they stand, for the level walker.
+    pub(crate) fn switches(&self) -> Vec<Switch> {
+        self.triggers
+            .iter()
+            .map(|t| Switch {
+                placement: t.placement,
+                subtype: t.subtype,
+                radius: (t.radius > 0.0).then_some(t.radius),
+                chained: t.flags & CHAINED_TO != 0,
+                hit: t.subtype == HIT_SWITCH,
+                on: t.action != 0,
+            })
+            .collect()
+    }
+
+    /// The rotators a touch sets turning (placement, touched), for the
+    /// level walker.
+    pub(crate) fn turners(&self) -> Vec<(usize, bool)> {
+        self.rotators.iter().filter(|r| r.subtype == 2).map(|r| (r.placement, r.touched)).collect()
+    }
+
+    /// Whether something a trigger set going is still on its way: a mover
+    /// between its heights, a bridge fading, a touched rotator turning.
+    pub(crate) fn on_the_move(&self) -> bool {
+        self.movers.iter().any(|m| m.state & MOVING != 0) || self.rotators.iter().any(|r| r.subtype == 2 && r.touched && !r.done)
+    }
+
+    /// A number that changes when the level's moving collision does: what
+    /// the walker's map of the level was made against.
+    pub(crate) fn shape_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for m in &self.movers {
+            // A bridge's collision goes with its state, not its fade.
+            (m.offset.to_bits(), if m.flags & BRIDGE != 0 { m.state & (ON | PLAYERS) } else { 0 }).hash(&mut h);
+        }
+        for a in &self.animations {
+            a.frame.to_bits().hash(&mut h);
+        }
+        for r in &self.rotators {
+            r.total.to_bits().hash(&mut h);
+        }
+        h.finish()
+    }
+}
+
 /// Hit switches (subtype 0x1F): a blow presses them for every player, down
 /// their chain.
 pub fn hit_switch(mech: &mut Mechanics, placement: usize) {
