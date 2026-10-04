@@ -29,7 +29,9 @@
 // xy: diffuse texture scroll (texture modifiers); z: additive; w: how far
 // faded out (vanishing bridges)
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var<uniform> uv_offset: vec4<f32>;
-// x: depth-test this much nearer the camera (an effect's depth bias)
+// x: depth-test this much nearer the camera (an effect's depth bias);
+// y: environment-mapped (render flag 0x8000): the texture's coordinates
+// come from the normals, as the chrome's do
 @group(#{MATERIAL_BIND_GROUP}) @binding(8) var<uniform> depth_offset: vec4<f32>;
 
 // The mesh's tag (flash.rs): bits 0-23 a colour (0xRRGGBB, opaque); bit 24
@@ -63,11 +65,13 @@ fn fragment(in: VertexOutput) -> FragmentOutput {
     let tag_color = vec4(f32((tag >> 16u) & 0xFFu), f32((tag >> 8u) & 0xFFu), f32(tag & 0xFFu), 255.0) / 255.0;
 #ifdef VERTEX_UVS_A
     var uv = in.uv + uv_offset.xy;
-    if (params.x > 2.5) {
-        // The chrome (override −3, draw flag 0x80000): the texture's
-        // coordinates are the normal along the camera's right and up.
+    if (params.x > 2.5 || depth_offset.y > 0.5) {
+        // The chrome (override −3, draw flag 0x80000) and environment-
+        // mapped instances (draw flag 0x20000): the texture's coordinates
+        // are the normal along the camera's right and up. The picture is
+        // mirrored (camera.rs), so the screen's right is the view's −X.
         let n = normalize(in.world_normal);
-        uv = vec2(dot(n, view.world_from_view[0].xyz), dot(n, view.world_from_view[1].xyz));
+        uv = vec2(-dot(n, view.world_from_view[0].xyz), dot(n, view.world_from_view[1].xyz));
     }
     var color = textureSample(diffuse_texture, diffuse_sampler, uv);
 #else

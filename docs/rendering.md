@@ -89,7 +89,8 @@ GS settings the data was authored for):
 | `0x4000` | skip the lightmap stage |
 | `0x800000` | additive: `GXSetBlendMode(BLEND, SRCALPHA, ONE)` (PS2 ALPHA `0x48`; normal is `0x44` = `SRCALPHA, INVSRCALPHA`). Bevy draws `AlphaMode::Add` as premultiplied alpha, so `level.wgsl` outputs colour × alpha with alpha 0 for these (without that, glows drew as dark discs) |
 | `0x100`, `0x200`/`0x400`/`0x100000` | tint colour from the instance / fade alpha from instance `+0x53` (not implemented) |
-| `0x8000` (→ `0x20000`), `0x10000000` | extra texture stages (not implemented) |
+| `0x8000` (→ draw flag `0x20000`) | environment-mapped: `FUN_800c5894` takes the same path as the chrome's `0x80000` (`FUN_800c60a4` builds the camera's right and up in the model's space), and the vertex routine replaces each vertex's texture coordinates with its normal along those two (`r13-0x6a9f`); the instance's own texture is kept. Only shiny things carry it: in `POWERUPS` the keys, the legendary weapons' blades, the gargoyle pieces, the gold and silver invulnerability icons and the menus' arrow; in the levels the ice realm's crystals, J6's glass, the tower's ice bridge. `level.wgsl` does it with the chrome's code (`LevelMaterial::env_mapped`); the screen's right is the view's −X there (the picture is mirrored) |
+| `0x10000000` | an extra texture stage (not implemented) |
 
 The draw traversal (`FUN_800c7d6c`) skips an instance's subtree on `0x2`
 and its own draw on `0x1`. Bits `0x0F000000` pick a facing mode that

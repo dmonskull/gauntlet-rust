@@ -82,7 +82,8 @@ pub struct LevelMaterial {
     #[uniform(7)]
     pub uv_offset: Vec4,
     /// x: how much nearer the camera the depth test takes it, in our depth
-    /// buffer's units (an effect's depth bias, [`LevelMaterial::set_depth_bias`]).
+    /// buffer's units (an effect's depth bias, [`LevelMaterial::set_depth_bias`]);
+    /// y: environment-mapped ([`LevelMaterial::env_mapped`]).
     #[uniform(8)]
     pub depth_offset: Vec4,
     pub alpha_mode: AlphaMode,
@@ -92,6 +93,9 @@ pub struct LevelMaterial {
     /// Blended, but still writing depth (a dissolving body, so it hides
     /// its own far side as the game's z-buffered blend does).
     pub blend_depth_write: bool,
+    /// Its light is set by whoever draws it, not kept on the level's (the
+    /// menus' arrow, `menu_arrow.rs`).
+    pub own_light: bool,
 }
 
 /// Pipeline variant: depth test and depth write on or off.
@@ -137,6 +141,7 @@ impl LevelMaterial {
             depth_test: true,
             depth_write: true,
             blend_depth_write: false,
+            own_light: false,
         }
     }
 
@@ -163,6 +168,14 @@ impl LevelMaterial {
 
     pub fn is_dynamic(&self) -> bool {
         self.params.w > 0.5
+    }
+
+    /// The texture is looked up by the normal along the camera's right
+    /// and up instead of the model's coordinates (render flag `0x8000`,
+    /// `docs/rendering.md`, "Environment maps").
+    pub fn env_mapped(mut self, on: bool) -> Self {
+        self.depth_offset.y = if on { 1.0 } else { 0.0 };
+        self
     }
 
     /// The game's per-object depth bias (an effect's, from its table:
@@ -251,7 +264,7 @@ fn apply_scene_light(
     for id in ids {
         let stale = materials
             .get(id)
-            .is_some_and(|m| m.is_dynamic() && (m.light_dir != light.dir || m.light_color != light.color));
+            .is_some_and(|m| m.is_dynamic() && !m.own_light && (m.light_dir != light.dir || m.light_color != light.color));
         if stale && let Some(m) = materials.get_mut(id) {
             m.light_dir = light.dir;
             m.light_color = light.color;
