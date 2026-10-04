@@ -93,6 +93,7 @@ struct DrawState {
     depth_test: bool,
     depth_write: bool,
     lightmap: bool,
+    env: bool,
 }
 
 impl DrawState {
@@ -103,6 +104,7 @@ impl DrawState {
             depth_test: flags & f::NO_DEPTH_TEST == 0,
             depth_write: flags & f::NO_DEPTH_WRITE == 0,
             lightmap: flags & f::NO_LIGHTMAP == 0,
+            env: flags & f::ENV_MAP != 0,
         }
     }
 }
@@ -202,7 +204,8 @@ pub fn build_flagged(
                 let made = materials.add(
                     LevelMaterial::new(diffuse_image, lightmap_image, alpha_mode)
                         .with_depth(state.depth_test, state.depth_write)
-                        .dynamic(lit),
+                        .dynamic(lit)
+                        .env_mapped(state.env),
                 );
                 if let Some(m) = cache.shared.as_mut() {
                     m.insert(key, made.clone());

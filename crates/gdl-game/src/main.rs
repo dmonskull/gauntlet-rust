@@ -46,6 +46,7 @@ mod levelup;
 mod locomotion;
 mod loot;
 mod mechanics;
+mod menu_arrow;
 mod message_box;
 mod model_mesh;
 mod options;
@@ -235,7 +236,7 @@ fn main() {
                 rumble::RumblePlugin,
             ))
             .add_plugins((party::PartyPlugin, fake_pad::FakePadPlugin, online::OnlinePlugin, resync::ResyncPlugin, lag_sign::LagSignPlugin))
-            .add_plugins(walker::WalkerPlugin)
+            .add_plugins((walker::WalkerPlugin, menu_arrow::MenuArrowPlugin))
             .add_plugins((
                 font::Screen2dPlugin,
                 frontend::FrontendPlugin { skip: skip_menus },

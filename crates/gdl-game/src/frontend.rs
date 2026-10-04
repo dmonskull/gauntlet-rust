@@ -19,9 +19,11 @@
 //! and pad bindings (`controls.rs`), the window, and debugging aids, all
 //! saved with the options.
 //!
+//! The menus' arrow is the game's own model, sliding and turning over
+//! between lines as the game has it (`menu_arrow.rs`).
+//!
 //! Stand-ins (see the doc): the title's attract mode (movies, credits,
-//! demo play) isn't run; menu sounds aren't played; the menus' spinning
-//! 3D arrow is drawn as the flat `MENU_MARKER` texture; Game Options,
+//! demo play) isn't run; menu sounds aren't played; Game Options,
 //! Shop, Inventory and memory-card Save/Load open or list what the game
 //! lists but change nothing.
 
@@ -35,6 +37,7 @@ use crate::controls::{self, Action, Input};
 use crate::exits::ChangeLevelTo;
 use crate::font::{Draw2d, FontTexture, GameFonts, TextStyle, UiTextures};
 use crate::level::LoadedGame;
+use crate::menu_arrow::MenuArrow;
 use crate::message_box::MessageBox;
 use crate::online::{ColumnShow, Hero, Lobby, Lockstep, Message, NewGame, Online, OnlineFailed, Opening};
 use crate::play_camera::PlayCamera;
@@ -67,6 +70,7 @@ impl Plugin for FrontendPlugin {
                 (
                     read_input,
                     run,
+                    step_arrows,
                     draw,
                     level_started.run_if(resource_exists_and_changed::<LevelPopulation>),
                     death.run_if(crate::online::lockstep_off),
@@ -888,11 +892,66 @@ struct Menu {
     kind: Option<Dynamic>,
     /// Words under the title (a confirmation's warning).
     note: Option<&'static str>,
+    /// The arrow: the line it last came to rest at, and the fields it has
+    /// been on its way to the selected one (0 at rest; as a menu opens the
+    /// game's count is at its end, so the arrow starts on its line).
+    arrow_at: usize,
+    arrow_slide: f32,
 }
+
+/// The fields the arrow takes from one line to another (`r13-0x7de0`),
+/// turning over half a turn on the way.
+const ARROW_SLIDE: f32 = 15.0;
+/// The arrow's tip is this far left of the lines.
+const ARROW_LEFT: f32 = 16.0;
 
 impl Menu {
     fn new(def: &'static MenuDef) -> Self {
-        Self { def, lines: None, selected: 0, t: 0.0, disabled: Vec::new(), column: 0.0, kind: None, note: None }
+        Self {
+            def,
+            lines: None,
+            selected: 0,
+            t: 0.0,
+            disabled: Vec::new(),
+            column: 0.0,
+            kind: None,
+            note: None,
+            arrow_at: 0,
+            arrow_slide: ARROW_SLIDE,
+        }
+    }
+
+    /// The arrow's count, a frame of `fields` on (the game steps it as it
+    /// draws the menu): at rest it sets off when the selection has moved,
+    /// staying where it is for that frame; on its way it counts the
+    /// fields; at its end it has arrived.
+    fn step_arrow(&mut self, fields: f32) {
+        if self.arrow_slide == 0.0 {
+            if self.arrow_at != self.selected {
+                self.arrow_slide = 1.0;
+            }
+        } else if self.arrow_slide < ARROW_SLIDE {
+            self.arrow_slide += fields;
+        } else {
+            self.arrow_at = self.selected;
+            self.arrow_slide = 0.0;
+        }
+    }
+
+    /// Where the arrow is and how it's turned: the line it's leaving, how
+    /// far along to the selected one (0 to 1), and its roll in radians —
+    /// none on an even line, half a turn on an odd one, and half a turn
+    /// more over the slide (the model looks the same either way up, so it
+    /// seems to turn over once per move).
+    fn arrow_pose(&self) -> (usize, f32, f32) {
+        let rest = if self.selected % 2 == 1 { std::f32::consts::PI } else { 0.0 };
+        // Its first frame on the way is spent where it was.
+        if self.arrow_slide <= 1.0 {
+            let from = if self.arrow_slide == 0.0 { self.selected } else { self.arrow_at };
+            return (from, 0.0, rest);
+        }
+        let along = self.arrow_slide.min(ARROW_SLIDE) / ARROW_SLIDE;
+        (self.arrow_at, along, rest + std::f32::consts::PI * along)
     }
     /// With words under its title.
     fn with_note(def: &'static MenuDef, note: &'static str) -> Self {
@@ -3194,6 +3253,15 @@ pub(crate) fn pulse(t: f32) -> f32 {
     0.5 + 0.5 * (tri / 40.0)
 }
 
+/// The menu on show's arrow moves on (the game steps it as it draws the
+/// menu, after the frame's presses).
+fn step_arrows(mut fe: ResMut<Frontend>, real: Res<Time<Real>>) {
+    let fields = real.delta_secs() * 60.0;
+    if let Some(m) = fe.bypass_change_detection().menus.last_mut() {
+        m.step_arrow(fields);
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn draw(
     fe: Res<Frontend>,
@@ -3211,12 +3279,12 @@ fn draw(
         Res<Party>,
         Option<Res<PlayCamera>>,
     ),
-    boxes: Res<MessageBox>,
+    (boxes, mut arrow): (Res<MessageBox>, Option<ResMut<MenuArrow>>),
 ) {
     let (Some(fonts), Some(tex), Some(strings), Some(stats)) = (fonts, tex.as_deref_mut(), strings, stats) else {
         return;
     };
-    let mut d = Painter { draw: &mut draw, fonts: &fonts, tex, images: &mut images };
+    let mut d = Painter { draw: &mut draw, fonts: &fonts, tex, images: &mut images, arrow: arrow.as_deref_mut() };
     let small = |d: &mut Painter, y: f32, text: &str, colour: Color| {
         let style = TextStyle::new(FONT32, 0.5, colour);
         for (i, line) in wrap(&font32_text(text), 52).iter().enumerate() {
@@ -3379,6 +3447,8 @@ struct Painter<'a> {
     fonts: &'a GameFonts,
     tex: &'a mut UiTextures,
     images: &'a mut Assets<Image>,
+    /// The menus' arrow (`menu_arrow.rs`), where its model was found.
+    arrow: Option<&'a mut MenuArrow>,
 }
 
 impl Painter<'_> {
@@ -3448,6 +3518,34 @@ fn draw_menu(d: &mut Painter, m: &Menu, options: &GameOptions) {
     }
     // Letters flicker through the GAR frames 10..22 fields after opening.
     let gar = (def.gar && (10.0..22.0).contains(&m.t)).then(|| ((m.t - 10.0) / 2.0) as u8);
+    if def.arrow && m.len() > 0 {
+        // The arrow (`docs/frontend.md`, "The arrow"): its tip 16 left of
+        // the lines — of the widest, where they're centred — and half a
+        // line down the selected one; on its way there from the line it
+        // left, in whole pixels of the 2D screen as the game counts them.
+        let label = |i: usize| m.label(i).split_once('\t').map_or(m.label(i), |(l, _)| l);
+        let left = if x < 0.0 {
+            let widest = (0..m.len()).map(|i| d.fonts.width(FONT32, def.item_scale, label(i))).fold(0.0, f32::max);
+            -x - (widest / 2.0).trunc()
+        } else {
+            x
+        };
+        let middle = |i: usize| top + (0..i).map(|k| line + m.below(k)).sum::<f32>() + (line / 2.0).trunc();
+        let (from, along, turn) = m.arrow_pose();
+        let (from, to) = (middle(from.min(m.len() - 1)), middle(m.selected.min(m.len() - 1)));
+        let tip = Vec2::new(left - ARROW_LEFT, from + ((to - from) * along).trunc());
+        match d.arrow.as_deref_mut() {
+            Some(arrow) => {
+                let (image, [ax, ay, aw, ah]) = arrow.show(tip, turn);
+                d.draw.image(&image, ax, ay, aw, ah, Color::WHITE);
+            }
+            // Without its model: the flat marker.
+            None => {
+                let size = 24.0;
+                d.image_sized("MENU_MARKER", 0, tip.x - size / 2.0, tip.y - size / 2.0, size, size, Color::WHITE.with_alpha(fade));
+            }
+        }
+    }
     let mut y = top;
     for i in 0..m.len() {
         let (full, item) = (m.label(i), m.item(i));
@@ -3459,16 +3557,8 @@ fn draw_menu(d: &mut Painter, m: &Menu, options: &GameOptions) {
             let glow = TextStyle::new(FONT32, def.item_scale, rgb(def.glow).with_alpha(alpha * pulse(m.t)))
                 .with_texture(FontTexture::Glow)
                 .glowing();
-            let width = d.draw.text(d.fonts, &glow, x, y, label);
+            d.draw.text(d.fonts, &glow, x, y, label);
             d.draw.text(d.fonts, &TextStyle::new(FONT32, def.item_scale, Color::WHITE.with_alpha(alpha)), x, y, label);
-            if def.arrow {
-                // Stand-in for the game's spinning 3D arrow (`ICON_ARROW`),
-                // which sits 16 left of the items.
-                let left = if x < 0.0 { -x - (width / 2.0).trunc() } else { x };
-                let size = 24.0;
-                let colour = Color::WHITE.with_alpha(alpha);
-                d.image_sized("MENU_MARKER", 0, left - 16.0 - size / 2.0, y + line / 2.0 - size / 2.0, size, size, colour);
-            }
         } else {
             let (colour, tex) = match gar {
                 Some(f) => (rgb(def.normal), FontTexture::Gar(f)),

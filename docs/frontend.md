@@ -171,6 +171,44 @@ The in-game menus (Options and after) share flags `0x4F3`, panel
 `SCROLL_A` at (16, 8) 480 × 360, items at x 128, colours (92,26,3) /
 white / (130,0,234), hints at y 304, logo at (290, 142) 224 × 172.
 
+### The arrow
+
+Every menu record names `ICON_ARROW` (word 14), scale 0.05 (word 15) and
+x offset −16 (word 16). `FUN_80073c0c` makes an instance of that model
+from the powerups bank (`r13-0x718c`, `POWERUPS/`: an atree of six parts
+— a flat, ornate silver arrow with a purple gem, the same front and back,
+its tip at its origin, pointing along +X); `FUN_80072a38` places and
+draws it each frame, in the 3D scene:
+
+- **Where.** Its tip at the 2D screen point (items' x − 16, the selected
+  line's y + half a line), 1.1 in front of the camera (`r13-0x7dc0`):
+  `FUN_800b4ba4` turns the screen point into a point in the world through
+  the camera. For centred items the x is the centre less half the
+  **widest** line's width.
+- **How it's turned.** The camera's own axes (`FUN_800bebbc` copies the
+  rotation rows of the camera's matrix: its length runs along the
+  camera's right, so it points at the line), then rolled about that
+  length (`FUN_800be73c`: Y′ = Y cos − Z sin, Z′ = Z cos + Y sin — the
+  top edge comes toward the viewer) by 0 on an even line, π on an odd one
+  (`r2-0x6178`, `r2-0x6180`).
+- **Moving.** The menu keeps the y it last rested at (`+0xD4`) and a
+  count (`+0xD8`). At rest with the selected line elsewhere the count
+  becomes 1 (the arrow stays for that frame); then each frame adds the
+  frame's fields and the arrow is at old + (new − old) × count / 15
+  (whole pixels) with π × count / 15 more roll, until the count reaches
+  15 (`r13-0x7de0`): a quarter of a second, half a turn over. The model
+  looks alike either way up, so nothing jumps. A menu opens with the
+  count at 15: the arrow starts on its line.
+- It isn't faded with the menu's text.
+
+Here (`menu_arrow.rs`): the menus are a 2D layer, so a camera of its own
+draws the model — at that point of the game's 60° view, cut down to the
+96 × 80 screen pixels round the arrow — into a picture the menu lays over
+its panel, lit by the level's light as the scene's camera sees it. The
+slide's count is the menu's (`Menu::step_arrow`, `Menu::arrow_pose`).
+The arrow's metal parts are environment-mapped (render flag `0x8000`,
+[rendering.md](rendering.md), "Blending and depth").
+
 Volume sliders (`FUN_80072330`, `FUN_80072454`): under the item, at the
 items' x, a bar `r13-0x7dac` = 264 wide: `MARKER_LEFT` at x − 52,
 `MARKER_RIGHT` at x + 264 − 24, `EMPTY_BAR` 264 × 32 at y + 11, `PINK_BAR`
@@ -879,10 +917,13 @@ Start, triggers.
 
 - No attract loop (movies, scroll screens, credits, demo play) and no
   30 s title timeout.
-- Menu sounds aren't played (the game plays sound indices `0xD`–`0x13`
-  through `FUN_800157ec`; their names aren't mapped).
-- The menus' spinning 3D arrow (`ICON_ARROW`) is drawn as the flat
-  `MENU_MARKER` texture, 24 px, 16 left of the items.
+- Menu sounds aren't played yet. The game's calls (`FUN_800157ec`, the
+  first bank's calls by number, volume `0x7F`): moving up or down `0xD`
+  `S_OPTMENUMOVVRT` (`FUN_8009cc90`), choosing `0x11` `S_OPTMENUSEL`
+  (`FUN_8009cc0c`, only menus with flag `0x400`), going back `0x10`
+  `S_OPTMENUEXIT` (`FUN_8009cbe0`, flag `0x800`), a disabled line `0xA`
+  `S_NO` (`FUN_8009ccbc`); also there: `0xE` `S_OPTMENUMOVHRZ`, `0xF`
+  `S_OPTMENUCHAR`, `0x12` `S_OPTEXIT`, `0x13` `S_OPTMENUSCROLL`.
 - Game Options lists its items but changes nothing; Shop and Inventory
   aren't implemented; Compass keeps its setting, but no compass is drawn.
 - Saving: a file stands in for the memory card, so the card's screens

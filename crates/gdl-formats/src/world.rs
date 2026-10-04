@@ -86,6 +86,11 @@ pub mod render_flags {
     pub const NO_DEPTH_WRITE: u32 = 0x80;
     /// The lightmap stage is skipped.
     pub const NO_LIGHTMAP: u32 = 0x4000;
+    /// Environment-mapped: the texture is looked up by the normal along
+    /// the camera's right and up instead of the model's own coordinates
+    /// (the game's draw flag `0x20000`): keys, blades, ice, glass, the
+    /// menu arrow.
+    pub const ENV_MAP: u32 = 0x8000;
     /// Additive: source × alpha + destination (PS2 ALPHA 0x48; normal
     /// blending is 0x44).
     pub const ADDITIVE: u32 = 0x80_0000;

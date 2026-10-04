@@ -79,6 +79,19 @@ Asked for and **not done yet**:
 
 ## Pick up here
 
+**2026-10-04: the menus' arrow (user request: "make the menu pointer
+like the original, with its motion").** Done: `menu_arrow.rs` draws the
+game's `ICON_ARROW` (POWERUPS) where the game puts it, and it slides to
+the new line over 15 fields while turning over ([frontend.md](
+frontend.md), "The arrow"). Render flag `0x8000` is now the game's
+environment map for everything that carries it (keys, blades, the ice
+realm's crystals: [rendering.md](rendering.md)) — looked at on the title,
+the Tower Menu and a key ring on A1 only; **look at the ice realm (I1–I4)
+and the tower's ice bridge next**. Left for this request: the menu sounds
+(names found, frontend.md "Stand-ins": `S_OPTMENUMOVVRT` on a move,
+`S_OPTMENUSEL`, `S_OPTMENUEXIT`, `S_NO`), the menus' fade out.
+
+
 **2026-10-04: the level walker (new, first runs only).** `walker.rs`
 (`GDL_WALK=1`, `tools/walk.sh <levels>`; never online): the hero plays a
 level by itself through its own controls — maps where it can walk with
