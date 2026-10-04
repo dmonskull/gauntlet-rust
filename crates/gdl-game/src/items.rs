@@ -921,6 +921,34 @@ impl LevelItems {
         self.items.iter().filter(|i| !i.gone).map(Self::view_of)
     }
 
+    /// The items a hero can't walk through as things stand — the touch
+    /// handler's blocking cases, whatever the camera shows — by placement
+    /// (the level walker, `walker.rs`).
+    pub(crate) fn in_way(&self) -> Vec<usize> {
+        self.items.iter().filter(|i| blocks(i)).map(|i| i.placement).collect()
+    }
+
+    /// Whether item `placement` stops a hero of radius `r` and half height
+    /// `h` stepping from `from` to `to`: the touch test, touching nothing.
+    pub(crate) fn stops_step(&self, placement: usize, from: [f32; 3], to: [f32; 3], r: f32, h: f32) -> bool {
+        self.find(placement).is_some_and(|i| {
+            blocks(i)
+                && match &i.wall {
+                    Some(w) => wall_contact(w, from, to, r).is_some(),
+                    None => contact(&i.shape, false, from, to, r, h).is_some(),
+                }
+        })
+    }
+
+    /// Where transporter `placement` sends a hero: its partner's centre.
+    pub(crate) fn transporter_to(&self, placement: usize) -> Option<[f32; 3]> {
+        let PlacementParams::Transporter { destination, .. } = self.find(placement)?.params else { return None };
+        self.items
+            .iter()
+            .find(|j| !j.gone && matches!(j.params, PlacementParams::Transporter { id, .. } if id == destination))
+            .map(|j| j.shape.centre)
+    }
+
     /// The realm id (`REALM_LETTERS`) of the level.
     pub fn realm(&self) -> usize {
         self.realm
@@ -2156,6 +2184,24 @@ fn touchable(item: &Item) -> bool {
         ItemClass::Sound => false,
         ItemClass::EnemyInfo => item.statue,
         _ => true,
+    }
+}
+
+/// Whether a hero walking into `item` is stopped by it, as things stand
+/// ([`touch`]'s blocking cases; a shut door counts though a key opens it).
+fn blocks(item: &Item) -> bool {
+    if item.gone || item.leaving || item.held || item.inside.is_some() || !touchable(item) {
+        return false;
+    }
+    match item.class() {
+        ItemClass::Container => !(item.state == 2 && item.holds.is_some()),
+        ItemClass::Door | ItemClass::Generator | ItemClass::EnemyInfo => true,
+        ItemClass::Obstacle => match item.ty.subtype {
+            ROCK_FALL | LEAF_FALL | ROCK_SINK | DEBRIS | SHOT_FALL => false,
+            SAFE_ROCK => item.stage > 0,
+            _ => true,
+        },
+        _ => false,
     }
 }
 

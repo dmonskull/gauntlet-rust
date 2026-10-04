@@ -962,7 +962,8 @@ impl Plugin for PlayerPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    (gather_inputs.run_if(crate::online::lockstep_off), hop).before(PlayerTick),
+                    ((gather_inputs.run_if(crate::online::lockstep_off), crate::walker::steer.run_if(crate::walker::walking)).chain(), hop)
+                        .before(PlayerTick),
                     (take_grabs, tick).chain().in_set(PlayerTick),
                 ),
             )

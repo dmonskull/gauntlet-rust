@@ -79,6 +79,20 @@ Asked for and **not done yet**:
 
 ## Pick up here
 
+**2026-10-04: the level walker (new, first runs only).** `walker.rs`
+(`GDL_WALK=1`, `tools/walk.sh <levels>`; never online): the hero plays a
+level by itself through its own controls — maps where it can walk with
+the game's player move, less the steps items stop, plus transporter hops;
+goes for the nearest pad, hit switch, key, door (with a key), barrel/wall/
+generator in the way, moving floor; the exit as soon as it's walkable
+(`MODE=all`: last) — and ends with `walker: <level> FINISHED|STUCK …; did:
+[…]; never reached: […]` and a picture. On A1 it maps in ~0.1 s, breaks
+barrels, takes keys, opens the gates and steps on the pads, but 240 s
+weren't enough to reach the exit: tune before the 67-level pass — sleeping
+statues (GRU on A1) shouldn't be attacked for 300 ticks, pads that need
+standing on their target, the fights' length, then run `tools/walk.sh` on
+A1–A4 first and read each STUCK line against the original.
+
 **2026-10-02 session: the user's bug list (do these first).** Done and
 checked in game (muted, scratch runs): first-person throws follow the gaze
 incl. pitch (A1 secret wall 5 broken from 9 units, chest revealed); hands
