@@ -331,10 +331,58 @@ panned by its position (`FUN_80015694`), whenever it isn't playing
 - the items' ambient sounds (`FUN_800a00ec`), re-volumed as well (below,
   "The sound items").
 
-**The volume.** The driver sets a voice's volume to requested × the call's
-own (the bank's `vol`, 0–127) / 127, less the ducking (`FUN_800d2698`),
-and its AX volume to that × 0x3FFF / 255 (`FUN_800d3d48`): linear. So 0x7F
-plays a call at its own volume, 0xB4 at 1.4 ×, 0xE0 at 1.76 ×, 0xFF at 2 ×.
+**The options' volumes.** `FUN_80017f00` sets the Sfx volume `r13-0x7FB8`
+and `FUN_80017f70` the Music volume `r13-0x7FB4`, each kept to 0–255
+("AUDIO sfx volume can't be greater than…"). The options start with both
+at **`0x80`** (`FUN_8007452c`, with stereo on) and `FUN_800744dc` puts
+them in force as the game is set up ("game init once") and again when a
+saved game's options are read; the Audio menu's sliders step them. (The
+Music variable holds 100 before that, which nothing plays at.)
+
+**The volume.** `FUN_80015cac` (and the re-volumes, `FUN_800161fc`) first
+scale the requested volume by the Sfx volume: × `r13-0x7FB8` / 256, so
+every request is halved until the player turns it up. The driver sets a voice's volume to
+that × the call's own (the bank's `vol`, 0–127) / 127, less the ducking
+(`FUN_800d2698`), 0–255; `FUN_800d3d48` makes it v = volume × `0x3FFF` /
+255, and `FUN_800d3f00(voice, v)` the voice's **mixer fader, in tenths of
+a dB** (`MIXSetFader`, `FUN_80102694`):
+
+- 0 at `0x3FFF`, −1000 at 0;
+- else −30, less 30 more for each bit from `0x2000` down that v's top bit
+  is below, plus `((bit / 2) + (v − bit) × 30) / bit` (the steps between
+  the halvings straight).
+
+That's **3 dB a halving**, not 6: the amplitude goes as the square root of
+the volume. With the Sfx option as the game starts, a full call asked at
+`0x7F` plays 6.1 dB down, at `0xE0` 3.7 dB down, at `0xFF` 3.0 dB down;
+with the option at its top `0xFF` plays in full. The mixer's pan (below)
+then takes 3 dB more on each side for a centred voice.
+
+**Ducking** (`FUN_800d2698`). A call's `duck` (× the driver's scale
+`r13-0x7B08` / 256: 256, so as it is) is taken off the volume of every
+other voice playing as the call starts, and given back as it ends; the
+running sum (`r13-0x68D4`) comes off each new voice's volume as it starts.
+A call doesn't duck itself. The banks' voice lines duck — a level's name
+on the loading screen 20, the heroes' and the select screen's announcer's
+lines 10 — and the effects don't: under a level's name a plain call plays
+1.9 dB quieter. The music's stream has its own voices and isn't ducked.
+The driver has 12 voices for calls.
+
+**The music's level.** The stream is started (the audio thread's command
+10, from `FUN_800174b8` → `FUN_800425cc`) and re-volumed (command 9) at
+the options' Music volume `r13-0x7FB4` × `0x1FFF` / 256 in the same
+0–`0x3FFF`, for both channels
+(`FUN_800d71bc`); `FUN_800d708c` sets the stream's voices by the same
+`FUN_800d3f00`: a stereo stream's left at pan 0 and right at pan 127 (each
+all on its own side), each × `0x2D40` / `0x4000` when the stream's flag
+`0x10` is set; a mono stream the mean of the two × `0x2D40` / `0x4000` at
+pan 64. So the music plays 6 dB down as the game starts and 3 dB down at
+the slider's top. (`FUN_80016144` scales a request by the Music option
+the way `FUN_800161fc` does by the Sfx one.)
+
+As the game starts, then, in each speaker: the music at 0.50 of full
+scale, a plain centred call at 0.35, an announcer's centred line (asked at
+`0xE0`) at 0.46.
 
 **The mixer** (`FUN_800d3d48` as the voice starts, `FUN_800d22f4` on
 changes). The pan is an angle, 512 to the turn: the side pan `|0x100 −
@@ -487,19 +535,34 @@ Here (`audio.rs`): `PlaySoundAt { name, at, volume, fade }` —
 `panned`, `faded`, `centred` — does the pan and the fade above as the
 sound starts: the ear is the play camera's current view (its target, and
 its right from eye to target), the heroes in play are the living hero not
-out of the level (its feet), and the call's gain is the call's volume ×
-volume / 127 (samples are floats, so a call asked for louder isn't
-clipped by the decoder). The pan becomes left and right gains from the
-side pan through the mixer's table, relative to the centre's (a centred
-sound plays exactly as a `PlaySound`): stereo here, so the surround pan —
-in front of the focus or behind it — isn't applied, and a sound behind
-pans by its side pan like one in front. There's no mono option.
+out of the level (its feet), and the voice's level is the game's
+(`audio::effect_level`: the requested volume, the options' Sfx volume, the
+call's own, less the ducks of the other calls playing, through the fader
+above), set as its sink's volume and kept up every frame as the option
+changes and voice lines start and end (`audio::Voice`,
+`audio::duck_voices`). The pan becomes
+left and right gains from the side pan through the mixer's table (a
+centred sound, played on one channel, is 3 dB down in each speaker):
+stereo here, so the surround pan — in front of the focus or behind it —
+isn't applied, and a sound behind pans by its side pan like one in front.
+There's no mono option. The music and the movies' sound play at
+`audio::music_level` of the Music option; the menus' and shops' music is
+asked for at the Music option's volume, as the game asks.
+
+The options (`options.rs`): the Audio menu's Music and Sfx sliders are the
+game's 0–255 (saved as `music` and `sfx`; both 128 to start, as the
+game's); the Master Volume (not the game's) scales the whole mix, 1 being
+the game's own level. Before this a call's gain was requested / 127 with
+both sliders at their top and 6 dB taken off the mix: the effects were
+3 to 5.5 dB too loud against the music, the loudest asks twice a plain
+call's level instead of 1.4 ×, and a loading screen's narration over its
+dashes (all asked at `0xE0`) could clip.
 
 `LoopSoundAt { key, slot, name, at, volume, follow_volume }` is a loop
 that follows something: one per channel (`key` and `slot`, the owner's
 numbering), sent by its owner every tick with where the thing is now
 (`LoopSoundAt::at`; `stop` ends it), ended with the level. It starts
-panned from `at` at the call's volume × `volume` / 127; while it plays,
+panned from `at` at the level of `volume` × the call's own / 127; while it plays,
 each frame its pan slides toward the one for where `at` is now by at most
 8 a game tick (240 a second, the short way round the 512 to the turn), and
 with `follow_volume` its volume toward `volume` itself the same way (the
@@ -557,7 +620,8 @@ What each screen does with the sounds, from the decompile:
   `FUN_800a079c(1)`: the menus' music. `FUN_800a079c(on)` keeps a state
   (`r13-0x6ed4`): from 0 it loads bank `SELECT` (`r2-0x526c`,
   `FUN_800a0a18`); on plays sound `0xC0000` (`S_SELECTMUS`, bank 12 call 0)
-  through `FUN_800157ec` at volume `r13-0x7fb4` = 100, priority 1; off
+  through `FUN_800157ec` at volume `r13-0x7fb4` (the options' Music
+  volume: 128 once they're in force), priority 1; off
   stops it (`FUN_80016558`).
 - **The select screen** (`FUN_8008ffec`): stops the level's stream
   (`FUN_800a0944`); entered over play (Manage Character, after a level)
@@ -570,7 +634,7 @@ What each screen does with the sounds, from the decompile:
   music with them) and the level's stream starts at track 0.
 - **The after-level and shop screens** (mode `0x4012`, `FUN_800a05e0`):
   stop `0xC0000` and the stream, load bank `SHOP_<letter>` (`r2-0x527c`)
-  and play `S_SHOP_<letter>` at volume 100 — the letter is
+  and play `S_SHOP_<letter>` at the Music volume too — the letter is
   `FUN_80057a68(0)`: the realm last selected (`r13-0x72b4`: after a level,
   still that level's, as the tower isn't selected until the screen ends;
   from the Tower Menu the tower's `L`), `G` for the test realm's `T`, and
@@ -581,7 +645,8 @@ What each screen does with the sounds, from the decompile:
 Here (`audio.rs` `front_end_sounds`, `Frontend::screen_sounds`): the
 title, the select screen and the loading before play are "menus" —
 entering them from play stops every started sound and the queues, and
-`S_SELECTMUS` plays at 100; the shop screens play `S_SHOP_<letter>`; GAME
+`S_SELECTMUS` plays at the Music option's volume; the shop screens play
+`S_SHOP_<letter>` the same; GAME
 OVER stops everything; the level's music is held (paused) under all of
 them (`hold_music`) and the menus' music stops as play starts. Online a
 player's own character menu leaves the level's sounds alone (the game
@@ -590,9 +655,9 @@ and a level's music and loops played on through GAME OVER and the menus.
 
 ## Not done / unconfirmed
 
-- Track switching during gameplay, ducking and priorities: the runtime
-  plays a level's track 0; effects at their call volume, or as a
-  positional call asks ("Positional sounds").
+- Track switching during gameplay, the 12-voice limit and priorities: the
+  runtime plays a level's track 0; effects at the level their call asks
+  ("The volume"), ducked as the game ducks them.
 - Bank version 0x100 and the byte-swapped variants (`VBNK`, `pGAV`,
   `SShd`) exist in the loader but not on the disc, so aren't implemented.
 - PCM16 streams (codec ≠ 0x20): same.

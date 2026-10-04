@@ -34,7 +34,7 @@ leaves co-op out.
 | Every level checked start to exit | 5 | 35 % | only A1's exit checked start to exit; the trigger tour has run on every level (A1–T3) |
 | Quest, tower, saving | 5 | 95 % | memory card screens |
 | Front end, menus, HUD, hints | 7 | 88 % | options, the attract loop, the hints' plates, the memory card screens |
-| Audio | 5 | 85 % | music switching and ducking, menu sounds, footstep pan |
+| Audio | 5 | 88 % | music switching, the voices' limit and priorities, menu sounds, footstep pan |
 | Co-op (2–4 players) | 6 | 72 % | co-op combos (decoded: [coop.md](coop.md)), the monsters' crowd penalty |
 | Speed and stability | 2 | 85 % | the animated objects' cost unmeasured; warm-up hitches |
 
@@ -187,7 +187,7 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
 
 ### 8. Audio ([audio-format.md](audio-format.md) "Not done / unconfirmed")
 
-- Music track switching, ducking and priorities.
+- Music track switching; the 12 voices' limit and their priorities.
 - The per-level `SNDS` names; the voice queues' pan and 12-voice limit.
 
 ### 9. Co-op (2–4 players)

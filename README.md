@@ -65,7 +65,7 @@ details and the full to-do list):
 | Every level played start to exit | `████░░░░░░` 35 % |
 | Quest, tower, saving | `██████████` 95 % |
 | Front end, menus, HUD, hints | `█████████░` 88 % |
-| Audio | `█████████░` 85 % |
+| Audio | `█████████░` 88 % |
 | Local co-op (2–4 players) | `███████░░░` 72 % |
 | Speed and stability | `█████████░` 85 % |
 
@@ -100,7 +100,7 @@ details and the full to-do list):
    loading maps and opening movies are in).
 5. Effects: texture wipes, effect lights, weapon and hand glows, exact
    particle maths.
-6. Audio: music switching and ducking.
+6. Audio: music switching, the 12-voice limit.
 7. Co-op: co-op combos (decoded, not yet ported), the monsters' crowd
    penalty.
 

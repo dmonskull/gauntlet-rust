@@ -36,6 +36,11 @@ fn main() {
         let dir = PathBuf::from(output);
         std::fs::create_dir_all(&dir).unwrap_or_else(|e| fail(&format!("{output}: {e}")));
         println!("{} calls, {} samples", bank.calls.len(), bank.samples.len());
+        // Each call's own volume, how much it ducks the other voices, and
+        // its priority.
+        for (i, c) in bank.calls.iter().enumerate() {
+            println!("call {i:3}: volume {:3}, duck {:3}, priority {:3}, {} steps", c.volume, c.duck, c.priority, c.steps.len());
+        }
         for (i, s) in bank.samples.iter().enumerate() {
             let pcm = s.decode();
             let path = dir.join(format!("{i:03}_{}.wav", s.name));
