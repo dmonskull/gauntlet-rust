@@ -1,6 +1,6 @@
 # Handoff: where the rewrite stands and how to continue
 
-Last updated 2026-10-03 (v0.2.4; master is past it, lockstep revision 10). Read this first when resuming;
+Last updated 2026-10-04 (v0.2.5 released at the user's request, lockstep revision 10). Read this first when resuming;
 [STATUS.md](STATUS.md) has how close the rewrite is to the original
 (≈ 84 % for one player, ≈ 83 % done overall) and everything left to do,
 in order.
@@ -36,7 +36,7 @@ the v0.2.3 build's `test` job passed on Windows, Linux and macOS (the
 and generators as the game's mover stops them (`docs/monsters.md`,
 "Items in the way") — they used to walk through shut doors.
 
-After v0.2.4 (master, lockstep revision 10 — **not released**; the user
+After v0.2.4, released as **v0.2.5** on 2026-10-04 (lockstep revision 10; until then the user
 decides when):
 
 - **Sync points carry the rest of the level** (`docs/online.md`, "Sync
