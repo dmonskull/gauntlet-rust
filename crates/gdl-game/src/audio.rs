@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use bevy::audio::{AddAudioSource, Decodable, Source};
+use bevy::audio::{AddAudioSource, Decodable, Source, Volume};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use gdl_formats::audio::{AdsSamples, AdsStream, AudioCatalog, SoundBank};
@@ -53,6 +53,7 @@ impl Plugin for GameAudioPlugin {
             .add_message::<QueueHeroLine>()
             .init_resource::<AudioStatus>()
             .init_resource::<VoiceQueues>()
+            .init_resource::<Ducking>()
             .add_systems(Startup, load_audio_tables)
             .add_systems(
                 Update,
@@ -67,6 +68,7 @@ impl Plugin for GameAudioPlugin {
                     stop_sounds,
                     loop_sounds,
                     follow_loops,
+                    duck_voices,
                 )
                     .chain(),
             )
@@ -101,7 +103,12 @@ fn music_held(intro: &crate::level_intro::LevelIntro, fe: Option<&Frontend>) -> 
 /// The menus' music (bank `SELECT`, call 0) and its requested volume, the
 /// shop screens' too (`docs/audio-format.md`, "The front end's sounds").
 const MENU_MUSIC: &str = "S_SELECTMUS";
-const MENU_MUSIC_VOLUME: u8 = 100;
+/// The menus' and shop's music is a sound effect asked for at the options'
+/// Music volume (128 as the game starts; the Sfx volume scales it too, as
+/// any effect).
+fn menu_music_volume(options: &GameOptions) -> u8 {
+    options.music().min(255) as u8
+}
 
 /// Every sound the game started: one-shots and both kinds of loop.
 type StartedSound = Or<(With<EffectName>, With<LoopChannel>, With<FollowingLoop>)>;
@@ -118,7 +125,7 @@ fn shop_music(letter: char) -> String {
 /// them (a level's start stops every sound started before it).
 #[allow(clippy::too_many_arguments)]
 fn front_end_sounds(
-    fe: Option<Res<Frontend>>,
+    (fe, options): (Option<Res<Frontend>>, Res<GameOptions>),
     mut was: Local<Option<ScreenSounds>>,
     mut commands: Commands,
     started: Query<Entity, StartedSound>,
@@ -155,10 +162,10 @@ fn front_end_sounds(
             if !matches!(before, Some(ScreenSounds::Menus | ScreenSounds::Shop(_))) {
                 silence();
             }
-            play.write(PlaySoundAt::centred(MENU_MUSIC, MENU_MUSIC_VOLUME));
+            play.write(PlaySoundAt::centred(MENU_MUSIC, menu_music_volume(&options)));
         }
         ScreenSounds::Shop(c) => {
-            play.write(PlaySoundAt::centred(shop_music(c), MENU_MUSIC_VOLUME));
+            play.write(PlaySoundAt::centred(shop_music(c), menu_music_volume(&options)));
         }
         ScreenSounds::Play => {}
     }
@@ -197,8 +204,93 @@ impl PlaySoundAt {
     }
 }
 
-/// The requested volume that plays a call at its own volume.
+/// The requested volume the game's plain calls ask for.
 pub const CALL_VOLUME: u8 = 127;
+
+/// A voice's fader, in tenths of a dB, for its volume (0–`0x3FFF`): none
+/// at the top, 3 dB down for each halving with the steps between them
+/// straight, 100 dB down at nothing (the driver's own table-less sum;
+/// `docs/audio-format.md`, "The volume").
+fn fader(volume: u32) -> i32 {
+    match volume.min(0x3FFF) {
+        0x3FFF => 0,
+        0 => -1000,
+        v => {
+            let (mut tenths, mut bit) = (-30, 0x2000u32);
+            while v & bit == 0 {
+                tenths -= 30;
+                bit >>= 1;
+            }
+            tenths + (((bit >> 1) + (v - bit) * 30) / bit) as i32
+        }
+    }
+}
+
+/// The amplitude of a mixer level in tenths of a dB: one at 0 dB, nothing
+/// from −90.4 dB down (its table's end).
+fn amplitude(tenths: i32) -> f32 {
+    if tenths <= -904 { 0.0 } else { 10f32.dpowf(tenths as f32 / 200.0) }
+}
+
+/// An effect voice's level: the volume asked for (0–255) × the options'
+/// Sfx volume / 256, × the call's own (0–127) / 127, less what the other
+/// playing calls duck it by, through the driver's fader. At the game's
+/// own Sfx setting (128) a plain call of full volume plays 6 dB down, the
+/// loudest ask 3 dB down.
+pub fn effect_level(requested: u32, call: u32, sfx: u32, ducked: u32) -> f32 {
+    let volume = (((requested * sfx) >> 8) * call.min(127) / 127).saturating_sub(ducked);
+    amplitude(fader(volume.min(255) * 0x3FFF / 255))
+}
+
+/// The same for a voice whose volume moves as it plays (a loop following
+/// something): `volume` is the asked volume × the call's own / 127.
+fn voice_level(volume: f32, sfx: u32, ducked: u32) -> f32 {
+    let volume = ((volume.max(0.0) * sfx as f32 / 256.0) as u32).saturating_sub(ducked);
+    amplitude(fader(volume.min(255) * 0x3FFF / 255))
+}
+
+/// What the calls playing take off every other voice's volume: the sum
+/// of their ducks (a voice line lowers the rest while it's said).
+#[derive(Resource, Default)]
+pub struct Ducking(u32);
+
+impl Ducking {
+    /// What a voice with this duck of its own is lowered by (a call
+    /// doesn't duck itself).
+    pub fn on(&self, own: u8) -> u32 {
+        self.0.saturating_sub(u32::from(own))
+    }
+}
+
+/// Keeps every playing effect's level: what it asked for, the options'
+/// Sfx volume, and the ducks of the calls playing now (the game's driver
+/// lowers the other voices as a ducking call starts and gives it back as
+/// it ends).
+fn duck_voices(
+    options: Res<GameOptions>,
+    mute: Res<crate::options::Mute>,
+    mut ducking: ResMut<Ducking>,
+    mut voices: Query<(&Voice, Option<&mut bevy::audio::AudioSink>)>,
+) {
+    use bevy::audio::{AudioSinkPlayback, Volume};
+    ducking.0 = voices.iter().map(|(v, _)| u32::from(v.duck)).sum();
+    let (sfx, master) = (options.sfx(), mute.master(&options));
+    for (voice, sink) in &mut voices {
+        let Some(mut sink) = sink else { continue };
+        let level = Volume::Linear(master * voice.level(sfx, ducking.on(voice.duck)));
+        if sink.volume() != level {
+            sink.set_volume(level);
+        }
+    }
+}
+
+/// The music stream's level for the options' Music volume (0–255): each
+/// of its two channels plays on its own side at × `0x1FFF` / 256 of the
+/// fader's range — 3 dB down at the most, 6 dB down at the game's own
+/// setting (128).
+pub fn music_level(music: u32) -> f32 {
+    amplitude(fader((music * 0x1FFF) >> 8))
+}
 /// The pan dead ahead of the camera's focus (and of a sound with no place).
 pub const CENTRE_PAN: i32 = 127;
 /// Offsets from the focus pan fully to a side from this far.
@@ -251,14 +343,18 @@ fn pan_db(k: u32) -> i32 {
 }
 
 /// The left and right gains of a pan: the mixer's side pan through its
-/// table, relative to the centre's so a centred sound plays as an unpanned
-/// one. The surround pan (front or behind) needs a surround decoder and
-/// isn't applied here.
+/// table — 3 dB down on each side at the centre, all on one side and
+/// nothing on the other at full left or right. The surround pan (front or
+/// behind) needs a surround decoder and isn't applied here.
 pub fn stereo_gains(pan: i32) -> [f32; 2] {
     let (side, _surround) = mix(pan);
-    let amp = |db: i32| 10f32.dpowf(db as f32 / 200.0);
-    let centre = amp(pan_db(mix(CENTRE_PAN).0));
-    [amp(pan_db(side)) / centre, amp(pan_db(127 - side)) / centre]
+    [amplitude(pan_db(side)), amplitude(pan_db(127 - side))]
+}
+
+/// A centred voice's gain on each side (a sound played on one channel
+/// goes to both speakers alike).
+fn centre_gain() -> f32 {
+    stereo_gains(CENTRE_PAN)[0]
 }
 
 /// Where the positional sounds are heard from: the camera's focus (the
@@ -573,6 +669,29 @@ pub struct StopSound(pub String);
 #[derive(Component)]
 pub struct EffectName(pub String);
 
+/// How loud a playing effect was asked to be: the volume asked for, its
+/// call's own, and whether it plays centred (on one channel: 3 dB down in
+/// each speaker, as the mixer pans it). Its sink's volume is the level
+/// these make with the options' Sfx volume ([`effect_level`]), kept up as
+/// the option changes (`options.rs`).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Voice {
+    requested: u8,
+    call: u8,
+    centred: bool,
+    /// What its call takes off every other voice while it plays.
+    duck: u8,
+}
+
+impl Voice {
+    /// Its level at the options' Sfx volume (0–255), lowered by `ducked`
+    /// (the other calls' ducks).
+    pub fn level(&self, sfx: u32, ducked: u32) -> f32 {
+        let pan = if self.centred { centre_gain() } else { 1.0 };
+        effect_level(u32::from(self.requested), u32::from(self.call), sfx, ducked) * pan
+    }
+}
+
 /// Starts (`Some`) or stops (`None`) the looping sound on channel `key`:
 /// one loop per channel, left alone when asked for the one it's playing
 /// (a lift's rumble while it moves).
@@ -696,10 +815,11 @@ struct FollowingLoop {
 }
 
 impl FollowingLoop {
-    /// The gains for its pan and volume now.
-    fn gains_now(&self) -> [f32; 2] {
+    /// The gains for its pan and volume now, at the options' Sfx volume
+    /// and under the playing calls' ducks.
+    fn gains_now(&self, sfx: u32, ducked: u32) -> [f32; 2] {
         let [l, r] = stereo_gains(self.pan.round() as i32);
-        let amp = self.volume / f32::from(CALL_VOLUME);
+        let amp = voice_level(self.volume, sfx, ducked);
         [l * amp, r * amp]
     }
 }
@@ -810,7 +930,7 @@ fn level_music(
                     AudioPlayer(tracks.add(track)),
                     PlaybackSettings {
                         muted: status.muted,
-                        volume: options.category(SoundKind::Music),
+                        volume: options.volume(SoundKind::Music),
                         // Held while the level's loading screen and movie
                         // are up, or a menu screen (`hold_music`).
                         paused: held,
@@ -886,6 +1006,7 @@ struct Effects<'w, 's> {
     status: ResMut<'w, AudioStatus>,
     assets: ResMut<'w, Assets<SoundEffect>>,
     options: Res<'w, GameOptions>,
+    ducking: Res<'w, Ducking>,
 }
 
 impl Effects<'_, '_> {
@@ -900,15 +1021,16 @@ impl Effects<'_, '_> {
         }
         match built {
             Ok(mut effect) => {
-                if let Some(look) = look {
-                    effect.gain *= f32::from(look.volume) / f32::from(CALL_VOLUME);
-                    effect.stereo = look.stereo;
-                }
+                let (requested, stereo) = look.map_or((CALL_VOLUME, None), |l| (l.volume, l.stereo));
+                effect.stereo = stereo;
+                let voice = Voice { requested, call: effect.call, centred: stereo.is_none(), duck: effect.duck };
+                let volume = Volume::Linear(voice.level(self.options.sfx(), self.ducking.on(voice.duck)));
                 self.commands.spawn((
                     EffectName(name.to_string()),
                     SoundKind::Effect,
+                    voice,
                     AudioPlayer(self.assets.add(effect)),
-                    PlaybackSettings { volume: self.options.category(SoundKind::Effect), ..PlaybackSettings::DESPAWN },
+                    PlaybackSettings { volume, ..PlaybackSettings::DESPAWN },
                 ));
                 self.status.last_sound = name.to_string();
             }
@@ -939,18 +1061,18 @@ impl Effects<'_, '_> {
                     at: r.at,
                     gains: gains.clone(),
                     pan,
-                    volume: f32::from(r.volume) * effect.gain,
+                    volume: f32::from(r.volume) * f32::from(effect.call) / f32::from(CALL_VOLUME),
                     target_volume: r.follow_volume.then_some(f32::from(r.volume)),
                 };
-                gains.set(lp.gains_now());
-                effect.gain = 1.0;
+                gains.set(lp.gains_now(self.options.sfx(), self.ducking.on(0)));
                 effect.live = Some(gains);
                 debug!("loop {name} on {}/{} at {:?}: volume {:.0}, pan {pan}", r.key, r.slot, r.at, lp.volume);
+                // (Its level is in the gains its channel sets as it plays.)
                 self.commands.spawn((
                     lp,
                     SoundKind::Effect,
                     AudioPlayer(self.assets.add(effect)),
-                    PlaybackSettings { volume: self.options.category(SoundKind::Effect), ..PlaybackSettings::DESPAWN },
+                    PlaybackSettings { volume: Volume::Linear(1.0), ..PlaybackSettings::DESPAWN },
                     LevelEntity,
                 ));
             }
@@ -1050,11 +1172,13 @@ fn loop_sounds(
         let Some(name) = name else { continue };
         match build_sound(&mut game, &mut tables, &name) {
             Ok(effect) => {
+                let voice = Voice { requested: CALL_VOLUME, call: effect.call, centred: true, duck: effect.duck };
                 commands.spawn((
                     LoopChannel(key, name.clone()),
                     SoundKind::Effect,
+                    voice,
                     AudioPlayer(effects.add(effect)),
-                    PlaybackSettings { volume: options.category(SoundKind::Effect), ..PlaybackSettings::DESPAWN },
+                    PlaybackSettings { volume: Volume::Linear(voice.level(options.sfx(), 0)), ..PlaybackSettings::DESPAWN },
                 ));
             }
             Err(e) => warn!("sound {name}: {e}"),
@@ -1122,7 +1246,7 @@ fn follow_loops(
         if (l.pan.round(), l.volume.round()) != was {
             trace!("loop {} on {}: pan {:.0} (heading for {target}), volume {:.0}", l.name, l.key, l.pan, l.volume);
         }
-        let gains = l.gains_now();
+        let gains = l.gains_now(effects.options.sfx(), effects.ducking.on(0));
         l.gains.set(gains);
     }
 }
@@ -1156,9 +1280,15 @@ fn build_sound(game: &mut LoadedGame, tables: &mut AudioTables, name: &str) -> R
         return Err("call has no audio".into());
     }
     let loop_from = loop_from.filter(|&l| l < segments.len());
-    // Volume is 0..127 of full scale.
-    let gain = call.volume.min(127) as f32 / 127.0;
-    Ok(SoundEffect { segments: segments.into(), loop_from, gain, stereo: None, live: None })
+    // (The call's own volume, 0–127, goes into its voice's level.)
+    Ok(SoundEffect {
+        segments: segments.into(),
+        loop_from,
+        call: call.volume.min(127) as u8,
+        duck: call.duck.min(255) as u8,
+        stereo: None,
+        live: None,
+    })
 }
 
 /// A level's music: its parts in order, the last one looping forever.
@@ -1219,13 +1349,15 @@ struct Segment {
 
 /// A decoded sound-effect call: mono segments played in order, optionally
 /// looping from one of them — centred (one channel), or panned (two, with
-/// these left and right gains). Samples are floats, so a call asked for
-/// louder than its own volume isn't clipped here.
+/// these left and right gains). How loud it plays is its sink's volume
+/// ([`Voice`]).
 #[derive(Asset, TypePath)]
 pub struct SoundEffect {
     segments: Arc<[Segment]>,
     loop_from: Option<usize>,
-    gain: f32,
+    /// The call's own volume, 0–127, and what it ducks the other voices by.
+    call: u8,
+    duck: u8,
     stereo: Option<[f32; 2]>,
     /// A loop following something: the gains its channel sets as it plays.
     live: Option<Arc<LiveGains>>,
@@ -1239,7 +1371,6 @@ impl Decodable for SoundEffect {
         SoundEffectDecoder {
             segments: self.segments.clone(),
             loop_from: self.loop_from,
-            gain: self.gain,
             stereo: self.stereo,
             live: self.live.clone(),
             frame: [1.0; 2],
@@ -1253,7 +1384,6 @@ impl Decodable for SoundEffect {
 pub struct SoundEffectDecoder {
     segments: Arc<[Segment]>,
     loop_from: Option<usize>,
-    gain: f32,
     stereo: Option<[f32; 2]>,
     live: Option<Arc<LiveGains>>,
     /// The gains of the frame being played (read once for both channels).
@@ -1290,7 +1420,7 @@ impl Iterator for SoundEffectDecoder {
 
     fn next(&mut self) -> Option<f32> {
         let seg = self.segments.get(self.segment)?;
-        let sample = f32::from(seg.pcm[self.pos]) / 32768.0 * self.gain;
+        let sample = f32::from(seg.pcm[self.pos]) / 32768.0;
         if !self.stereo() {
             self.advance();
             return Some(sample);
@@ -1372,7 +1502,7 @@ mod tests {
             .enumerate()
             .map(|(i, &(rate, n))| Segment { sample_rate: rate, pcm: vec![(i as i16 + 1) * 8192; n].into() })
             .collect();
-        SoundEffect { segments: segments.into(), loop_from, gain: 1.0, stereo: None, live: None }
+        SoundEffect { segments: segments.into(), loop_from, call: 127, duck: 0, stereo: None, live: None }
     }
 
     /// Segment n's samples come out as (n + 1) / 4 of full scale.
@@ -1398,8 +1528,7 @@ mod tests {
     #[test]
     fn a_panned_effect_plays_both_channels_by_their_gains() {
         let mut e = effect(&[(12000, 2), (18000, 1)], None);
-        e.stereo = Some([0.5, 2.0]);
-        e.gain = 2.0;
+        e.stereo = Some([1.0, 4.0]);
         let mut d = e.decoder();
         assert_eq!((d.channels(), d.current_frame_len()), (2, Some(4)));
         assert_eq!(quarters(d.by_ref().take(1)), [1.0]);
@@ -1435,7 +1564,8 @@ mod tests {
         assert_eq!(quarters(d.by_ref().take(2)), [1.0, 0.5]);
         gains.set([0.0, 2.0]);
         assert_eq!(quarters(d.by_ref().take(2)), [0.0, 2.0]);
-        // A channel at the centre and its call's own volume plays as is.
+        // A channel at the centre asking a plain call's volume: its level
+        // at the game's Sfx setting, 3 dB down on each side.
         let l = FollowingLoop {
             key: "k",
             slot: 0,
@@ -1446,8 +1576,9 @@ mod tests {
             volume: f32::from(CALL_VOLUME),
             target_volume: None,
         };
-        let [a, b] = l.gains_now();
-        assert!((a - 1.0).abs() < 1e-6 && (b - 1.0).abs() < 0.01, "{a} {b}");
+        let [a, b] = l.gains_now(0x80, 0);
+        let level = effect_level(127, 127, 0x80, 0) * centre_gain();
+        assert!((a - level).abs() < 1e-6 && (b - level).abs() < 1e-6, "{a} {b}");
     }
 
     #[test]
@@ -1504,18 +1635,67 @@ mod tests {
 
     #[test]
     fn stereo_gains_keep_the_power() {
+        // 3 dB down on each side at the centre; all on one side at the ends.
         let [l, r] = stereo_gains(CENTRE_PAN);
-        assert!((l - 1.0).abs() < 1e-6 && (r - 1.0).abs() < 0.01, "{l} {r}");
+        assert!((l - 0.7079).abs() < 1e-3 && (r - 0.7079).abs() < 1e-3, "{l} {r}");
+        assert_eq!(centre_gain(), l);
         let [l, r] = stereo_gains(255);
-        assert!(l < 0.001 && (r - std::f32::consts::SQRT_2).abs() < 0.01, "{l} {r}");
+        assert!(l < 0.001 && (r - 1.0).abs() < 0.01, "{l} {r}");
         let [l, r] = stereo_gains(0);
-        assert!((l - std::f32::consts::SQRT_2).abs() < 0.01 && r < 0.001, "{l} {r}");
+        assert!((l - 1.0).abs() < 0.01 && r < 0.001, "{l} {r}");
         // Behind the camera it pans by the same side pan.
         assert_eq!(stereo_gains(-255), stereo_gains(255));
         for p in [-200, -50, 0, 40, 127, 200, 255] {
             let [l, r] = stereo_gains(p);
-            assert!((l * l + r * r - 2.0).abs() < 0.1, "{p}: {l} {r}");
+            assert!((l * l + r * r - 1.0).abs() < 0.05, "{p}: {l} {r}");
         }
+    }
+
+    /// The driver's fader: 3 dB down for each halving of the volume, the
+    /// steps between straight (the game's own sums).
+    #[test]
+    fn the_fader_takes_3_db_a_halving() {
+        assert_eq!((fader(0x3FFF), fader(0), fader(0x5000)), (0, -1000, 0));
+        assert_eq!((fader(0x2000), fader(0x1000), fader(0x800), fader(1)), (-30, -60, -90, -420));
+        // Between 0x2000 and 0x3FFF: straight, rounded to the nearest.
+        assert_eq!((fader(0x3000), fader(0x2800), fader(0x3FFE)), (-15, -22, 0));
+        assert!((amplitude(-30) - 0.70795).abs() < 1e-4);
+        assert_eq!((amplitude(0), amplitude(-904), amplitude(-1000)), (1.0, 0.0, 0.0));
+    }
+
+    /// The levels as the game starts (Sfx and Music both 128): a plain
+    /// call 6.1 dB down, an announcer's line 3.7 dB, the music 6 dB; at the
+    /// sliders' top the loudest call plays in full and the music 3 dB down.
+    #[test]
+    fn levels_at_the_games_own_settings() {
+        let db = |amp: f32| (200.0 * f64::from(amp).dlog10()).round() as i32;
+        assert_eq!(db(effect_level(127, 127, 0x80, 0)), -61);
+        assert_eq!(db(effect_level(0xE0, 127, 0x80, 0)), -37);
+        assert_eq!(db(effect_level(0xFF, 127, 0x80, 0)), -30);
+        assert_eq!(db(effect_level(127, 64, 0x80, 0)), -92);
+        assert_eq!((db(music_level(128)), db(music_level(100))), (-60, -73));
+        assert_eq!((db(effect_level(0xFF, 127, 0xFF, 0)), db(music_level(0xFF))), (0, -30));
+        assert_eq!((effect_level(127, 127, 0, 0), music_level(0)), (0.0, 0.0));
+        // A moving voice at a plain call's volume is as loud as the call.
+        assert_eq!(voice_level(127.0, 0x80, 0), effect_level(127, 127, 0x80, 0));
+        // Centred, a voice is 3 dB down in each speaker.
+        let centred = Voice { requested: 127, call: 127, centred: true, duck: 0 };
+        assert_eq!(db(centred.level(0x80, 0)), -91);
+        assert_eq!(db(Voice { centred: false, ..centred }.level(0x80, 0)), -61);
+    }
+
+    /// A call that ducks takes its duck off every other voice's volume
+    /// while it plays (a level's name being said, 20: a plain call under
+    /// it is 1.9 dB quieter), never off its own.
+    #[test]
+    fn a_ducking_call_lowers_the_others() {
+        let db = |amp: f32| (200.0 * f64::from(amp).dlog10()).round() as i32;
+        let (line, other) = (Ducking(20), Ducking(30));
+        assert_eq!((line.on(20), line.on(0), other.on(10), Ducking(0).on(0)), (0, 20, 20, 0));
+        assert_eq!(db(effect_level(127, 127, 0x80, 20)), -80);
+        assert_eq!(voice_level(127.0, 0x80, 20), effect_level(127, 127, 0x80, 20));
+        // Ducked to nothing, it's silent.
+        assert_eq!(effect_level(40, 127, 0x80, 20), 0.0);
     }
 
     /// An announcer's line's look.

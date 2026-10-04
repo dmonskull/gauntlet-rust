@@ -501,7 +501,7 @@ fn start_sound(
             .spawn((
                 SoundKind::Music,
                 AudioPlayer(sounds.add(sound)),
-                PlaybackSettings { muted: status.muted, volume: options.category(SoundKind::Music), ..PlaybackSettings::DESPAWN },
+                PlaybackSettings { muted: status.muted, volume: options.volume(SoundKind::Music), ..PlaybackSettings::DESPAWN },
             ))
             .id(),
     )
