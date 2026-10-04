@@ -373,10 +373,13 @@ deflated on the wire (`online::pack_sync`): 16 KB on a boss level and
 sync point that follows the last within 150 ticks didn't hold — the games
 differ in something it doesn't carry — and the host waits longer before
 the next (2 s doubling to 30 s), so such games never stop every second.
-Not carried: the tower's wizard scenes (each machine's runs from its own
-records, on the game's ticks). A boss's death sweep under way on one
-machine alone stops with the other blasts (what it had broken is broken
-everywhere).
+The tower's wizard scenes aren't carried (each machine's runs from its own
+records, on the game's ticks) but compared: where the machines' scenes
+differ — one's wizard is announcing what the others' isn't, and holds the
+heroes' pads meanwhile — the scene ends on every machine alike, and what
+he was announcing comes at the next visit (`tower_scenes::end`). A boss's
+death sweep under way on one machine alone stops with the other blasts
+(what it had broken is broken everywhere).
 Machines on different levels can't be put together: everyone starts again
 on the level a machine's game came to last (each reports the tick it came
 to its level: a level one game has finished isn't played again), each
@@ -436,7 +439,8 @@ starts the host alone, so the client joins the game under way;
 (`GDL_DESYNC_AT`: `coin`, `hero`, `monster`, `kill`, `generator`, `item`,
 `door`, `chest`, `barrel`, `mover`, `critter`, `slay` — every critter
 awake is killed, a boss too —, `box` — a message box comes up —, `clock`
-— the game clock jumps a second); a sync point must put the
+— the game clock jumps a second —, `scene` — in the tower, the wizard
+comes with an announcement); a sync point must put the
 games together, with no level starting again, and every check after it
 must agree. Each of these comes together at the first sync point.
 `GDL_SYNC_AFTER=<ticks>` has the host call the sync point that long after

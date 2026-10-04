@@ -147,6 +147,8 @@ struct Report {
     voices: VoicesSave,
     /// The blasts it has in flight (their keys' sum).
     blasts: u64,
+    /// The tower's wizard scene it has under way (`tower_scenes::sync_key`).
+    scene: u64,
 }
 
 /// The game every machine takes over at a sync point.
@@ -186,6 +188,11 @@ struct GameState {
     /// machine has the same: if not, none hurts any more.
     blasts: u64,
     blasts_differ: bool,
+    /// The tower's wizard scene (the host's key), and whether the machines
+    /// have it alike: if not, it ends on every machine (the heroes' pads
+    /// are held through it).
+    scene: u64,
+    scene_differs: bool,
 }
 
 /// The game clock: the time the ticks read as now (the fixed loop's).
@@ -274,6 +281,7 @@ fn sync_point(world: &mut World) {
         let shop = world.resource::<crate::shop::ShopScreen>().is_open();
         let voices = world.resource::<VoiceQueues>().save_synced();
         let blasts = crate::effects::blasts_key(world);
+        let scene = crate::tower_scenes::sync_key(world);
         if host {
             let heroes = crate::player::save_synced(world);
             let mechanics = world.get_resource::<Mechanics>().map(Mechanics::save_synced);
@@ -296,6 +304,8 @@ fn sync_point(world: &mut World) {
                 voices,
                 blasts,
                 blasts_differ: false,
+                scene,
+                scene_differs: false,
             });
         } else {
             // Its own players' heroes are theirs to say; its copies of the
@@ -315,6 +325,7 @@ fn sync_point(world: &mut World) {
                 shop,
                 voices,
                 blasts,
+                scene,
             };
             match ron::to_string(&report) {
                 Ok(report) => {
@@ -373,6 +384,7 @@ fn host_point(world: &mut World, point: &mut Point) -> bool {
     let Some(mut state) = point.state.take() else { return true };
     // (A machine that didn't report may have anything in flight.)
     state.blasts_differ = !all_in || point.reports.iter().any(|(_, r)| r.blasts != state.blasts);
+    state.scene_differs = !all_in || point.reports.iter().any(|(_, r)| r.scene != state.scene);
     // Machines on another level can't be put together here: everyone
     // starts again (`frontend.rs`) on the level a machine went on to last
     // — a level one machine's game has finished isn't played again — each
@@ -543,6 +555,9 @@ fn apply(world: &mut World, state: &GameState) {
     }
     if let (Some(save), Some(mut hazards)) = (&state.hazards, world.get_resource_mut::<Hazards>()) {
         hazards.load_synced(save);
+    }
+    if state.scene_differs {
+        crate::tower_scenes::end(world);
     }
     world.resource_mut::<VoiceQueues>().load_synced(&state.voices);
     world.resource_mut::<MessageBox>().load_synced(&state.boxes);

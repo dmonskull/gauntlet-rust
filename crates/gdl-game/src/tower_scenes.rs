@@ -380,6 +380,59 @@ impl Scene {
     }
 }
 
+/// What the machines compare of the wizard's scene at a sync point
+/// (`resync.rs`): what he's announcing and how far it has gone; 0 with
+/// none under way.
+pub(crate) fn sync_key(world: &World) -> u64 {
+    use gdl_formats::detmath::sync_bits;
+    use std::hash::{Hash, Hasher};
+    let Some(s) = world.get_resource::<Scene>() else { return 0 };
+    if !s.active() && s.follow == 0 && s.fading.is_none() {
+        return 0;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    format!("{:?} {:?}", s.announce, s.rank).hash(&mut h);
+    (sync_bits(s.delay), sync_bits(s.fields), sync_bits(s.wait), sync_bits(s.fade)).hash(&mut h);
+    (s.wizard.is_some(), s.spoken, s.follow, s.fading, s.flashed, s.sparkled).hash(&mut h);
+    h.finish() | 1
+}
+
+/// A sync point found the machines' scenes differ (one's wizard is
+/// announcing what the others' isn't): the scene ends on every machine
+/// alike — he goes, his words and his cut with him, and the heroes' pads
+/// are theirs again. (What he was announcing comes at the next visit.)
+pub(crate) fn end(world: &mut World) {
+    let Some(mut scene) = world.get_resource_mut::<Scene>() else { return };
+    if !scene.active() && scene.follow == 0 && scene.fading.is_none() {
+        return;
+    }
+    info!("sync point: the wizard's scene ends ({:?}, step {:#x})", scene.announce, scene.follow);
+    let wizard = scene.wizard.take();
+    scene.announce = None;
+    scene.rank = None;
+    scene.rank_voice = None;
+    (scene.follow, scene.fade, scene.fading) = (0, 0.0, None);
+    if let Some(w) = wizard {
+        let _ = world.try_despawn(w);
+    }
+    if let Some(mut captions) = world.get_resource_mut::<Captions>() {
+        captions.clear();
+    }
+    if let Some(mut camera) = world.get_resource_mut::<PlayCamera>() {
+        camera.end_cut();
+    }
+}
+
+/// `GDL_DESYNC_AT=<tick>:scene` (testing the sync points, `online.rs`):
+/// in the tower, on this machine alone the wizard comes to say there are
+/// more shards to find.
+pub(crate) fn test_diverge(world: &mut World) {
+    match world.get_resource_mut::<Scene>() {
+        Some(mut scene) if scene.wizard_model.is_some() => scene.again(Announce::MoreShards),
+        _ => warn!("GDL_DESYNC_AT: no wizard's scene here (not the tower)"),
+    }
+}
+
 /// The wizard of the scenes as the game makes him (`0xC00880`): drawn
 /// additively without depth writes.
 pub fn apparition(model: CharacterModel, materials: &mut Assets<LevelMaterial>) -> Arc<CharacterModel> {

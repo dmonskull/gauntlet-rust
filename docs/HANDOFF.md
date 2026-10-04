@@ -61,12 +61,21 @@ decides when):
   sync point, `GDL_SYNC_LOG=items` to find the item that differs. Every
   case comes together at the first sync point.
 
+- The tower's wizard scenes are compared at a sync point and end on every
+  machine where they differ (`CLIENT_DESYNC_AT=300:scene` in the tower).
+- **Sound levels are the game's** (`docs/audio-format.md`, "The volume",
+  "Ducking", "The music's level"): a voice's fader takes 3 dB a halving,
+  the Sfx and Music options start at half, voice lines duck the rest.
+  This is the likely cause of the "staticy" loading audio on Windows
+  (narration and dashes, all asked loud, used to sum past full scale);
+  nobody has listened on Windows since.
+
 Asked for and **not done yet**:
 
-1. Sync points don't carry the tower's wizard scenes (each machine's
-   runs from its own records, on the ticks).
-2. Cross-platform play (Windows with Mac) is only covered by the build's
-   `test` job (the "same bits" tests), not by a real session.
+1. Cross-platform play (Windows with Mac) is only covered by the build's
+   `test` job (the "same bits" tests: they passed for master on
+   2026-10-03, run by hand: `gh workflow run build --ref master`), not
+   by a real session.
 
 ## Pick up here
 
