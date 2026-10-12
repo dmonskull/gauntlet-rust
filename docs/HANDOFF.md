@@ -79,6 +79,13 @@ Asked for and **not done yet**:
 
 ## Pick up here
 
+**2026-10-12: every commit id changed.** The history was rewritten (the
+working notes became `CONTRIBUTING.md`, commit messages lost their last
+lines), so the ids quoted in this file and in [STATUS.md](STATUS.md) were
+updated to the new ones; an id from an older note or chat log won't
+resolve — search the commit subjects instead. The working rules below say
+what the repo must stay free of.
+
 **2026-10-04: the menus' arrow (user request: "make the menu pointer
 like the original, with its motion").** Done: `menu_arrow.rs` draws the
 game's `ICON_ARROW` (POWERUPS) where the game puts it, and it slides to
