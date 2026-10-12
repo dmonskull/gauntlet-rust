@@ -820,7 +820,7 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
 ## Next jobs, in order
 
-Run one helper at a time; each job ends in a report, then the agent
+Run one helper at a time; each job ends in a report, then the helper
 waits.
 
 **Level fidelity (user request, 2026-09-30; top priority after the job in
