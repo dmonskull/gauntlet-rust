@@ -357,7 +357,7 @@ not first-person visual proof. No game assets are committed.
   Checked: `tools/online_test.sh` plain (51–53 checks), `HOST_PLAYERS=1`
   (late join, 71), `CLIENT_MENU=…` (Manage Character VAL → WIZ, 86) and
   `CLIENT_DESYNC_AT=600` (recovers, 48–51 after the restart), all in sync.
-- **Bosses** (helper, merged `fd427c5`): the blows' effect slots (the lich's
+- **Bosses** (helper, merged `6a12e4d`): the blows' effect slots (the lich's
   axe and chain spheres = its aura; held attacks' steady areas; area
   cones), the boss key (its pick-up is dead code in retail; the realm bit
   does everything), the 2D health meters and the 3D `GMETER`. Heroes take
@@ -382,7 +382,7 @@ under the shop screen. Merged the helper's audit round 4 (level ids
 through the realm records: the tower's a2 portal leads to levelA6;
 trigger ids and camera points; the tower's gates open as it loads).
 **Parked, unmerged:** the helper's secret realm timer and coins
-(`worktree-a7499ea16152eadcd`, WIP 048cd59, unverified: check S1's
+(`worktree-a7499ea16152eadcd`, WIP a6fb60b, unverified: check S1's
 coins with `GDL_HOPS` before merging — the S levels can't be finished
 without it). **Next:** the G–T tour's leads (G2, G3, G4, H3, J3, K3; the
 "NOT ARRIVED" animated lifts are likely tour.py treating animated targets
@@ -400,7 +400,7 @@ level changes settled first, per-hero cameras and spectating, a state hash
 every second. `tools/online_test.sh` (two games over loopback) stays in sync
 in the tower and in levelA1. Not online yet: joining after the start, Manage
 Character, the shops. The helper's shop decoding is parked unmerged on
-`worktree-aba24fd14c15b99a9` (WIP commit 5411df7; `shop.rs` still
+`worktree-aba24fd14c15b99a9` (WIP commit 30aa783; `shop.rs` still
 names retail addresses). Packaging: `PLAYING.md`, `tools/package.sh`,
 `.github/workflows/build.yml` (Windows / macOS / Linux zips).
 
@@ -600,7 +600,7 @@ the levelA2 Death barrel).
 
 ## Latest check
 
-**Session end 2026-10-01, `master` at `e231026`** (build, clippy, tests
+**Session end 2026-10-01, `master` at `c188f8b`** (build, clippy, tests
 pass; keys checked turning in game). Done this session: the A1 lift
 regression (a teleport swept the touch test across secret walls); the
 crystal sparkle that never ended (effect emitters stop with their
@@ -629,17 +629,17 @@ The helper's worktree branch is fully merged; give it the next round.
 
 Earlier:
 
-2026-10-01, on `ef1f596` (the level audit's first round merged: the
+2026-10-01, on `613522b` (the level audit's first round merged: the
 world's animated objects — A2's drawbridges, the plank, the diving board,
 B2's snakes, B3's rock groups —, secret walls blocking until broken,
 falling obstacles, key rings, every trigger's target held at its off
 height): build, clippy and tests pass. In game, A2's first drawbridge
 starts raised and swings down when the hero stands on lever 379; A1's
-exit leads to A6 again (exits are shut only in the tower, `9d385c9`).
+exit leads to A6 again (exits are shut only in the tower, `f2bc60c`).
 
 The trigger tour (`tools/tour.sh`) on the merged build, A1–C1: every
 one-player trigger switches on and its node arrives except **A1 402/403
-(A1ELEV1/ELEV2: a regression from the merge — they fired on `6cffb3a`)**,
+(A1ELEV1/ELEV2: a regression from the merge — they fired on `657497e`)**,
 A4 267/268, B1 96, B5 275/278/280, C1 432/433 (STATUS.md "Now"). The
 tour before the merge also flagged C2 43, C3 415, C4 556/575/669, D2
 307/406, D3 46/48/51/324/363 and D4 338/342/355; C2–T3 haven't been
@@ -647,47 +647,47 @@ toured on the merged build, and the smoke test hasn't run since the merge.
 
 Earlier:
 
-The all-levels smoke test on `70b2f0a` (Death and the halo, the familiars
+The all-levels smoke test on `20e12e5` (Death and the halo, the familiars
 and the phoenix, the Pojo's throws, Skorne's gauntlets and the super
 crossbow with every release's throw sound, and the helper's level-up
 flash and level-up routine) passed all 67 real levels; only the known
 warnings (the test levels' missing `dream1a_1.ads`, no lookout 0 on L2/L3).
 
-Before that, the all-levels smoke test on `5a1b996` (the armour and special power-ups:
+Before that, the all-levels smoke test on `b856566` (the armour and special power-ups:
 the resistance routine everywhere, chrome, shields, invisibility, shrink,
 grow, time stop, breaths, the hammer; the helper's blasts on items,
 CHESTEXP, the power-up looks, x-ray, the lift and the hourglass) passed
 all 67 real levels.
 
-Before that, the all-levels smoke test on `0b8a828` (hit flashes, hints, critters
+Before that, the all-levels smoke test on `270ff8f` (hit flashes, hints, critters
 found and hit once, floor potions set off, power-ups stages A–B, and the
 helper's HUD key row, "IN TOWER" and voice queues) passed all 67 real
 levels.
 
 Before that, the all-levels smoke test on the tower wizard's scenes (the commit after
-`6ca8c15`) passed all 67 real levels; so did `6ca8c15` (the message box,
+`5ff90cf`) passed all 67 real levels; so did `5ff90cf` (the message box,
 captions, the welcome, input blocked in cuts; the tower's check has the
 welcome box up).
 
 Before that, the all-levels smoke test on the texture-modifier nodes, flipbook runs and
-the tower's shards, runestones and gates at load (`2faf43c`) passed all
-67 real levels; so did `c8fb3f9` (the turbo meter,
+the tower's shards, runestones and gates at load (`835b049`) passed all
+67 real levels; so did `1bea78f` (the turbo meter,
 the boss camera's stick) before it.
 
-Before that, the all-levels smoke test on master `f83e379` (item, monster and boss
+Before that, the all-levels smoke test on master `86bf589` (item, monster and boss
 texture animations, safe rocks, the shards' light, the camera's top-point
 target, unaware monsters and running from a charging runner) passed all
-67 real levels; so did `5b4ad91` and `2bb0c8c` before it.
+67 real levels; so did `04f1fc5` and `199dbc3` before it.
 
-Before that, the smoke test on master `c2424af` (the mirrored view, gamma
+Before that, the smoke test on master `f82f150` (the mirrored view, gamma
 blending, one-player placements, barrels, the tower's wizard and arrival
 starts, boss facing) passed all 67 real levels.
 
-Before that, the smoke test on master `58d602b` (suicide runners, effect
+Before that, the smoke test on master `2df70b3` (suicide runners, effect
 flipbooks and depth bias, the helper's chimera heads merged) passed all 67
 real levels.
 
-Before that, the smoke test on master `b089b35` (boss intro, the level-change
+Before that, the smoke test on master `1d512f6` (boss intro, the level-change
 crash fix, shared materials, saving) passed all 67 real levels (`DEMO1`
 included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 
@@ -729,7 +729,7 @@ included; `ORIGlevelL1` is a leftover folder the game doesn't list).
 - **Helper** (worktree branch `worktree-aba24fd14c15b99a9`): the
   level audit's second round, B1 onward (static: what each level makes,
   skips and hides, every trigger link, the tour's failures above); its
-  first round is merged (`ef1f596`). Before that, the level-up flash (additive, at
+  first round is merged (`613522b`). Before that, the level-up flash (additive, at
   the effect table's depth bias −512) and the game's level-up
   (`levelup.rs`: hint `0x22` and the flash on a rise, the lost level's
   sentence on a fall), before that the familiars and the phoenix's

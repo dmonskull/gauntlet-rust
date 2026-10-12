@@ -1,7 +1,7 @@
 # Status: how close the rewrite is to the original
 
 Assessed 2026-10-01 on `master` after the level audit's second round
-(`04b2745`; the first estimate, on `ef1f596`, was 81 % / 76 %); local
+(`a2d3800`; the first estimate, on `613522b`, was 81 % / 76 %); local
 co-op re-scored after it landed (3 % → 65 %). Online co-op is an addition,
 not counted. Update
 this file when an area moves; [HANDOFF.md](HANDOFF.md) has the
@@ -51,18 +51,18 @@ In order, top first. Each line names its doc, where the decoding is.
 ### 1. Now: regressions and blockers
 
 Fixed 2026-10-01: A1's lifts 402/403 (a teleport swept the item touch
-test across secret walls, `8c39b5f`); the crystal pickup's sparkle that
-never ended (effect emitters now stop with their effect, `9aa1881`);
-keys that turned once and stopped (`d2fa6d4`, a stand-in: see
+test across secret walls, `21ad4e4`); the crystal pickup's sparkle that
+never ended (effect emitters now stop with their effect, `2ed607c`);
+keys that turned once and stopped (`510984a`, a stand-in: see
 [items.md](items.md) "Item animation"); the developer keys (`I` swapped
 every item for a debug marker — a likely source of the user's "stray
 objects" —, `K`, `C`, `[`/`]`, `M`, `N`, F1) are off unless
-`GDL_DEV_KEYS=1` (`04b2745`). The second audit round (`728a4ff`)
+`GDL_DEV_KEYS=1` (`a2d3800`). The second audit round (`c97986b`)
 explained or fixed every tour lead from A4 to D4: items now drop with
 the movers at their start heights and ride them, touches reach from the
 hero's centre; C1 433 and D2 307 are unreachable in the original too.
 
-- Re-run the tour on every level on `04b2745` (`tools/tour.sh`; running),
+- Re-run the tour on every level on `a2d3800` (`tools/tour.sh`; running),
   then the all-levels smoke test (`tools/smoke.sh`).
 - Check the secret walls block and break in game (A1: `GDL_WARP=
   "55.5,0.15,59.1"`, A1SHOOTW1; the first try's camera sat inside a
@@ -70,7 +70,7 @@ hero's centre; C1 433 and D2 307 are unreachable in the original too.
 - Look at characters after the track-flag fix (`flags & 0x0FFF`), which
   changed 32 character bones ([animation-format.md](animation-format.md)).
 - Measure the frame rate with the 1,608 animated objects (`GDL_FPS=1`).
-- Done since: keys turn by the game's rule (`dd18546`); hints in the game's box (`cd179ab`); levels E1–I5 audited and bursting objects burst (`e231026`; their blast still to add in `effects.rs`).
+- Done since: keys turn by the game's rule (`8a761b3`); hints in the game's box (`f5a4990`); levels E1–I5 audited and bursting objects burst (`c188f8b`; their blast still to add in `effects.rs`).
 
 ### 2. Level fidelity (the user's top priority)
 
