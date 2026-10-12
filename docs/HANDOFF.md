@@ -904,10 +904,9 @@ item/object mechanic work. Split, side by side:
   of `crates/`; they belong in `docs/` only. The `no_retail_addresses` test
   checks this.
 - Only confirmed behaviour goes in; label stand-ins as stand-ins.
+- Commits carry no trailers or co-author lines, and nothing in the repo says
+  what tools the work was done with (2026-10-12).
 - Volume defaults to 25%: `-` / `=` keys, or Settings → Audio.
-- The user can set a standing goal with `/goal` (only they can run it), e.g.
-  `/goal get Gauntlet: Dark Legacy working 1:1 with the original, running
-  better, with zero issues or flaws`.
 
 ## Tools
 
